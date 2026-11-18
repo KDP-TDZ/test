@@ -1,0 +1,6 @@
+{
+  "name": "StudyCheck AI",
+  "description": "Nền tảng kiểm chứng tài liệu học tập, phân tích độ chính xác và độ đầy đủ kiến thức bằng AI, đối chiếu sách giáo khoa và luyện tập cá nhân hóa.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,320 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Student or administrator account profile.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "email": { "type": "string", "format": "email", "maxLength": 254 },
+        "avatarUrl": { "type": "string", "maxLength": 1024 },
+        "grade": { "type": "string", "enum": ["10", "11", "12"] },
+        "preferredSubjects": { "type": "array" },
+        "accountStatus": { "type": "string", "enum": ["active", "suspended"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastLoginAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "email", "grade", "accountStatus", "createdAt", "lastLoginAt"]
+    },
+    "AnalysisRecord": {
+      "title": "AnalysisRecord",
+      "description": "Document verification analysis owned by a single student.",
+      "type": "object",
+      "properties": {
+        "analysisId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "documentTitle": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "originalFileName": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "mimeType": { "type": "string", "maxLength": 100 },
+        "storagePath": { "type": "string", "maxLength": 500 },
+        "grade": { "type": "string", "enum": ["10", "11", "12"] },
+        "subject": { "type": "string", "maxLength": 40 },
+        "textbookReferenceId": { "type": "string", "maxLength": 128 },
+        "textbookTitle": { "type": "string", "maxLength": 200 },
+        "scope": { "type": "string", "maxLength": 300 },
+        "analysisStatus": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "uploading",
+            "extracting",
+            "awaiting_ocr_confirmation",
+            "retrieving_references",
+            "verifying",
+            "calculating",
+            "generating_report",
+            "completed",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "accuracyScore": { "type": "number" },
+        "completenessScore": { "type": "number" },
+        "evidenceCoverage": { "type": "number" },
+        "confidenceLevel": { "type": "string", "maxLength": 60 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["analysisId", "ownerUid", "documentTitle", "originalFileName", "grade", "subject", "analysisStatus", "createdAt", "updatedAt"]
+    },
+    "KnowledgeClaim": {
+      "title": "KnowledgeClaim",
+      "description": "Extracted atomic knowledge unit inside an analysis.",
+      "type": "object",
+      "properties": {
+        "claimId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sourceText": { "type": "string", "maxLength": 2000 },
+        "normalizedMeaning": { "type": "string", "maxLength": 2000 },
+        "evaluationStatus": {
+          "type": "string",
+          "enum": ["CORRECT", "PARTIALLY_CORRECT", "INCORRECT", "MISSING", "UNVERIFIED", "AMBIGUOUS", "OCR_UNCERTAIN", "OUT_OF_SCOPE"]
+        },
+        "importanceWeight": { "type": "number" }
+      },
+      "required": ["claimId", "ownerUid", "sourceText", "evaluationStatus", "importanceWeight"]
+    },
+    "ReferenceBook": {
+      "title": "ReferenceBook",
+      "description": "Admin-managed textbook or curriculum reference document.",
+      "type": "object",
+      "properties": {
+        "referenceId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "grade": { "type": "string", "enum": ["10", "11", "12"] },
+        "subject": { "type": "string", "maxLength": 40 },
+        "textbookSeries": { "type": "string", "maxLength": 100 },
+        "publisher": { "type": "string", "maxLength": 120 },
+        "editionYear": { "type": "string", "maxLength": 20 },
+        "status": { "type": "string", "enum": ["active", "paused"] },
+        "indexStatus": { "type": "string", "enum": ["indexed", "processing", "failed"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["referenceId", "title", "grade", "subject", "textbookSeries", "status", "indexStatus", "createdAt", "updatedAt"]
+    },
+    "ReferenceChunk": {
+      "title": "ReferenceChunk",
+      "description": "Indexed knowledge chunk extracted from a reference book.",
+      "type": "object",
+      "properties": {
+        "chunkId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "referenceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "grade": { "type": "string", "enum": ["10", "11", "12"] },
+        "subject": { "type": "string", "maxLength": 40 },
+        "chapter": { "type": "string", "maxLength": 200 },
+        "lesson": { "type": "string", "maxLength": 200 },
+        "pageNumber": { "type": "number" },
+        "content": { "type": "string", "maxLength": 6000 }
+      },
+      "required": ["chunkId", "referenceId", "grade", "subject", "chapter", "pageNumber", "content"]
+    },
+    "QuizSet": {
+      "title": "QuizSet",
+      "description": "Generated ABCD quiz set belonging to a student.",
+      "type": "object",
+      "properties": {
+        "quizSetId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "analysisId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "subject": { "type": "string", "maxLength": 40 },
+        "grade": { "type": "string", "enum": ["10", "11", "12"] },
+        "questionCount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["quizSetId", "ownerUid", "title", "subject", "grade", "questionCount", "createdAt"]
+    },
+    "PracticeItem": {
+      "title": "PracticeItem",
+      "description": "Persistent incorrect quiz question saved in student Practice Bank.",
+      "type": "object",
+      "properties": {
+        "itemId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "questionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "questionText": { "type": "string", "maxLength": 2000 },
+        "correctAnswer": { "type": "string", "enum": ["A", "B", "C", "D"] },
+        "attemptCount": { "type": "number" },
+        "correctCount": { "type": "number" },
+        "incorrectCount": { "type": "number" },
+        "masteryStatus": { "type": "string", "maxLength": 60 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["itemId", "questionId", "ownerUid", "questionText", "correctAnswer", "attemptCount", "createdAt"]
+    },
+    "KnowledgeProgress": {
+      "title": "KnowledgeProgress",
+      "description": "Per-user long-term learning mastery state for a single concept.",
+      "type": "object",
+      "properties": {
+        "conceptId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "conceptTitle": { "type": "string", "maxLength": 200 },
+        "subjectId": { "type": "string", "maxLength": 40 },
+        "grade": { "type": "string", "enum": ["10", "11", "12"] },
+        "chapterId": { "type": "string", "maxLength": 200 },
+        "encounteredCount": { "type": "number" },
+        "practiceAttemptCount": { "type": "number" },
+        "correctAttempts": { "type": "number" },
+        "incorrectAttempts": { "type": "number" },
+        "masteryStatus": { "type": "string", "enum": ["Đã tiếp cận", "Đã học qua", "Đang củng cố", "Cần ôn tập", "Tạm nắm vững"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["conceptId", "ownerUid", "conceptTitle", "subjectId", "grade", "chapterId", "masteryStatus", "updatedAt"]
+    },
+    "QuizAttempt": {
+      "title": "QuizAttempt",
+      "description": "Immutable individual quiz question attempt log.",
+      "type": "object",
+      "properties": {
+        "attemptId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "questionId": { "type": "string", "maxLength": 128 },
+        "quizSetId": { "type": "string", "maxLength": 128 },
+        "conceptId": { "type": "string", "maxLength": 128 },
+        "selectedAnswer": { "type": "string", "enum": ["A", "B", "C", "D"] },
+        "correctAnswer": { "type": "string", "enum": ["A", "B", "C", "D"] },
+        "isCorrect": { "type": "boolean" },
+        "attemptedAt": { "type": "string", "format": "date-time" },
+        "sessionId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["attemptId", "uid", "questionId", "conceptId", "selectedAnswer", "correctAnswer", "isCorrect", "attemptedAt", "sessionId"]
+    },
+    "SystemConfig": {
+      "title": "SystemConfig",
+      "description": "Central AI service switch, maintenance notice, and rate limit settings.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "disabledReason": { "type": "string", "maxLength": 300 },
+        "maintenanceMessage": { "type": "string", "maxLength": 400 },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["enabled", "maintenanceMessage", "updatedAt", "updatedBy"]
+    },
+    "AdminSecret": {
+      "title": "AdminSecret",
+      "description": "AES-256-GCM server-encrypted single Gemini API key accessible strictly by Super Admin.",
+      "type": "object",
+      "properties": {
+        "secretId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ciphertext": { "type": "string", "maxLength": 1024 },
+        "iv": { "type": "string", "maxLength": 64 },
+        "authTag": { "type": "string", "maxLength": 64 },
+        "maskedIdentifier": { "type": "string", "maxLength": 40 },
+        "label": { "type": "string", "maxLength": 100 },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 },
+        "lastTestAt": { "type": "string", "maxLength": 64 },
+        "lastTestStatus": { "type": "string", "maxLength": 40 },
+        "lastTestMessage": { "type": "string", "maxLength": 300 }
+      },
+      "required": ["secretId", "ciphertext", "iv", "authTag", "maskedIdentifier", "label", "updatedAt", "updatedBy"]
+    },
+    "ApiUsageDaily": {
+      "title": "ApiUsageDaily",
+      "description": "Daily AI API usage and token counters.",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "requestCount": { "type": "number" },
+        "successfulCount": { "type": "number" },
+        "failedCount": { "type": "number" },
+        "blockedCount": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["date", "requestCount", "successfulCount", "failedCount", "blockedCount", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Super Admin security and configuration audit log entry.",
+      "type": "object",
+      "properties": {
+        "logId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorUid": { "type": "string", "maxLength": 128 },
+        "action": { "type": "string", "maxLength": 100 },
+        "resourceType": { "type": "string", "maxLength": 80 },
+        "resourceId": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["success", "failure", "blocked"] }
+      },
+      "required": ["logId", "actorUid", "action", "resourceType", "resourceId", "timestamp", "status"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted server-managed Super Admin registry document.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "role": { "type": "string", "enum": ["super_admin"] },
+        "grantedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "role", "grantedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private student user profiles isolated per UID."
+    },
+    "/users/{uid}/knowledgeProgress/{conceptId}": {
+      "schema": { "$ref": "#/entities/KnowledgeProgress" },
+      "description": "Per-user long-term knowledge progress per concept."
+    },
+    "/users/{uid}/quizAttempts/{attemptId}": {
+      "schema": { "$ref": "#/entities/QuizAttempt" },
+      "description": "Per-user immutable quiz attempt history."
+    },
+    "/users/{uid}/usageDaily/{date}": {
+      "schema": { "$ref": "#/entities/ApiUsageDaily" },
+      "description": "Per-user daily AI request counters."
+    },
+    "/analyses/{analysisId}": {
+      "schema": { "$ref": "#/entities/AnalysisRecord" },
+      "description": "Student document analysis reports owned by ownerUid."
+    },
+    "/analyses/{analysisId}/claims/{claimId}": {
+      "schema": { "$ref": "#/entities/KnowledgeClaim" },
+      "description": "Extracted atomic knowledge claims scoped under parent analysis."
+    },
+    "/referenceBooks/{referenceId}": {
+      "schema": { "$ref": "#/entities/ReferenceBook" },
+      "description": "Admin-managed textbook metadata library."
+    },
+    "/referenceChunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/ReferenceChunk" },
+      "description": "Indexed textbook chunks for retrieval."
+    },
+    "/quizSets/{quizSetId}": {
+      "schema": { "$ref": "#/entities/QuizSet" },
+      "description": "Generated quiz sets owned by ownerUid."
+    },
+    "/practiceItems/{itemId}": {
+      "schema": { "$ref": "#/entities/PracticeItem" },
+      "description": "Persistent student Practice Bank items (manual delete only)."
+    },
+    "/systemConfig/{configId}": {
+      "schema": { "$ref": "#/entities/SystemConfig" },
+      "description": "Global AI service switch and configuration (admin write only)."
+    },
+    "/adminSecrets/{secretId}": {
+      "schema": { "$ref": "#/entities/AdminSecret" },
+      "description": "Server-encrypted single Gemini API key readable/writable strictly by Super Admin."
+    },
+    "/apiUsageDaily/{date}": {
+      "schema": { "$ref": "#/entities/ApiUsageDaily" },
+      "description": "Global daily AI usage statistics (Super Admin read/write)."
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable Super Admin audit log."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Trusted Super Admin allowlist directory."
+    }
+  }
+}

@@ -1,0 +1,391 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOwner(uid) {
+      return isVerifiedUser() && request.auth.uid == uid;
+    }
+
+    // Super Admin verification:
+    // 1. Verified custom claim (superAdmin == true or role == 'super_admin')
+    // 2. Bootstrapped pre-existing Super Admin email with email_verified == true
+    // 3. Trusted /admins/{uid} document
+    function isSuperAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.superAdmin == true ||
+        request.auth.token.role == 'super_admin' ||
+        request.auth.token.email == 'tuankhang2011pm@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUserProfile(data, uid) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'grade', 'accountStatus', 'createdAt', 'lastLoginAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'avatarUrl', 'grade', 'preferredSubjects', 'accountStatus', 'createdAt', 'lastLoginAt'])
+        && data.uid is string && data.uid == uid && data.uid.size() <= 128
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 1024))
+        && data.grade in ['10', '11', '12']
+        && (!('preferredSubjects' in data) || (data.preferredSubjects is list && data.preferredSubjects.size() <= 12 && (data.preferredSubjects.size() == 0 || data.preferredSubjects[0] is string)))
+        && data.accountStatus in ['active', 'suspended']
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.lastLoginAt is string && data.lastLoginAt.size() <= 64;
+    }
+
+    function isValidAnalysis(data) {
+      return data.keys().hasAll(['analysisId', 'ownerUid', 'documentTitle', 'originalFileName', 'grade', 'subject', 'analysisStatus', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'analysisId', 'ownerUid', 'documentTitle', 'originalFileName', 'mimeType',
+          'storagePath', 'storageDownloadUrl', 'grade', 'subject', 'textbookReferenceId',
+          'textbookTitle', 'textbookVersion', 'selectedChapters', 'scope', 'analysisStatus',
+          'statusMessage', 'extractedPages', 'claims', 'coverageItems', 'annotations',
+          'accuracyScore', 'completenessScore', 'evidenceCoverage', 'confidenceLevel',
+          'confidenceReason', 'accuracyBreakdown', 'completenessBreakdown', 'strengths',
+          'weaknesses', 'suggestions', 'webSources', 'usedWebGrounding', 'webGroundingNotice',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.analysisId)
+        && data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid.size() <= 128
+        && data.documentTitle is string && data.documentTitle.size() >= 1 && data.documentTitle.size() <= 200
+        && data.originalFileName is string && data.originalFileName.size() >= 1 && data.originalFileName.size() <= 255
+        && (!('mimeType' in data) || (data.mimeType is string && data.mimeType.size() <= 100))
+        && (!('storagePath' in data) || (data.storagePath is string && data.storagePath.size() <= 500))
+        && (!('storageDownloadUrl' in data) || (data.storageDownloadUrl is string && data.storageDownloadUrl.size() <= 2048))
+        && data.grade in ['10', '11', '12']
+        && data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 40
+        && (!('textbookReferenceId' in data) || (data.textbookReferenceId is string && data.textbookReferenceId.size() <= 128))
+        && (!('textbookTitle' in data) || (data.textbookTitle is string && data.textbookTitle.size() <= 200))
+        && (!('textbookVersion' in data) || (data.textbookVersion is string && data.textbookVersion.size() <= 64))
+        && (!('selectedChapters' in data) || (data.selectedChapters is list && data.selectedChapters.size() <= 30 && (data.selectedChapters.size() == 0 || data.selectedChapters[0] is string)))
+        && (!('scope' in data) || (data.scope is string && data.scope.size() <= 300))
+        && data.analysisStatus in ['queued', 'uploading', 'extracting', 'awaiting_ocr_confirmation', 'retrieving_references', 'verifying', 'calculating', 'generating_report', 'completed', 'failed', 'cancelled']
+        && (!('statusMessage' in data) || (data.statusMessage is string && data.statusMessage.size() <= 400))
+        && (!('extractedPages' in data) || (data.extractedPages is list && data.extractedPages.size() <= 50))
+        && (!('claims' in data) || (data.claims is list && data.claims.size() <= 150))
+        && (!('coverageItems' in data) || (data.coverageItems is list && data.coverageItems.size() <= 100))
+        && (!('annotations' in data) || (data.annotations is list && data.annotations.size() <= 200))
+        && (!('strengths' in data) || (data.strengths is list && data.strengths.size() <= 30))
+        && (!('weaknesses' in data) || (data.weaknesses is list && data.weaknesses.size() <= 50))
+        && (!('suggestions' in data) || (data.suggestions is list && data.suggestions.size() <= 30))
+        && (!('webSources' in data) || (data.webSources is list && data.webSources.size() <= 30))
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidQuizSet(data) {
+      return data.keys().hasAll(['quizSetId', 'ownerUid', 'title', 'subject', 'grade', 'questionCount', 'questions', 'createdAt'])
+        && data.keys().hasOnly(['quizSetId', 'ownerUid', 'analysisId', 'title', 'subject', 'grade', 'difficulty', 'scope', 'questionCount', 'questions', 'createdAt'])
+        && isValidId(data.quizSetId)
+        && data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid.size() <= 128
+        && (!('analysisId' in data) || (data.analysisId is string && data.analysisId.size() <= 128))
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 40
+        && data.grade in ['10', '11', '12']
+        && data.questionCount is number && data.questionCount >= 1 && data.questionCount <= 30
+        && data.questions is list && data.questions.size() >= 1 && data.questions.size() <= 30
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidPracticeItem(data) {
+      return data.keys().hasAll(['itemId', 'questionId', 'ownerUid', 'questionText', 'optionA', 'optionB', 'optionC', 'optionD', 'correctAnswer', 'explanation', 'subject', 'grade', 'chapter', 'concept', 'attemptCount', 'correctCount', 'incorrectCount', 'lastAttemptAt', 'lastResult', 'masteryStatus', 'createdAt'])
+        && data.keys().hasOnly(['itemId', 'questionId', 'ownerUid', 'questionText', 'optionA', 'optionB', 'optionC', 'optionD', 'correctAnswer', 'explanation', 'sourceReference', 'subject', 'grade', 'chapter', 'concept', 'difficulty', 'attemptCount', 'correctCount', 'incorrectCount', 'lastAttemptAt', 'lastResult', 'masteryStatus', 'createdAt'])
+        && isValidId(data.itemId)
+        && data.questionId is string && data.questionId.size() >= 1 && data.questionId.size() <= 128
+        && data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid.size() <= 128
+        && data.questionText is string && data.questionText.size() >= 1 && data.questionText.size() <= 2000
+        && data.optionA is string && data.optionA.size() <= 500
+        && data.optionB is string && data.optionB.size() <= 500
+        && data.optionC is string && data.optionC.size() <= 500
+        && data.optionD is string && data.optionD.size() <= 500
+        && data.correctAnswer in ['A', 'B', 'C', 'D']
+        && data.explanation is string && data.explanation.size() <= 2000
+        && (!('sourceReference' in data) || (data.sourceReference is string && data.sourceReference.size() <= 300))
+        && data.subject is string && data.subject.size() <= 40
+        && data.grade in ['10', '11', '12']
+        && data.chapter is string && data.chapter.size() <= 200
+        && data.concept is string && data.concept.size() <= 200
+        && data.attemptCount is number && data.attemptCount >= 1
+        && data.correctCount is number && data.correctCount >= 0
+        && data.incorrectCount is number && data.incorrectCount >= 0
+        && data.lastResult in ['correct', 'incorrect']
+        && data.masteryStatus is string && data.masteryStatus.size() <= 60
+        && data.lastAttemptAt is string && data.lastAttemptAt.size() <= 64
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidKnowledgeProgress(data) {
+      return data.keys().hasAll(['conceptId', 'ownerUid', 'conceptTitle', 'subjectId', 'grade', 'chapterId', 'encounteredCount', 'practiceAttemptCount', 'correctAttempts', 'incorrectAttempts', 'recentResults', 'sessionIds', 'masteryStatus', 'firstSeenAt', 'updatedAt'])
+        && data.keys().hasOnly(['conceptId', 'ownerUid', 'conceptTitle', 'subjectId', 'grade', 'chapterId', 'lesson', 'textbookReferenceId', 'textbookTitle', 'encounteredCount', 'practiceAttemptCount', 'correctAttempts', 'incorrectAttempts', 'recentResults', 'sessionIds', 'recentAccuracy', 'masteryStatus', 'lastMistakeNote', 'firstSeenAt', 'lastAttemptAt', 'updatedAt'])
+        && isValidId(data.conceptId)
+        && data.ownerUid is string && data.ownerUid == request.auth.uid && data.ownerUid.size() <= 128
+        && data.conceptTitle is string && data.conceptTitle.size() >= 1 && data.conceptTitle.size() <= 200
+        && data.subjectId is string && data.subjectId.size() <= 40
+        && data.grade in ['10', '11', '12']
+        && data.chapterId is string && data.chapterId.size() <= 200
+        && data.encounteredCount is number && data.encounteredCount >= 0
+        && data.practiceAttemptCount is number && data.practiceAttemptCount >= 0
+        && data.correctAttempts is number && data.correctAttempts >= 0
+        && data.incorrectAttempts is number && data.incorrectAttempts >= 0
+        && data.recentResults is list && data.recentResults.size() <= 20
+        && data.sessionIds is list && data.sessionIds.size() <= 50
+        && data.masteryStatus in ['Đã tiếp cận', 'Đã học qua', 'Đang củng cố', 'Cần ôn tập', 'Tạm nắm vững']
+        && data.firstSeenAt is string && data.firstSeenAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidQuizAttempt(data) {
+      return data.keys().hasAll(['attemptId', 'uid', 'questionId', 'quizSetId', 'conceptId', 'conceptTitle', 'subjectId', 'chapterId', 'selectedAnswer', 'correctAnswer', 'isCorrect', 'attemptedAt', 'sessionId'])
+        && data.keys().hasOnly(['attemptId', 'uid', 'questionId', 'quizSetId', 'conceptId', 'conceptTitle', 'subjectId', 'chapterId', 'selectedAnswer', 'correctAnswer', 'isCorrect', 'attemptedAt', 'sessionId'])
+        && isValidId(data.attemptId)
+        && data.uid is string && data.uid == request.auth.uid && data.uid.size() <= 128
+        && data.questionId is string && data.questionId.size() <= 128
+        && data.quizSetId is string && data.quizSetId.size() <= 128
+        && data.conceptId is string && data.conceptId.size() <= 128
+        && data.conceptTitle is string && data.conceptTitle.size() <= 200
+        && data.subjectId is string && data.subjectId.size() <= 40
+        && data.chapterId is string && data.chapterId.size() <= 200
+        && data.selectedAnswer in ['A', 'B', 'C', 'D']
+        && data.correctAnswer in ['A', 'B', 'C', 'D']
+        && data.isCorrect is bool
+        && data.attemptedAt is string && data.attemptedAt.size() <= 64
+        && data.sessionId is string && data.sessionId.size() <= 128;
+    }
+
+    function isValidReferenceBook(data) {
+      return data.keys().hasAll(['referenceId', 'title', 'grade', 'subject', 'textbookSeries', 'status', 'indexStatus', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['referenceId', 'title', 'grade', 'subject', 'textbookSeries', 'publisher', 'editionYear', 'description', 'sourceType', 'sourceUrl', 'storagePath', 'chapters', 'chunkCount', 'status', 'indexStatus', 'indexError', 'createdAt', 'updatedAt'])
+        && isValidId(data.referenceId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.grade in ['10', '11', '12']
+        && data.subject is string && data.subject.size() <= 40
+        && data.textbookSeries is string && data.textbookSeries.size() <= 100
+        && data.status in ['active', 'paused']
+        && data.indexStatus in ['indexed', 'processing', 'failed'];
+    }
+
+    function isValidReferenceChunk(data) {
+      return data.keys().hasAll(['chunkId', 'referenceId', 'grade', 'subject', 'chapter', 'pageNumber', 'content'])
+        && data.keys().hasOnly(['chunkId', 'referenceId', 'grade', 'subject', 'textbookSeries', 'chapter', 'lesson', 'pageNumber', 'sectionTitle', 'content', 'keywords', 'learningObjectives', 'conceptTags'])
+        && isValidId(data.chunkId)
+        && data.referenceId is string && data.referenceId.size() <= 128
+        && data.grade in ['10', '11', '12']
+        && data.subject is string && data.subject.size() <= 40
+        && data.chapter is string && data.chapter.size() <= 200
+        && data.pageNumber is number && data.pageNumber >= 0
+        && data.content is string && data.content.size() <= 8000;
+    }
+
+    function isValidSystemConfig(data) {
+      return data.keys().hasAll(['enabled', 'maintenanceMessage', 'updatedAt', 'updatedBy'])
+        && data.keys().hasOnly(['enabled', 'disabledReason', 'maintenanceMessage', 'updatedAt', 'updatedBy', 'rateLimitConfig', 'activeModel'])
+        && data.enabled is bool
+        && data.maintenanceMessage is string && data.maintenanceMessage.size() <= 400
+        && (!('disabledReason' in data) || (data.disabledReason is string && data.disabledReason.size() <= 300))
+        && data.updatedAt is string && data.updatedAt.size() <= 64
+        && data.updatedBy is string && data.updatedBy.size() <= 128;
+    }
+
+    function isValidAdminSecret(data) {
+      return data.keys().hasAll(['secretId', 'ciphertext', 'iv', 'authTag', 'maskedIdentifier', 'label', 'updatedAt', 'updatedBy'])
+        && data.keys().hasOnly(['secretId', 'ciphertext', 'iv', 'authTag', 'maskedIdentifier', 'label', 'updatedAt', 'updatedBy', 'lastTestAt', 'lastTestStatus', 'lastTestMessage'])
+        && isValidId(data.secretId)
+        && data.ciphertext is string && data.ciphertext.size() >= 16 && data.ciphertext.size() <= 1024
+        && data.iv is string && data.iv.size() >= 8 && data.iv.size() <= 64
+        && data.authTag is string && data.authTag.size() >= 16 && data.authTag.size() <= 64
+        && data.maskedIdentifier is string && data.maskedIdentifier.size() <= 40
+        && data.label is string && data.label.size() <= 100
+        && data.updatedAt is string && data.updatedAt.size() <= 64
+        && data.updatedBy is string && data.updatedBy.size() <= 128
+        && !('rawKey' in data)
+        && !('apiKey' in data);
+    }
+
+    // --- Collection Rules ---
+
+    // Connection test helper document (read-only ping)
+    match /test/{docId} {
+      allow get: if isSignedIn();
+    }
+
+    // Users collection (PII isolated per UID; Super Admin can list/manage accounts)
+    match /users/{uid} {
+      allow get: if isValidId(uid) && (isOwner(uid) || isSuperAdmin());
+      allow list: if isSuperAdmin();
+      allow create: if isValidId(uid) && isOwner(uid) && isValidUserProfile(incoming(), uid) && incoming().accountStatus == 'active';
+      allow update: if isValidId(uid) && isValidUserProfile(incoming(), uid) && (
+        isSuperAdmin() ||
+        (
+          isOwner(uid)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().accountStatus == existing().accountStatus
+          && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'avatarUrl', 'grade', 'preferredSubjects', 'lastLoginAt'])
+        )
+      );
+      allow delete: if isValidId(uid) && (isOwner(uid) || isSuperAdmin());
+
+      match /knowledgeProgress/{conceptId} {
+        allow get: if isValidId(uid) && isValidId(conceptId) && (isOwner(uid) || isSuperAdmin());
+        allow list: if isValidId(uid) && (isOwner(uid) || isSuperAdmin());
+        allow create: if isValidId(uid) && isValidId(conceptId) && isOwner(uid) && isValidKnowledgeProgress(incoming());
+        allow update: if isValidId(uid) && isValidId(conceptId) && isOwner(uid) && isValidKnowledgeProgress(incoming())
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().firstSeenAt == existing().firstSeenAt
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'encounteredCount', 'practiceAttemptCount', 'correctAttempts', 'incorrectAttempts',
+            'recentResults', 'sessionIds', 'recentAccuracy', 'masteryStatus', 'lastMistakeNote',
+            'lastAttemptAt', 'updatedAt', 'lesson', 'textbookReferenceId', 'textbookTitle'
+          ]);
+        allow delete: if isValidId(uid) && isValidId(conceptId) && isOwner(uid);
+      }
+
+      match /quizAttempts/{attemptId} {
+        allow get: if isValidId(uid) && isValidId(attemptId) && (isOwner(uid) || isSuperAdmin());
+        allow list: if isValidId(uid) && (isOwner(uid) || isSuperAdmin());
+        allow create: if isValidId(uid) && isValidId(attemptId) && isOwner(uid) && isValidQuizAttempt(incoming());
+        allow update, delete: if false;
+      }
+
+      match /usageDaily/{date} {
+        allow get: if isValidId(uid) && (isOwner(uid) || isSuperAdmin());
+        allow list: if isValidId(uid) && (isOwner(uid) || isSuperAdmin());
+        allow create, update: if isValidId(uid) && isSuperAdmin();
+        allow delete: if false;
+      }
+    }
+
+    // Analyses collection (strict UID ownership)
+    match /analyses/{analysisId} {
+      allow get: if isValidId(analysisId) && isVerifiedUser() && (existing().ownerUid == request.auth.uid || isSuperAdmin());
+      allow list: if isVerifiedUser() && (resource.data.ownerUid == request.auth.uid || isSuperAdmin());
+      allow create: if isValidId(analysisId) && isVerifiedUser() && isValidAnalysis(incoming());
+      allow update: if isValidId(analysisId) && isVerifiedUser() && isValidAnalysis(incoming())
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && (
+          isSuperAdmin() ||
+          (
+            existing().ownerUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'documentTitle', 'grade', 'subject', 'textbookReferenceId', 'textbookTitle',
+              'textbookVersion', 'selectedChapters', 'scope', 'analysisStatus', 'statusMessage',
+              'extractedPages', 'claims', 'coverageItems', 'annotations', 'accuracyScore',
+              'completenessScore', 'evidenceCoverage', 'confidenceLevel', 'confidenceReason',
+              'accuracyBreakdown', 'completenessBreakdown', 'strengths', 'weaknesses',
+              'suggestions', 'webSources', 'usedWebGrounding', 'webGroundingNotice', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isValidId(analysisId) && isVerifiedUser() && (existing().ownerUid == request.auth.uid || isSuperAdmin());
+    }
+
+    // Reference Library (Readable by verified users for verification UI, writable ONLY by Super Admin)
+    match /referenceBooks/{referenceId} {
+      allow get: if isValidId(referenceId) && isVerifiedUser();
+      allow list: if isVerifiedUser();
+      allow create: if isValidId(referenceId) && isSuperAdmin() && isValidReferenceBook(incoming());
+      allow update: if isValidId(referenceId) && isSuperAdmin() && isValidReferenceBook(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'grade', 'subject', 'textbookSeries', 'publisher', 'editionYear',
+          'description', 'sourceType', 'sourceUrl', 'storagePath', 'chapters',
+          'chunkCount', 'status', 'indexStatus', 'indexError', 'updatedAt'
+        ]);
+      allow delete: if isValidId(referenceId) && isSuperAdmin();
+    }
+
+    match /referenceChunks/{chunkId} {
+      allow get: if isValidId(chunkId) && isVerifiedUser();
+      allow list: if isVerifiedUser();
+      allow create, update: if isValidId(chunkId) && isSuperAdmin() && isValidReferenceChunk(incoming());
+      allow delete: if isValidId(chunkId) && isSuperAdmin();
+    }
+
+    // Quiz Sets (owned by student)
+    match /quizSets/{quizSetId} {
+      allow get: if isValidId(quizSetId) && isVerifiedUser() && (existing().ownerUid == request.auth.uid || isSuperAdmin());
+      allow list: if isVerifiedUser() && (resource.data.ownerUid == request.auth.uid || isSuperAdmin());
+      allow create: if isValidId(quizSetId) && isVerifiedUser() && isValidQuizSet(incoming());
+      allow update: if false;
+      allow delete: if isValidId(quizSetId) && isVerifiedUser() && (existing().ownerUid == request.auth.uid || isSuperAdmin());
+    }
+
+    // Practice Items (owned by student; only student can manually delete)
+    match /practiceItems/{itemId} {
+      allow get: if isValidId(itemId) && isVerifiedUser() && (existing().ownerUid == request.auth.uid || isSuperAdmin());
+      allow list: if isVerifiedUser() && (resource.data.ownerUid == request.auth.uid || isSuperAdmin());
+      allow create: if isValidId(itemId) && isVerifiedUser() && isValidPracticeItem(incoming());
+      allow update: if isValidId(itemId) && isVerifiedUser() && isValidPracticeItem(incoming())
+        && existing().ownerUid == request.auth.uid
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().questionId == existing().questionId
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'attemptCount', 'correctCount', 'incorrectCount', 'lastAttemptAt', 'lastResult', 'masteryStatus'
+        ]);
+      allow delete: if isValidId(itemId) && isVerifiedUser() && existing().ownerUid == request.auth.uid;
+    }
+
+    // Global AI Service Config (readable by signed-in users for maintenance status, writable ONLY by Super Admin)
+    match /systemConfig/{configId} {
+      allow get: if isValidId(configId) && isSignedIn();
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidId(configId) && isSuperAdmin() && isValidSystemConfig(incoming());
+      allow delete: if false;
+    }
+
+    // Encrypted Single Gemini API Key (Super Admin ONLY — AES-256-GCM encrypted server-side)
+    match /adminSecrets/{secretId} {
+      allow get, list: if isSuperAdmin();
+      allow create, update: if isValidId(secretId) && isSuperAdmin() && isValidAdminSecret(incoming());
+      allow delete: if isValidId(secretId) && isSuperAdmin();
+    }
+
+    // Global Daily API Usage (Super Admin read/write)
+    match /apiUsageDaily/{date} {
+      allow get, list: if isSuperAdmin();
+      allow create, update: if isSuperAdmin();
+      allow delete: if false;
+    }
+
+    // Audit Logs (Super Admin read & append-only, immutable)
+    match /auditLogs/{logId} {
+      allow get, list: if isSuperAdmin();
+      allow create: if isValidId(logId) && isSuperAdmin();
+      allow update, delete: if false;
+    }
+
+    // Admins directory (Super Admin read only; never client-writable by ordinary users)
+    match /admins/{uid} {
+      allow get: if isValidId(uid) && isVerifiedUser() && (request.auth.uid == uid || isSuperAdmin());
+      allow list: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin();
+    }
+  }
+}

@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    color: #0f172a;
+    background-color: #f4f7fb;
+    scroll-behavior: smooth;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* === Liquid Glass Surfaces === */
+.glass-surface {
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.78) 0%,
+    rgba(248, 251, 255, 0.62) 100%
+  );
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  box-shadow:
+    0 12px 36px -12px rgba(15, 23, 42, 0.08),
+    0 2px 6px rgba(15, 23, 42, 0.03),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.glass-nav {
+  background: rgba(248, 251, 255, 0.72);
+  backdrop-filter: blur(24px) saturate(175%);
+  -webkit-backdrop-filter: blur(24px) saturate(175%);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: 0 4px 24px -8px rgba(15, 23, 42, 0.06);
+}
+
+.glass-panel-subtle {
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid rgba(226, 232, 240, 0.85);
+}
+
+/* Document viewer stays crystal sharp without glass blur */
+.document-paper {
+  background: #ffffff;
+  border: 1px solid rgba(203, 213, 225, 0.85);
+  box-shadow: 0 10px 30px -12px rgba(15, 23, 42, 0.09);
+}
+
+/* === Water Ripple Animation (550–800ms) === */
+@keyframes liquid-ripple-outer {
+  0% {
+    transform: translate(-50%, -50%) scale(0.15);
+    opacity: 0.65;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(2.8);
+    opacity: 0;
+  }
+}
+
+@keyframes liquid-ripple-inner {
+  0% {
+    transform: translate(-50%, -50%) scale(0.1);
+    opacity: 0.75;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1.9);
+    opacity: 0;
+  }
+}
+
+.ripple-ring-1 {
+  animation: liquid-ripple-outer 720ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.ripple-ring-2 {
+  animation: liquid-ripple-inner 580ms cubic-bezier(0.16, 1, 0.3, 1) 70ms forwards;
+}
+
+.ripple-ring-3 {
+  animation: liquid-ripple-inner 640ms cubic-bezier(0.16, 1, 0.3, 1) 140ms forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ripple-ring-1,
+  .ripple-ring-2,
+  .ripple-ring-3 {
+    animation: none !important;
+    opacity: 0 !important;
+  }
+  * {
+    scroll-behavior: auto !important;
+  }
+}
