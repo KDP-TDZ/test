@@ -11,6 +11,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { BRAND_CONFIG } from '../config/brand';
+import heroPrismImage from '../assets/images/hero_liquid_prism_1795012421683.jpg';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
@@ -164,7 +165,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                 <div className="relative w-full h-full min-h-[280px] sm:min-h-[340px] rounded-2xl overflow-hidden bg-gradient-to-br from-sky-50 via-white to-indigo-50">
                   {!heroImgError ? (
                     <img
-                      src="/src/assets/images/hero_liquid_prism_1795012421683.jpg"
+                      src={heroPrismImage}
                       alt="Minh họa lăng kính quang học Liquid Glass tượng trưng cho sự đối chiếu kiến thức trong sáng và chính xác"
                       referrerPolicy="no-referrer"
                       onError={() => setHeroImgError(true)}

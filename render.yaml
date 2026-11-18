@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: studycheck-ai
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPER_ADMIN_EMAIL
+        value: tuankhang2011pm@gmail.com

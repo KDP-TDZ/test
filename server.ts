@@ -168,6 +168,28 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '15mb' }));
 
+  const allowedOrigins = (process.env.ALLOWED_ORIGIN || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  if (allowedOrigins.length > 0) {
+    app.use((req, res, next) => {
+      const origin = req.headers.origin;
+      if (origin && (allowedOrigins.includes('*') || allowedOrigins.includes(origin))) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+      }
+      if (req.method === 'OPTIONS') {
+        res.status(204).end();
+        return;
+      }
+      next();
+    });
+  }
+
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, service: 'StudyCheck AI Backend', timestamp: new Date().toISOString() });
   });

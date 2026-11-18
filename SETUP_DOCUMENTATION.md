@@ -74,3 +74,16 @@ npm run build
 # Khởi động máy chủ Production trên cổng 3000
 npm start
 ```
+
+---
+
+## 7. Đưa lên GitHub & Deploy miễn phí không cần Billing Account
+
+> **Lưu ý quan trọng về GitHub Pages (tránh lỗi trắng màn hình):**
+> - **GitHub** là nơi lưu trữ mã nguồn, còn **GitHub Pages** chỉ phát file tĩnh (HTML/JS thuần) và **không thể biên dịch `.tsx` trực tiếp** hoặc **chạy server Express (`server.ts`)**. Nếu bật GitHub Pages trực tiếp từ nhánh mã nguồn gốc, trình duyệt sẽ không chạy được `/src/main.tsx` và hiện **màn hình trắng**.
+> - Để deploy miễn phí từ GitHub mà vẫn chạy đầy đủ cả giao diện React và backend `/api/*`, hãy kết nối repo GitHub với một nền tảng Node.js miễn phí (như **Render Free Web Service** hoặc **Koyeb** — không cần thẻ thanh toán):
+>   1. Tạo tài khoản miễn phí trên [Render](https://render.com) → chọn **New + → Blueprint** (hoặc **Web Service**), kết nối repo GitHub vừa push (repo đã có sẵn file `render.yaml`).
+>   2. Render tự chạy `npm install && npm run build` và `npm start` (`NODE_ENV=production tsx server.ts`).
+>   3. Sau khi có domain `https://<ten-app>.onrender.com`, vào **Firebase Console → Authentication → Settings → Authorized domains** và thêm `<ten-app>.onrender.com` để đăng nhập Google hoạt động bình thường.
+>   4. Đăng nhập bằng tài khoản Super Admin (`tuankhang2011pm@gmail.com`) → vào **Quản trị hệ thống → API Key duy nhất** để dán 1 Gemini API key miễn phí (hoặc đặt biến `GEMINI_API_KEY` trong Environment của Render để không bị mất key khi container ngủ).
+
