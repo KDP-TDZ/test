@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Request } from 'express';
 import { getApp, getApps, initializeApp } from 'firebase-admin/app';
-import { getAuth, type DecodedIdToken } from 'firebase-admin/auth';
+import { getAuth, type Auth, type DecodedIdToken } from 'firebase-admin/auth';
 
 export interface FirebaseAppletConfig {
   projectId: string;
@@ -14,8 +15,60 @@ export interface FirebaseAppletConfig {
   messagingSenderId: string;
 }
 
-const configPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
-export const firebaseConfig: FirebaseAppletConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+const FALLBACK_FIREBASE_CONFIG: FirebaseAppletConfig = {
+  projectId: 'gen-lang-client-0000361568',
+  appId: '1:872979635387:web:1666b7019ecb7065645d9e',
+  apiKey: 'AIzaSyDK6J4IvA0KFV7_28CpspJvOFrhR-BlIPE',
+  authDomain: 'gen-lang-client-0000361568.firebaseapp.com',
+  firestoreDatabaseId: 'ai-studio-a93ebbc7-3820-4590-85b7-c81b44ed2e49',
+  storageBucket: 'gen-lang-client-0000361568.firebasestorage.app',
+  messagingSenderId: '872979635387',
+};
+
+function loadFirebaseConfig(): FirebaseAppletConfig {
+  const candidates: string[] = [path.resolve(process.cwd(), 'firebase-applet-config.json')];
+  try {
+    const currentDir = path.dirname(fileURLToPath(import.meta.url));
+    candidates.push(
+      path.resolve(currentDir, '../../firebase-applet-config.json'),
+      path.resolve(currentDir, '../firebase-applet-config.json'),
+      path.resolve(currentDir, 'firebase-applet-config.json')
+    );
+  } catch {
+    // Ignore if import.meta.url is unavailable in a bundled context
+  }
+
+  let parsed: Partial<FirebaseAppletConfig> = {};
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        parsed = JSON.parse(fs.readFileSync(candidate, 'utf8')) as Partial<FirebaseAppletConfig>;
+        break;
+      }
+    } catch {
+      // Try next candidate path
+    }
+  }
+
+  return {
+    projectId: process.env.FIREBASE_PROJECT_ID?.trim() || parsed.projectId || FALLBACK_FIREBASE_CONFIG.projectId,
+    appId: process.env.FIREBASE_APP_ID?.trim() || parsed.appId || FALLBACK_FIREBASE_CONFIG.appId,
+    apiKey: process.env.FIREBASE_API_KEY?.trim() || parsed.apiKey || FALLBACK_FIREBASE_CONFIG.apiKey,
+    authDomain: process.env.FIREBASE_AUTH_DOMAIN?.trim() || parsed.authDomain || FALLBACK_FIREBASE_CONFIG.authDomain,
+    firestoreDatabaseId:
+      process.env.FIREBASE_FIRESTORE_DATABASE_ID?.trim() ||
+      parsed.firestoreDatabaseId ||
+      FALLBACK_FIREBASE_CONFIG.firestoreDatabaseId,
+    storageBucket:
+      process.env.FIREBASE_STORAGE_BUCKET?.trim() || parsed.storageBucket || FALLBACK_FIREBASE_CONFIG.storageBucket,
+    messagingSenderId:
+      process.env.FIREBASE_MESSAGING_SENDER_ID?.trim() ||
+      parsed.messagingSenderId ||
+      FALLBACK_FIREBASE_CONFIG.messagingSenderId,
+  };
+}
+
+export const firebaseConfig: FirebaseAppletConfig = loadFirebaseConfig();
 
 const DEFAULT_SUPER_ADMIN_EMAILS = ['tuankhang2011pm@gmail.com', 'tuankhangnek@gmail.com'];
 
@@ -37,13 +90,19 @@ export const SUPER_ADMIN_EMAIL =
   (process.env.SUPER_ADMIN_EMAIL || 'tuankhang2011pm@gmail.com').trim().toLowerCase();
 export const SUPER_ADMIN_UID = (process.env.SUPER_ADMIN_UID || '').trim();
 
-const adminApp = getApps().length
-  ? getApp()
-  : initializeApp({
-      projectId: firebaseConfig.projectId,
-    });
+let adminAuthInstance: Auth | null = null;
+try {
+  const adminApp = getApps().length
+    ? getApp()
+    : initializeApp({
+        projectId: firebaseConfig.projectId,
+      });
+  adminAuthInstance = getAuth(adminApp);
+} catch (err) {
+  console.warn('Warning: firebase-admin auth init skipped, using IdentityToolkit fallback:', err);
+}
 
-export const adminAuth = getAuth(adminApp);
+export const adminAuth: Auth | null = adminAuthInstance;
 
 export interface AuthenticatedUser {
   uid: string;
@@ -116,6 +175,9 @@ export async function verifyFirebaseRequest(req: Request): Promise<Authenticated
   let isSuperAdmin = false;
 
   try {
+    if (!adminAuth) {
+      throw new Error('ADMIN_AUTH_UNAVAILABLE');
+    }
     decoded = await adminAuth.verifyIdToken(idToken);
     uid = decoded.uid;
     email = decoded.email || '';

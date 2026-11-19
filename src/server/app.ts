@@ -136,16 +136,19 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
 }
 
 async function requireSuperAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
+  let authed = false;
   await requireAuth(req, res, () => {
-    if (!req.authUser?.isSuperAdmin) {
-      res.status(403).json({
-        code: 'FORBIDDEN_SUPER_ADMIN',
-        error: 'Chỉ tài khoản Super Admin được ủy quyền mới có quyền truy cập khu vực quản trị này.',
-      });
-      return;
-    }
-    next();
+    authed = true;
   });
+  if (!authed) return;
+  if (!req.authUser?.isSuperAdmin) {
+    res.status(403).json({
+      code: 'FORBIDDEN_SUPER_ADMIN',
+      error: 'Chỉ tài khoản Super Admin được ủy quyền mới có quyền truy cập khu vực quản trị này.',
+    });
+    return;
+  }
+  next();
 }
 
 function mapGeminiErrorResponse(err: unknown): { status: number; code: string; error: string } {
@@ -196,21 +199,25 @@ export function createApiApp(): express.Express {
 
   // Live dynamic CORS combining env var + Admin-managed systemConfig.allowedOrigins (no redeploy required!)
   app.use(async (req, res, next) => {
-    const origin = req.headers.origin;
-    const cfg = await loadAuthoritativeAiConfig();
-    const combined = Array.from(
-      new Set([...envAllowedOrigins, ...(cfg.allowedOrigins || [])].map((o) => o.trim()).filter(Boolean))
-    );
+    try {
+      const origin = req.headers.origin;
+      const cfg = await loadAuthoritativeAiConfig();
+      const combined = Array.from(
+        new Set([...envAllowedOrigins, ...(cfg.allowedOrigins || [])].map((o) => o.trim()).filter(Boolean))
+      );
 
-    if (origin && (combined.length === 0 || combined.includes('*') || combined.includes(origin))) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Vary', 'Origin');
-      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-    }
-    if (req.method === 'OPTIONS') {
-      res.status(204).end();
-      return;
+      if (origin && (combined.length === 0 || combined.includes('*') || combined.includes(origin))) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+      }
+      if (req.method === 'OPTIONS') {
+        res.status(204).end();
+        return;
+      }
+    } catch (err) {
+      console.warn('CORS middleware fallback:', err);
     }
     next();
   });
@@ -220,20 +227,24 @@ export function createApiApp(): express.Express {
   });
 
   app.get('/api/system/status', async (req, res) => {
-    let token: string | undefined;
-    const authHeader = req.headers.authorization;
-    if (authHeader?.startsWith('Bearer ')) {
-      token = authHeader.slice(7).trim();
+    try {
+      let token: string | undefined;
+      const authHeader = req.headers.authorization;
+      if (authHeader?.startsWith('Bearer ')) {
+        token = authHeader.slice(7).trim();
+      }
+      const cfg = await loadAuthoritativeAiConfig(token);
+      res.json({
+        enabled: cfg.enabled,
+        maintenanceMessage: cfg.maintenanceMessage,
+        disabledReason: cfg.disabledReason,
+        rateLimitConfig: cfg.rateLimitConfig,
+        configVersion: cfg.configVersion,
+        updatedAt: cfg.updatedAt,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể đọc trạng thái hệ thống.' });
     }
-    const cfg = await loadAuthoritativeAiConfig(token);
-    res.json({
-      enabled: cfg.enabled,
-      maintenanceMessage: cfg.maintenanceMessage,
-      disabledReason: cfg.disabledReason,
-      rateLimitConfig: cfg.rateLimitConfig,
-      configVersion: cfg.configVersion,
-      updatedAt: cfg.updatedAt,
-    });
   });
 
   app.post('/api/auth/session', async (req, res) => {
@@ -255,47 +266,47 @@ export function createApiApp(): express.Express {
 
   app.post('/api/ai/extract', requireAuth, upload.array('files', 25), async (req, res) => {
     const user = req.authUser!;
-    const guard = await checkAiRequestGuard({
-      uid: user.uid,
-      email: user.email,
-      idToken: user.idToken,
-      requestType: 'ocr',
-    });
-    if (!guard.allowed) {
-      res.status(guard.httpStatus || 503).json({ code: guard.code, error: guard.message });
-      return;
-    }
-
-    const uploadedFiles = (req.files as Express.Multer.File[]) || [];
-    if (uploadedFiles.length === 0) {
-      res.status(400).json({ error: 'Vui lòng chọn ít nhất một tài liệu hợp lệ.' });
-      return;
-    }
-
-    const maxBytes = guard.config.rateLimitConfig.maximumFileSizeMb * 1024 * 1024;
-    for (const f of uploadedFiles) {
-      if (!ALLOWED_UPLOAD_MIMES.has(f.mimetype)) {
-        res.status(400).json({
-          error: `Định dạng file "${f.originalname}" (${f.mimetype}) không được hỗ trợ. Chỉ chấp nhận PDF, DOCX, JPG, PNG, WEBP.`,
-        });
-        return;
-      }
-      if (f.size > maxBytes) {
-        res.status(400).json({
-          error: `File "${f.originalname}" vượt quá giới hạn ${guard.config.rateLimitConfig.maximumFileSizeMb}MB.`,
-        });
-        return;
-      }
-      if (!hasValidMagicSignature(f.buffer, f.mimetype)) {
-        res.status(400).json({
-          error: `File "${f.originalname}" có chữ ký nhị phân không khớp định dạng khai báo hoặc bị hỏng.`,
-        });
-        return;
-      }
-    }
-
     const tokens: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
     try {
+      const guard = await checkAiRequestGuard({
+        uid: user.uid,
+        email: user.email,
+        idToken: user.idToken,
+        requestType: 'ocr',
+      });
+      if (!guard.allowed) {
+        res.status(guard.httpStatus || 503).json({ code: guard.code, error: guard.message });
+        return;
+      }
+
+      const uploadedFiles = (req.files as Express.Multer.File[]) || [];
+      if (uploadedFiles.length === 0) {
+        res.status(400).json({ error: 'Vui lòng chọn ít nhất một tài liệu hợp lệ.' });
+        return;
+      }
+
+      const maxBytes = guard.config.rateLimitConfig.maximumFileSizeMb * 1024 * 1024;
+      for (const f of uploadedFiles) {
+        if (!ALLOWED_UPLOAD_MIMES.has(f.mimetype)) {
+          res.status(400).json({
+            error: `Định dạng file "${f.originalname}" (${f.mimetype}) không được hỗ trợ. Chỉ chấp nhận PDF, DOCX, JPG, PNG, WEBP.`,
+          });
+          return;
+        }
+        if (f.size > maxBytes) {
+          res.status(400).json({
+            error: `File "${f.originalname}" vượt quá giới hạn ${guard.config.rateLimitConfig.maximumFileSizeMb}MB.`,
+          });
+          return;
+        }
+        if (!hasValidMagicSignature(f.buffer, f.mimetype)) {
+          res.status(400).json({
+            error: `File "${f.originalname}" có chữ ký nhị phân không khớp định dạng khai báo hoặc bị hỏng.`,
+          });
+          return;
+        }
+      }
+
       let pages: ExtractedPage[] = [];
       const first = uploadedFiles[0];
 
@@ -405,28 +416,30 @@ export function createApiApp(): express.Express {
       return;
     }
 
-    const guard = await checkAiRequestGuard({
-      uid: user.uid,
-      email: user.email,
-      idToken: user.idToken,
-      requestType: 'analysis',
-    });
-    if (!guard.allowed) {
-      res.status(guard.httpStatus || 503).json({ code: guard.code, error: guard.message });
-      return;
-    }
-
-    if (pages.length > guard.config.rateLimitConfig.maximumPagesPerAnalysis) {
-      res.status(400).json({
-        error: `Số trang (${pages.length}) vượt quá giới hạn tối đa (${guard.config.rateLimitConfig.maximumPagesPerAnalysis}).`,
-      });
-      return;
-    }
-
-    incrementConcurrentJob(user.uid);
+    let jobStarted = false;
     const tokens: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
 
     try {
+      const guard = await checkAiRequestGuard({
+        uid: user.uid,
+        email: user.email,
+        idToken: user.idToken,
+        requestType: 'analysis',
+      });
+      if (!guard.allowed) {
+        res.status(guard.httpStatus || 503).json({ code: guard.code, error: guard.message });
+        return;
+      }
+
+      if (pages.length > guard.config.rateLimitConfig.maximumPagesPerAnalysis) {
+        res.status(400).json({
+          error: `Số trang (${pages.length}) vượt quá giới hạn tối đa (${guard.config.rateLimitConfig.maximumPagesPerAnalysis}).`,
+        });
+        return;
+      }
+
+      incrementConcurrentJob(user.uid);
+      jobStarted = true;
       const result = await KnowledgeAnalysisService.runFullVerification({
         pages,
         grade: grade || '10',
@@ -472,7 +485,9 @@ export function createApiApp(): express.Express {
       });
       res.status(mapped.status).json(mapped);
     } finally {
-      decrementConcurrentJob(user.uid);
+      if (jobStarted) {
+        decrementConcurrentJob(user.uid);
+      }
     }
   });
 
@@ -516,22 +531,22 @@ export function createApiApp(): express.Express {
       }
     }
 
-    const guard = await checkAiRequestGuard({
-      uid: user.uid,
-      email: user.email,
-      idToken: user.idToken,
-      requestType: 'quiz',
-    });
-    if (!guard.allowed) {
-      res.status(guard.httpStatus || 503).json({ code: guard.code, error: guard.message });
-      return;
-    }
-
     const safeCount = Math.min(20, Math.max(5, Number(count) || 5));
     const safeAdvancedCount = advancedEnabled ? Math.min(6, Math.max(1, Number(advancedCount) || 2)) : 0;
     const tokens: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
 
     try {
+      const guard = await checkAiRequestGuard({
+        uid: user.uid,
+        email: user.email,
+        idToken: user.idToken,
+        requestType: 'quiz',
+      });
+      if (!guard.allowed) {
+        res.status(guard.httpStatus || 503).json({ code: guard.code, error: guard.message });
+        return;
+      }
+
       const generated = await QuizGenerationService.generateQuiz({
         subject,
         grade,
@@ -583,18 +598,7 @@ export function createApiApp(): express.Express {
 
   app.post('/api/ai/flashcards', requireAuth, async (req, res) => {
     const user = req.authUser!;
-    const guard = await checkAiRequestGuard({
-      uid: user.uid,
-      email: user.email,
-      idToken: user.idToken,
-      requestType: 'quiz',
-    });
-    if (!guard.allowed) {
-      res.status(guard.httpStatus || 503).json({ code: guard.code, error: guard.message });
-      return;
-    }
-
-    const { subject, grade, textbookTitle, claims, coverageItems, count } = req.body as {
+    const { subject, grade, textbookTitle, claims, coverageItems, count } = (req.body || {}) as {
       subject: SubjectId;
       grade: GradeLevel;
       textbookTitle: string;
@@ -605,6 +609,17 @@ export function createApiApp(): express.Express {
     const tokens: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
 
     try {
+      const guard = await checkAiRequestGuard({
+        uid: user.uid,
+        email: user.email,
+        idToken: user.idToken,
+        requestType: 'quiz',
+      });
+      if (!guard.allowed) {
+        res.status(guard.httpStatus || 503).json({ code: guard.code, error: guard.message });
+        return;
+      }
+
       const cards = await FlashcardGenerationService.generateFromAnalysis({
         ownerUid: user.uid,
         subject: subject || 'khac',
@@ -651,74 +666,122 @@ export function createApiApp(): express.Express {
   // --- Super Admin Endpoints ---
   app.get('/api/admin/overview', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
-    const [config, usageStats, auditLogs, singleKeyStatus] = await Promise.all([
-      loadAuthoritativeAiConfig(user.idToken),
-      getUsageStatistics(user.idToken),
-      getAuditLogs(user.idToken),
-      getSingleKeyStatus(user.idToken),
-    ]);
-    res.json({
-      config,
-      usageStats,
-      auditLogs,
-      singleKeyStatus,
-      executionLogs: getRecentExecutionLogs(),
-      modelCatalog: MODEL_CATALOG,
-    });
+    try {
+      const [config, usageStats, auditLogs, singleKeyStatus] = await Promise.all([
+        loadAuthoritativeAiConfig(user.idToken),
+        getUsageStatistics(user.idToken).catch(() => ({
+          today: {
+            date: new Date().toISOString().slice(0, 10),
+            requestCount: 0,
+            successfulCount: 0,
+            failedCount: 0,
+            blockedCount: 0,
+            analysisCount: 0,
+            quizGenerationCount: 0,
+            ocrCount: 0,
+            webGroundedCount: 0,
+            actualPromptTokens: 0,
+            actualCandidateTokens: 0,
+            actualTotalTokens: 0,
+            quotaExceededEvents: 0,
+            providerErrorEvents: 0,
+            updatedAt: new Date().toISOString(),
+          },
+          dailySeries: [],
+          perUserToday: [],
+        })),
+        getAuditLogs(user.idToken).catch(() => []),
+        getSingleKeyStatus(user.idToken).catch(() => ({
+          configured: false,
+          source: 'none' as const,
+          maskedKey: '',
+          label: '',
+          hasEnvFallbackKey: false,
+          lastTestStatus: 'Untested' as const,
+        })),
+      ]);
+      res.json({
+        config,
+        usageStats,
+        auditLogs,
+        singleKeyStatus,
+        executionLogs: getRecentExecutionLogs(),
+        modelCatalog: MODEL_CATALOG,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Không tải được dữ liệu tổng quan quản trị.' });
+    }
   });
 
   app.patch('/api/admin/ai-service', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
-    const {
-      enabled,
-      disabledReason,
-      maintenanceMessage,
-      rateLimitConfig,
-      activeModel,
-      allowedOrigins,
-      taskModels,
-    } = req.body;
-    const updated = await updateAuthoritativeAiConfig(
-      {
-        ...(typeof enabled === 'boolean' ? { enabled } : {}),
-        ...(typeof disabledReason === 'string' ? { disabledReason: disabledReason.slice(0, 300) } : {}),
-        ...(typeof maintenanceMessage === 'string'
-          ? { maintenanceMessage: maintenanceMessage.slice(0, 400) }
-          : {}),
-        ...(rateLimitConfig ? { rateLimitConfig } : {}),
-        ...(typeof activeModel === 'string' ? { activeModel } : {}),
-        ...(Array.isArray(allowedOrigins) ? { allowedOrigins } : {}),
-        ...(taskModels && typeof taskModels === 'object' ? { taskModels } : {}),
-      },
-      user.uid,
-      user.email,
-      user.idToken
-    );
-    res.json({ config: updated });
+    try {
+      const {
+        enabled,
+        disabledReason,
+        maintenanceMessage,
+        rateLimitConfig,
+        activeModel,
+        allowedOrigins,
+        taskModels,
+      } = req.body || {};
+      const updated = await updateAuthoritativeAiConfig(
+        {
+          ...(typeof enabled === 'boolean' ? { enabled } : {}),
+          ...(typeof disabledReason === 'string' ? { disabledReason: disabledReason.slice(0, 300) } : {}),
+          ...(typeof maintenanceMessage === 'string'
+            ? { maintenanceMessage: maintenanceMessage.slice(0, 400) }
+            : {}),
+          ...(rateLimitConfig ? { rateLimitConfig } : {}),
+          ...(typeof activeModel === 'string' ? { activeModel } : {}),
+          ...(Array.isArray(allowedOrigins) ? { allowedOrigins } : {}),
+          ...(taskModels && typeof taskModels === 'object' ? { taskModels } : {}),
+        },
+        user.uid,
+        user.email,
+        user.idToken
+      );
+      res.json({ config: updated });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể cập nhật cấu hình dịch vụ AI.' });
+    }
   });
 
   app.post('/api/admin/models/override', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
-    const { taskType, modelId } = req.body as { taskType: AiTaskType; modelId: string | null };
-    if (!taskType) {
-      res.status(400).json({ error: 'Thiếu taskType.' });
-      return;
+    try {
+      const { taskType, modelId } = (req.body || {}) as { taskType: AiTaskType; modelId: string | null };
+      if (!taskType) {
+        res.status(400).json({ error: 'Thiếu taskType.' });
+        return;
+      }
+      const updated = await setOneTimeTaskOverride({
+        taskType,
+        modelId: modelId || null,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+      });
+      res.json({ config: updated });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể đặt model override.' });
     }
-    const updated = await setOneTimeTaskOverride({
-      taskType,
-      modelId: modelId || null,
-      actorUid: user.uid,
-      actorEmail: user.email,
-      idToken: user.idToken,
-    });
-    res.json({ config: updated });
   });
 
   app.post('/api/admin/models/test', requireSuperAdmin, async (req, res) => {
-    const { modelId } = req.body as { modelId?: string };
-    const targetModel = (modelId || 'gemini-4-hydrogen').trim();
-    const result = await testModelConnectivity(targetModel);
-    res.json(result);
+    try {
+      const { modelId } = (req.body || {}) as { modelId?: string };
+      const targetModel = (modelId || 'gemini-4-hydrogen').trim();
+      const result = await testModelConnectivity(targetModel);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        ok: false,
+        modelId: String(req.body?.modelId || 'gemini-4-hydrogen'),
+        latencyMs: 0,
+        message: err instanceof Error ? err.message : 'Không thể kiểm tra kết nối model.',
+      });
+    }
   });
 
   app.get('/api/admin/roles', requireSuperAdmin, async (req, res) => {
@@ -750,8 +813,27 @@ export function createApiApp(): express.Express {
     try {
       let targetUid = clean;
       if (clean.includes('@')) {
-        const fbUser = await adminAuth.getUserByEmail(clean);
-        targetUid = fbUser.uid;
+        let resolvedFromAdmin = '';
+        if (adminAuth) {
+          try {
+            const fbUser = await adminAuth.getUserByEmail(clean);
+            resolvedFromAdmin = fbUser.uid;
+          } catch {
+            // Ignore ADC errors on serverless environments without service account
+          }
+        }
+        if (resolvedFromAdmin) {
+          targetUid = resolvedFromAdmin;
+        } else {
+          const usersList = await firestoreRestList<{ uid?: string; email?: string }>('users', user.idToken, 200);
+          const matchedUser = usersList.find((u) => (u.email || '').trim().toLowerCase() === clean.toLowerCase());
+          if (!matchedUser?.uid) {
+            throw new Error(
+              `Không tìm thấy tài khoản có email "${clean}". Người dùng cần đăng nhập ít nhất 1 lần trước khi cấp quyền theo Email, hoặc hãy nhập trực tiếp UID.`
+            );
+          }
+          targetUid = matchedUser.uid;
+        }
       }
 
       const now = new Date().toISOString();
@@ -830,53 +912,74 @@ export function createApiApp(): express.Express {
 
   app.get('/api/admin/key', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
-    const singleKeyStatus = await getSingleKeyStatus(user.idToken);
-    res.json({ singleKeyStatus });
+    try {
+      const singleKeyStatus = await getSingleKeyStatus(user.idToken);
+      res.json({ singleKeyStatus });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Không kiểm tra được trạng thái API key.' });
+    }
   });
 
   app.post('/api/admin/key', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
-    const { apiKey, label } = req.body as { apiKey?: string; label?: string };
-    if (!apiKey || typeof apiKey !== 'string') {
-      res.status(400).json({ error: 'Vui lòng nhập Gemini API key.' });
-      return;
+    try {
+      const { apiKey, label } = (req.body || {}) as { apiKey?: string; label?: string };
+      if (!apiKey || typeof apiKey !== 'string') {
+        res.status(400).json({ error: 'Vui lòng nhập Gemini API key.' });
+        return;
+      }
+      const result = await setSingleGeminiApiKey({
+        rawKey: apiKey,
+        label,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+      });
+      if (!result.ok) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+      res.json({ singleKeyStatus: result.status });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể lưu Gemini API key.' });
     }
-    const result = await setSingleGeminiApiKey({
-      rawKey: apiKey,
-      label,
-      actorUid: user.uid,
-      actorEmail: user.email,
-      idToken: user.idToken,
-    });
-    if (!result.ok) {
-      res.status(400).json({ error: result.error });
-      return;
-    }
-    res.json({ singleKeyStatus: result.status });
   });
 
   app.post('/api/admin/key/test', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
-    const { apiKey } = req.body as { apiKey?: string };
-    const cfg = await loadAuthoritativeAiConfig(user.idToken);
-    const result = await testSingleGeminiKey({
-      rawKeyOverride: apiKey,
-      actorUid: user.uid,
-      actorEmail: user.email,
-      idToken: user.idToken,
-      activeModel: cfg.activeModel,
-    });
-    res.json(result);
+    try {
+      const { apiKey } = (req.body || {}) as { apiKey?: string };
+      const cfg = await loadAuthoritativeAiConfig(user.idToken);
+      const result = await testSingleGeminiKey({
+        rawKeyOverride: apiKey,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+        activeModel: cfg.activeModel,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        status: 'Temporary provider error',
+        message: err instanceof Error ? err.message : 'Không thể kiểm tra Gemini API key.',
+        testedSource: 'none',
+        testedAt: new Date().toISOString(),
+      });
+    }
   });
 
   app.delete('/api/admin/key', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
-    const result = await clearSingleGeminiApiKey({
-      actorUid: user.uid,
-      actorEmail: user.email,
-      idToken: user.idToken,
-    });
-    res.json({ singleKeyStatus: result.status });
+    try {
+      const result = await clearSingleGeminiApiKey({
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+      });
+      res.json({ singleKeyStatus: result.status });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể xóa Gemini API key.' });
+    }
   });
 
   app.post('/api/admin/references/ingest-url', requireSuperAdmin, async (req, res) => {
@@ -1095,6 +1198,14 @@ export function createApiApp(): express.Express {
       const mapped = mapGeminiErrorResponse(err);
       res.status(mapped.status).json(mapped);
     }
+  });
+
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    console.error('Unhandled Express API error:', err);
+    if (res.headersSent) return;
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Lỗi máy chủ nội bộ.',
+    });
   });
 
   return app;
