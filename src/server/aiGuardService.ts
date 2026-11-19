@@ -1,9 +1,11 @@
 import crypto from 'node:crypto';
 import type {
+  AiTaskType,
   ApiUsageDaily,
   AuditLogEntry,
   RateLimitConfig,
   SystemAiConfig,
+  TaskModelConfig,
 } from '../core/types';
 import {
   firestoreRestGet,
@@ -11,6 +13,7 @@ import {
   firestoreRestList,
   SUPER_ADMIN_EMAIL,
 } from './firebaseServer';
+import { clearAiResponseCache, DEFAULT_TASK_MODELS } from './modelRouter';
 
 export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
   requestsPerMinute: 12,
@@ -25,6 +28,14 @@ export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
 export const DEFAULT_MAINTENANCE_MESSAGE =
   'StudyCheck AI đang tạm ngừng xử lý AI. Những tài liệu và kết quả đã lưu vẫn có thể được truy cập bình thường.';
 
+function cloneDefaultTaskModels(): Record<AiTaskType, TaskModelConfig> {
+  const out = {} as Record<AiTaskType, TaskModelConfig>;
+  for (const [key, val] of Object.entries(DEFAULT_TASK_MODELS)) {
+    out[key as AiTaskType] = { ...val };
+  }
+  return out;
+}
+
 let authoritativeAiConfig: SystemAiConfig = {
   enabled: true,
   disabledReason: '',
@@ -33,6 +44,9 @@ let authoritativeAiConfig: SystemAiConfig = {
   updatedBy: SUPER_ADMIN_EMAIL,
   rateLimitConfig: { ...DEFAULT_RATE_LIMITS },
   activeModel: 'gemini-4-hydrogen',
+  configVersion: 1,
+  allowedOrigins: [],
+  taskModels: cloneDefaultTaskModels(),
 };
 
 // Server-side in-memory counters & locks (never bypassed by browser refresh)
@@ -75,6 +89,25 @@ function getOrCreateDailyUsage(date = todayDateKey()): ApiUsageDaily {
   return fresh;
 }
 
+function mergeTaskModels(
+  base: Record<AiTaskType, TaskModelConfig>,
+  patch?: Partial<Record<AiTaskType, Partial<TaskModelConfig>>>
+): Record<AiTaskType, TaskModelConfig> {
+  const merged = {} as Record<AiTaskType, TaskModelConfig>;
+  for (const taskKey of Object.keys(DEFAULT_TASK_MODELS) as AiTaskType[]) {
+    merged[taskKey] = {
+      ...DEFAULT_TASK_MODELS[taskKey],
+      ...(base?.[taskKey] || {}),
+      ...(patch?.[taskKey] || {}),
+    };
+  }
+  return merged;
+}
+
+export function getAuthoritativeAiConfigSnapshot(): SystemAiConfig {
+  return authoritativeAiConfig;
+}
+
 export async function loadAuthoritativeAiConfig(idToken?: string): Promise<SystemAiConfig> {
   if (idToken) {
     try {
@@ -83,6 +116,9 @@ export async function loadAuthoritativeAiConfig(idToken?: string): Promise<Syste
         authoritativeAiConfig = {
           ...authoritativeAiConfig,
           ...remote,
+          configVersion: typeof remote.configVersion === 'number' ? remote.configVersion : authoritativeAiConfig.configVersion,
+          allowedOrigins: Array.isArray(remote.allowedOrigins) ? remote.allowedOrigins : authoritativeAiConfig.allowedOrigins,
+          taskModels: mergeTaskModels(authoritativeAiConfig.taskModels, remote.taskModels),
           rateLimitConfig: {
             ...DEFAULT_RATE_LIMITS,
             ...(remote.rateLimitConfig || {}),
@@ -100,15 +136,104 @@ export function getActiveModel(): string {
   return (authoritativeAiConfig.activeModel || 'gemini-4-hydrogen').trim();
 }
 
+export async function consumeOneTimeModelOverride(
+  taskType: AiTaskType,
+  idToken?: string
+): Promise<void> {
+  const cur = authoritativeAiConfig.taskModels[taskType];
+  if (!cur?.oneTimeOverrideModel) return;
+  authoritativeAiConfig = {
+    ...authoritativeAiConfig,
+    taskModels: {
+      ...authoritativeAiConfig.taskModels,
+      [taskType]: {
+        ...cur,
+        oneTimeOverrideModel: null,
+      },
+    },
+    updatedAt: new Date().toISOString(),
+  };
+  if (idToken) {
+    try {
+      await firestoreRestSet(
+        'systemConfig/aiService',
+        authoritativeAiConfig as unknown as Record<string, unknown>,
+        idToken
+      );
+    } catch {
+      // Non-fatal if caller doesn't have systemConfig write role (in-memory clear still enforces single-run!)
+    }
+  }
+}
+
+export async function setOneTimeTaskOverride(params: {
+  taskType: AiTaskType;
+  modelId: string | null;
+  actorUid: string;
+  actorEmail: string;
+  idToken: string;
+}): Promise<SystemAiConfig> {
+  const { taskType, modelId, actorUid, actorEmail, idToken } = params;
+  const curTask = authoritativeAiConfig.taskModels[taskType] || DEFAULT_TASK_MODELS[taskType];
+  const next: SystemAiConfig = {
+    ...authoritativeAiConfig,
+    taskModels: {
+      ...authoritativeAiConfig.taskModels,
+      [taskType]: {
+        ...curTask,
+        oneTimeOverrideModel: modelId ? modelId.trim() : null,
+      },
+    },
+    updatedAt: new Date().toISOString(),
+    updatedBy: actorUid,
+  };
+  authoritativeAiConfig = next;
+  try {
+    await firestoreRestSet('systemConfig/aiService', next as unknown as Record<string, unknown>, idToken);
+  } catch (err) {
+    console.warn('Warning: unable to persist 1-run model override via REST:', err);
+  }
+  await recordAuditLog(
+    {
+      actorUid,
+      actorEmail,
+      action: 'ONE_TIME_MODEL_OVERRIDE_SET',
+      resourceType: 'systemConfig',
+      resourceId: taskType,
+      status: 'success',
+      metadata: {
+        taskType,
+        overrideModel: modelId || 'cleared',
+      },
+    },
+    idToken
+  );
+  return next;
+}
+
 export async function updateAuthoritativeAiConfig(
   patch: Partial<SystemAiConfig>,
   actorUid: string,
   actorEmail: string,
   idToken: string
 ): Promise<SystemAiConfig> {
+  const shouldBumpVersion = Boolean(patch.taskModels || patch.activeModel || patch.allowedOrigins);
+  if (patch.taskModels || patch.activeModel) {
+    clearAiResponseCache();
+  }
+
   const next: SystemAiConfig = {
     ...authoritativeAiConfig,
     ...patch,
+    configVersion: shouldBumpVersion
+      ? (authoritativeAiConfig.configVersion || 1) + 1
+      : authoritativeAiConfig.configVersion || 1,
+    allowedOrigins: Array.isArray(patch.allowedOrigins)
+      ? patch.allowedOrigins.map((o) => o.trim()).filter(Boolean)
+      : authoritativeAiConfig.allowedOrigins,
+    taskModels: patch.taskModels
+      ? mergeTaskModels(authoritativeAiConfig.taskModels, patch.taskModels)
+      : authoritativeAiConfig.taskModels,
     rateLimitConfig: {
       ...authoritativeAiConfig.rateLimitConfig,
       ...(patch.rateLimitConfig || {}),
@@ -136,6 +261,7 @@ export async function updateAuthoritativeAiConfig(
         enabled: next.enabled,
         disabledReason: next.disabledReason,
         activeModel: next.activeModel,
+        configVersion: next.configVersion,
       },
     },
     idToken

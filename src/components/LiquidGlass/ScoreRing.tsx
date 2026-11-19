@@ -9,10 +9,26 @@ interface ScoreRingProps {
 }
 
 const COLOR_MAP = {
-  sky: { stroke: '#0284C7', track: '#E0F2FE', text: 'text-sky-700' },
-  indigo: { stroke: '#4F46E5', track: '#E0E7FF', text: 'text-indigo-700' },
-  emerald: { stroke: '#059669', track: '#D1FAE5', text: 'text-emerald-700' },
-  amber: { stroke: '#D97706', track: '#FEF3C7', text: 'text-amber-700' },
+  sky: {
+    stroke: '#2563EB',
+    trackClass: 'stroke-sky-100 dark:stroke-sky-950/70',
+    text: 'text-sky-700 dark:text-sky-300',
+  },
+  indigo: {
+    stroke: '#4F46E5',
+    trackClass: 'stroke-indigo-100 dark:stroke-indigo-950/70',
+    text: 'text-indigo-700 dark:text-indigo-300',
+  },
+  emerald: {
+    stroke: '#059669',
+    trackClass: 'stroke-emerald-100 dark:stroke-emerald-950/70',
+    text: 'text-emerald-700 dark:text-emerald-300',
+  },
+  amber: {
+    stroke: '#D97706',
+    trackClass: 'stroke-amber-100 dark:stroke-amber-950/70',
+    text: 'text-amber-700 dark:text-amber-300',
+  },
 };
 
 export const ScoreRing: React.FC<ScoreRingProps> = ({
@@ -38,7 +54,7 @@ export const ScoreRing: React.FC<ScoreRingProps> = ({
             cy={size / 2}
             r={radius}
             fill="none"
-            stroke={palette.track}
+            className={palette.trackClass}
             strokeWidth={strokeWidth}
           />
           {value !== null && (
@@ -63,8 +79,8 @@ export const ScoreRing: React.FC<ScoreRingProps> = ({
         </div>
       </div>
       <div className="min-w-0">
-        <p className="text-sm font-semibold text-slate-900">{label}</p>
-        <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">{subtitle}</p>
+        <p className="text-sm font-semibold text-[#17243A] dark:text-[#E5EDF9]">{label}</p>
+        <p className="text-xs text-[#64748B] dark:text-slate-400 mt-0.5 leading-relaxed">{subtitle}</p>
       </div>
     </div>
   );

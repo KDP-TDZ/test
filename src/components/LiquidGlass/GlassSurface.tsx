@@ -134,7 +134,7 @@ export const GlassSurface: React.FC<GlassSurfaceProps> = ({
             />
           </span>
         ))}
-      <div className="relative z-10">{children}</div>
+      <div className="relative z-10 h-full">{children}</div>
     </div>
   );
 };

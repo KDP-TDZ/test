@@ -1,32 +1,50 @@
 import crypto from 'node:crypto';
-import { GoogleGenAI, ThinkingLevel, Type, type GenerateContentResponse } from '@google/genai';
+import { ThinkingLevel, Type, type GenerateContentResponse } from '@google/genai';
 import mammoth from 'mammoth';
 import {
   calculateAccuracyScore,
   calculateCompletenessScore,
 } from '../core/scoring';
+import {
+  normalizeCognitiveLevel,
+  validateExamBlueprint,
+  validateQuizQuestionSet,
+} from '../core/quizValidation';
 import { retrieveRelevantChunks } from '../core/retrieval';
 import type {
+  AiTaskType,
   AnalysisStrength,
   AnalysisWeakness,
   AnnotationItem,
   ClaimStatus,
+  CognitiveLevel,
+  ExamBlueprint,
+  ExamBlueprintRow,
+  ExamQuestion,
+  ExamQuestionType,
+  ExamType,
   ExtractedClaim,
   ExtractedPage,
   ExtractedTextBlock,
+  FlashcardItem,
   GradeLevel,
   ImprovementSuggestion,
   KnowledgeCoverageItem,
+  KnowledgeUnitType,
   QuizDifficulty,
   QuizQuestion,
   QuizScope,
   ReferenceChunk,
   ReferenceEvidence,
   SubjectId,
+  SystemAiConfig,
 } from '../core/types';
-import { SUBJECT_LABELS } from '../core/types';
-import { resolveActiveGeminiApiKey } from './singleKeyService';
-import { getActiveModel } from './aiGuardService';
+import { EXAM_TYPE_LABELS, SUBJECT_LABELS } from '../core/types';
+import {
+  consumeOneTimeModelOverride,
+  getAuthoritativeAiConfigSnapshot,
+} from './aiGuardService';
+import { createServerAiClient, executeRoutedAiTask } from './modelRouter';
 
 export interface TokenTelemetry {
   promptTokens: number;
@@ -42,54 +60,33 @@ function accumulateTokens(acc: TokenTelemetry, resp: GenerateContentResponse): v
   acc.totalTokens += meta.totalTokenCount || 0;
 }
 
-async function createAiClient(): Promise<GoogleGenAI> {
-  const apiKey = await resolveActiveGeminiApiKey();
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
+async function runTaskWithRouter<T>(params: {
+  taskType: AiTaskType;
+  config?: SystemAiConfig;
+  idToken?: string;
+  cacheInput?: Record<string, unknown>;
+  bypassCache?: boolean;
+  runWithModel: (modelId: string) => Promise<T>;
+}): Promise<{ data: T; modelId: string }> {
+  const cfg = params.config || getAuthoritativeAiConfigSnapshot();
+  const res = await executeRoutedAiTask({
+    taskType: params.taskType,
+    config: cfg,
+    consumeOneTimeOverride: (task) => consumeOneTimeModelOverride(task, params.idToken),
+    cacheInput: params.cacheInput,
+    bypassCache: params.bypassCache,
+    runWithModel: params.runWithModel,
   });
-}
-
-function isTransientError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return (
-    msg.includes('429') ||
-    msg.includes('500') ||
-    msg.includes('502') ||
-    msg.includes('503') ||
-    msg.includes('RESOURCE_EXHAUSTED') ||
-    msg.includes('DEADLINE_EXCEEDED') ||
-    msg.includes('ETIMEDOUT') ||
-    msg.includes('ECONNRESET')
-  );
-}
-
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2): Promise<T> {
-  let attempt = 0;
-  while (true) {
-    try {
-      return await fn();
-    } catch (err) {
-      attempt += 1;
-      if (attempt > maxRetries || !isTransientError(err)) {
-        throw err;
-      }
-      const delayMs = 600 * Math.pow(2, attempt - 1);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
+  return { data: res.data, modelId: res.modelId };
 }
 
 export class DocumentExtractionService {
   static async extractFromImageBuffers(
     files: Array<{ buffer: Buffer; mimeType: string; originalName: string }>,
-    tokensOut: TokenTelemetry
+    tokensOut: TokenTelemetry,
+    opts?: { config?: SystemAiConfig; idToken?: string }
   ): Promise<ExtractedPage[]> {
-    const ai = await createAiClient();
+    const ai = await createServerAiClient();
     const pages: ExtractedPage[] = [];
 
     for (let idx = 0; idx < files.length; idx++) {
@@ -97,61 +94,66 @@ export class DocumentExtractionService {
       const pageNum = idx + 1;
       const base64 = file.buffer.toString('base64');
 
-      const response = await withRetry(() =>
-        ai.models.generateContent({
-          model: getActiveModel(),
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  mimeType: file.mimeType,
-                  data: base64,
-                },
-              },
-              {
-                text: [
-                  'Hãy trích xuất toàn bộ nội dung văn bản, công thức, bảng biểu và chữ viết tay (nếu có) từ trang tài liệu học tập này.',
-                  'Yêu cầu:',
-                  '- Giữ nguyên chính tả và nội dung gốc của học sinh, KHÔNG tự sửa lỗi kiến thức trong tài liệu.',
-                  '- Phân tách thành các khối văn bản có thứ tự đọc (readingOrder).',
-                  '- Cung cấp tọa độ chuẩn hóa boundingBox (x, y, width, height từ 0.0 đến 1.0 theo kích thước ảnh). Nếu không chắc chắn vùng tọa độ, hãy ước lượng cẩn thận hoặc đặt null.',
-                  '- Đánh giá độ tin cậy OCR (confidence từ 0.0 đến 1.0) trung thực: chữ viết tay mờ hoặc bị cắt thì đánh confidence < 0.65.',
-                ].join('\n'),
-              },
-            ],
-          },
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                blocks: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      extractedText: { type: Type.STRING },
-                      textType: {
-                        type: Type.STRING,
-                        description: 'paragraph | heading | formula | table | list | handwriting',
-                      },
-                      confidence: { type: Type.NUMBER },
-                      formulaText: { type: Type.STRING },
-                      x: { type: Type.NUMBER },
-                      y: { type: Type.NUMBER },
-                      width: { type: Type.NUMBER },
-                      height: { type: Type.NUMBER },
-                    },
-                    required: ['extractedText', 'textType', 'confidence'],
+      const { data: response } = await runTaskWithRouter({
+        taskType: 'curriculum_extraction',
+        config: opts?.config,
+        idToken: opts?.idToken,
+        bypassCache: true,
+        runWithModel: (modelId) =>
+          ai.models.generateContent({
+            model: modelId,
+            contents: {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: file.mimeType,
+                    data: base64,
                   },
                 },
-              },
-              required: ['blocks'],
+                {
+                  text: [
+                    'Hãy trích xuất toàn bộ nội dung văn bản, công thức, bảng biểu và chữ viết tay (nếu có) từ trang tài liệu học tập này.',
+                    'Yêu cầu:',
+                    '- Giữ nguyên chính tả và nội dung gốc của học sinh, KHÔNG tự sửa lỗi kiến thức trong tài liệu.',
+                    '- Phân tách thành các khối văn bản có thứ tự đọc (readingOrder).',
+                    '- Cung cấp tọa độ chuẩn hóa boundingBox (x, y, width, height từ 0.0 đến 1.0 theo kích thước ảnh). Nếu không chắc chắn vùng tọa độ, hãy ước lượng cẩn thận hoặc đặt null.',
+                    '- Đánh giá độ tin cậy OCR (confidence từ 0.0 đến 1.0) trung thực: chữ viết tay mờ hoặc bị cắt thì đánh confidence < 0.65.',
+                  ].join('\n'),
+                },
+              ],
             },
-          },
-        })
-      );
+            config: {
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  blocks: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        extractedText: { type: Type.STRING },
+                        textType: {
+                          type: Type.STRING,
+                          description: 'paragraph | heading | formula | table | list | handwriting',
+                        },
+                        confidence: { type: Type.NUMBER },
+                        formulaText: { type: Type.STRING },
+                        x: { type: Type.NUMBER },
+                        y: { type: Type.NUMBER },
+                        width: { type: Type.NUMBER },
+                        height: { type: Type.NUMBER },
+                      },
+                      required: ['extractedText', 'textType', 'confidence'],
+                    },
+                  },
+                },
+                required: ['blocks'],
+              },
+            },
+          }),
+      });
 
       accumulateTokens(tokensOut, response);
       const parsed = JSON.parse((response.text || '{"blocks":[]}').trim()) as {
@@ -213,8 +215,11 @@ export class DocumentExtractionService {
     return pages;
   }
 
-  static async extractFromPdfBuffer(buffer: Buffer, tokensOut: TokenTelemetry): Promise<ExtractedPage[]> {
-    // First attempt direct PDF text layer extraction via pdfjs-dist
+  static async extractFromPdfBuffer(
+    buffer: Buffer,
+    tokensOut: TokenTelemetry,
+    opts?: { config?: SystemAiConfig; idToken?: string }
+  ): Promise<ExtractedPage[]> {
     try {
       const { extractPdfPagesFromBuffer } = await import('./referenceIngestService');
       const textPages = await extractPdfPagesFromBuffer(buffer);
@@ -246,59 +251,64 @@ export class DocumentExtractionService {
       // Fall back to Gemini multimodal PDF OCR for scanned PDFs
     }
 
-    const ai = await createAiClient();
+    const ai = await createServerAiClient();
     const base64 = buffer.toString('base64');
-    const response = await withRetry(() =>
-      ai.models.generateContent({
-        model: getActiveModel(),
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType: 'application/pdf',
-                data: base64,
-              },
-            },
-            {
-              text: 'Trích xuất văn bản, công thức và bảng biểu theo từng trang của file PDF học tập này. Giữ nguyên nội dung gốc của học sinh (không tự sửa lỗi kiến thức). Trả về danh sách các trang và từng đoạn văn bản với độ tin cậy OCR.',
-            },
-          ],
-        },
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              pages: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    pageNumber: { type: Type.INTEGER },
-                    blocks: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          extractedText: { type: Type.STRING },
-                          textType: { type: Type.STRING },
-                          confidence: { type: Type.NUMBER },
-                          formulaText: { type: Type.STRING },
-                        },
-                        required: ['extractedText', 'textType', 'confidence'],
-                      },
-                    },
-                  },
-                  required: ['pageNumber', 'blocks'],
+    const { data: response } = await runTaskWithRouter({
+      taskType: 'curriculum_extraction',
+      config: opts?.config,
+      idToken: opts?.idToken,
+      bypassCache: true,
+      runWithModel: (modelId) =>
+        ai.models.generateContent({
+          model: modelId,
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType: 'application/pdf',
+                  data: base64,
                 },
               },
-            },
-            required: ['pages'],
+              {
+                text: 'Trích xuất văn bản, công thức và bảng biểu theo từng trang của file PDF học tập này. Giữ nguyên nội dung gốc của học sinh (không tự sửa lỗi kiến thức). Trả về danh sách các trang và từng đoạn văn bản với độ tin cậy OCR.',
+              },
+            ],
           },
-        },
-      })
-    );
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                pages: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      pageNumber: { type: Type.INTEGER },
+                      blocks: {
+                        type: Type.ARRAY,
+                        items: {
+                          type: Type.OBJECT,
+                          properties: {
+                            extractedText: { type: Type.STRING },
+                            textType: { type: Type.STRING },
+                            confidence: { type: Type.NUMBER },
+                            formulaText: { type: Type.STRING },
+                          },
+                          required: ['extractedText', 'textType', 'confidence'],
+                        },
+                      },
+                    },
+                    required: ['pageNumber', 'blocks'],
+                  },
+                },
+              },
+              required: ['pages'],
+            },
+          },
+        }),
+    });
 
     accumulateTokens(tokensOut, response);
     const parsed = JSON.parse((response.text || '{"pages":[]}').trim()) as {
@@ -350,7 +360,6 @@ export class DocumentExtractionService {
       .map((l) => l.trim())
       .filter(Boolean);
 
-    // Group into logical preview pages (~18 blocks per page) so long DOCX doesn't truncate
     const pageSize = 18;
     const pages: ExtractedPage[] = [];
     for (let i = 0; i < paragraphs.length; i += pageSize) {
@@ -379,49 +388,55 @@ export class DocumentExtractionService {
 export class SubjectDetectionService {
   static async detectScope(
     sampleText: string,
-    tokensOut: TokenTelemetry
+    tokensOut: TokenTelemetry,
+    opts?: { config?: SystemAiConfig; idToken?: string }
   ): Promise<{
     suggestedGrade: GradeLevel;
     suggestedSubject: SubjectId;
     suggestedChapters: string[];
     suggestedTitle: string;
   }> {
-    const ai = await createAiClient();
-    const response = await withRetry(() =>
-      ai.models.generateContent({
-        model: getActiveModel(),
-        contents: `Phân tích đoạn ghi chép học tập sau đây để đề xuất lớp (10, 11 hoặc 12), môn học THPT và tên chủ đề/chương phù hợp:\n\n${sampleText.slice(0, 4000)}`,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              suggestedGrade: { type: Type.STRING, description: '10 | 11 | 12' },
-              suggestedSubject: {
-                type: Type.STRING,
-                description:
-                  'toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac',
+    const ai = await createServerAiClient();
+    const { data: parsed } = await runTaskWithRouter({
+      taskType: 'subject_classification',
+      config: opts?.config,
+      idToken: opts?.idToken,
+      cacheInput: { sample: sampleText.slice(0, 2500) },
+      runWithModel: async (modelId) => {
+        const response = await ai.models.generateContent({
+          model: modelId,
+          contents: `Phân tích đoạn ghi chép học tập sau đây để đề xuất lớp (10, 11 hoặc 12), môn học THPT và tên chủ đề/chương phù hợp:\n\n${sampleText.slice(0, 4000)}`,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                suggestedGrade: { type: Type.STRING, description: '10 | 11 | 12' },
+                suggestedSubject: {
+                  type: Type.STRING,
+                  description:
+                    'toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac',
+                },
+                suggestedChapters: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+                suggestedTitle: { type: Type.STRING },
               },
-              suggestedChapters: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-              suggestedTitle: { type: Type.STRING },
+              required: ['suggestedGrade', 'suggestedSubject', 'suggestedChapters', 'suggestedTitle'],
             },
-            required: ['suggestedGrade', 'suggestedSubject', 'suggestedChapters', 'suggestedTitle'],
           },
-        },
-      })
-    );
-    accumulateTokens(tokensOut, response);
-
-    const parsed = JSON.parse((response.text || '{}').trim()) as {
-      suggestedGrade?: string;
-      suggestedSubject?: string;
-      suggestedChapters?: string[];
-      suggestedTitle?: string;
-    };
+        });
+        accumulateTokens(tokensOut, response);
+        return JSON.parse((response.text || '{}').trim()) as {
+          suggestedGrade?: string;
+          suggestedSubject?: string;
+          suggestedChapters?: string[];
+          suggestedTitle?: string;
+        };
+      },
+    });
 
     const grade: GradeLevel =
       parsed.suggestedGrade === '11' || parsed.suggestedGrade === '12' ? parsed.suggestedGrade : '10';
@@ -451,6 +466,8 @@ export class KnowledgeAnalysisService {
     referenceChunks: ReferenceChunk[];
     enableWebGrounding: boolean;
     tokensOut: TokenTelemetry;
+    config?: SystemAiConfig;
+    idToken?: string;
   }): Promise<{
     claims: ExtractedClaim[];
     coverageItems: KnowledgeCoverageItem[];
@@ -461,6 +478,7 @@ export class KnowledgeAnalysisService {
     webSources: ReferenceEvidence[];
     usedWebGrounding: boolean;
     webGroundingNotice?: string;
+    modelUsed: string;
     accuracyScore: number | null;
     completenessScore: number | null;
     evidenceCoverage: number | null;
@@ -480,12 +498,13 @@ export class KnowledgeAnalysisService {
       referenceChunks,
       enableWebGrounding,
       tokensOut,
+      config,
+      idToken,
     } = params;
 
-    const ai = await createAiClient();
+    const ai = await createServerAiClient();
     const subjectName = SUBJECT_LABELS[subject];
 
-    // Prepare full student text across ALL pages (never drop middle pages!)
     const formattedStudentBlocks = pages
       .map((p) => {
         const blocksStr = p.blocks
@@ -498,7 +517,6 @@ export class KnowledgeAnalysisService {
       })
       .join('\n\n');
 
-    // Retrieve top textbook chunks across the document
     const fullText = pages.map((p) => p.rawText).join('\n');
     const retrievedHits = retrieveRelevantChunks(fullText, referenceChunks, {
       referenceId: textbookReferenceId || undefined,
@@ -516,7 +534,6 @@ export class KnowledgeAnalysisService {
             .join('\n\n')
         : 'Không có đoạn trích sách giáo khoa được lập chỉ mục trong kho tham chiếu cho phạm vi này.';
 
-    // Optional Pass: Real Google Search Grounding for advanced / beyond-textbook verification
     let webSources: ReferenceEvidence[] = [];
     let webGroundingSummary = '';
     let usedWebGrounding = false;
@@ -526,22 +543,29 @@ export class KnowledgeAnalysisService {
       try {
         const searchPrompt = [
           `Kiểm chứng các khái niệm nâng cao hoặc nội dung chưa có đủ trong sách giáo khoa đối với môn ${subjectName} lớp ${grade}, phạm vi: ${scope || selectedChapters.join(', ') || 'Tổng hợp'}.`,
-          'Ưu tiên tuyệt đối nguồn chính thống: Bộ GD&ĐT, đại học, viện nghiên cứu, tạp chí khoa học, nhà xuất bản giáo dục uy tín.',
+          'Ưu tiên tuyệt đối nguồn chính thống: Bộ GD&ĐT (moet.gov.vn), Nhà xuất bản Giáo dục, đại học, viện nghiên cứu.',
           'Tóm tắt các điểm kiến thức chuẩn kèm trích dẫn thực tế để đối chiếu với bài ghi sau:',
           fullText.slice(0, 6000),
         ].join('\n\n');
 
-        const groundResp = await withRetry(() =>
-          ai.models.generateContent({
-            model: getActiveModel(),
-            contents: searchPrompt,
-            config: {
-              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-              tools: [{ googleSearch: {} }],
-            },
-          })
-        );
-        accumulateTokens(tokensOut, groundResp);
+        const { data: groundResp } = await runTaskWithRouter({
+          taskType: 'claim_validation',
+          config,
+          idToken,
+          cacheInput: { webSearchText: fullText.slice(0, 2000), grade, subject, scope },
+          runWithModel: async (modelId) => {
+            const resp = await ai.models.generateContent({
+              model: modelId,
+              contents: searchPrompt,
+              config: {
+                thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+                tools: [{ googleSearch: {} }],
+              },
+            });
+            accumulateTokens(tokensOut, resp);
+            return resp;
+          },
+        });
 
         const gChunks = groundResp.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
         const nowIso = new Date().toISOString();
@@ -572,26 +596,32 @@ export class KnowledgeAnalysisService {
           usedWebGrounding = true;
         } else {
           webGroundingNotice =
-            'Google Search Grounding không trả về nguồn web trích dẫn cụ thể cho nội dung này; hệ thống chỉ đánh giá dựa trên kho sách tham chiếu.';
+            'Google Search Grounding không trả về nguồn web trích dẫn cụ thể cho nội dung này; hệ thống đánh giá dựa trên kho sách tham chiếu.';
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        webGroundingNotice = `Không thể truy vấn Google Search Grounding (${msg.slice(0, 90)}). Đánh giá được thực hiện dựa trên kho sách tham chiếu.`;
+        webGroundingNotice = `Không thể truy vấn Google Search Grounding (${msg.slice(0, 90)}). Đánh giá dựa trên kho sách tham chiếu.`;
       }
     }
 
-    // Multi-pass structured Claim Extraction + Verification + Completeness Mapping
     const analysisPrompt = [
       'Bạn là chuyên gia kiểm định kiến thức giáo dục THPT Việt Nam của StudyCheck AI.',
       `Môn học: ${subjectName} | Lớp: ${grade} | Sách tham chiếu: ${textbookTitle || 'Chưa chọn sách cố định'} | Phạm vi: ${scope || selectedChapters.join(', ') || 'Chưa chỉ định phạm vi cụ thể'}`,
       '',
       'NGUYÊN TẮC BẮT BUỘC:',
       '1. Chia tài liệu học sinh thành các đơn vị kiến thức (claims) có nghĩa, không cắt vụn vô nghĩa và không bỏ qua các trang giữa.',
-      '2. Phân biệt rõ: CORRECT (đúng bản chất, dù diễn đạt khác sách giáo khoa), PARTIALLY_CORRECT (đúng một phần nhưng thiếu điều kiện/phạm vi), INCORRECT (sai có căn cứ rõ ràng), MISSING (kiến thức quan trọng trong phạm vi bị thiếu), UNVERIFIED (chưa đủ nguồn kiểm chứng - TUYỆT ĐỐI KHÔNG tự kết luận là sai), AMBIGUOUS (mơ hồ nhiều nghĩa), OCR_UNCERTAIN (độ tin cậy OCR < 0.65 - KHÔNG kết luận lỗi kiến thức), OUT_OF_SCOPE (ngoài phạm vi chương trình đang xét).',
-      '3. Gán trọng số importanceWeight: 3 (cốt lõi), 2 (hỗ trợ), 1 (chi tiết mở rộng).',
-      '4. Với mỗi claim, chỉ gắn evidence từ các đoạn trích sách giáo khoa hoặc nguồn web được cung cấp bên dưới. Tuyệt đối KHÔNG bịa URL hay số trang không có trong ngữ cảnh.',
-      '5. Xây dựng Knowledge Coverage Map (coverageItems) đánh giá mức độ đầy đủ (COVERED, PARTIALLY_COVERED, MISSING) của tài liệu so với phạm vi tham chiếu.',
-      '6. Tổng hợp ưu điểm (phải dẫn trích đoạn gốc), nhược điểm (tách lỗi kiến thức và lỗi trình bày), và đề xuất cải thiện cụ thể.',
+      '2. Đối chiếu THEO NGHĨA HỌC THUẬT (không đòi hỏi đúng từng chữ nguyên văn sách giáo khoa; kiến thức mở rộng bên ngoài đúng khoa học KHÔNG bị đánh sai).',
+      '3. Phân loại rõ:',
+      '   - CORRECT: đúng bản chất kiến thức.',
+      '   - PARTIALLY_CORRECT (Thiếu điều kiện): đúng một phần nhưng thiếu điều kiện áp dụng/phạm vi/biến số quan trọng.',
+      '   - INCORRECT: sai bản chất có căn cứ rõ ràng.',
+      '   - UNVERIFIED (Chưa xác định): chưa đủ nguồn kiểm chứng đáng tin — TUYỆT ĐỐI KHÔNG tự kết luận là sai.',
+      '   - OCR_UNCERTAIN: độ tin cậy OCR < 0.65 — không kết luận lỗi kiến thức.',
+      '   - OUT_OF_SCOPE: ngoài phạm vi chương trình đang xét.',
+      '4. Gán trọng số importanceWeight: 3 (cốt lõi), 2 (hỗ trợ), 1 (chi tiết mở rộng).',
+      '5. Với mỗi claim cần sửa, điền suggestedFix cụ thể để học sinh chép sửa lại ngay.',
+      '6. Với mỗi claim, chỉ gắn evidence từ đoạn trích sách giáo khoa hoặc nguồn web được cung cấp bên dưới. Tuyệt đối KHÔNG bịa URL hay số trang không có trong ngữ cảnh.',
+      '7. Xây dựng Knowledge Coverage Map (coverageItems) đánh giá mức độ đầy đủ (COVERED, PARTIALLY_COVERED, MISSING).',
       '',
       '=== TÀI LIỆU CỦA HỌC SINH ===',
       formattedStudentBlocks.slice(0, 28000),
@@ -604,131 +634,7 @@ export class KnowledgeAnalysisService {
         : '',
     ].join('\n');
 
-    const evalResp = await withRetry(() =>
-      ai.models.generateContent({
-        model: getActiveModel(),
-        contents: analysisPrompt,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              claims: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    blockId: { type: Type.STRING },
-                    sourcePage: { type: Type.INTEGER },
-                    sourceText: { type: Type.STRING },
-                    normalizedMeaning: { type: Type.STRING },
-                    chapter: { type: Type.STRING },
-                    concept: { type: Type.STRING },
-                    importanceLevel: { type: Type.STRING, description: 'core | supporting | detail' },
-                    importanceWeight: { type: Type.INTEGER, description: '1 | 2 | 3' },
-                    knowledgeType: {
-                      type: Type.STRING,
-                      description: 'textbook_core | advanced_extension | insufficient_evidence',
-                    },
-                    evaluationStatus: {
-                      type: Type.STRING,
-                      description:
-                        'CORRECT | PARTIALLY_CORRECT | INCORRECT | MISSING | UNVERIFIED | AMBIGUOUS | OCR_UNCERTAIN | OUT_OF_SCOPE',
-                    },
-                    explanation: { type: Type.STRING },
-                    correctKnowledge: { type: Type.STRING },
-                    reason: { type: Type.STRING },
-                    matchedChunkId: { type: Type.STRING },
-                    matchedExcerpt: { type: Type.STRING },
-                    matchedPage: { type: Type.INTEGER },
-                  },
-                  required: [
-                    'sourcePage',
-                    'sourceText',
-                    'normalizedMeaning',
-                    'chapter',
-                    'concept',
-                    'importanceLevel',
-                    'importanceWeight',
-                    'evaluationStatus',
-                    'explanation',
-                    'correctKnowledge',
-                  ],
-                },
-              },
-              coverageItems: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    concept: { type: Type.STRING },
-                    chapter: { type: Type.STRING },
-                    lesson: { type: Type.STRING },
-                    importanceWeight: { type: Type.INTEGER },
-                    status: { type: Type.STRING, description: 'COVERED | PARTIALLY_COVERED | MISSING | OUT_OF_SCOPE' },
-                    suggestedAddition: { type: Type.STRING },
-                    referenceExcerpt: { type: Type.STRING },
-                    referencePage: { type: Type.INTEGER },
-                  },
-                  required: ['concept', 'chapter', 'importanceWeight', 'status', 'suggestedAddition', 'referenceExcerpt'],
-                },
-              },
-              strengths: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: { type: Type.STRING },
-                    detail: { type: Type.STRING },
-                    sourceExcerpt: { type: Type.STRING },
-                    pageNumber: { type: Type.INTEGER },
-                  },
-                  required: ['title', 'detail', 'sourceExcerpt', 'pageNumber'],
-                },
-              },
-              weaknesses: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: { type: Type.STRING },
-                    category: {
-                      type: Type.STRING,
-                      description: 'knowledge_error | missing_content | partial_condition | unverified | presentation',
-                    },
-                    detail: { type: Type.STRING },
-                    pageNumber: { type: Type.INTEGER },
-                  },
-                  required: ['title', 'category', 'detail'],
-                },
-              },
-              suggestions: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    priority: { type: Type.INTEGER },
-                    actionType: {
-                      type: Type.STRING,
-                      description: 'fix_error | add_missing | review_partial | practice_weak | explore_extension',
-                    },
-                    title: { type: Type.STRING },
-                    description: { type: Type.STRING },
-                  },
-                  required: ['priority', 'actionType', 'title', 'description'],
-                },
-              },
-            },
-            required: ['claims', 'coverageItems', 'strengths', 'weaknesses', 'suggestions'],
-          },
-        },
-      })
-    );
-
-    accumulateTokens(tokensOut, evalResp);
-
-    const rawEval = JSON.parse((evalResp.text || '{}').trim()) as {
+    type RawEvalResult = {
       claims?: Array<{
         blockId?: string;
         sourcePage: number;
@@ -743,6 +649,7 @@ export class KnowledgeAnalysisService {
         explanation: string;
         correctKnowledge: string;
         reason?: string;
+        suggestedFix?: string;
         matchedChunkId?: string;
         matchedExcerpt?: string;
         matchedPage?: number;
@@ -761,6 +668,147 @@ export class KnowledgeAnalysisService {
       weaknesses?: AnalysisWeakness[];
       suggestions?: ImprovementSuggestion[];
     };
+
+    const { data: rawEval, modelId: modelUsed } = await runTaskWithRouter<RawEvalResult>({
+      taskType: 'knowledge_analysis',
+      config,
+      idToken,
+      cacheInput: {
+        studentText: formattedStudentBlocks.slice(0, 12000),
+        textbookRef: textbookReferenceId,
+        grade,
+        subject,
+        scope,
+        chunksDigest: retrievedHits.map((h) => h.chunk.chunkId).join(','),
+      },
+      runWithModel: async (modelId) => {
+        const evalResp = await ai.models.generateContent({
+          model: modelId,
+          contents: analysisPrompt,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                claims: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      blockId: { type: Type.STRING },
+                      sourcePage: { type: Type.INTEGER },
+                      sourceText: { type: Type.STRING },
+                      normalizedMeaning: { type: Type.STRING },
+                      chapter: { type: Type.STRING },
+                      concept: { type: Type.STRING },
+                      importanceLevel: { type: Type.STRING, description: 'core | supporting | detail' },
+                      importanceWeight: { type: Type.INTEGER, description: '1 | 2 | 3' },
+                      knowledgeType: {
+                        type: Type.STRING,
+                        description: 'textbook_core | advanced_extension | insufficient_evidence',
+                      },
+                      evaluationStatus: {
+                        type: Type.STRING,
+                        description:
+                          'CORRECT | PARTIALLY_CORRECT | INCORRECT | MISSING | UNVERIFIED | AMBIGUOUS | OCR_UNCERTAIN | OUT_OF_SCOPE',
+                      },
+                      explanation: { type: Type.STRING },
+                      correctKnowledge: { type: Type.STRING },
+                      reason: { type: Type.STRING },
+                      suggestedFix: { type: Type.STRING },
+                      matchedChunkId: { type: Type.STRING },
+                      matchedExcerpt: { type: Type.STRING },
+                      matchedPage: { type: Type.INTEGER },
+                    },
+                    required: [
+                      'sourcePage',
+                      'sourceText',
+                      'normalizedMeaning',
+                      'chapter',
+                      'concept',
+                      'importanceLevel',
+                      'importanceWeight',
+                      'evaluationStatus',
+                      'explanation',
+                      'correctKnowledge',
+                    ],
+                  },
+                },
+                coverageItems: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      concept: { type: Type.STRING },
+                      chapter: { type: Type.STRING },
+                      lesson: { type: Type.STRING },
+                      importanceWeight: { type: Type.INTEGER },
+                      status: {
+                        type: Type.STRING,
+                        description: 'COVERED | PARTIALLY_COVERED | MISSING | OUT_OF_SCOPE',
+                      },
+                      suggestedAddition: { type: Type.STRING },
+                      referenceExcerpt: { type: Type.STRING },
+                      referencePage: { type: Type.INTEGER },
+                    },
+                    required: ['concept', 'chapter', 'importanceWeight', 'status', 'suggestedAddition', 'referenceExcerpt'],
+                  },
+                },
+                strengths: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      title: { type: Type.STRING },
+                      detail: { type: Type.STRING },
+                      sourceExcerpt: { type: Type.STRING },
+                      pageNumber: { type: Type.INTEGER },
+                    },
+                    required: ['title', 'detail', 'sourceExcerpt', 'pageNumber'],
+                  },
+                },
+                weaknesses: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      title: { type: Type.STRING },
+                      category: {
+                        type: Type.STRING,
+                        description: 'knowledge_error | missing_content | partial_condition | unverified | presentation',
+                      },
+                      detail: { type: Type.STRING },
+                      pageNumber: { type: Type.INTEGER },
+                    },
+                    required: ['title', 'category', 'detail'],
+                  },
+                },
+                suggestions: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      priority: { type: Type.INTEGER },
+                      actionType: {
+                        type: Type.STRING,
+                        description: 'fix_error | add_missing | review_partial | practice_weak | explore_extension',
+                      },
+                      title: { type: Type.STRING },
+                      description: { type: Type.STRING },
+                    },
+                    required: ['priority', 'actionType', 'title', 'description'],
+                  },
+                },
+              },
+              required: ['claims', 'coverageItems', 'strengths', 'weaknesses', 'suggestions'],
+            },
+          },
+        });
+        accumulateTokens(tokensOut, evalResp);
+        return JSON.parse((evalResp.text || '{}').trim()) as RawEvalResult;
+      },
+    });
 
     const blockMap = new Map<string, ExtractedTextBlock>();
     for (const p of pages) {
@@ -792,7 +840,6 @@ export class KnowledgeAnalysisService {
         ? (c.evaluationStatus as ClaimStatus)
         : 'UNVERIFIED';
 
-      // Enforce OCR safety guard: never penalize low-confidence OCR as INCORRECT
       if (ocrConf < 0.65 && status === 'INCORRECT') {
         status = 'OCR_UNCERTAIN';
       }
@@ -853,6 +900,7 @@ export class KnowledgeAnalysisService {
         explanation: c.explanation,
         correctKnowledge: c.correctKnowledge,
         reason: c.reason,
+        suggestedFix: c.suggestedFix || (status !== 'CORRECT' ? c.correctKnowledge : undefined),
         evidences,
       };
     });
@@ -886,7 +934,6 @@ export class KnowledgeAnalysisService {
     const accuracyBreakdown = calculateAccuracyScore(claims, hasTextbook);
     const completenessBreakdown = calculateCompletenessScore(coverageItems, hasValidScope);
 
-    // Deterministic annotation mapping (never invents random coordinates)
     const annotations: AnnotationItem[] = [];
     for (const claim of claims) {
       if (claim.evaluationStatus === 'MISSING' || claim.evaluationStatus === 'OUT_OF_SCOPE') continue;
@@ -925,6 +972,7 @@ export class KnowledgeAnalysisService {
       webSources,
       usedWebGrounding,
       webGroundingNotice,
+      modelUsed,
       accuracyScore: accuracyBreakdown.accuracyScore,
       completenessScore: completenessBreakdown.completenessScore,
       evidenceCoverage: accuracyBreakdown.evidenceCoverage,
@@ -943,23 +991,38 @@ export class QuizGenerationService {
     textbookTitle: string;
     claims: ExtractedClaim[];
     coverageItems: KnowledgeCoverageItem[];
+    referenceChunks?: ReferenceChunk[];
     count: number;
     difficulty: QuizDifficulty;
     scope: QuizScope;
     chapterFilter?: string;
+    advancedEnabled?: boolean;
+    advancedCount?: number;
     tokensOut: TokenTelemetry;
-  }): Promise<QuizQuestion[]> {
+    config?: SystemAiConfig;
+    idToken?: string;
+  }): Promise<{
+    questions: QuizQuestion[];
+    supplementedFromTextbook: boolean;
+    supplementNotice?: string;
+    modelUsed: string;
+  }> {
     const {
       subject,
       grade,
       textbookTitle,
       claims,
       coverageItems,
+      referenceChunks = [],
       count,
       difficulty,
       scope,
       chapterFilter,
+      advancedEnabled = false,
+      advancedCount = 0,
       tokensOut,
+      config,
+      idToken,
     } = params;
 
     let targetClaims = claims;
@@ -976,14 +1039,34 @@ export class QuizGenerationService {
         ? coverageItems.filter((i) => i.status === 'MISSING' || i.status === 'PARTIALLY_COVERED')
         : [];
 
+    // Estimate distinct knowledge points available directly from upload
+    const distinctUploadConcepts = new Set([
+      ...targetClaims.map((c) => (c.concept || c.sourceText.slice(0, 35)).toLowerCase()),
+      ...missingItems.map((m) => (m.concept || '').toLowerCase()),
+    ].filter(Boolean));
+
+    const needsTextbookSupplement = distinctUploadConcepts.size < 5;
+    const safeAdvancedExtra = advancedEnabled ? Math.min(6, Math.max(1, Number(advancedCount) || 2)) : 0;
+    const baseTargetCount = Math.min(20, Math.max(5, Number(count) || 5));
+
+    const supplementChunks = needsTextbookSupplement
+      ? referenceChunks
+          .filter((rc) => rc.grade === grade && rc.subject === subject)
+          .slice(0, 8)
+      : [];
+
     const contextLines = [
       ...targetClaims.map(
         (c) =>
-          `[Claim ${c.claimId} | ${c.evaluationStatus} | ${c.chapter} | ${c.concept}] Học sinh viết: "${c.sourceText}" | Chuẩn: "${c.correctKnowledge}" | Giải thích: "${c.explanation}"`
+          `[UploadClaim ${c.claimId} | ${c.evaluationStatus} | ${c.chapter} | ${c.concept}] Học sinh viết: "${c.sourceText}" | Chuẩn: "${c.correctKnowledge}" | Giải thích: "${c.explanation}"`
       ),
       ...missingItems.map(
         (m) =>
-          `[Missing | ${m.chapter} | ${m.concept}] Gợi ý: "${m.suggestedAddition}" | Trích dẫn: "${m.referenceExcerpt}"`
+          `[UploadMissing | ${m.chapter} | ${m.concept}] Gợi ý: "${m.suggestedAddition}" | Trích dẫn: "${m.referenceExcerpt}"`
+      ),
+      ...supplementChunks.map(
+        (ch) =>
+          `[TextbookSupplement | ${ch.chapter} - ${ch.lesson} | Tr.${ch.pageNumber}] ${ch.content.slice(0, 450)}`
       ),
     ];
 
@@ -992,7 +1075,7 @@ export class QuizGenerationService {
         ? contextLines.join('\n')
         : claims.map((c) => `${c.concept}: ${c.correctKnowledge}`).join('\n');
 
-    const ai = await createAiClient();
+    const ai = await createServerAiClient();
     const diffLabel =
       difficulty === 'basic'
         ? 'Cơ bản (Nhận biết, Thông hiểu)'
@@ -1000,98 +1083,153 @@ export class QuizGenerationService {
         ? 'Trung bình (Thông hiểu, Vận dụng)'
         : difficulty === 'advanced'
         ? 'Nâng cao (Vận dụng, Vận dụng cao)'
-        : 'Hỗn hợp từ Cơ bản đến Vận dụng cao';
+        : 'Hỗn hợp cân bằng (Nhận biết 30% - Thông hiểu 30% - Vận dụng 25% - Vận dụng cao 15%)';
 
     const prompt = [
-      `Tạo chính xác ${count} câu hỏi trắc nghiệm ABCD cho học sinh lớp ${grade}, môn ${SUBJECT_LABELS[subject]}.`,
-      `Độ khó yêu cầu: ${diffLabel}. Nguồn tham chiếu: ${textbookTitle || 'Kiến thức chuẩn THPT'}.`,
+      `Soạn ${baseTargetCount} câu hỏi trắc nghiệm ABCD cốt lõi cho học sinh lớp ${grade}, môn ${SUBJECT_LABELS[subject]}.`,
+      needsTextbookSupplement
+        ? `LƯU Ý ĐẶC BIỆT: Nội dung tải lên chỉ có ${distinctUploadConcepts.size} đơn vị kiến thức khác nhau (< 5). Hãy tạo tối đa số câu hỏi bám sát nội dung tải lên, VÀ TỰ ĐỘNG BỔ SUNG phần còn lại từ kiến thức đã hoàn thiện của chương/sách giáo khoa (${textbookTitle || SUBJECT_LABELS[subject] + ' lớp ' + grade}) để đủ ${baseTargetCount} câu chất lượng không trùng lặp.`
+        : `Tất cả ${baseTargetCount} câu cốt lõi bám sát nội dung đã tải lên và phần kiến thức cần củng cố.`,
+      safeAdvancedExtra > 0
+        ? `YÊU CẦU MỞ RỘNG NÂNG CAO: Ngoài ${baseTargetCount} câu trên, HÃY TẠO THÊM ĐÚNG ${safeAdvancedExtra} câu hỏi NÂNG CAO BÊN NGOÀI (isExternalAdvanced = true, mức Vận dụng / Vận dụng cao) kiểm tra tư duy sâu hơn ở cùng chủ đề môn học.`
+        : '',
+      `Độ khó: ${diffLabel}. Nguồn tham chiếu: ${textbookTitle || 'Kiến thức chuẩn GDPT 2018'}.`,
       'YÊU CẦU CHẤT LƯỢNG NGHIÊM NGẶT:',
       '- Mỗi câu CHỈ CÓ DUY NHẤT 1 đáp án đúng (A, B, C hoặc D).',
-      '- Không tạo 2 lựa chọn cùng đúng hoặc đáp án nhiễu vô lý.',
-      '- Đa dạng góc độ (nhận biết, phân biệt điều kiện, vận dụng tình huống thực tế), không lặp lại 1 khuôn mẫu câu.',
-      '- Giải thích rõ vì sao đáp án đúng là chính xác và vì sao các lựa chọn khác sai.',
+      '- Độ dài 4 lựa chọn A/B/C/D tương đồng hợp lý, không lộ đáp án đúng bằng độ dài quá vượt trội.',
+      '- Phân loại đúng cognitiveLevel (nhan_biet | thong_hieu | van_dung | van_dung_cao) và knowledgeUnitType (concept | mechanism | condition | characteristic | formula | problem_type).',
+      '- Cung cấp distractorExplanations giải thích ngắn gọn vì sao từng lựa chọn A, B, C, D đúng hoặc sai.',
       '',
-      'NGỮ CẢNH KIẾN THỨC CẦN KIỂM TRA:',
-      effectiveContext.slice(0, 16000),
-    ].join('\n');
+      'NGỮ CẢNH KIẾN THỨC:',
+      effectiveContext.slice(0, 18000),
+    ]
+      .filter(Boolean)
+      .join('\n');
 
-    const response = await withRetry(() =>
-      ai.models.generateContent({
-        model: getActiveModel(),
-        contents: prompt,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              questions: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    questionText: { type: Type.STRING },
-                    optionA: { type: Type.STRING },
-                    optionB: { type: Type.STRING },
-                    optionC: { type: Type.STRING },
-                    optionD: { type: Type.STRING },
-                    correctAnswer: { type: Type.STRING, description: 'A | B | C | D' },
-                    explanation: { type: Type.STRING },
-                    difficulty: { type: Type.STRING, description: 'basic | medium | advanced' },
-                    chapter: { type: Type.STRING },
-                    concept: { type: Type.STRING },
-                    sourceReference: { type: Type.STRING },
-                    relatedClaimId: { type: Type.STRING },
-                  },
-                  required: [
-                    'questionText',
-                    'optionA',
-                    'optionB',
-                    'optionC',
-                    'optionD',
-                    'correctAnswer',
-                    'explanation',
-                    'difficulty',
-                    'chapter',
-                    'concept',
-                    'sourceReference',
-                  ],
-                },
-              },
-            },
-            required: ['questions'],
-          },
-        },
-      })
-    );
-
-    accumulateTokens(tokensOut, response);
-
-    const parsed = JSON.parse((response.text || '{"questions":[]}').trim()) as {
-      questions: Array<{
-        questionText: string;
-        optionA: string;
-        optionB: string;
-        optionC: string;
-        optionD: string;
-        correctAnswer: string;
-        explanation: string;
-        difficulty: string;
-        chapter: string;
-        concept: string;
-        sourceReference: string;
-        relatedClaimId?: string;
-      }>;
+    type RawQuizItem = {
+      questionText: string;
+      optionA: string;
+      optionB: string;
+      optionC: string;
+      optionD: string;
+      correctAnswer: string;
+      explanation: string;
+      distractorA?: string;
+      distractorB?: string;
+      distractorC?: string;
+      distractorD?: string;
+      difficulty: string;
+      cognitiveLevel?: string;
+      knowledgeUnitType?: string;
+      chapter: string;
+      concept: string;
+      sourceReference: string;
+      sourcePage?: number;
+      isExternalAdvanced?: boolean;
+      relatedClaimId?: string;
     };
 
+    const { data: parsed, modelId: modelUsed } = await runTaskWithRouter<{ questions: RawQuizItem[] }>({
+      taskType: 'quiz_generation',
+      config,
+      idToken,
+      cacheInput: {
+        subject,
+        grade,
+        baseTargetCount,
+        safeAdvancedExtra,
+        difficulty,
+        scope,
+        chapterFilter: chapterFilter || '',
+        ctx: effectiveContext.slice(0, 8000),
+      },
+      runWithModel: async (modelId) => {
+        const response = await ai.models.generateContent({
+          model: modelId,
+          contents: prompt,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                questions: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      questionText: { type: Type.STRING },
+                      optionA: { type: Type.STRING },
+                      optionB: { type: Type.STRING },
+                      optionC: { type: Type.STRING },
+                      optionD: { type: Type.STRING },
+                      correctAnswer: { type: Type.STRING, description: 'A | B | C | D' },
+                      explanation: { type: Type.STRING },
+                      distractorA: { type: Type.STRING },
+                      distractorB: { type: Type.STRING },
+                      distractorC: { type: Type.STRING },
+                      distractorD: { type: Type.STRING },
+                      difficulty: { type: Type.STRING, description: 'basic | medium | advanced' },
+                      cognitiveLevel: {
+                        type: Type.STRING,
+                        description: 'nhan_biet | thong_hieu | van_dung | van_dung_cao',
+                      },
+                      knowledgeUnitType: {
+                        type: Type.STRING,
+                        description: 'concept | mechanism | condition | characteristic | formula | problem_type',
+                      },
+                      chapter: { type: Type.STRING },
+                      concept: { type: Type.STRING },
+                      sourceReference: { type: Type.STRING },
+                      sourcePage: { type: Type.INTEGER },
+                      isExternalAdvanced: { type: Type.BOOLEAN },
+                      relatedClaimId: { type: Type.STRING },
+                    },
+                    required: [
+                      'questionText',
+                      'optionA',
+                      'optionB',
+                      'optionC',
+                      'optionD',
+                      'correctAnswer',
+                      'explanation',
+                      'difficulty',
+                      'chapter',
+                      'concept',
+                      'sourceReference',
+                    ],
+                  },
+                },
+              },
+              required: ['questions'],
+            },
+          },
+        });
+        accumulateTokens(tokensOut, response);
+        return JSON.parse((response.text || '{"questions":[]}').trim()) as {
+          questions: RawQuizItem[];
+        };
+      },
+    });
+
+    const totalWanted = baseTargetCount + safeAdvancedExtra;
     const now = new Date().toISOString();
-    return (parsed.questions || []).slice(0, count).map((q, idx) => {
+    const mapped: QuizQuestion[] = (parsed.questions || []).slice(0, totalWanted + 2).map((q, idx) => {
       const ans =
         q.correctAnswer === 'A' || q.correctAnswer === 'B' || q.correctAnswer === 'C' || q.correctAnswer === 'D'
           ? q.correctAnswer
           : 'A';
       const diff: QuizQuestion['difficulty'] =
         q.difficulty === 'basic' || q.difficulty === 'advanced' ? q.difficulty : 'medium';
+      const unitTypes = new Set<KnowledgeUnitType>([
+        'concept',
+        'mechanism',
+        'condition',
+        'characteristic',
+        'formula',
+        'problem_type',
+      ]);
+      const cog = normalizeCognitiveLevel(q.cognitiveLevel, diff);
 
       return {
         questionId: `q_${Date.now()}_${idx + 1}_${crypto.randomBytes(2).toString('hex')}`,
@@ -1102,15 +1240,692 @@ export class QuizGenerationService {
         optionD: q.optionD,
         correctAnswer: ans,
         explanation: q.explanation,
+        distractorExplanations:
+          q.distractorA || q.distractorB || q.distractorC || q.distractorD
+            ? {
+                A: q.distractorA,
+                B: q.distractorB,
+                C: q.distractorC,
+                D: q.distractorD,
+              }
+            : undefined,
         difficulty: diff,
+        cognitiveLevel: cog,
+        knowledgeUnitType: unitTypes.has(q.knowledgeUnitType as KnowledgeUnitType)
+          ? (q.knowledgeUnitType as KnowledgeUnitType)
+          : 'concept',
         subject,
         grade,
         chapter: q.chapter || chapterFilter || 'Tổng hợp',
         concept: q.concept || 'Khái niệm trọng tâm',
         sourceReference: q.sourceReference || textbookTitle || 'Tài liệu tham chiếu',
+        sourcePage: typeof q.sourcePage === 'number' && q.sourcePage > 0 ? q.sourcePage : undefined,
+        sourceType: q.isExternalAdvanced ? 'external_extension' : 'textbook_reference',
+        modelId: modelUsed,
+        isExternalAdvanced: Boolean(q.isExternalAdvanced),
         relatedClaimId: q.relatedClaimId,
         createdAt: now,
       };
     });
+
+    const validation = validateQuizQuestionSet(mapped);
+
+    return {
+      questions: validation.questions.slice(0, totalWanted),
+      supplementedFromTextbook: needsTextbookSupplement,
+      supplementNotice: needsTextbookSupplement
+        ? `Nội dung tải lên chỉ tạo được ít hơn 5 câu hỏi khác nhau (${distinctUploadConcepts.size} ý). Hệ thống đã tự động bổ sung thêm từ kiến thức sách giáo khoa / tham chiếu chuẩn để đủ ${Math.min(validation.questions.length, baseTargetCount)} câu.`
+        : undefined,
+      modelUsed,
+    };
+  }
+}
+
+export class ExamPipelineService {
+  static async generateBlueprint(params: {
+    title?: string;
+    grade: GradeLevel;
+    subject: SubjectId;
+    textbookSeries: string;
+    examType: ExamType;
+    academicYear: string;
+    semester: '1' | '2';
+    chapters: string[];
+    durationMinutes: number;
+    totalScore: number;
+    referenceChunks: ReferenceChunk[];
+    actorUid: string;
+    tokensOut: TokenTelemetry;
+    config?: SystemAiConfig;
+    idToken?: string;
+  }): Promise<ExamBlueprint> {
+    const ai = await createServerAiClient();
+    const {
+      title,
+      grade,
+      subject,
+      textbookSeries,
+      examType,
+      academicYear,
+      semester,
+      chapters,
+      durationMinutes,
+      totalScore,
+      referenceChunks,
+      actorUid,
+      tokensOut,
+      config,
+      idToken,
+    } = params;
+
+    const relevant = referenceChunks
+      .filter((c) => c.grade === grade && c.subject === subject)
+      .slice(0, 10)
+      .map((c) => `${c.chapter} - ${c.lesson}: ${c.content.slice(0, 220)}`)
+      .join('\n');
+
+    const prompt = [
+      `Lập MA TRẬN ĐỀ KIỂM TRA chuẩn GDPT 2018 cho môn ${SUBJECT_LABELS[subject]} lớp ${grade} (${textbookSeries}).`,
+      `Loại kỳ thi: ${EXAM_TYPE_LABELS[examType]} | Học kỳ ${semester} | Thời gian: ${durationMinutes} phút | Tổng điểm bắt buộc: ${totalScore}.`,
+      `Phạm vi chương/bài: ${chapters.length > 0 ? chapters.join(', ') : 'Toàn bộ học kỳ'}.`,
+      'Yêu cầu bắt buộc:',
+      '- Tạo từ 4 đến 10 dòng ma trận phân bổ rõ ràng giữa các chương, mức độ nhận thức (nhan_biet ~30%, thong_hieu ~30%, van_dung ~25%, van_dung_cao ~15%) và dạng câu hỏi (abcd, true_false, short_answer).',
+      `- Tổng của (questionCount * scorePerQuestion) qua TẤT CẢ các dòng PHẢI BẰNG ĐÚNG ${totalScore}.`,
+      relevant ? `Nội dung tham chiếu có sẵn:\n${relevant}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const { data: parsed } = await runTaskWithRouter<{
+      title?: string;
+      rows?: Array<{
+        chapter: string;
+        topic: string;
+        cognitiveLevel: string;
+        questionType: string;
+        questionCount: number;
+        scorePerQuestion: number;
+        learningOutcome: string;
+      }>;
+    }>({
+      taskType: 'quiz_blueprint',
+      config,
+      idToken,
+      bypassCache: true,
+      runWithModel: async (modelId) => {
+        const resp = await ai.models.generateContent({
+          model: modelId,
+          contents: prompt,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                rows: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      chapter: { type: Type.STRING },
+                      topic: { type: Type.STRING },
+                      cognitiveLevel: {
+                        type: Type.STRING,
+                        description: 'nhan_biet | thong_hieu | van_dung | van_dung_cao',
+                      },
+                      questionType: {
+                        type: Type.STRING,
+                        description: 'abcd | true_false | short_answer',
+                      },
+                      questionCount: { type: Type.INTEGER },
+                      scorePerQuestion: { type: Type.NUMBER },
+                      learningOutcome: { type: Type.STRING },
+                    },
+                    required: [
+                      'chapter',
+                      'topic',
+                      'cognitiveLevel',
+                      'questionType',
+                      'questionCount',
+                      'scorePerQuestion',
+                      'learningOutcome',
+                    ],
+                  },
+                },
+              },
+              required: ['title', 'rows'],
+            },
+          },
+        });
+        accumulateTokens(tokensOut, resp);
+        return JSON.parse((resp.text || '{}').trim());
+      },
+    });
+
+    const validCogs = new Set<CognitiveLevel>(['nhan_biet', 'thong_hieu', 'van_dung', 'van_dung_cao']);
+    const validTypes = new Set<ExamQuestionType>(['abcd', 'true_false', 'short_answer']);
+
+    const rows: ExamBlueprintRow[] = (parsed.rows || []).map((r, idx) => ({
+      rowId: `row_${idx + 1}`,
+      chapter: r.chapter || chapters[0] || 'Chương 1',
+      topic: r.topic || 'Chủ đề trọng tâm',
+      cognitiveLevel: validCogs.has(r.cognitiveLevel as CognitiveLevel)
+        ? (r.cognitiveLevel as CognitiveLevel)
+        : 'thong_hieu',
+      questionType: validTypes.has(r.questionType as ExamQuestionType)
+        ? (r.questionType as ExamQuestionType)
+        : 'abcd',
+      questionCount: Math.max(1, Math.round(Number(r.questionCount) || 2)),
+      scorePerQuestion: Math.max(0.25, Number(r.scorePerQuestion) || 0.25),
+      learningOutcome: r.learningOutcome || 'Nắm vững kiến thức và vận dụng giải bài tập.',
+    }));
+
+    // Auto-normalize final row's scorePerQuestion if minor rounding variance occurred
+    const bpCheck = validateExamBlueprint({
+      blueprintId: 'tmp',
+      title: title || parsed.title || `${EXAM_TYPE_LABELS[examType]} - ${SUBJECT_LABELS[subject]} ${grade}`,
+      grade,
+      subject,
+      textbookSeries,
+      examType,
+      academicYear,
+      semester,
+      chapters,
+      durationMinutes,
+      totalScore,
+      cognitiveDistribution: { nhan_biet: 30, thong_hieu: 30, van_dung: 25, van_dung_cao: 15 },
+      rows,
+      status: 'draft',
+      createdBy: actorUid,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    if (!bpCheck.valid && rows.length > 0) {
+      // Scale row scores proportionally so sum equals totalScore strictly
+      const currentSum = rows.reduce((s, r) => s + r.questionCount * r.scorePerQuestion, 0);
+      if (currentSum > 0) {
+        const factor = totalScore / currentSum;
+        for (const r of rows) {
+          r.scorePerQuestion = Math.round(r.scorePerQuestion * factor * 100) / 100;
+        }
+        const afterSum = rows.reduce((s, r) => s + r.questionCount * r.scorePerQuestion, 0);
+        const diff = Math.round((totalScore - afterSum) * 100) / 100;
+        if (Math.abs(diff) > 0.001) {
+          const last = rows[rows.length - 1];
+          last.scorePerQuestion = Math.round((last.scorePerQuestion + diff / last.questionCount) * 100) / 100;
+        }
+      }
+    }
+
+    const now = new Date().toISOString();
+    return {
+      blueprintId: `bp_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      title:
+        title?.trim() ||
+        parsed.title ||
+        `${EXAM_TYPE_LABELS[examType]} - ${SUBJECT_LABELS[subject]} ${grade}`,
+      grade,
+      subject,
+      textbookSeries,
+      examType,
+      academicYear,
+      semester,
+      chapters,
+      durationMinutes,
+      totalScore,
+      cognitiveDistribution: { nhan_biet: 30, thong_hieu: 30, van_dung: 25, van_dung_cao: 15 },
+      rows,
+      status: 'draft',
+      createdBy: actorUid,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  static async generateExamFromBlueprint(params: {
+    blueprint: ExamBlueprint;
+    referenceChunks: ReferenceChunk[];
+    tokensOut: TokenTelemetry;
+    config?: SystemAiConfig;
+    idToken?: string;
+  }): Promise<{ questions: ExamQuestion[]; validationStatus: 'passed' | 'repaired' | 'needs_review' }> {
+    const ai = await createServerAiClient();
+    const { blueprint, referenceChunks, tokensOut, config, idToken } = params;
+
+    const contextChunks = referenceChunks
+      .filter((c) => c.grade === blueprint.grade && c.subject === blueprint.subject)
+      .slice(0, 12)
+      .map((c) => `[${c.chapter} | Tr.${c.pageNumber}] ${c.content.slice(0, 350)}`)
+      .join('\n');
+
+    const rowsSpec = blueprint.rows
+      .map(
+        (r, idx) =>
+          `${idx + 1}. Chương "${r.chapter}" | Chủ đề "${r.topic}" | Mức: ${r.cognitiveLevel} | Dạng: ${r.questionType} | Số câu: ${r.questionCount} | Điểm/câu: ${r.scorePerQuestion} | Yêu cầu cần đạt: ${r.learningOutcome}`
+      )
+      .join('\n');
+
+    const prompt = [
+      `Soạn ĐỀ KIỂM TRA hoàn chỉnh tuân thủ CHÍNH XÁC Ma trận đề sau (${SUBJECT_LABELS[blueprint.subject]} lớp ${blueprint.grade}, bộ sách ${blueprint.textbookSeries}):`,
+      rowsSpec,
+      '',
+      'QUY ĐỊNH DẠNG CÂU HỎI:',
+      '- Dạng abcd: có optionA, optionB, optionC, optionD và correctAnswer ("A"|"B"|"C"|"D").',
+      '- Dạng true_false: có đúng 4 ý a, b, c, d trong trueFalseStatements [{ label: "a"|"b"|"c"|"d", text, isTrue }].',
+      '- Dạng short_answer: có shortAnswerAccepted (mảng các đáp án ngắn chuẩn, ví dụ ["0.5", "0,5"] hoặc từ khóa ngắn).',
+      '- Mỗi câu ghi rõ explanation và sourceReference.',
+      contextChunks ? `\nNGỮ LIỆU SÁCH GIÁO KHOA THAM CHIẾU:\n${contextChunks}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    type RawExamQuestion = {
+      chapterId: string;
+      conceptId: string;
+      learningOutcome: string;
+      cognitiveLevel: string;
+      questionType: string;
+      scoreWeight: number;
+      questionText: string;
+      optionA?: string;
+      optionB?: string;
+      optionC?: string;
+      optionD?: string;
+      correctAnswer?: string;
+      trueFalseStatements?: Array<{ label: string; text: string; isTrue: boolean }>;
+      shortAnswerAccepted?: string[];
+      explanation: string;
+      sourceReference: string;
+    };
+
+    const { data: parsed } = await runTaskWithRouter<{ questions: RawExamQuestion[] }>({
+      taskType: 'quiz_generation',
+      config,
+      idToken,
+      bypassCache: true,
+      runWithModel: async (modelId) => {
+        const resp = await ai.models.generateContent({
+          model: modelId,
+          contents: prompt,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                questions: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      chapterId: { type: Type.STRING },
+                      conceptId: { type: Type.STRING },
+                      learningOutcome: { type: Type.STRING },
+                      cognitiveLevel: { type: Type.STRING },
+                      questionType: { type: Type.STRING },
+                      scoreWeight: { type: Type.NUMBER },
+                      questionText: { type: Type.STRING },
+                      optionA: { type: Type.STRING },
+                      optionB: { type: Type.STRING },
+                      optionC: { type: Type.STRING },
+                      optionD: { type: Type.STRING },
+                      correctAnswer: { type: Type.STRING },
+                      trueFalseStatements: {
+                        type: Type.ARRAY,
+                        items: {
+                          type: Type.OBJECT,
+                          properties: {
+                            label: { type: Type.STRING },
+                            text: { type: Type.STRING },
+                            isTrue: { type: Type.BOOLEAN },
+                          },
+                          required: ['label', 'text', 'isTrue'],
+                        },
+                      },
+                      shortAnswerAccepted: {
+                        type: Type.ARRAY,
+                        items: { type: Type.STRING },
+                      },
+                      explanation: { type: Type.STRING },
+                      sourceReference: { type: Type.STRING },
+                    },
+                    required: [
+                      'chapterId',
+                      'conceptId',
+                      'cognitiveLevel',
+                      'questionType',
+                      'scoreWeight',
+                      'questionText',
+                      'explanation',
+                      'sourceReference',
+                    ],
+                  },
+                },
+              },
+              required: ['questions'],
+            },
+          },
+        });
+        accumulateTokens(tokensOut, resp);
+        return JSON.parse((resp.text || '{"questions":[]}').trim()) as {
+          questions: RawExamQuestion[];
+        };
+      },
+    });
+
+    const validCogs = new Set<CognitiveLevel>(['nhan_biet', 'thong_hieu', 'van_dung', 'van_dung_cao']);
+    const validTypes = new Set<ExamQuestionType>(['abcd', 'true_false', 'short_answer']);
+    let needsReview = false;
+
+    const questions: ExamQuestion[] = (parsed.questions || []).map((q, idx) => {
+      const qType: ExamQuestionType = validTypes.has(q.questionType as ExamQuestionType)
+        ? (q.questionType as ExamQuestionType)
+        : 'abcd';
+      const cog: CognitiveLevel = validCogs.has(q.cognitiveLevel as CognitiveLevel)
+        ? (q.cognitiveLevel as CognitiveLevel)
+        : 'thong_hieu';
+
+      const ans =
+        q.correctAnswer === 'A' || q.correctAnswer === 'B' || q.correctAnswer === 'C' || q.correctAnswer === 'D'
+          ? q.correctAnswer
+          : 'A';
+
+      const stmts =
+        qType === 'true_false'
+          ? (['a', 'b', 'c', 'd'] as const).map((lbl, sIdx) => ({
+              label: lbl,
+              text: q.trueFalseStatements?.[sIdx]?.text || `Phát biểu ${lbl}`,
+              isTrue: Boolean(q.trueFalseStatements?.[sIdx]?.isTrue),
+            }))
+          : undefined;
+
+      const accepted =
+        qType === 'short_answer'
+          ? (q.shortAnswerAccepted && q.shortAnswerAccepted.length > 0
+              ? q.shortAnswerAccepted
+              : ['0'])
+          : undefined;
+
+      if (!q.questionText || !q.explanation) {
+        needsReview = true;
+      }
+
+      return {
+        questionId: `eq_${Date.now()}_${idx + 1}_${crypto.randomBytes(2).toString('hex')}`,
+        orderIndex: idx + 1,
+        chapterId: q.chapterId || blueprint.chapters[0] || 'Tổng hợp',
+        conceptId: q.conceptId || 'Kiến thức trọng tâm',
+        learningOutcome: q.learningOutcome || 'Đạt chuẩn kiến thức kỹ năng',
+        cognitiveLevel: cog,
+        questionType: qType,
+        scoreWeight: Math.max(0.1, Number(q.scoreWeight) || 0.25),
+        questionText: q.questionText,
+        optionA: qType === 'abcd' ? q.optionA || 'Phương án A' : undefined,
+        optionB: qType === 'abcd' ? q.optionB || 'Phương án B' : undefined,
+        optionC: qType === 'abcd' ? q.optionC || 'Phương án C' : undefined,
+        optionD: qType === 'abcd' ? q.optionD || 'Phương án D' : undefined,
+        correctAnswer: qType === 'abcd' ? ans : undefined,
+        trueFalseStatements: stmts,
+        shortAnswerAccepted: accepted,
+        explanation: q.explanation,
+        sourceReference: q.sourceReference || blueprint.textbookSeries,
+        sourceType: 'textbook_reference',
+        validationStatus: q.questionText && q.explanation ? 'passed' : 'needs_review',
+      };
+    });
+
+    return {
+      questions,
+      validationStatus: needsReview ? 'needs_review' : 'passed',
+    };
+  }
+
+  static async rewriteSingleQuestion(params: {
+    question: ExamQuestion;
+    instruction: string;
+    grade: GradeLevel;
+    subject: SubjectId;
+    textbookSeries: string;
+    tokensOut: TokenTelemetry;
+    config?: SystemAiConfig;
+    idToken?: string;
+  }): Promise<ExamQuestion> {
+    const ai = await createServerAiClient();
+    const { question, instruction, grade, subject, textbookSeries, tokensOut, config, idToken } = params;
+
+    const prompt = [
+      `Viết lại câu hỏi kiểm tra môn ${SUBJECT_LABELS[subject]} lớp ${grade} (${textbookSeries}) theo yêu cầu của Admin.`,
+      `Yêu cầu chỉnh sửa: ${instruction || 'Làm câu hỏi rõ ràng, chính xác, phương án nhiễu hợp lý hơn.'}`,
+      `Giữ nguyên questionType="${question.questionType}", scoreWeight=${question.scoreWeight}, cognitiveLevel="${question.cognitiveLevel}".`,
+      `Câu hỏi hiện tại:\n${JSON.stringify(question)}`,
+    ].join('\n\n');
+
+    const { data: updated } = await runTaskWithRouter<Partial<ExamQuestion>>({
+      taskType: 'quiz_validation',
+      config,
+      idToken,
+      bypassCache: true,
+      runWithModel: async (modelId) => {
+        const resp = await ai.models.generateContent({
+          model: modelId,
+          contents: prompt,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                questionText: { type: Type.STRING },
+                optionA: { type: Type.STRING },
+                optionB: { type: Type.STRING },
+                optionC: { type: Type.STRING },
+                optionD: { type: Type.STRING },
+                correctAnswer: { type: Type.STRING },
+                shortAnswerAccepted: { type: Type.ARRAY, items: { type: Type.STRING } },
+                explanation: { type: Type.STRING },
+                sourceReference: { type: Type.STRING },
+              },
+              required: ['questionText', 'explanation'],
+            },
+          },
+        });
+        accumulateTokens(tokensOut, resp);
+        return JSON.parse((resp.text || '{}').trim()) as Partial<ExamQuestion>;
+      },
+    });
+
+    return {
+      ...question,
+      questionText: updated.questionText || question.questionText,
+      optionA: question.questionType === 'abcd' ? updated.optionA || question.optionA : undefined,
+      optionB: question.questionType === 'abcd' ? updated.optionB || question.optionB : undefined,
+      optionC: question.questionType === 'abcd' ? updated.optionC || question.optionC : undefined,
+      optionD: question.questionType === 'abcd' ? updated.optionD || question.optionD : undefined,
+      correctAnswer:
+        question.questionType === 'abcd' &&
+        (updated.correctAnswer === 'A' ||
+          updated.correctAnswer === 'B' ||
+          updated.correctAnswer === 'C' ||
+          updated.correctAnswer === 'D')
+          ? updated.correctAnswer
+          : question.correctAnswer,
+      shortAnswerAccepted:
+        question.questionType === 'short_answer' && updated.shortAnswerAccepted?.length
+          ? updated.shortAnswerAccepted
+          : question.shortAnswerAccepted,
+      explanation: updated.explanation || question.explanation,
+      sourceReference: updated.sourceReference || question.sourceReference,
+      validationStatus: 'repaired',
+    };
+  }
+}
+
+export class FlashcardGenerationService {
+  static async generateFromAnalysis(params: {
+    ownerUid: string;
+    subject: SubjectId;
+    grade: GradeLevel;
+    textbookTitle: string;
+    claims: ExtractedClaim[];
+    coverageItems: KnowledgeCoverageItem[];
+    count?: number;
+    tokensOut: TokenTelemetry;
+    config?: SystemAiConfig;
+    idToken?: string;
+  }): Promise<FlashcardItem[]> {
+    const ai = await createServerAiClient();
+    const {
+      ownerUid,
+      subject,
+      grade,
+      textbookTitle,
+      claims,
+      coverageItems,
+      count = 6,
+      tokensOut,
+      config,
+      idToken,
+    } = params;
+
+    const weakClaims = claims.filter(
+      (c) =>
+        c.evaluationStatus === 'INCORRECT' ||
+        c.evaluationStatus === 'PARTIALLY_CORRECT' ||
+        c.evaluationStatus === 'UNVERIFIED'
+    );
+    const missing = coverageItems.filter((m) => m.status === 'MISSING' || m.status === 'PARTIALLY_COVERED');
+
+    const sourceContext = [
+      ...weakClaims.map((c) => `[${c.chapter} | ${c.concept}] Sai/Thiếu: "${c.sourceText}" -> Đúng: "${c.correctKnowledge}"`),
+      ...missing.map((m) => `[${m.chapter} | ${m.concept}] Bổ sung: "${m.suggestedAddition}"`),
+    ];
+    if (sourceContext.length === 0) {
+      for (const c of claims.slice(0, 6)) {
+        sourceContext.push(`[${c.chapter} | ${c.concept}] "${c.correctKnowledge || c.sourceText}"`);
+      }
+    }
+
+    const safeCount = Math.min(12, Math.max(3, count));
+    const prompt = [
+      `Tạo ${safeCount} thẻ ghi nhớ (Flashcard) ngắn gọn, súc tích cho học sinh lớp ${grade} môn ${SUBJECT_LABELS[subject]} (${textbookTitle || 'SGK chuẩn'}).`,
+      'Mặt trước (front): Câu hỏi gợi nhớ nhanh hoặc tên công thức/điều kiện dễ nhầm.',
+      'Mặt sau (back): Kiến thức chuẩn, điều kiện áp dụng hoặc cách sửa lỗi sai.',
+      '',
+      sourceContext.join('\n').slice(0, 8000),
+    ].join('\n');
+
+    type RawCard = {
+      front: string;
+      back: string;
+      chapter: string;
+      concept: string;
+      cardType: string;
+      sourceReference: string;
+    };
+
+    const { data: parsed } = await runTaskWithRouter<{ cards: RawCard[] }>({
+      taskType: 'flashcard_generation',
+      config,
+      idToken,
+      cacheInput: { subject, grade, safeCount, sourceDigest: sourceContext.join('|').slice(0, 3000) },
+      runWithModel: async (modelId) => {
+        const resp = await ai.models.generateContent({
+          model: modelId,
+          contents: prompt,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                cards: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      front: { type: Type.STRING },
+                      back: { type: Type.STRING },
+                      chapter: { type: Type.STRING },
+                      concept: { type: Type.STRING },
+                      cardType: {
+                        type: Type.STRING,
+                        description: 'concept | formula | condition | mistake_fix | example',
+                      },
+                      sourceReference: { type: Type.STRING },
+                    },
+                    required: ['front', 'back', 'chapter', 'concept', 'cardType'],
+                  },
+                },
+              },
+              required: ['cards'],
+            },
+          },
+        });
+        accumulateTokens(tokensOut, resp);
+        return JSON.parse((resp.text || '{"cards":[]}').trim()) as { cards: RawCard[] };
+      },
+    });
+
+    const validCardTypes = new Set<FlashcardItem['cardType']>([
+      'concept',
+      'formula',
+      'condition',
+      'mistake_fix',
+      'example',
+    ]);
+    const now = new Date().toISOString();
+    return (parsed.cards || []).slice(0, safeCount).map((card, idx) => ({
+      flashcardId: `fc_${Date.now()}_${idx + 1}_${crypto.randomBytes(2).toString('hex')}`,
+      ownerUid,
+      front: card.front,
+      back: card.back,
+      sourceReference: card.sourceReference || textbookTitle || 'Tài liệu tham chiếu',
+      subject,
+      grade,
+      chapter: card.chapter || 'Tổng hợp',
+      concept: card.concept || 'Khái niệm trọng tâm',
+      cardType: validCardTypes.has(card.cardType as FlashcardItem['cardType'])
+        ? (card.cardType as FlashcardItem['cardType'])
+        : 'mistake_fix',
+      masteryStatus: 'Mới tạo',
+      reviewStage: 0,
+      nextReviewAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      createdAt: now,
+      updatedAt: now,
+    }));
+  }
+}
+
+export class FeedbackAnalysisService {
+  static async classifyFeedback(params: {
+    targetType: string;
+    category: string;
+    note: string;
+    tokensOut: TokenTelemetry;
+    config?: SystemAiConfig;
+    idToken?: string;
+  }): Promise<string> {
+    const ai = await createServerAiClient();
+    const { data } = await runTaskWithRouter<string>({
+      taskType: 'feedback_analysis',
+      config: params.config,
+      idToken: params.idToken,
+      cacheInput: { targetType: params.targetType, category: params.category, note: params.note },
+      runWithModel: async (modelId) => {
+        const resp = await ai.models.generateContent({
+          model: modelId,
+          contents: `Tóm tắt ngắn gọn (1 câu tiếng Việt) nguyên nhân & hướng xử lý cho phản hồi học sinh [${params.targetType} | ${params.category}]: "${params.note}"`,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            maxOutputTokens: 120,
+          },
+        });
+        accumulateTokens(params.tokensOut, resp);
+        return (resp.text || 'Cần quản trị viên kiểm tra đối chiếu lại nguồn sách giáo khoa.').trim();
+      },
+    });
+    return data;
   }
 }

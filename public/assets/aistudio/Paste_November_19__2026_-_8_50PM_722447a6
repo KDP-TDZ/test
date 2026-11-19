@@ -1,0 +1,1806 @@
+# MASTER PROMPT – HOÀN THIỆN ỨNG DỤNG KIỂM ĐỊNH KIẾN THỨC VÀ HỖ TRỢ HỌC TẬP BẰNG AI
+
+## I. VAI TRÒ VÀ MỤC TIÊU DỰ ÁN
+
+Bạn là một Senior Full-stack Engineer, AI Engineer, Product Designer và chuyên gia thiết kế hệ thống giáo dục số.
+
+Tôi muốn bạn nâng cấp ứng dụng hiện tại thành một sản phẩm giáo dục AI hoàn chỉnh, có khả năng kiểm định kiến thức trong tài liệu học sinh, đối chiếu với nguồn kiến thức chuẩn, phát hiện lỗi và phần kiến thức còn thiếu, tạo câu hỏi luyện tập cũng như đề kiểm tra giữa kỳ và cuối kỳ.
+
+Đây là dự án Khoa học kỹ thuật cấp trường, được triển khai để thử nghiệm và trình diễn trước ban giám khảo. Số lượng người dùng thực tế ban đầu rất nhỏ, chỉ khoảng vài người đến vài chục người.
+
+Vì vậy, ưu tiên hàng đầu là:
+1. Độ chính xác của việc kiểm định kiến thức.
+2. Chất lượng câu hỏi do AI tạo ra.
+3. Khả năng truy xuất và kiểm chứng nguồn tài liệu.
+4. Trải nghiệm người dùng hiện đại, mượt mà.
+5. Tốc độ phản hồi tốt trong điều kiện sử dụng API miễn phí.
+6. Quản trị đơn giản, có thể thay đổi cấu hình mà không cần deploy lại.
+
+Không xây dựng những hệ thống quá phức tạp dành cho hàng nghìn người dùng. Không cần thống kê điểm yếu toàn trường, bảng xếp hạng toàn trường hoặc phân tích dữ liệu quy mô lớn.
+
+**NGUYÊN TẮC BẮT BUỘC:**
+
+- Không viết lại toàn bộ ứng dụng nếu không thực sự cần thiết.
+- Không xóa hoặc làm hỏng bất kỳ chức năng hiện có nào.
+- Không tự ý thay đổi Firebase Authentication, Firestore, cơ chế API Key, API endpoints hoặc cấu trúc dữ liệu đang được sử dụng mà không phân tích ảnh hưởng.
+- Kiểm tra source code trước khi chỉnh sửa.
+- Tái sử dụng các component và module hiện tại.
+- Không tạo giao diện giả lập cho những tính năng chưa hoạt động.
+- Mọi nút bấm, cấu hình Admin, quy trình AI và thao tác lưu dữ liệu phải có logic thực tế.
+- Ưu tiên độ ổn định và khả năng bảo trì thay vì sử dụng quá nhiều thư viện.
+- Mọi nguồn kiến thức, đáp án và kết luận quan trọng phải có khả năng truy xuất.
+
+---
+
+# PHẦN A. KIẾN TRÚC VÀ TÍNH NĂNG HIỆN CÓ CẦN BẢO TOÀN
+
+Ứng dụng hiện tại đã có hoặc được thiết kế để có các chức năng sau:
+
+## 1. Đăng nhập và phân quyền
+
+- Firebase Authentication.
+- Đăng nhập Google và Email/Mật khẩu.
+- Yêu cầu xác minh email.
+- Phân quyền Super Admin.
+- Các tài khoản Super Admin được cấp phép hiện tại phải được giữ nguyên.
+- Bảo đảm quyền quản trị được xác thực ở backend, không chỉ thông qua frontend.
+
+## 2. Trang giới thiệu
+
+- Giới thiệu quy trình kiểm định bốn bước.
+- Câu hỏi thường gặp.
+- Khu vực minh họa tương tác Đúng, Sai, Thiếu điều kiện.
+- Có thể xem lý do và dẫn chứng sách giáo khoa khi nhấn vào từng phần.
+
+## 3. Tải tài liệu
+
+Hỗ trợ:
+- PDF.
+- DOCX.
+- JPG.
+- PNG.
+- WEBP.
+- Chụp ảnh trực tiếp bằng camera.
+- Chọn nhiều ảnh cùng lúc.
+
+Trước khi chấm:
+- Trích xuất nội dung bằng OCR.
+- Hiển thị văn bản nhận diện.
+- Hiển thị độ tin cậy nếu OCR hỗ trợ.
+- Cho phép học sinh chỉnh sửa văn bản nhận diện sai.
+- Không kết luận sai kiến thức khi nguyên nhân thực chất là lỗi nhận dạng chữ.
+
+## 4. Kiểm định kiến thức
+
+- Nhận diện môn học, khối lớp 10, 11, 12, chương và bài học.
+- Cho phép chọn bộ sách giáo khoa tham chiếu.
+- Hỗ trợ bật/tắt tìm kiếm nguồn bên ngoài khi có khả năng và quyền sử dụng.
+- Tách nội dung học sinh thành các đơn vị kiến thức.
+- Đối chiếu với nguồn chuẩn.
+- Chấm riêng Độ chính xác và Độ đầy đủ.
+- Trình bày báo cáo hai cột.
+- Đánh dấu trực tiếp trên tài liệu.
+- Hiển thị giải thích, kiến thức chuẩn và dẫn chứng.
+
+## 5. Học tập và luyện tập
+
+- Tạo đề trắc nghiệm ABCD.
+- Lưu bộ đề trên Firestore.
+- Tự động lưu câu trả lời sai vào ngân hàng luyện tập cá nhân.
+- Không tự động xóa câu sai.
+- Cho phép làm lại câu sai.
+- Theo dõi trạng thái ghi nhớ.
+- Lưu lịch sử phân tích và thống kê cá nhân.
+- Cho phép xóa dữ liệu cá nhân theo yêu cầu của học sinh.
+
+## 6. Trung tâm Admin
+
+- Công tắc AI khẩn cấp.
+- Thông báo bảo trì.
+- Quản lý model Gemini.
+- Quản lý API Key.
+- Mã hóa API Key bằng AES-256-GCM.
+- Test kết nối API Key.
+- Quản lý giới hạn lượt gọi, token và dung lượng file.
+- Quản lý thư viện tài liệu tham chiếu.
+- Xem danh sách tài khoản.
+- Audit Log.
+- Cấp và thu hồi quyền Admin.
+
+## 7. Hạ tầng
+
+Tiếp tục duy trì khả năng triển khai:
+- Node/Express.
+- Google AI Studio.
+- Render.
+- Vercel Serverless thông qua api/index.ts và vercel.json nếu kiến trúc hiện tại đang sử dụng.
+
+Ưu tiên các giải pháp có gói miễn phí. Không tự ý chuyển sang Google Cloud có yêu cầu Billing Account hoặc sử dụng dịch vụ trả phí.
+
+---
+
+# PHẦN B. THIẾT KẾ LẠI GIAO DIỆN – LIQUID GLASS DESIGN
+
+## 1. Website tham khảo
+
+Sử dụng website sau làm thư viện tham khảo phong cách:
+
+https://liquidglassdesign.com/
+
+Hãy trực tiếp xem xét các trang và ví dụ UI trong thư viện, không chỉ nhìn trang chủ.
+
+Chắt lọc các mẫu:
+- Floating Navigation.
+- Glass Navbar.
+- Glass Sidebar.
+- Glass Dropdown.
+- Glass Popover.
+- Glass Modal.
+- Floating Toolbar.
+- Interactive Glass Button.
+- Glass Form.
+- Glass Cards.
+- Dashboard Cards.
+- Glass Tiles.
+- Glass Hero.
+- Frosted Glass Panels.
+- Interactive Lens.
+- Glass Frame.
+- Các mẫu SaaS dashboard.
+- Các mẫu giao diện quản trị và ứng dụng hiện đại.
+
+Không sao chép nguyên xi một website. Hãy học hỏi các nguyên tắc thiết kế, kỹ thuật và phong cách, sau đó tạo một Design System riêng cho sản phẩm giáo dục này.
+
+## 2. Phong cách tổng thể
+
+Tên phong cách:
+
+**Modern Educational SaaS + Selective Liquid Glass + Premium Apple-inspired UI.**
+
+Giao diện cần tạo cảm giác:
+- Cao cấp.
+- Hiện đại.
+- Tinh tế.
+- Có chiều sâu.
+- Sạch sẽ.
+- Khoa học.
+- Chuyên nghiệp.
+- Dễ sử dụng trong thời gian dài.
+
+Không được biến ứng dụng thành một website chỉ đẹp về hiệu ứng nhưng khó học tập.
+
+## 3. Màu sắc
+
+Light Mode:
+
+- Background: #F4F7FC.
+- Primary: #2563EB.
+- Accent: #38BDF8.
+- Text Primary: #17243A.
+- Text Secondary: #64748B.
+- Success: #16A34A.
+- Error: #DC2626.
+- Warning: #D97706.
+- Surface: #FFFFFF.
+
+Glass Surface:
+- Nền trắng bán trong suốt.
+- Opacity khoảng 65–80% tùy ngữ cảnh.
+- Backdrop blur khoảng 16–24px.
+- Border sáng mảnh.
+- Highlight phản chiếu nhẹ.
+- Shadow mềm.
+
+Dark Mode:
+- Background: #0B1220.
+- Surface: #111C2E.
+- Text: #E5EDF9.
+- Primary: #60A5FA.
+- Glass surface sử dụng nền navy bán trong suốt.
+- Đảm bảo độ tương phản.
+
+Sử dụng Inter hoặc một font sans-serif hiện đại tương đương.
+
+## 4. Quy tắc sử dụng Liquid Glass
+
+NÊN sử dụng:
+- Navbar.
+- Floating toolbar.
+- Sidebar nổi.
+- Dropdown.
+- Popover.
+- Modal.
+- Một số dashboard cards.
+- Hero cards.
+- Nút hành động.
+- Các thành phần điều hướng nổi.
+
+KHÔNG nên sử dụng:
+- Nền kính trong suốt dưới đoạn văn bản dài.
+- Nền kính dưới bảng dữ liệu.
+- Nền kính dưới văn bản OCR.
+- Nền kính khiến tài liệu khó đọc.
+- Glass blur trên mọi card.
+- Hiệu ứng khúc xạ nặng trên toàn bộ website.
+- Shader/WebGL không cần thiết.
+- Glow liên tục gây mất tập trung.
+
+Ưu tiên phong cách Glass Frame + Solid Content: lớp kính bên ngoài tạo chiều sâu, nội dung bên trong sử dụng nền đặc.
+
+## 5. Từng khu vực giao diện
+
+### Trang giới thiệu
+
+- Hero section nổi bật.
+- Floating Glass Navbar.
+- CTA rõ ràng.
+- Gradient nhẹ.
+- Khu vực giới thiệu quy trình bốn bước.
+- Minh họa đối chiếu kiến thức tương tác.
+- Các tính năng được trình bày bằng card.
+- Animation nhẹ khi cuộn.
+
+### Dashboard học sinh
+
+- Navigation rõ ràng.
+- Tổng quan hoạt động cá nhân.
+- Thẻ tài liệu đã phân tích.
+- Thẻ đề đã làm.
+- Ngân hàng câu sai.
+- Kiến thức cần ôn tập.
+- Lịch sử hoạt động.
+- Các nút chức năng nổi bật nhưng không chiếm quá nhiều diện tích.
+
+### Khu vực tải tài liệu
+
+- Drag & Drop.
+- Khu vực chọn file.
+- Camera.
+- Progress bar.
+- Danh sách tài liệu.
+- Hiệu ứng nhẹ khi kéo file vào.
+- Trạng thái tải lên rõ ràng.
+
+### Khu vực OCR
+
+- Nền đặc.
+- Văn bản dễ đọc.
+- Phân biệt văn bản gốc và văn bản chỉnh sửa.
+- Các đoạn có độ tin cậy OCR thấp được đánh dấu.
+- Floating toolbar.
+- Không dùng animation gây mất tập trung.
+
+### Báo cáo kiểm định
+
+Giữ nguyên bố cục hai cột:
+
+Bên trái:
+- Tài liệu học sinh.
+- Highlight Đúng.
+- Highlight Sai.
+- Highlight Thiếu điều kiện.
+- Có thể nhấn vào đoạn văn để xem giải thích.
+
+Bên phải:
+- Nhận xét.
+- Kiến thức chuẩn.
+- Giải thích.
+- Nguồn tham chiếu.
+- Trang sách.
+- Mức độ chắc chắn.
+
+Độ chính xác và Độ đầy đủ cần được trình bày nổi bật, nhưng không sử dụng màu sắc quá sặc sỡ.
+
+### Khu vực trắc nghiệm
+
+- Câu hỏi nằm trong card trung tâm.
+- Các phương án A, B, C, D là interactive cards.
+- Hover nâng nhẹ.
+- Khi chọn đáp án có hiệu ứng chuyển trạng thái.
+- Hiển thị tiến độ.
+- Phần giải thích nằm trên nền đặc.
+- Không làm xao nhãng học sinh khi làm bài.
+
+### Trung tâm Admin
+
+- Sidebar chuyên nghiệp.
+- Quản lý model AI.
+- Quản lý API Key.
+- Quản lý thư viện SGK.
+- Quản lý nguồn đề.
+- Quản lý câu hỏi.
+- Quản lý bộ đề.
+- Quản lý phản hồi.
+- Quản lý người dùng.
+- Audit Log.
+
+Các bảng sử dụng nền đặc; modal và công cụ nổi có thể sử dụng Glass.
+
+## 6. Responsive và accessibility
+
+- Desktop ưu tiên.
+- Tablet sử dụng tốt.
+- Mobile bố cục gọn.
+- Hai cột báo cáo có thể chuyển thành tab trên mobile.
+- Không horizontal overflow.
+- Có keyboard focus.
+- Có reduced motion.
+- Có fallback khi backdrop-filter không hoạt động.
+- Có phương án khi người dùng bật Reduce Transparency.
+- Bảo đảm contrast tốt.
+
+## 7. Hiệu ứng
+
+- Hover transition.
+- Soft elevation.
+- Button highlight.
+- Modal transition.
+- Dropdown transition.
+- Toggle animation.
+- Skeleton loading.
+- Progress animation.
+- Success/error feedback.
+
+Thời gian animation thường khoảng 150–250ms.
+
+Không dùng animation liên tục chỉ để trang trí.
+
+---
+
+# PHẦN C. XÂY DỰNG HỆ THỐNG AI MODEL ROUTER
+
+Đây là một yêu cầu quan trọng.
+
+Không sử dụng một model cố định xuyên suốt hệ thống.
+
+## 1. Mục tiêu
+
+Super Admin có quyền lựa chọn model riêng cho từng công đoạn.
+
+Danh sách model dự kiến ban đầu:
+- gemini-4-hydrogen.
+- gemini-3.1-flash-lite.
+
+Không được mặc định rằng các model trên luôn khả dụng trong mọi môi trường. Phải kiểm tra model ID, khả năng truy cập, tính năng và giới hạn của Gemini Developer API mà ứng dụng đang sử dụng trước khi kích hoạt.
+
+Không tự ý chuyển sang Vertex AI.
+
+## 2. Các công đoạn cần được cấu hình riêng
+
+| Task | Công đoạn |
+|---|---|
+| subject_classification | Nhận diện môn, lớp, chương |
+| curriculum_extraction | Trích xuất đơn vị kiến thức |
+| knowledge_analysis | Phân tích kiến thức |
+| completeness_analysis | Đánh giá độ đầy đủ |
+| claim_validation | Đối chiếu từng mệnh đề |
+| quiz_blueprint | Lập ma trận đề |
+| quiz_generation | Tạo câu hỏi |
+| quiz_validation | Kiểm định câu hỏi |
+| answer_explanation | Giải thích đáp án |
+| flashcard_generation | Tạo flashcard |
+| feedback_analysis | Phân loại phản hồi |
+
+Các thao tác tính điểm, kiểm tra schema, so sánh dữ liệu hoặc xử lý cấu trúc nên được thực hiện bằng code khi có thể.
+
+## 3. Giao diện Admin
+
+Thêm khu vực Quản lý mô hình AI.
+
+Mỗi công đoạn có:
+- Tên tác vụ.
+- Mô tả.
+- Model hiện tại.
+- Model dự phòng nếu có.
+- Trạng thái hoạt động.
+- Nút Test Model.
+- Nút lưu cấu hình.
+
+Admin được phép chọn model khác nhau cho từng công đoạn.
+
+## 4. Override model một lần
+
+Bắt buộc có khả năng:
+
+- Model mặc định cho mỗi task.
+- Model override cho một lần chạy.
+- Model dự phòng tùy chọn.
+
+Ví dụ:
+Model mặc định tạo câu hỏi là Gemini 3.1 Flash-Lite. Admin chọn Gemini 4 Hydrogen và kích hoạt "Chỉ dùng cho lần chạy tiếp theo".
+
+Sau khi chạy xong:
+- Model mặc định vẫn giữ nguyên.
+- Lần chạy sau quay lại cấu hình cũ.
+- Không ảnh hưởng đến các tác vụ đang chạy.
+
+## 5. Kỹ thuật
+
+Tạo module trung tâm:
+
+`resolveModel(taskType, executionContext)`
+
+Mọi tác vụ AI đều phải thông qua module này.
+
+Yêu cầu:
+- Cấu hình lưu trên Firestore.
+- Backend quyết định model.
+- Frontend không có quyền tự chọn model để truy cập API.
+- API Key không bao giờ được trả về frontend.
+- Cấu hình có version.
+- Mỗi job giữ nguyên model và cấu hình tại thời điểm bắt đầu.
+- Có khả năng Test Model.
+- Kiểm tra Structured Output nếu tác vụ yêu cầu.
+- Không tự động chuyển model khi gặp lỗi nếu Admin chưa bật fallback.
+- Ghi Audit Log khi thay đổi model.
+
+Lưu lại:
+- Model ID.
+- Task type.
+- Prompt version.
+- Config version.
+- Thời điểm chạy.
+- Trạng thái.
+- Thông tin lỗi nếu có.
+
+Cấu hình thay đổi phải có hiệu lực với các tác vụ mới mà không cần deploy lại.
+
+---
+
+# PHẦN D. LOGIC KIỂM ĐỊNH VÀ CHẤM ĐIỂM KIẾN THỨC
+
+Đây là trái tim của ứng dụng.
+
+Không được để AI nhận một đoạn văn dài rồi tự đưa ra một điểm số tổng thể theo cảm tính.
+
+## 1. Quy trình kiểm định
+
+### Bước 1. Tiếp nhận tài liệu
+
+- Nhận file.
+- OCR.
+- Làm sạch văn bản.
+- Giữ thông tin trang.
+- Cho phép học sinh chỉnh sửa nội dung nhận diện.
+- Lưu bản văn bản đã xác nhận.
+
+### Bước 2. Nhận diện phạm vi
+
+AI gợi ý:
+- Môn học.
+- Khối lớp.
+- Bộ sách.
+- Chương.
+- Bài học.
+
+Học sinh được xác nhận hoặc điều chỉnh trước khi chấm.
+
+### Bước 3. Xây dựng khung kiến thức chuẩn
+
+Từ nguồn tham chiếu, xây dựng danh sách các đơn vị kiến thức cần đạt.
+
+Mỗi đơn vị có:
+- concept_id.
+- Tên kiến thức.
+- Nội dung chuẩn.
+- Điều kiện cần thiết.
+- Trọng số.
+- Mức độ quan trọng.
+- Trang SGK.
+- Nguồn.
+- Mối quan hệ với đơn vị khác.
+
+Không mặc định rằng mọi đoạn trong sách đều quan trọng như nhau.
+
+### Bước 4. Tách mệnh đề
+
+Tách nội dung học sinh thành các mệnh đề độc lập.
+
+Mỗi mệnh đề được gắn với một hoặc nhiều concept_id phù hợp.
+
+Không đánh giá toàn bộ đoạn văn như một đơn vị duy nhất.
+
+### Bước 5. Đối chiếu ngữ nghĩa
+
+So sánh từng mệnh đề với nguồn chuẩn.
+
+Không bắt học sinh phải diễn đạt giống nguyên văn sách giáo khoa.
+
+Phải nhận diện được các cách diễn đạt khác nhau nhưng cùng bản chất kiến thức.
+
+Không mặc định kiến thức ngoài nguồn tham chiếu là sai.
+
+### Bước 6. Phân loại
+
+Sử dụng bốn trạng thái chính:
+
+1. ĐÚNG:
+Nội dung chính xác về bản chất.
+
+2. SAI:
+Nội dung mâu thuẫn hoặc không chính xác về kiến thức.
+
+3. THIẾU ĐIỀU KIỆN:
+Nội dung đúng một phần nhưng thiếu điều kiện, phạm vi hoặc yếu tố quan trọng.
+
+4. CHƯA XÁC ĐỊNH:
+Nguồn tham chiếu không đủ căn cứ hoặc không thể kết luận đáng tin cậy.
+
+Không ép AI phải đưa mọi mệnh đề vào Đúng hoặc Sai.
+
+## 2. Độ chính xác
+
+Đánh giá những gì học sinh đã thực sự viết.
+
+Sử dụng trọng số theo từng mệnh đề.
+
+Công thức:
+
+Độ chính xác = Tổng điểm kiến thức đúng / Tổng điểm kiến thức đã được đánh giá × 100%.
+
+Quy tắc:
+- Đúng: nhận đầy đủ điểm.
+- Sai: không được tính điểm đúng.
+- Thiếu điều kiện: nhận điểm một phần theo rubric xác định trước.
+- Chưa xác định: không mặc định đúng hoặc sai; loại khỏi mẫu số đánh giá và báo riêng.
+
+Không để lỗi lặp lại cùng một kiến thức bị tính thành nhiều lỗi độc lập.
+
+## 3. Độ đầy đủ
+
+Đánh giá mức độ bao phủ khung kiến thức chuẩn.
+
+Công thức:
+
+Độ đầy đủ = Tổng trọng số kiến thức đã đạt / Tổng trọng số kiến thức cần đạt × 100%.
+
+Quy tắc:
+- Kiến thức đúng và được thể hiện đầy đủ: đạt.
+- Kiến thức mới được thể hiện một phần: tính phần trọng số tương ứng.
+- Kiến thức sai: không được tính là kiến thức đã đạt.
+- Kiến thức không được đề cập: chưa đạt.
+- Kiến thức chưa xác định: đánh dấu cần xem xét, không tự suy đoán.
+
+## 4. Ví dụ
+
+Một học sinh viết 5 mệnh đề:
+- 4 đúng.
+- 1 sai.
+
+Nếu mỗi mệnh đề có trọng số bằng nhau, độ chính xác có thể là 80%.
+
+Tuy nhiên, chương học có 10 đơn vị kiến thức trọng số bằng nhau, học sinh mới thể hiện được 5 đơn vị và có 4 đơn vị đạt.
+
+Độ đầy đủ là 40%.
+
+Không được đánh đồng hai chỉ số.
+
+## 5. Báo cáo
+
+Báo cáo hai cột.
+
+Bên trái:
+- Văn bản học sinh.
+- Highlight theo từng mệnh đề.
+- Đúng, Sai, Thiếu điều kiện.
+- Vị trí trong tài liệu.
+
+Bên phải:
+- Mệnh đề được đánh giá.
+- Trạng thái.
+- Giải thích.
+- Kiến thức chuẩn.
+- Nguồn tham chiếu.
+- Trang.
+- Mức độ chắc chắn.
+- Đề xuất sửa lại.
+
+Mỗi nhận xét phải có căn cứ.
+
+Nếu không đủ nguồn để kết luận, phải thông báo rõ.
+
+---
+
+# PHẦN E. HỆ THỐNG TẠO CÂU HỎI TRẮC NGHIỆM
+
+Không được yêu cầu AI tạo một bộ đề trực tiếp từ văn bản mà không phân tích nội dung trước.
+
+## 1. Quy trình
+
+Bước 1: Phân tích tài liệu.
+
+Bước 2: Xác định các đơn vị kiến thức có khả năng kiểm tra.
+
+Bước 3: Xác định mức độ nhận thức.
+
+Bước 4: Lập ma trận đề.
+
+Bước 5: Sinh câu hỏi.
+
+Bước 6: Kiểm định từng câu.
+
+Bước 7: Sửa hoặc loại câu không đạt.
+
+Bước 8: Hiển thị, lưu đề.
+
+## 2. Bốn mức độ nhận thức
+
+- Nhận biết.
+- Thông hiểu.
+- Vận dụng.
+- Vận dụng cao.
+
+Có tỷ lệ mặc định nhưng Admin được quyền điều chỉnh.
+
+Gợi ý khởi đầu:
+- Nhận biết: 30%.
+- Thông hiểu: 30%.
+- Vận dụng: 25%.
+- Vận dụng cao: 15%.
+
+Không áp dụng cứng cho mọi môn.
+
+## 3. Tiêu chí câu hỏi
+
+Mỗi câu phải:
+- Đúng kiến thức.
+- Bám sát phạm vi.
+- Kiểm tra một mục tiêu chính.
+- Rõ nghĩa.
+- Đủ dữ kiện.
+- Không đánh đố.
+- Không trùng lặp.
+- Phù hợp khối lớp.
+- Có nguồn tham chiếu.
+- Có đáp án chính xác.
+
+## 4. Tiêu chí phương án nhiễu
+
+Mặc định ABCD.
+
+Các phương án sai phải:
+- Hợp lý.
+- Có khả năng được học sinh chọn nếu hiểu nhầm.
+- Dựa trên lỗi tư duy thường gặp.
+- Cùng loại nội dung.
+- Độ dài tương đối cân đối.
+- Không chồng lấn.
+- Không tạo hai phương án đồng thời đúng.
+- Không để đáp án đúng luôn dài nhất.
+- Không để vị trí đáp án đúng có quy luật dễ đoán.
+
+Không sử dụng phương án sai vô nghĩa chỉ để đủ bốn lựa chọn.
+
+Nếu không thể tạo được ba phương án nhiễu hợp lý, chuyển câu hỏi sang trạng thái cần Admin chỉnh sửa hoặc loại bỏ.
+
+## 5. Dữ liệu câu hỏi
+
+Mỗi câu hỏi lưu:
+
+- question_id.
+- question.
+- options.
+- correct_answer.
+- explanation.
+- distractor_explanations.
+- concept_id.
+- subject.
+- grade.
+- chapter.
+- lesson.
+- cognitive_level.
+- difficulty.
+- source_reference.
+- source_page.
+- source_type.
+- model_id.
+- prompt_version.
+- validation_status.
+- validation_issues.
+
+## 6. Kiểm định độc lập
+
+Kiểm tra:
+- Đúng kiến thức.
+- Một đáp án đúng duy nhất.
+- Phương án nhiễu hợp lý.
+- Không mơ hồ.
+- Không trùng lặp.
+- Đúng phạm vi.
+- Phù hợp độ khó.
+- Trích dẫn tồn tại và hỗ trợ câu hỏi.
+
+Kết hợp code validation và AI validation.
+
+Nếu câu hỏi không đạt:
+- Cho phép sửa một lần.
+- Kiểm định lại.
+- Nếu vẫn không đạt thì loại hoặc chuyển Admin duyệt.
+
+Không coi một câu chưa đạt là câu hợp lệ chỉ vì đã sinh ra được.
+
+Nếu model tạo và model kiểm định giống nhau, cần ghi nhận rằng hai bước không hoàn toàn độc lập.
+
+---
+
+# PHẦN F. NGUỒN TÀI LIỆU VÀ KHO KIẾN THỨC CHUẨN
+
+Đây là nền tảng cho cả chức năng kiểm định và tạo đề giữa kỳ, cuối kỳ.
+
+Không phụ thuộc vào duy nhất một website.
+
+## 1. Các nguồn ưu tiên
+
+### Nguồn 1: Bộ Giáo dục và Đào tạo
+
+https://moet.gov.vn/
+
+Sử dụng để xác định:
+- Chương trình GDPT 2018.
+- Yêu cầu cần đạt.
+- Chuẩn kiến thức.
+- Định hướng đánh giá.
+- Văn bản chuyên môn.
+
+### Nguồn 2: Hành trang số – NXBGDVN
+
+https://hanhtrangso.nxbgd.vn/sach-dien-tu/
+
+Sử dụng để tham khảo SGK và xây dựng kho kiến thức theo:
+- Môn.
+- Khối.
+- Bộ sách.
+- Chương.
+- Bài.
+- Trang.
+
+### Nguồn 3: VOER
+
+https://voer.edu.vn/
+
+Dùng làm tài liệu bổ sung hoặc nguồn mở rộng.
+
+Phải kiểm tra giấy phép và quyền sử dụng từng tài liệu.
+
+### Nguồn 4: Thư Viện Học Liệu
+
+https://thuvienhoclieu.com/
+
+Dùng để tham khảo:
+- Đề giữa kỳ.
+- Đề cuối kỳ.
+- Đề cương.
+- Ma trận.
+- Bản đặc tả.
+- Hướng dẫn chấm.
+- Cách phân bố độ khó.
+- Dạng câu hỏi.
+
+Không mặc định toàn bộ tài liệu tại đây là nguồn chuẩn hoặc được phép sao chép, tái phân phối.
+
+Chỉ nhập tài liệu khi quyền sử dụng được xác định rõ.
+
+### Nguồn 5: Tài liệu giáo viên cung cấp
+
+Đây là nguồn đặc biệt quan trọng.
+
+Ưu tiên:
+- Đề cương ôn tập.
+- Phạm vi kiểm tra.
+- Ma trận đề.
+- Bản đặc tả.
+- Đề mẫu.
+- Hướng dẫn chấm.
+- Tài liệu được phép sử dụng trong trường.
+
+## 2. Thứ tự ưu tiên nguồn
+
+1. Chương trình giáo dục và yêu cầu cần đạt.
+2. SGK đúng bộ sách.
+3. Đề cương và ma trận của giáo viên.
+4. Tài liệu bổ trợ đã được kiểm tra.
+5. Đề thi công khai dùng để tham khảo cấu trúc.
+
+Không sử dụng đề thi cũ làm nguồn kiến thức chuẩn duy nhất.
+
+## 3. Phân biệt nguồn
+
+Mỗi nguồn cần có source_type:
+
+- official_curriculum.
+- textbook_reference.
+- teacher_material.
+- supplementary_material.
+- public_exam_reference.
+- external_extension.
+
+Đối với từng câu hỏi phải biết rõ câu được sinh từ nguồn nào.
+
+## 4. Quản lý quyền sử dụng
+
+Admin phải khai báo trạng thái quyền:
+
+- Admin tự biên soạn.
+- Có sự cho phép của chủ sở hữu.
+- Có giấy phép mở phù hợp.
+- Chỉ được tham chiếu nội bộ.
+- Chưa xác minh.
+
+Không tự động crawl toàn bộ website, vượt cơ chế bảo vệ, thu thập tài liệu cần đăng nhập hoặc tái phân phối tài liệu có bản quyền khi không có quyền.
+
+Không mặc định tài liệu miễn phí tải xuống là tài liệu được phép tái sử dụng.
+
+## 5. Thư viện nguồn chuẩn trong Admin
+
+Bổ sung khu vực Source Library.
+
+Cho phép:
+- Tải PDF.
+- Tải DOCX.
+- Nhập URL HTTPS hợp lệ.
+- Dán nội dung văn bản.
+- Nhập dữ liệu JSON.
+- Chọn môn.
+- Chọn khối.
+- Chọn bộ sách.
+- Chọn chương.
+- Chọn bài.
+- Nhập số trang.
+- Khai báo giấy phép.
+- Gắn trạng thái kiểm duyệt.
+- Bật/tắt nguồn.
+
+Khi nhập file:
+- Trích xuất văn bản.
+- Chia thành các đoạn kiến thức.
+- Giữ thông tin trang.
+- Xác định chương và bài.
+- Admin được chỉnh sửa trước khi đưa vào kho.
+- Chỉ mục hóa để truy xuất nhanh.
+
+Không gửi toàn bộ một quyển sách cho Gemini mỗi lần học sinh yêu cầu kiểm định.
+
+## 6. RAG
+
+Triển khai RAG ở mức phù hợp với ứng dụng nhỏ.
+
+Quy trình:
+1. Nạp nguồn.
+2. Làm sạch.
+3. Chia đoạn.
+4. Lưu metadata.
+5. Tạo chỉ mục.
+6. Truy vấn theo môn, lớp, chương, bài.
+7. Lấy những đoạn liên quan.
+8. Gửi cho Gemini.
+9. Trả về kết luận kèm nguồn.
+
+Ưu tiên trước:
+- Tìm kiếm theo metadata.
+- Tìm kiếm từ khóa.
+- TF-IDF hoặc tìm kiếm tương đồng nhẹ nếu phù hợp.
+
+Không bắt buộc phải sử dụng vector database có phí.
+
+Mỗi đoạn kiến thức cần có ID ổn định để truy xuất.
+
+---
+
+# PHẦN G. TẠO ĐỀ KIỂM TRA GIỮA KỲ VÀ CUỐI KỲ
+
+Bổ sung một module độc lập:
+
+**TRUNG TÂM ĐỀ KIỂM TRA**
+
+Không gộp tất cả chức năng vào phần tạo đề luyện tập thông thường.
+
+## 1. Đối tượng
+
+- Khối 10.
+- Khối 11.
+- Khối 12.
+
+Các môn học cần được Admin cấu hình.
+
+Hỗ trợ theo bộ sách:
+- Kết nối tri thức với cuộc sống.
+- Chân trời sáng tạo.
+- Cánh Diều.
+
+Không mặc định mọi bộ sách có nội dung hoặc cách phân chia chương hoàn toàn giống nhau.
+
+## 2. Các loại đề
+
+- Giữa kỳ I.
+- Cuối kỳ I.
+- Giữa kỳ II.
+- Cuối kỳ II.
+- Đề ôn tập tổng hợp.
+
+Phạm vi đề phải được cấu hình dựa trên các chương/bài đã học.
+
+Không tự kết luận rằng một học sinh phải học toàn bộ sách mới được thi cuối kỳ.
+
+## 3. Giao diện Admin tạo đề
+
+Cho phép chọn:
+
+- Khối lớp.
+- Môn học.
+- Bộ sách.
+- Năm học.
+- Loại kiểm tra.
+- Học kỳ.
+- Phạm vi chương/bài.
+- Thời gian làm bài.
+- Thang điểm.
+- Số câu.
+- Cấu trúc dạng câu hỏi.
+- Mức độ nhận thức.
+- Tỷ lệ phân bố điểm.
+- Nguồn tham chiếu.
+
+## 4. Bắt buộc có ma trận đề
+
+Trước khi sinh câu hỏi phải tạo:
+
+- Ma trận đề.
+- Bản đặc tả.
+- Danh sách đơn vị kiến thức.
+- Số câu theo từng đơn vị kiến thức.
+- Mức độ nhận thức.
+- Số điểm.
+- Dạng câu hỏi.
+
+Ma trận cần được Admin duyệt hoặc điều chỉnh.
+
+Cấu trúc dữ liệu mỗi câu liên kết:
+
+chapter_id → concept_id → learning_outcome → cognitive_level → question_type → score_weight.
+
+Không tạo đề nếu ma trận không cân đối hoặc không có nguồn phù hợp.
+
+## 5. Nguồn để tạo đề
+
+Kết hợp:
+- Chương trình GDPT.
+- SGK.
+- Tài liệu giáo viên.
+- Đề cương.
+- Ma trận mẫu.
+- Đề thi công khai được phép tham khảo.
+
+Câu hỏi phải được sáng tạo mới dựa trên kiến thức và cấu trúc tham khảo.
+
+Không sao chép máy móc đề thi có sẵn.
+
+Các đề cũ chỉ được dùng để nhận diện:
+- Dạng câu.
+- Cấu trúc.
+- Độ khó.
+- Cách phân bổ.
+- Cách đặt vấn đề.
+
+Không lấy đáp án cũ làm căn cứ duy nhất cho câu hỏi mới.
+
+## 6. Kiểm định đề kiểm tra
+
+Sau khi tạo đề:
+- Kiểm tra tổng điểm.
+- Kiểm tra số lượng câu.
+- Kiểm tra độ bao phủ.
+- Kiểm tra phân bố mức độ.
+- Kiểm tra trùng lặp.
+- Kiểm tra đáp án.
+- Kiểm tra nguồn.
+- Kiểm tra thời lượng dự kiến.
+
+Không tự động công bố đề chưa được kiểm định.
+
+## 7. Giao diện học sinh
+
+Trung tâm đề kiểm tra gồm:
+
+- Ôn theo chương.
+- Đề giữa kỳ.
+- Đề cuối kỳ.
+- Đề tổng hợp.
+- Lịch sử làm đề.
+
+Học sinh được:
+- Xem mô tả đề.
+- Xem phạm vi.
+- Xem số câu.
+- Xem thời gian.
+- Làm bài.
+- Nộp bài.
+- Xem điểm.
+- Xem lời giải.
+- Làm lại đề nếu được cho phép.
+
+Đối với chế độ kiểm tra mô phỏng, hiển thị đồng hồ làm bài và tiến độ.
+
+## 8. Chấm bài
+
+- Trắc nghiệm ABCD: chấm tự động bằng code.
+- Đúng/sai: chấm theo từng ý.
+- Trả lời ngắn: sử dụng đáp án chuẩn và quy tắc chấm phù hợp.
+- Tự luận nếu triển khai sau này: AI chỉ đề xuất điểm theo rubric, không mặc định điểm AI là điểm chính thức.
+
+Lưu đáp án, điểm và giải thích.
+
+## 9. Xuất đề
+
+Admin có thể:
+- Xuất đề PDF.
+- Xuất đáp án riêng.
+- Xuất hướng dẫn chấm.
+- Tạo phiên bản mã đề khác bằng cách thay đổi thứ tự câu và phương án nếu phù hợp.
+- Giữ nguyên nội dung, đáp án và thang điểm.
+
+---
+
+# PHẦN H. TỐI ƯU TỐC ĐỘ VÀ SỬ DỤNG GEMINI API FREE
+
+Đây là một ưu tiên rất lớn.
+
+Mục tiêu là giảm thời gian chờ, giảm token và giảm số lượt gọi AI mà vẫn giữ chất lượng.
+
+Không được hứa hẹn tốc độ cố định khi phụ thuộc dịch vụ bên ngoài.
+
+## 1. Không gọi AI khi code có thể xử lý
+
+Các công đoạn sau phải ưu tiên dùng code:
+
+- Tính điểm.
+- Tính phần trăm.
+- Kiểm tra schema.
+- Kiểm tra cấu trúc JSON.
+- Kiểm tra thiếu trường.
+- So sánh đáp án.
+- Tạo ID.
+- Tìm câu hỏi trùng chính xác.
+- Lưu lịch sử.
+- Xử lý trạng thái giao diện.
+- Tính trọng số.
+
+Không gọi Gemini chỉ để thực hiện phép tính thông thường.
+
+## 2. Giảm số lần gọi API
+
+Không gọi AI riêng cho mỗi câu hoặc mỗi mệnh đề nếu có thể xử lý theo nhóm.
+
+Gộp các nội dung tương thích vào một yêu cầu có cấu trúc.
+
+Tuy nhiên, không tạo một request quá lớn gây hết token hoặc quá tải.
+
+Chia theo chunk hợp lý.
+
+## 3. RAG
+
+Không gửi toàn bộ sách giáo khoa vào từng prompt.
+
+Chỉ truy xuất:
+- Đoạn liên quan.
+- Đúng môn.
+- Đúng lớp.
+- Đúng chương.
+- Đúng bài.
+- Đúng phiên bản nguồn.
+
+Giới hạn context theo mức cần thiết.
+
+## 4. Cache
+
+Triển khai cache cho:
+- Phân loại môn học.
+- Trích xuất khung kiến thức.
+- Nội dung đã phân tích.
+- Câu hỏi đã tạo.
+- Kết quả kiểm định.
+
+Khóa cache phải phụ thuộc:
+- Nội dung đã chuẩn hóa.
+- Task type.
+- Model ID.
+- Prompt version.
+- Source version.
+- Các cấu hình ảnh hưởng kết quả.
+
+Có thể sử dụng SHA-256 để tạo cache key.
+
+Không tái sử dụng kết quả nếu nguồn hoặc tiêu chí chấm đã thay đổi.
+
+Có chính sách xóa cache và thời hạn lưu dữ liệu.
+
+## 5. Batching
+
+Đối với các tác vụ độc lập:
+- Có thể xử lý theo nhóm.
+- Giới hạn số request đồng thời.
+- Không gửi hàng chục request liên tiếp.
+- Ưu tiên giữ độ ổn định.
+
+Với người dùng nhỏ, concurrency thấp nhưng có kiểm soát là phù hợp.
+
+## 6. Model routing
+
+Sử dụng model nhẹ cho:
+- Phân loại.
+- Tác vụ chuyển đổi ngắn.
+- Giải thích ngắn.
+- Flashcard.
+
+Sử dụng model mạnh hơn cho:
+- Suy luận.
+- Kiểm định phức tạp.
+- Tạo câu hỏi vận dụng.
+- Xử lý những trường hợp mơ hồ.
+
+Không mặc định model nhẹ luôn đủ chất lượng hoặc model mạnh luôn nhanh hơn.
+
+Cần có bộ test thực tế để so sánh.
+
+## 7. Giới hạn và retry
+
+Đối với lỗi 429:
+- Kiểm tra quota.
+- Giãn thời gian.
+- Giảm concurrency.
+- Không retry liên tục.
+- Chuyển fallback nếu Admin bật.
+
+Đối với 503:
+- Exponential backoff.
+- Jitter.
+- Số lần thử lại có giới hạn.
+
+Đối với 400:
+- Không retry vô nghĩa.
+- Kiểm tra request.
+
+Đối với 403:
+- Kiểm tra quyền và API Key.
+
+Đối với hết quota theo ngày:
+- Tạm dừng tác vụ.
+- Thông báo rõ.
+- Cho phép tiếp tục khi có khả năng sử dụng lại.
+
+Không tự động đổi sang dịch vụ trả phí.
+
+Không tạo nhiều API Key trong cùng một project với kỳ vọng có thêm quota.
+
+## 8. Không lạm dụng Google Search Grounding
+
+Google Search Grounding là tùy chọn.
+
+Không bật mặc định cho mỗi lượt kiểm định.
+
+Ưu tiên kho tài liệu nội bộ đã được Admin phê duyệt.
+
+Trước khi sử dụng Grounding phải kiểm tra:
+- Model hỗ trợ.
+- Trạng thái miễn phí hoặc tính phí.
+- Quyền sử dụng.
+- Giới hạn hiện tại.
+
+Hiển thị rõ nếu người dùng chọn một tính năng có thể phát sinh chi phí hoặc không còn trong Free Tier.
+
+## 9. Structured Output
+
+Sử dụng JSON Schema khi phù hợp.
+
+Có validation bằng code.
+
+Nếu dữ liệu JSON sai:
+- Parse.
+- Kiểm tra.
+- Thử sửa có giới hạn.
+- Không lưu dữ liệu lỗi.
+
+Không để JSON lỗi làm hỏng toàn bộ hệ thống.
+
+## 10. Lưu trạng thái job
+
+Các tác vụ dài cần có trạng thái trong Firestore:
+
+- queued.
+- processing.
+- completed.
+- failed.
+- paused.
+- cancelled.
+
+Lưu kết quả từng giai đoạn để có thể tiếp tục nếu bị lỗi.
+
+Không cần xây hàng đợi phức tạp dành cho quy mô lớn.
+
+Có thể sử dụng cơ chế job đơn giản phù hợp với backend hiện tại.
+
+Đối với Vercel Serverless, không phụ thuộc vào việc giữ một tiến trình chạy liên tục hoặc tác vụ nền không được nền tảng hỗ trợ.
+
+Thiết kế sao cho có thể chia nhỏ công việc và tiếp tục xử lý khi người dùng quay lại.
+
+---
+
+# PHẦN I. TRẢI NGHIỆM CHỜ VÀ PHẢN HỒI NGƯỜI DÙNG
+
+Tốc độ phản hồi không chỉ là thời gian API trả kết quả. Trải nghiệm chờ cũng rất quan trọng.
+
+## 1. Loading theo từng giai đoạn
+
+Không hiển thị một spinner vô thời hạn.
+
+Các giai đoạn cần được hiển thị rõ:
+
+1. Đang tải tài liệu.
+2. Đang nhận diện văn bản.
+3. Đang xác định phạm vi.
+4. Đang tìm nguồn tham chiếu.
+5. Đang phân tích kiến thức.
+6. Đang kiểm định kết quả.
+7. Đang hoàn thiện báo cáo.
+
+Tạo trạng thái riêng cho từng giai đoạn.
+
+Không giả lập phần trăm hoàn thành nếu backend không cung cấp tiến độ thực tế.
+
+## 2. Hiển thị nội dung có thể sử dụng sớm
+
+Ví dụ:
+- OCR xong thì hiển thị văn bản ngay.
+- Phân loại xong thì hiển thị môn và chương.
+- Khi hoàn thành từng nhóm kiến thức, có thể hiển thị kết quả nhóm đó nếu bảo đảm tính nhất quán.
+- Khi hoàn thành báo cáo mới công bố hai điểm số tổng thể.
+
+Không bắt học sinh chờ toàn bộ quá trình mới thấy bất cứ điều gì.
+
+## 3. Người dùng có thể rời trang
+
+- Lưu job ID.
+- Lưu trạng thái.
+- Khi quay lại có thể tiếp tục xem.
+- Không phải tải lại tài liệu.
+- Không tạo request AI trùng lặp chỉ vì người dùng reload.
+- Có khả năng hủy tác vụ nếu an toàn.
+- Có cơ chế khôi phục sau lỗi.
+
+## 4. Trạng thái khi gặp lỗi
+
+Không hiển thị thông báo chung chung kiểu "Có lỗi xảy ra".
+
+Ví dụ:
+- Máy chủ AI đang quá tải.
+- Đã vượt giới hạn sử dụng tạm thời.
+- Tài liệu quá lớn.
+- Không tìm thấy nguồn tham chiếu phù hợp.
+- Văn bản OCR chưa đủ rõ.
+- Model không hỗ trợ tác vụ.
+- Quá trình xử lý bị gián đoạn.
+
+Cho phép thử lại đúng công đoạn bị lỗi, không chạy lại toàn bộ pipeline.
+
+## 5. Không khiến học sinh nản
+
+Trong lúc chờ:
+- Cho xem văn bản OCR.
+- Cho xem phạm vi đã nhận diện.
+- Hiển thị công đoạn hiện tại.
+- Giữ nội dung đã nhập.
+- Có giao diện loading skeleton.
+- Có thông báo nhẹ khi hoàn thành.
+
+Không dùng countdown giả.
+
+Không tuyên bố thời gian hoàn thành chắc chắn khi không có dữ liệu.
+
+---
+
+# PHẦN J. CÁC TÍNH NĂNG HỌC TẬP BỔ SUNG
+
+Ưu tiên các tính năng thực sự giúp học sinh sửa lỗi và học tốt hơn.
+
+## 1. Spaced Repetition
+
+Nhắc học sinh ôn các câu sai theo lịch:
+
+- Sau 1 ngày.
+- Sau 3 ngày.
+- Sau 7 ngày.
+
+Có thể điều chỉnh dựa trên kết quả học.
+
+Không cần dùng Gemini cho việc lên lịch.
+
+## 2. Flashcard
+
+Tạo thẻ từ:
+- Kiến thức sai.
+- Kiến thức thiếu.
+- Khái niệm khó.
+- Điều kiện quan trọng.
+- Công thức.
+
+Mỗi thẻ gồm:
+- Mặt trước: câu hỏi hoặc gợi nhớ.
+- Mặt sau: kiến thức chuẩn.
+- Nguồn.
+- Trang sách.
+- Trạng thái ghi nhớ.
+
+## 3. Đề ôn tập từ câu sai
+
+Cho phép gom các câu sai vào đề luyện tập 10 câu hoặc số lượng tùy chọn.
+
+Ưu tiên dữ liệu đã có trên Firestore.
+
+Không cần gọi Gemini tạo lại đề nếu câu hỏi đã tồn tại.
+
+## 4. Luyện theo đơn vị kiến thức
+
+Học sinh có thể chọn:
+- Khái niệm.
+- Cơ chế.
+- Điều kiện.
+- Đặc điểm.
+- Công thức.
+- Dạng bài.
+
+Hệ thống chỉ lấy câu hỏi liên quan đến đơn vị kiến thức đó.
+
+## 5. Đánh dấu câu cần xem lại
+
+Học sinh có thể đánh dấu câu khó ngay cả khi trả lời đúng.
+
+Có khu vực riêng để xem lại.
+
+## 6. So sánh trước và sau
+
+Khi học sinh nộp lại cùng một chương:
+- So sánh độ chính xác.
+- So sánh độ đầy đủ.
+- So sánh số lượng lỗi.
+- So sánh số đơn vị kiến thức đạt.
+
+Phải bảo đảm hai báo cáo sử dụng cùng một khung kiến thức hoặc có cơ chế quy đổi khi framework thay đổi.
+
+## 7. Xuất phiếu sửa lỗi
+
+Cho phép xuất PDF:
+- Những mệnh đề sai.
+- Kiến thức đúng.
+- Những điều kiện còn thiếu.
+- Nguồn và trang sách.
+
+## 8. Giải thích từng phương án
+
+Sau khi làm câu trắc nghiệm, hiển thị:
+- Tại sao đáp án đúng.
+- Tại sao từng phương án còn lại sai.
+- Những nhầm lẫn thường gặp.
+- Kiến thức cần ghi nhớ.
+
+## 9. Phản hồi câu hỏi và kết quả AI
+
+Mỗi nhận xét kiểm định có nút:
+- Hợp lý.
+- Chưa chính xác.
+- Thiếu dẫn chứng.
+- Diễn giải chưa đúng.
+- Ngoài phạm vi.
+- Khó hiểu.
+
+Mỗi câu hỏi trắc nghiệm có nút báo cáo:
+- Sai đáp án.
+- Có nhiều đáp án đúng.
+- Câu hỏi mơ hồ.
+- Phương án nhiễu không hợp lý.
+- Ngoài phạm vi.
+
+Lưu phản hồi để Admin kiểm tra.
+
+Không tự động biến mọi phản hồi thành dữ liệu chuẩn để huấn luyện AI.
+
+## 10. Trình duyệt câu hỏi cho Admin
+
+Admin được:
+- Xem câu AI tạo.
+- Chỉnh sửa đề bài.
+- Chỉnh sửa các phương án.
+- Chỉnh sửa đáp án.
+- Chỉnh sửa lời giải.
+- Thay nguồn.
+- Yêu cầu AI viết lại một câu.
+- Kiểm định lại.
+- Duyệt hoặc loại bỏ.
+
+## 11. Xuất đề và đáp án riêng
+
+Cho phép xuất:
+- Đề PDF.
+- Đáp án PDF.
+- Hướng dẫn chấm.
+- Phiên bản mã đề khác nếu phù hợp.
+
+Không cần thống kê điểm yếu toàn trường.
+
+---
+
+# PHẦN K. QUẢN LÝ API KEY VÀ BẢO MẬT ADMIN
+
+Giữ nguyên cơ chế quản lý API Key hiện tại và gia cố nếu cần.
+
+## 1. Mã hóa
+
+Sử dụng AES-256-GCM.
+
+Master key:
+- Lưu trong biến môi trường máy chủ.
+- Không lưu cùng Firestore.
+- Không gửi về frontend.
+
+Khi mã hóa:
+- IV ngẫu nhiên.
+- Authentication tag.
+- Kiểm tra tính toàn vẹn.
+
+Không ghi API Key trong log.
+
+## 2. Luồng sử dụng
+
+Backend mới được giải mã API Key.
+
+Frontend không bao giờ nhận API Key.
+
+Admin có thể:
+- Thêm key.
+- Test key.
+- Thay key.
+- Gỡ key.
+- Dùng biến GEMINI_API_KEY của máy chủ làm dự phòng theo cấu hình.
+
+Không hiển thị key đầy đủ sau khi lưu.
+
+## 3. Thay đổi cấu hình
+
+Không yêu cầu frontend học sinh liên tục nhận API Key.
+
+Backend sử dụng cấu hình mới cho các request tiếp theo thông qua config version và cache ngắn hạn phù hợp.
+
+Không triển khai polling 15 giây nếu không thực sự cần.
+
+## 4. Phân quyền
+
+- Xác thực Firebase ID Token ở backend.
+- Kiểm tra quyền người dùng.
+- Chỉ Super Admin được thay đổi cấu hình.
+- Không cho người dùng tự sửa role.
+- Không thu hồi quyền Super Admin cuối cùng.
+- Audit Log mọi thao tác quan trọng.
+
+## 5. ALLOWED_ORIGIN
+
+Cho phép Admin quản lý danh sách origin nếu phù hợp.
+
+Nhưng phải phân biệt CORS với xác thực.
+
+ALLOWED_ORIGIN không thay thế Firebase Authentication và backend authorization.
+
+---
+
+# PHẦN L. CẤU TRÚC DỮ LIỆU GỢI Ý
+
+Không bắt buộc phải thay toàn bộ Firestore schema hiện có.
+
+Nếu cấu trúc hiện tại đã phù hợp, hãy tái sử dụng.
+
+Các collection hoặc module cần có về mặt logic:
+
+1. users
+2. user_roles
+3. user_settings
+4. analyses
+5. analysis_claims
+6. knowledge_frameworks
+7. knowledge_concepts
+8. source_library
+9. source_chunks
+10. quizzes
+11. quiz_questions
+12. quiz_attempts
+13. wrong_question_bank
+14. flashcards
+15. review_schedules
+16. exam_blueprints
+17. exams
+18. exam_attempts
+19. ai_model_configs
+20. ai_jobs
+21. ai_usage_logs
+22. feedback
+23. audit_logs
+24. system_settings
+
+Mỗi dữ liệu quan trọng cần có:
+- ID.
+- UID sở hữu hoặc quyền truy cập.
+- createdAt.
+- updatedAt.
+- version khi cần.
+
+Quyền Firestore phải được thiết lập rõ ràng.
+
+Học sinh không được đọc dữ liệu riêng của người khác.
+
+Admin không được lấy API Key từ frontend.
+
+---
+
+# PHẦN M. QUY TRÌNH TRÌNH DIỄN SẢN PHẨM
+
+Ứng dụng phải có khả năng trình diễn một quy trình thực tế, liền mạch.
+
+Kịch bản đề xuất:
+
+1. Đăng nhập bằng tài khoản học sinh.
+2. Tải lên một tài liệu học tập.
+3. Hệ thống trích xuất OCR.
+4. Học sinh kiểm tra và xác nhận văn bản.
+5. AI xác định môn, lớp và chương.
+6. Học sinh chọn nguồn SGK.
+7. Hệ thống phân tích từng mệnh đề.
+8. Hệ thống đánh dấu Đúng, Sai, Thiếu điều kiện, Chưa xác định.
+9. Hiển thị Độ chính xác và Độ đầy đủ.
+10. Học sinh chọn tạo đề từ phần sai hoặc phần thiếu.
+11. AI lập ma trận và tạo câu hỏi.
+12. Hệ thống kiểm định câu hỏi.
+13. Học sinh làm đề.
+14. Hệ thống giải thích từng lựa chọn.
+15. Câu sai được lưu vào ngân hàng cá nhân.
+16. Học sinh ôn tập lại và theo dõi tiến bộ.
+
+Kịch bản thứ hai:
+
+1. Admin mở Trung tâm đề kiểm tra.
+2. Chọn khối 10, môn Hóa học.
+3. Chọn bộ sách.
+4. Chọn đề giữa kỳ.
+5. Chọn các chương đã học.
+6. Chọn tài liệu và ma trận tham chiếu.
+7. Xem trước ma trận đề.
+8. Sinh đề.
+9. Kiểm định từng câu.
+10. Chỉnh sửa hoặc duyệt.
+11. Xuất đề PDF và đáp án riêng.
+12. Học sinh làm đề và xem kết quả.
+
+Các kịch bản này phải hoạt động thực sự, không phải bản demo tĩnh.
+
+---
+
+# PHẦN N. KẾ HOẠCH TRIỂN KHAI THEO THỨ TỰ ƯU TIÊN
+
+Không triển khai toàn bộ mọi thứ một cách tùy tiện.
+
+Hãy chia thành các giai đoạn.
+
+## Giai đoạn 1 – Kiểm tra source code và thiết kế hệ thống
+
+- Kiểm tra toàn bộ source.
+- Đánh giá kiến trúc frontend/backend.
+- Xác định các file liên quan.
+- Kiểm tra Firebase.
+- Kiểm tra cơ chế AI hiện tại.
+- Kiểm tra API Key.
+- Xác định rủi ro khi nâng cấp.
+- Đưa ra kế hoạch sửa phù hợp.
+
+Không được bỏ qua giai đoạn này.
+
+## Giai đoạn 2 – Nâng cấp logic AI cốt lõi
+
+- Model Router.
+- Đơn vị kiến thức.
+- Độ chính xác.
+- Độ đầy đủ.
+- Trạng thái Chưa xác định.
+- Nguồn và trích dẫn.
+- Kiểm định câu hỏi.
+- Ma trận đề.
+- RAG.
+- Cache.
+- Job state.
+
+Đây là giai đoạn ưu tiên cao nhất.
+
+## Giai đoạn 3 – Thiết kế lại giao diện
+
+- Design System.
+- Liquid Glass.
+- Navbar.
+- Sidebar.
+- Dashboard.
+- Upload.
+- OCR.
+- Báo cáo.
+- Trắc nghiệm.
+- Admin.
+- Dark mode.
+- Responsive.
+
+Không làm hỏng logic đã có.
+
+## Giai đoạn 4 – Trung tâm đề kiểm tra
+
+- Quản lý nguồn.
+- Ma trận đề.
+- Bản đặc tả.
+- Sinh đề giữa kỳ.
+- Sinh đề cuối kỳ.
+- Kiểm định.
+- Duyệt.
+- Xuất đề.
+- Xuất đáp án.
+- Làm bài và chấm điểm.
+
+## Giai đoạn 5 – Nâng cấp trải nghiệm học tập
+
+- Spaced Repetition.
+- Flashcard.
+- Đề tổng hợp câu sai.
+- Luyện theo concept.
+- Đánh dấu câu.
+- So sánh tiến bộ.
+- Phản hồi AI.
+- Xuất phiếu sửa lỗi.
+
+## Giai đoạn 6 – Kiểm thử toàn bộ
+
+Thực hiện kiểm thử:
+- Đăng nhập.
+- Phân quyền.
+- Upload.
+- OCR.
+- Tài liệu nhiều trang.
+- File lớn.
+- Tài liệu nhiều ảnh.
+- Model Router.
+- Override model một lần.
+- Đổi cấu hình.
+- Kiểm định kiến thức.
+- Tính điểm.
+- Tạo đề.
+- Kiểm định câu hỏi.
+- Duyệt đề.
+- Làm bài.
+- Lưu dữ liệu.
+- Feedback.
+- Export PDF.
+- Vercel.
+- Render.
+- Mobile.
+- Dark mode.
+- Trường hợp 429.
+- Trường hợp 503.
+- Trường hợp JSON sai.
+- Trường hợp mất kết nối giữa chừng.
+
+---
+
+# PHẦN O. TIÊU CHÍ NGHIỆM THU
+
+Không được coi một tính năng hoàn thành chỉ vì đã xuất hiện trên giao diện.
+
+## 1. Logic kiểm định
+
+- Phân loại được bốn trạng thái.
+- Không nhầm thiếu kiến thức với sai kiến thức.
+- Không bắt học sinh diễn đạt giống nguyên văn sách.
+- Có dẫn chứng và nguồn.
+- Hai chỉ số được tính độc lập.
+- Không tính điểm tùy tiện đối với phần chưa xác định.
+
+## 2. Logic tạo đề
+
+- Có ma trận trước khi sinh.
+- Câu hỏi bám sát phạm vi.
+- Phương án nhiễu hợp lý.
+- Một đáp án đúng.
+- Không trùng lặp.
+- Có lời giải.
+- Có nguồn.
+- Câu không đạt không được tự động đưa vào đề chính thức.
+
+## 3. Model Router
+
+- Chọn được model theo từng công đoạn.
+- Override một lần hoạt động đúng.
+- Cấu hình mặc định không bị thay đổi bởi override.
+- Có Test Model.
+- Có log.
+- Không để API Key xuất hiện ở frontend.
+
+## 4. Tốc độ
+
+- Không gọi AI cho phép tính thông thường.
+- Không gửi toàn bộ sách trong mỗi request.
+- Có cache.
+- Có giới hạn request đồng thời.
+- Có retry hợp lý.
+- Có lưu trạng thái job.
+- Có khả năng tiếp tục khi lỗi.
+- Không hiển thị loading giả.
+
+## 5. Giao diện
+
+- Nhất quán.
+- Có Light/Dark mode.
+- Liquid Glass chọn lọc.
+- Nội dung dễ đọc.
+- Responsive.
+- Các chức năng cũ còn hoạt động.
+
+## 6. Nguồn học liệu
+
+- Có thông tin nguồn.
+- Có thông tin trang.
+- Có phiên bản.
+- Có trạng thái quyền sử dụng.
+- Không tạo trích dẫn giả.
+- Không tự lấy mọi đề trên mạng làm đáp án chuẩn.
+
+---
+
+# PHẦN P. YÊU CẦU THỰC HIỆN VÀ BÁO CÁO
+
+Trước khi chỉnh sửa, hãy kiểm tra source code hiện tại và lập danh sách các module liên quan.
+
+Nếu có thể sử dụng công cụ trình duyệt, hãy xem website Liquid Glass Design trực tiếp và kiểm tra các component mẫu trước khi thiết kế.
+
+Không chỉ trả lời bằng kế hoạch. Hãy thực hiện những thay đổi thực tế phù hợp với kiến trúc hiện tại.
+
+Trong quá trình triển khai:
+- Ưu tiên sửa theo từng module.
+- Kiểm tra lại sau mỗi phần lớn.
+- Không tạo code trùng lặp.
+- Không thay thế dữ liệu cũ một cách nguy hiểm.
+- Không xóa chức năng chưa được yêu cầu.
+- Không tự ý thay đổi cấu hình sản xuất.
+- Không đưa API Key vào source code.
+- Không tạo dữ liệu giả để đánh dấu tính năng đã hoạt động.
+
+Nếu một chức năng phụ thuộc vào quyền truy cập bên ngoài hoặc nguồn tài liệu chưa được xác minh, hãy triển khai cơ chế nhập tài liệu thủ công và thông báo rõ phần giới hạn.
+
+Khi hoàn thành, cung cấp báo cáo:
+1. Các file đã chỉnh sửa.
+2. Các tính năng đã hoàn thành.
+3. Các tính năng chưa hoàn thành.
+4. Những thay đổi về Firestore.
+5. Những thay đổi về API.
+6. Các kiểm thử đã chạy.
+7. Các lỗi còn tồn tại.
+8. Các bước cần thực hiện khi deploy.
+
+**MỤC TIÊU CUỐI CÙNG**
+
+Tạo ra một ứng dụng giáo dục AI có khả năng:
+
+- Đọc và hiểu tài liệu học sinh.
+- Đối chiếu kiến thức với sách giáo khoa.
+- Phát hiện chính xác lỗi sai và phần kiến thức còn thiếu.
+- Tính toán Độ chính xác và Độ đầy đủ có cơ sở.
+- Tạo câu hỏi trắc nghiệm chất lượng.
+- Kiểm định độc lập câu hỏi trước khi sử dụng.
+- Tạo đề ôn tập, đề giữa kỳ và đề cuối kỳ theo chương trình, bộ sách và phạm vi được xác nhận.
+- Giúp học sinh hiểu lỗi và sửa lỗi.
+- Theo dõi sự tiến bộ cá nhân.
+- Cho Admin quyền kiểm soát model, nguồn dữ liệu và toàn bộ cấu hình AI.
+- Hoạt động ổn định trong điều kiện sử dụng API miễn phí.
+- Có giao diện hiện đại, cao cấp theo phong cách Selective Liquid Glass.
+
+**Định hướng quan trọng nhất:**
+
+Đây không phải một chatbot trả lời câu hỏi học tập. Đây là một hệ thống kiểm định kiến thức có nguồn đối chiếu, tạo bài kiểm tra có ma trận và hỗ trợ học sinh khắc phục những lỗ hổng kiến thức của chính mình.
+
+Hãy ưu tiên tính chính xác, tính kiểm chứng, khả năng giải thích và trải nghiệm học tập thực tế hơn số lượng tính năng.

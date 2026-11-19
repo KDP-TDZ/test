@@ -87,6 +87,8 @@
         "textbookSeries": { "type": "string", "maxLength": 100 },
         "publisher": { "type": "string", "maxLength": 120 },
         "editionYear": { "type": "string", "maxLength": 20 },
+        "knowledgeSourceType": { "type": "string", "maxLength": 60 },
+        "licenseStatus": { "type": "string", "maxLength": 100 },
         "status": { "type": "string", "enum": ["active", "paused"] },
         "indexStatus": { "type": "string", "enum": ["indexed", "processing", "failed"] },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -128,7 +130,7 @@
     },
     "PracticeItem": {
       "title": "PracticeItem",
-      "description": "Persistent incorrect quiz question saved in student Practice Bank.",
+      "description": "Persistent incorrect or flagged quiz question saved in student Practice Bank.",
       "type": "object",
       "properties": {
         "itemId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -140,9 +142,127 @@
         "correctCount": { "type": "number" },
         "incorrectCount": { "type": "number" },
         "masteryStatus": { "type": "string", "maxLength": 60 },
+        "flaggedForReview": { "type": "boolean" },
+        "reviewStage": { "type": "number" },
+        "nextReviewAt": { "type": "string", "maxLength": 64 },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["itemId", "questionId", "ownerUid", "questionText", "correctAnswer", "attemptCount", "createdAt"]
+    },
+    "FlashcardItem": {
+      "title": "FlashcardItem",
+      "description": "Student flashcard item for active recall & spaced repetition.",
+      "type": "object",
+      "properties": {
+        "flashcardId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "front": { "type": "string", "maxLength": 1000 },
+        "back": { "type": "string", "maxLength": 2000 },
+        "subject": { "type": "string", "maxLength": 40 },
+        "grade": { "type": "string", "enum": ["10", "11", "12"] },
+        "masteryStatus": { "type": "string", "enum": ["Mới tạo", "Đang ôn", "Đã nhớ"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["flashcardId", "ownerUid", "front", "back", "subject", "grade", "masteryStatus", "createdAt", "updatedAt"]
+    },
+    "ExamBlueprint": {
+      "title": "ExamBlueprint",
+      "description": "Admin-managed exam matrix blueprint specifying distribution before question generation.",
+      "type": "object",
+      "properties": {
+        "blueprintId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "maxLength": 200 },
+        "grade": { "type": "string", "enum": ["10", "11", "12"] },
+        "subject": { "type": "string", "maxLength": 40 },
+        "examType": { "type": "string", "enum": ["giua_ky_1", "cuoi_ky_1", "giua_ky_2", "cuoi_ky_2", "on_tap_tong_hop"] },
+        "status": { "type": "string", "enum": ["draft", "approved"] },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["blueprintId", "title", "grade", "subject", "examType", "status", "createdBy", "createdAt", "updatedAt"]
+    },
+    "ExamDocument": {
+      "title": "ExamDocument",
+      "description": "Published or draft Midterm/Final exam test in Exam Center.",
+      "type": "object",
+      "properties": {
+        "examId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "blueprintId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 200 },
+        "grade": { "type": "string", "enum": ["10", "11", "12"] },
+        "subject": { "type": "string", "maxLength": 40 },
+        "examType": { "type": "string", "enum": ["giua_ky_1", "cuoi_ky_1", "giua_ky_2", "cuoi_ky_2", "on_tap_tong_hop"] },
+        "durationMinutes": { "type": "number" },
+        "totalScore": { "type": "number" },
+        "published": { "type": "boolean" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["examId", "blueprintId", "title", "grade", "subject", "examType", "durationMinutes", "totalScore", "published", "createdBy", "createdAt", "updatedAt"]
+    },
+    "ExamAttempt": {
+      "title": "ExamAttempt",
+      "description": "Immutable student exam submission & score breakdown.",
+      "type": "object",
+      "properties": {
+        "attemptId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "examId": { "type": "string", "maxLength": 128 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "grade": { "type": "string", "enum": ["10", "11", "12"] },
+        "earnedScore": { "type": "number" },
+        "maxScore": { "type": "number" },
+        "submittedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["attemptId", "examId", "uid", "grade", "earnedScore", "maxScore", "submittedAt"]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Student Đua Top cumulative points by grade and schoolwide.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "grade": { "type": "string", "enum": ["10", "11", "12"] },
+        "totalScore": { "type": "number" },
+        "examCount": { "type": "number" },
+        "bestExamScore": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "grade", "totalScore", "examCount", "bestExamScore", "updatedAt"]
+    },
+    "FeedbackEntry": {
+      "title": "FeedbackEntry",
+      "description": "User feedback or issue report on claim verification or quiz/exam questions.",
+      "type": "object",
+      "properties": {
+        "feedbackId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "targetType": { "type": "string", "enum": ["claim", "quiz_question", "exam_question"] },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "maxLength": 120 },
+        "note": { "type": "string", "maxLength": 1500 },
+        "status": { "type": "string", "enum": ["pending", "reviewed", "resolved"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["feedbackId", "ownerUid", "targetType", "targetId", "category", "status", "createdAt", "updatedAt"]
+    },
+    "AiJobRecord": {
+      "title": "AiJobRecord",
+      "description": "Resumable AI execution job status stored per user.",
+      "type": "object",
+      "properties": {
+        "jobId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "jobType": { "type": "string", "enum": ["ocr_extract", "analysis_verify", "quiz_generate", "exam_generate"] },
+        "status": { "type": "string", "enum": ["queued", "processing", "completed", "failed", "paused", "cancelled"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["jobId", "ownerUid", "jobType", "status", "createdAt", "updatedAt"]
     },
     "KnowledgeProgress": {
       "title": "KnowledgeProgress",
@@ -184,12 +304,13 @@
     },
     "SystemConfig": {
       "title": "SystemConfig",
-      "description": "Central AI service switch, maintenance notice, and rate limit settings.",
+      "description": "Central AI service switch, Model Router per-task config, allowed origins, and rate limits.",
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },
         "disabledReason": { "type": "string", "maxLength": 300 },
         "maintenanceMessage": { "type": "string", "maxLength": 400 },
+        "configVersion": { "type": "number" },
         "updatedAt": { "type": "string", "format": "date-time" },
         "updatedBy": { "type": "string", "maxLength": 128 }
       },
@@ -207,10 +328,7 @@
         "maskedIdentifier": { "type": "string", "maxLength": 40 },
         "label": { "type": "string", "maxLength": 100 },
         "updatedAt": { "type": "string", "format": "date-time" },
-        "updatedBy": { "type": "string", "maxLength": 128 },
-        "lastTestAt": { "type": "string", "maxLength": 64 },
-        "lastTestStatus": { "type": "string", "maxLength": 40 },
-        "lastTestMessage": { "type": "string", "maxLength": 300 }
+        "updatedBy": { "type": "string", "maxLength": 128 }
       },
       "required": ["secretId", "ciphertext", "iv", "authTag", "maskedIdentifier", "label", "updatedAt", "updatedBy"]
     },
@@ -296,9 +414,37 @@
       "schema": { "$ref": "#/entities/PracticeItem" },
       "description": "Persistent student Practice Bank items (manual delete only)."
     },
+    "/flashcards/{flashcardId}": {
+      "schema": { "$ref": "#/entities/FlashcardItem" },
+      "description": "Personal study flashcards owned by ownerUid."
+    },
+    "/examBlueprints/{blueprintId}": {
+      "schema": { "$ref": "#/entities/ExamBlueprint" },
+      "description": "Exam matrix blueprints managed by Super Admin."
+    },
+    "/exams/{examId}": {
+      "schema": { "$ref": "#/entities/ExamDocument" },
+      "description": "Published or draft Midterm/Final exams in Exam Center."
+    },
+    "/examAttempts/{attemptId}": {
+      "schema": { "$ref": "#/entities/ExamAttempt" },
+      "description": "Immutable student exam submissions and scores."
+    },
+    "/leaderboard/{uid}": {
+      "schema": { "$ref": "#/entities/LeaderboardEntry" },
+      "description": "Schoolwide & grade-level Đua Top leaderboard scores."
+    },
+    "/feedback/{feedbackId}": {
+      "schema": { "$ref": "#/entities/FeedbackEntry" },
+      "description": "Student claim/question issue feedback moderated by Super Admin."
+    },
+    "/aiJobs/{jobId}": {
+      "schema": { "$ref": "#/entities/AiJobRecord" },
+      "description": "Resumable AI stage job tracking per student."
+    },
     "/systemConfig/{configId}": {
       "schema": { "$ref": "#/entities/SystemConfig" },
-      "description": "Global AI service switch and configuration (admin write only)."
+      "description": "Global AI service switch and Model Router configuration (admin write only)."
     },
     "/adminSecrets/{secretId}": {
       "schema": { "$ref": "#/entities/AdminSecret" },

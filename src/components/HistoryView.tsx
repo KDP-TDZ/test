@@ -20,6 +20,7 @@ interface HistoryViewProps {
   onLoadMore: () => void;
   onDeleted: (analysisId: string) => void;
   onStartQuiz: (analysis: AnalysisRecord) => void;
+  onOpenFlashcards?: () => void;
 }
 
 export const HistoryView: React.FC<HistoryViewProps> = ({
@@ -31,6 +32,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   onLoadMore,
   onDeleted,
   onStartQuiz,
+  onOpenFlashcards,
 }) => {
   const [search, setSearch] = useState('');
   const [subjectFilter, setSubjectFilter] = useState<string>('all');
@@ -70,7 +72,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     return (
       <AnalysisReportView
         analysis={selectedRecord}
+        allAnalyses={analyses}
         onStartQuiz={onStartQuiz}
+        onOpenFlashcards={onOpenFlashcards}
         onBack={() => onSelectAnalysis(null)}
       />
     );
@@ -94,10 +98,10 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-display text-2xl font-bold text-slate-950">
+        <h1 className="font-display text-2xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
           Lịch sử kiểm định & ưu nhược điểm
         </h1>
-        <p className="text-xs sm:text-sm text-slate-600 mt-1">
+        <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1">
           Toàn bộ báo cáo phân tích, vùng khoanh lỗi và dẫn chứng sách giáo khoa đều có thể mở lại
           bất cứ lúc nào (kể cả khi dịch vụ AI đang tạm nghỉ).
         </p>
@@ -112,14 +116,14 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Tìm tên tài liệu, phạm vi..."
-            className="w-full pl-9 pr-3 py-2 rounded-xl bg-white border border-slate-200 text-xs"
+            className="w-full pl-9 pr-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
           />
         </div>
 
         <select
           value={subjectFilter}
           onChange={(e) => setSubjectFilter(e.target.value)}
-          className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs"
+          className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
         >
           <option value="all">Tất cả môn học</option>
           {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
@@ -132,7 +136,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         <select
           value={gradeFilter}
           onChange={(e) => setGradeFilter(e.target.value)}
-          className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs"
+          className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
         >
           <option value="all">Tất cả khối lớp</option>
           <option value="10">Lớp 10</option>
@@ -143,7 +147,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value as 'newest' | 'accuracy_asc' | 'accuracy_desc')}
-          className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-xs"
+          className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
         >
           <option value="newest">Mới nhất trước</option>
           <option value="accuracy_desc">Chính xác cao nhất</option>
@@ -152,7 +156,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       </GlassSurface>
 
       {filtered.length === 0 ? (
-        <GlassSurface className="rounded-2xl p-8 text-center text-sm text-slate-600">
+        <GlassSurface className="rounded-2xl p-8 text-center text-sm text-slate-600 dark:text-slate-300">
           Chưa có tài liệu nào phù hợp bộ lọc.
         </GlassSurface>
       ) : (
@@ -164,25 +168,29 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             >
               <div className="min-w-0 space-y-1">
                 <div className="flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-sky-700 shrink-0" />
-                  <h2 className="text-base font-bold text-slate-950 truncate">
+                  <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+                  <h2 className="text-base font-bold text-[#17243A] dark:text-[#E5EDF9] truncate">
                     {item.documentTitle}
                   </h2>
                 </div>
-                <p className="text-xs text-slate-600">
+                <p className="text-xs text-slate-600 dark:text-slate-300">
                   {SUBJECT_LABELS[item.subject]} · Lớp {item.grade} ·{' '}
                   {item.textbookTitle || 'Chương trình chuẩn'} ·{' '}
                   {new Date(item.createdAt).toLocaleString('vi-VN')}
                 </p>
                 <div className="flex flex-wrap items-center gap-4 text-xs pt-1">
-                  <span className="font-mono text-sky-700">
+                  <span className="font-mono text-blue-700 dark:text-blue-400">
                     Chính xác: {item.accuracyScore !== null ? `${item.accuracyScore}%` : '—'}
                   </span>
-                  <span className="font-mono text-indigo-700">
+                  <span className="font-mono text-indigo-700 dark:text-indigo-400">
                     Đầy đủ: {item.completenessScore !== null ? `${item.completenessScore}%` : '—'}
                   </span>
-                  <span className="text-emerald-700">Điểm mạnh: {item.strengths.length}</span>
-                  <span className="text-rose-700">Điểm yếu: {item.weaknesses.length}</span>
+                  <span className="text-emerald-700 dark:text-emerald-400">
+                    Điểm mạnh: {item.strengths.length}
+                  </span>
+                  <span className="text-rose-700 dark:text-rose-400">
+                    Điểm yếu: {item.weaknesses.length}
+                  </span>
                 </div>
               </div>
 
@@ -194,7 +202,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   type="button"
                   onClick={() => setConfirmDelete(item)}
                   aria-label="Xóa bản phân tích"
-                  className="p-2 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                  className="p-2 rounded-lg border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -214,15 +222,15 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
 
       {confirmDelete && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/35 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/45 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
         >
           <GlassSurface className="w-full max-w-sm rounded-2xl p-6 space-y-4">
-            <h3 className="font-display text-base font-bold text-slate-950">
+            <h3 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
               Xóa kết quả phân tích?
             </h3>
-            <p className="text-xs text-slate-600 leading-relaxed">
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
               Thao tác này sẽ xóa báo cáo “{confirmDelete.documentTitle}” khỏi lịch sử học tập trên
               Firestore.
             </p>
@@ -230,7 +238,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               <button
                 type="button"
                 onClick={() => setConfirmDelete(null)}
-                className="px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-xs font-medium cursor-pointer"
+                className="px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium cursor-pointer"
               >
                 Hủy
               </button>

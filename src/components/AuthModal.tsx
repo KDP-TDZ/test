@@ -46,8 +46,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
       setMode(initialMode);
       setError(null);
       setNotice(null);
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') onClose();
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
     }
-  }, [open, initialMode]);
+  }, [open, initialMode, onClose]);
 
   if (!open) return null;
 
@@ -94,7 +99,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/35 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/45 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-labelledby="auth-modal-title"
@@ -102,18 +107,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
       <GlassSurface className="w-full max-w-md rounded-2xl p-6 sm:p-8 shadow-2xl">
         <div className="flex items-start justify-between gap-4 mb-6">
           <div>
-            <h2 id="auth-modal-title" className="text-xl font-bold text-slate-900">
+            <h2 id="auth-modal-title" className="text-xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
               {mode === 'login'
                 ? 'Đăng nhập StudyCheck AI'
                 : mode === 'register'
                 ? 'Tạo tài khoản học sinh'
                 : 'Khôi phục mật khẩu'}
             </h2>
-            <p className="text-sm text-slate-600 mt-1">
+            <p className="text-sm text-slate-600 dark:text-slate-300 mt-1">
               {mode === 'login'
-                ? 'Truy cập kho tài liệu kiểm định và ngân hàng luyện tập cá nhân.'
+                ? 'Truy cập kho tài liệu kiểm định, trung tâm đề thi và bảng xếp hạng.'
                 : mode === 'register'
-                ? 'Lưu toàn bộ lịch sử phân tích và tiến độ học tập trên Firebase.'
+                ? 'Lưu toàn bộ lịch sử phân tích, thẻ ghi nhớ và tiến độ học tập.'
                 : 'Nhập email đã đăng ký để nhận hướng dẫn đặt lại mật khẩu.'}
             </p>
           </div>
@@ -121,22 +126,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
             type="button"
             onClick={onClose}
             aria-label="Đóng hộp thoại đăng nhập"
-            className="p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-900/5 transition-colors cursor-pointer"
+            className="p-2 rounded-lg text-slate-500 dark:text-slate-400 hover:text-[#17243A] dark:hover:text-[#E5EDF9] hover:bg-slate-900/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {error && (
-          <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs text-rose-800 flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
+          <div className="mb-4 rounded-xl border border-rose-200 dark:border-rose-800/70 bg-rose-50 dark:bg-rose-950/50 px-3.5 py-2.5 text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600 dark:text-rose-400" />
             <span>{error}</span>
           </div>
         )}
 
         {notice && (
-          <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs text-emerald-800 flex items-start gap-2">
-            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+          <div className="mb-4 rounded-xl border border-emerald-200 dark:border-emerald-800/70 bg-emerald-50 dark:bg-emerald-950/50 px-3.5 py-2.5 text-xs text-emerald-800 dark:text-emerald-200 flex items-start gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />
             <span>{notice}</span>
           </div>
         )}
@@ -171,10 +176,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
               Tiếp tục với Google
             </WaterRippleButton>
 
-            <div className="my-5 flex items-center gap-3 text-xs text-slate-400">
-              <span className="h-px flex-1 bg-slate-200" />
+            <div className="my-5 flex items-center gap-3 text-xs text-slate-400 dark:text-slate-500">
+              <span className="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
               <span>hoặc dùng email</span>
-              <span className="h-px flex-1 bg-slate-200" />
+              <span className="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
             </div>
           </>
         )}
@@ -182,7 +187,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
         <form onSubmit={handleSubmit} className="space-y-4">
           {mode === 'register' && (
             <div>
-              <label htmlFor="auth-name" className="block text-xs font-medium text-slate-700 mb-1.5">
+              <label htmlFor="auth-name" className="block text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5">
                 Họ và tên hiển thị
               </label>
               <div className="relative">
@@ -194,14 +199,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   placeholder="Nguyễn Minh Anh"
-                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-white/85 border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-white/85 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700 text-sm text-[#17243A] dark:text-[#E5EDF9] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
             </div>
           )}
 
           <div>
-            <label htmlFor="auth-email" className="block text-xs font-medium text-slate-700 mb-1.5">
+            <label htmlFor="auth-email" className="block text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5">
               Địa chỉ email
             </label>
             <div className="relative">
@@ -213,14 +218,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="hocsinh@example.com"
-                className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-white/85 border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-white/85 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700 text-sm text-[#17243A] dark:text-[#E5EDF9] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
           </div>
 
           {mode !== 'reset' && (
             <div>
-              <label htmlFor="auth-password" className="block text-xs font-medium text-slate-700 mb-1.5">
+              <label htmlFor="auth-password" className="block text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5">
                 Mật khẩu
               </label>
               <div className="relative">
@@ -233,7 +238,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Tối thiểu 6 ký tự"
-                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-white/85 border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-white/85 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700 text-sm text-[#17243A] dark:text-[#E5EDF9] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
             </div>
@@ -250,7 +255,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
           </WaterRippleButton>
         </form>
 
-        <div className="mt-5 pt-4 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+        <div className="mt-5 pt-4 border-t border-slate-200/80 dark:border-slate-700/80 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-300">
           {mode === 'login' ? (
             <>
               <button
@@ -260,7 +265,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
                   setError(null);
                   setNotice(null);
                 }}
-                className="hover:text-sky-700 font-medium cursor-pointer"
+                className="hover:text-blue-600 dark:hover:text-blue-400 font-medium cursor-pointer"
               >
                 Chưa có tài khoản? Tạo mới
               </button>
@@ -271,7 +276,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
                   setError(null);
                   setNotice(null);
                 }}
-                className="hover:text-sky-700 cursor-pointer"
+                className="hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer"
               >
                 Quên mật khẩu?
               </button>
@@ -284,7 +289,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
                 setError(null);
                 setNotice(null);
               }}
-              className="hover:text-sky-700 font-medium cursor-pointer"
+              className="hover:text-blue-600 dark:hover:text-blue-400 font-medium cursor-pointer"
             >
               Quay lại đăng nhập
             </button>

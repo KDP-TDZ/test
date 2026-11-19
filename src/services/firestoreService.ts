@@ -631,3 +631,439 @@ export async function fetchSystemAiConfigFromFirestore(): Promise<SystemAiConfig
     return null;
   }
 }
+
+// === Extended Practice Bank (Flagging + Spaced Repetition 1/3/7) ===
+export async function togglePracticeItemFlag(item: PracticeItem): Promise<PracticeItem> {
+  const path = `practiceItems/${item.itemId}`;
+  const nextFlag = !item.flaggedForReview;
+  try {
+    await updateDoc(doc(db, 'practiceItems', item.itemId), {
+      flaggedForReview: nextFlag,
+    });
+    return { ...item, flaggedForReview: nextFlag };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function flagQuizQuestionForReview(
+  uid: string,
+  question: QuizQuestion
+): Promise<boolean> {
+  const itemId = makeSafeId(`prac_${uid}_${question.questionId}`);
+  const path = `practiceItems/${itemId}`;
+  const now = new Date().toISOString();
+  try {
+    const existingSnap = await getDoc(doc(db, 'practiceItems', itemId));
+    if (existingSnap.exists()) {
+      const prev = existingSnap.data() as PracticeItem;
+      const nextFlag = !prev.flaggedForReview;
+      await updateDoc(doc(db, 'practiceItems', itemId), { flaggedForReview: nextFlag });
+      return nextFlag;
+    }
+    const item: PracticeItem = {
+      itemId,
+      questionId: question.questionId,
+      ownerUid: uid,
+      questionText: question.questionText.slice(0, 2000),
+      optionA: question.optionA.slice(0, 500),
+      optionB: question.optionB.slice(0, 500),
+      optionC: question.optionC.slice(0, 500),
+      optionD: question.optionD.slice(0, 500),
+      correctAnswer: question.correctAnswer,
+      explanation: question.explanation.slice(0, 2000),
+      ...(question.distractorExplanations ? { distractorExplanations: question.distractorExplanations } : {}),
+      sourceReference: (question.sourceReference || '').slice(0, 300),
+      subject: question.subject,
+      grade: question.grade,
+      chapter: question.chapter.slice(0, 200),
+      concept: question.concept.slice(0, 200),
+      difficulty: question.difficulty,
+      ...(question.cognitiveLevel ? { cognitiveLevel: question.cognitiveLevel } : {}),
+      ...(question.knowledgeUnitType ? { knowledgeUnitType: question.knowledgeUnitType } : {}),
+      flaggedForReview: true,
+      reviewStage: 0,
+      reviewIntervalDays: 1,
+      nextReviewAt: new Date(Date.now() + 86400000).toISOString(),
+      attemptCount: 1,
+      correctCount: 0,
+      incorrectCount: 0,
+      lastAttemptAt: now,
+      lastResult: 'correct',
+      masteryStatus: 'Đang củng cố',
+      createdAt: now,
+    };
+    await setDoc(doc(db, 'practiceItems', itemId), item);
+    return true;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function recordPracticeRetryWithSchedule(
+  item: PracticeItem,
+  isCorrect: boolean
+): Promise<PracticeItem> {
+  const { calculateNextReviewSchedule } = await import('../core/examScoring');
+  const path = `practiceItems/${item.itemId}`;
+  const now = new Date().toISOString();
+  const nextAttemptCount = item.attemptCount + 1;
+  const nextCorrectCount = item.correctCount + (isCorrect ? 1 : 0);
+  const nextIncorrectCount = item.incorrectCount + (isCorrect ? 0 : 1);
+  const nextStatus: PracticeItem['masteryStatus'] =
+    isCorrect && nextCorrectCount >= 3 ? 'Tạm nắm vững' : isCorrect ? 'Đang củng cố' : 'Cần ôn tập';
+  const schedule = calculateNextReviewSchedule({
+    currentStage: item.reviewStage,
+    isCorrect,
+    fromIso: now,
+  });
+
+  try {
+    await updateDoc(doc(db, 'practiceItems', item.itemId), {
+      attemptCount: nextAttemptCount,
+      correctCount: nextCorrectCount,
+      incorrectCount: nextIncorrectCount,
+      lastAttemptAt: now,
+      lastResult: isCorrect ? 'correct' : 'incorrect',
+      masteryStatus: nextStatus,
+      reviewStage: schedule.nextStage,
+      reviewIntervalDays: schedule.intervalDays,
+      nextReviewAt: schedule.nextReviewAt,
+    });
+    return {
+      ...item,
+      attemptCount: nextAttemptCount,
+      correctCount: nextCorrectCount,
+      incorrectCount: nextIncorrectCount,
+      lastAttemptAt: now,
+      lastResult: isCorrect ? 'correct' : 'incorrect',
+      masteryStatus: nextStatus,
+      reviewStage: schedule.nextStage,
+      reviewIntervalDays: schedule.intervalDays,
+      nextReviewAt: schedule.nextReviewAt,
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+// === Flashcards ===
+export async function listUserFlashcards(uid: string): Promise<import('../core/types').FlashcardItem[]> {
+  const path = 'flashcards';
+  try {
+    const q = query(
+      collection(db, 'flashcards'),
+      where('ownerUid', '==', uid),
+      orderBy('updatedAt', 'desc'),
+      limit(150)
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => d.data() as import('../core/types').FlashcardItem);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
+export async function saveFlashcard(card: import('../core/types').FlashcardItem): Promise<void> {
+  const safeId = makeSafeId(card.flashcardId);
+  const path = `flashcards/${safeId}`;
+  try {
+    await setDoc(doc(db, 'flashcards', safeId), { ...card, flashcardId: safeId });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function updateFlashcardMastery(
+  flashcardId: string,
+  masteryStatus: 'Mới tạo' | 'Đang ôn' | 'Đã nhớ',
+  reviewStage: 0 | 1 | 2 | 3
+): Promise<void> {
+  const path = `flashcards/${flashcardId}`;
+  const days = reviewStage === 0 ? 1 : reviewStage === 1 ? 3 : reviewStage === 2 ? 7 : 14;
+  try {
+    await updateDoc(doc(db, 'flashcards', flashcardId), {
+      masteryStatus,
+      reviewStage,
+      nextReviewAt: new Date(Date.now() + days * 86400000).toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function deleteFlashcard(flashcardId: string): Promise<void> {
+  const path = `flashcards/${flashcardId}`;
+  try {
+    await deleteDoc(doc(db, 'flashcards', flashcardId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+// === Reference Chunks Editing ===
+export async function updateReferenceChunkContent(
+  chunkId: string,
+  updates: Partial<Pick<ReferenceChunk, 'chapter' | 'lesson' | 'pageNumber' | 'sectionTitle' | 'content'>>
+): Promise<void> {
+  const path = `referenceChunks/${chunkId}`;
+  try {
+    await updateDoc(doc(db, 'referenceChunks', chunkId), updates);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+// === Exam Center & Đua Top Leaderboard ===
+export async function listExamBlueprints(): Promise<import('../core/types').ExamBlueprint[]> {
+  const path = 'examBlueprints';
+  try {
+    const snap = await getDocs(query(collection(db, 'examBlueprints'), orderBy('updatedAt', 'desc'), limit(60)));
+    return snap.docs.map((d) => d.data() as import('../core/types').ExamBlueprint);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
+export async function saveExamBlueprint(bp: import('../core/types').ExamBlueprint): Promise<void> {
+  const safeId = makeSafeId(bp.blueprintId);
+  const path = `examBlueprints/${safeId}`;
+  try {
+    await setDoc(doc(db, 'examBlueprints', safeId), { ...bp, blueprintId: safeId });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function deleteExamBlueprint(blueprintId: string): Promise<void> {
+  const path = `examBlueprints/${blueprintId}`;
+  try {
+    await deleteDoc(doc(db, 'examBlueprints', blueprintId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function listExams(onlyPublished = true): Promise<import('../core/types').ExamDocument[]> {
+  const path = 'exams';
+  try {
+    const q = onlyPublished
+      ? query(collection(db, 'exams'), where('published', '==', true), limit(100))
+      : query(collection(db, 'exams'), orderBy('updatedAt', 'desc'), limit(100));
+    const snap = await getDocs(q);
+    const docs = snap.docs.map((d) => d.data() as import('../core/types').ExamDocument);
+    return docs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
+export async function saveExamDocument(exam: import('../core/types').ExamDocument): Promise<void> {
+  const safeId = makeSafeId(exam.examId);
+  const path = `exams/${safeId}`;
+  try {
+    await setDoc(doc(db, 'exams', safeId), { ...exam, examId: safeId });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function deleteExamDocument(examId: string): Promise<void> {
+  const path = `exams/${examId}`;
+  try {
+    await deleteDoc(doc(db, 'exams', examId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
+  }
+}
+
+export async function listUserExamAttempts(uid: string): Promise<import('../core/types').ExamAttempt[]> {
+  const path = 'examAttempts';
+  try {
+    const q = query(
+      collection(db, 'examAttempts'),
+      where('uid', '==', uid),
+      orderBy('submittedAt', 'desc'),
+      limit(60)
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => d.data() as import('../core/types').ExamAttempt);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
+export async function submitExamAttemptAndSyncLeaderboard(params: {
+  exam: import('../core/types').ExamDocument;
+  uid: string;
+  displayName: string;
+  grade: GradeLevel;
+  answers: import('../core/types').ExamQuestionAnswer[];
+  durationSpentSeconds: number;
+}): Promise<{
+  attempt: import('../core/types').ExamAttempt;
+  pointsDelta: number;
+  examPoints: number;
+  leaderboardEntry: import('../core/types').LeaderboardEntry;
+}> {
+  const { computeLeaderboardUpdate, gradeExamSubmission } = await import('../core/examScoring');
+  const { exam, uid, displayName, grade, answers, durationSpentSeconds } = params;
+  const now = new Date().toISOString();
+  const graded = gradeExamSubmission(exam, answers);
+
+  // Check existing leaderboard entry for anti-farming improvement delta
+  const lbRef = doc(db, 'leaderboard', uid);
+  let existingLb: import('../core/types').LeaderboardEntry | null = null;
+  try {
+    const lbSnap = await getDoc(lbRef);
+    if (lbSnap.exists()) {
+      existingLb = lbSnap.data() as import('../core/types').LeaderboardEntry;
+    }
+  } catch {
+    existingLb = null;
+  }
+
+  const lbUpdate = computeLeaderboardUpdate({
+    existing: existingLb,
+    uid,
+    displayName,
+    grade,
+    examId: exam.examId,
+    earnedScore: graded.earnedScore,
+    maxScore: graded.maxScore,
+    nowIso: now,
+  });
+
+  const attemptId = makeSafeId(`ea_${uid}_${exam.examId}_${Date.now()}`);
+  const attempt: import('../core/types').ExamAttempt = {
+    attemptId,
+    examId: exam.examId,
+    examTitle: exam.title,
+    uid,
+    displayName: displayName || 'Học sinh',
+    grade,
+    subject: exam.subject,
+    examType: exam.examType,
+    answers,
+    earnedScore: graded.earnedScore,
+    maxScore: graded.maxScore,
+    percentScore: graded.percentScore,
+    leaderboardPointsAwarded: lbUpdate.pointsDelta,
+    durationSpentSeconds,
+    breakdown: graded.breakdown,
+    submittedAt: now,
+  };
+
+  try {
+    await setDoc(doc(db, 'examAttempts', attemptId), attempt);
+    await setDoc(lbRef, lbUpdate.nextEntry);
+    return {
+      attempt,
+      pointsDelta: lbUpdate.pointsDelta,
+      examPoints: lbUpdate.examPoints,
+      leaderboardEntry: lbUpdate.nextEntry,
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `examAttempts/${attemptId} | leaderboard/${uid}`);
+  }
+}
+
+export async function listLeaderboard(
+  gradeFilter?: GradeLevel | 'all'
+): Promise<import('../core/types').LeaderboardEntry[]> {
+  const path = 'leaderboard';
+  try {
+    const q =
+      gradeFilter && gradeFilter !== 'all'
+        ? query(
+            collection(db, 'leaderboard'),
+            where('grade', '==', gradeFilter),
+            orderBy('totalScore', 'desc'),
+            limit(100)
+          )
+        : query(collection(db, 'leaderboard'), orderBy('totalScore', 'desc'), limit(100));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => d.data() as import('../core/types').LeaderboardEntry);
+  } catch (error) {
+    // Fallback client-side sort if composite index for grade + totalScore hasn't built yet
+    try {
+      const snap = await getDocs(query(collection(db, 'leaderboard'), limit(150)));
+      const all = snap.docs.map((d) => d.data() as import('../core/types').LeaderboardEntry);
+      const filtered =
+        gradeFilter && gradeFilter !== 'all' ? all.filter((e) => e.grade === gradeFilter) : all;
+      return filtered.sort((a, b) => b.totalScore - a.totalScore || b.bestExamScore - a.bestExamScore);
+    } catch (inner) {
+      handleFirestoreError(inner || error, OperationType.LIST, path);
+    }
+  }
+}
+
+// === Feedback & Moderation ===
+export async function submitFeedback(
+  entry: import('../core/types').FeedbackEntry
+): Promise<void> {
+  const safeId = makeSafeId(entry.feedbackId);
+  const path = `feedback/${safeId}`;
+  try {
+    await setDoc(doc(db, 'feedback', safeId), { ...entry, feedbackId: safeId });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function listAllFeedbackForAdmin(): Promise<import('../core/types').FeedbackEntry[]> {
+  const path = 'feedback';
+  try {
+    const q = query(collection(db, 'feedback'), orderBy('createdAt', 'desc'), limit(120));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => d.data() as import('../core/types').FeedbackEntry);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
+export async function updateFeedbackStatus(
+  feedbackId: string,
+  status: 'pending' | 'reviewed' | 'resolved',
+  aiClassification?: string
+): Promise<void> {
+  const path = `feedback/${feedbackId}`;
+  try {
+    await updateDoc(doc(db, 'feedback', feedbackId), {
+      status,
+      ...(aiClassification ? { aiClassification } : {}),
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+// === Resumable AI Jobs ===
+export async function saveAiJobRecord(job: import('../core/types').AiJobRecord): Promise<void> {
+  const safeId = makeSafeId(job.jobId);
+  const path = `aiJobs/${safeId}`;
+  try {
+    await setDoc(doc(db, 'aiJobs', safeId), { ...job, jobId: safeId });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function listUserAiJobs(uid: string): Promise<import('../core/types').AiJobRecord[]> {
+  const path = 'aiJobs';
+  try {
+    const q = query(
+      collection(db, 'aiJobs'),
+      where('ownerUid', '==', uid),
+      orderBy('updatedAt', 'desc'),
+      limit(15)
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => d.data() as import('../core/types').AiJobRecord);
+  } catch {
+    return [];
+  }
+}
+

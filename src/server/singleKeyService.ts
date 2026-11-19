@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import type { KeyTestStatus, SingleApiKeyStatus } from '../core/types';
@@ -38,6 +39,7 @@ interface CachedSingleKey {
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
 const ENCRYPTED_KEY_FILE = path.join(DATA_DIR, 'single-gemini-key.enc');
+const TMP_ENCRYPTED_KEY_FILE = path.join(os.tmpdir(), 'studycheck-single-gemini-key.enc');
 const FIRESTORE_SECRET_DOC = 'adminSecrets/primary';
 
 function deriveAesKey(): Buffer {
@@ -93,46 +95,57 @@ export function validateApiKeyInput(rawKey: string): { valid: boolean; reason?: 
 let cachedSingleKey: CachedSingleKey | null = null;
 
 function writeLocalEncryptedFile(record: StoredEncryptedSecret): void {
+  const serialized = JSON.stringify(record, null, 2);
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
     }
-    fs.writeFileSync(ENCRYPTED_KEY_FILE, JSON.stringify(record, null, 2), { mode: 0o600 });
+    fs.writeFileSync(ENCRYPTED_KEY_FILE, serialized, { mode: 0o600 });
   } catch {
-    // Best-effort local persistence (e.g. read-only container edge cases still use memory + Firestore)
+    // Fallback to os.tmpdir() on read-only serverless containers (e.g. Vercel)
+  }
+  try {
+    fs.writeFileSync(TMP_ENCRYPTED_KEY_FILE, serialized, { mode: 0o600 });
+  } catch {
+    // Ignore if tmpdir unavailable
   }
 }
 
 function removeLocalEncryptedFile(): void {
-  try {
-    if (fs.existsSync(ENCRYPTED_KEY_FILE)) {
-      fs.unlinkSync(ENCRYPTED_KEY_FILE);
+  for (const filePath of [ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE]) {
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch {
+      // Ignore cleanup errors
     }
-  } catch {
-    // Ignore cleanup errors
   }
 }
 
 function loadLocalEncryptedFile(): void {
-  try {
-    if (!fs.existsSync(ENCRYPTED_KEY_FILE)) return;
-    const raw = fs.readFileSync(ENCRYPTED_KEY_FILE, 'utf8');
-    const parsed = JSON.parse(raw) as StoredEncryptedSecret;
-    if (!parsed.ciphertext || !parsed.iv || !parsed.authTag) return;
-    const rawKey = decryptApiKey(parsed);
-    if (!rawKey) return;
-    cachedSingleKey = {
-      rawKey,
-      maskedKey: parsed.maskedIdentifier || maskApiKey(rawKey),
-      label: parsed.label || 'Gemini API Key duy nhất',
-      updatedAt: parsed.updatedAt || new Date().toISOString(),
-      updatedBy: parsed.updatedBy || 'admin',
-      lastTestStatus: parsed.lastTestStatus,
-      lastTestAt: parsed.lastTestAt,
-      lastTestMessage: parsed.lastTestMessage,
-    };
-  } catch {
-    cachedSingleKey = null;
+  for (const filePath of [ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE]) {
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const parsed = JSON.parse(raw) as StoredEncryptedSecret;
+      if (!parsed.ciphertext || !parsed.iv || !parsed.authTag) continue;
+      const rawKey = decryptApiKey(parsed);
+      if (!rawKey) continue;
+      cachedSingleKey = {
+        rawKey,
+        maskedKey: parsed.maskedIdentifier || maskApiKey(rawKey),
+        label: parsed.label || 'Gemini API Key duy nhất',
+        updatedAt: parsed.updatedAt || new Date().toISOString(),
+        updatedBy: parsed.updatedBy || 'admin',
+        lastTestStatus: parsed.lastTestStatus,
+        lastTestAt: parsed.lastTestAt,
+        lastTestMessage: parsed.lastTestMessage,
+      };
+      return;
+    } catch {
+      cachedSingleKey = null;
+    }
   }
 }
 

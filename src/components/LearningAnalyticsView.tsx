@@ -27,11 +27,11 @@ interface LearningAnalyticsViewProps {
 }
 
 const MASTERY_BADGE: Record<MasteryStatus, string> = {
-  'Tạm nắm vững': 'text-emerald-700 bg-emerald-50 border-emerald-200',
-  'Đang củng cố': 'text-indigo-700 bg-indigo-50 border-indigo-200',
-  'Cần ôn tập': 'text-rose-700 bg-rose-50 border-rose-200',
-  'Đã học qua': 'text-sky-700 bg-sky-50 border-sky-200',
-  'Đã tiếp cận': 'text-slate-700 bg-slate-100 border-slate-200',
+  'Tạm nắm vững': 'text-emerald-700 dark:text-emerald-400',
+  'Đang củng cố': 'text-indigo-700 dark:text-indigo-400',
+  'Cần ôn tập': 'text-rose-700 dark:text-rose-400',
+  'Đã học qua': 'text-blue-700 dark:text-blue-400',
+  'Đã tiếp cận': 'text-slate-600 dark:text-slate-400',
 };
 
 export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
@@ -172,11 +172,11 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
   if (progressList.length === 0 && quizAttempts.length === 0) {
     return (
       <GlassSurface className="rounded-3xl p-8 sm:p-10 text-center space-y-4">
-        <BarChart3 className="w-10 h-10 text-sky-700 mx-auto" />
-        <h1 className="font-display text-2xl font-bold text-slate-950">
+        <BarChart3 className="w-10 h-10 text-blue-600 dark:text-blue-400 mx-auto" />
+        <h1 className="font-display text-2xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
           Thống kê kiến thức đã học
         </h1>
-        <p className="text-sm text-slate-600 max-w-lg mx-auto">
+        <p className="text-sm text-slate-600 dark:text-slate-300 max-w-lg mx-auto">
           Bạn chưa có dữ liệu khái niệm nào được ghi nhận. Hãy kiểm định một tài liệu hoặc làm bài
           trắc nghiệm để hệ thống lập bản đồ kiến thức theo từng môn và chương.
         </p>
@@ -189,16 +189,16 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
     <div className="space-y-7">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-bold text-slate-950">
+          <h1 className="font-display text-2xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
             Thống kê kiến thức đã học
           </h1>
-          <p className="text-xs sm:text-sm text-slate-600 mt-1">
+          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1">
             Tổng hợp toàn bộ khái niệm đã tiếp cận từ tài liệu kiểm định và tiến độ làm trắc nghiệm
             qua nhiều phiên học.
           </p>
         </div>
 
-        <div className="inline-flex rounded-xl border border-slate-200 bg-white/85 p-1 text-xs font-medium self-start">
+        <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 bg-white/85 dark:bg-slate-900/90 p-1 text-xs font-medium self-start">
           {(
             [
               ['7d', '7 ngày'],
@@ -212,7 +212,9 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
               type="button"
               onClick={() => setTimeRange(id)}
               className={`px-3 py-1.5 rounded-lg cursor-pointer ${
-                timeRange === id ? 'bg-sky-600 text-white' : 'text-slate-600 hover:text-slate-900'
+                timeRange === id
+                  ? 'bg-blue-600 text-white'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-[#17243A] dark:hover:text-[#E5EDF9]'
               }`}
             >
               {label}
@@ -222,8 +224,8 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
       </div>
 
       {/* Mastery Rule Transparency Banner */}
-      <div className="rounded-2xl border border-sky-200 bg-sky-50/80 px-4 py-3 text-xs text-sky-950 flex items-start gap-2.5">
-        <Info className="w-4 h-4 text-sky-700 shrink-0 mt-0.5" />
+      <div className="rounded-2xl border border-sky-200 dark:border-sky-800/70 bg-sky-50/80 dark:bg-sky-950/35 px-4 py-3 text-xs text-sky-950 dark:text-sky-200 flex items-start gap-2.5">
+        <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
         <span>
           <strong>Quy tắc đánh giá “Tạm nắm vững”:</strong> Hệ thống không bao giờ đánh dấu nắm vững
           chỉ sau 1 câu trả lời đúng. Một khái niệm chỉ đạt <strong>Tạm nắm vững</strong> khi có ít
@@ -235,20 +237,20 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
       {/* 7 Top Summary Metrics */}
       <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3.5">
         {[
-          { label: 'Tổng khái niệm', val: summary.totalConcepts, cls: 'text-slate-950' },
-          { label: 'Tạm nắm vững', val: summary.mastered, cls: 'text-emerald-700' },
-          { label: 'Đang củng cố', val: summary.reinforcing, cls: 'text-indigo-700' },
-          { label: 'Cần ôn tập', val: summary.needsReview, cls: 'text-rose-700' },
-          { label: 'Đã tiếp cận / học qua', val: summary.studiedOrSeen, cls: 'text-sky-700' },
-          { label: 'Câu trắc nghiệm đã làm', val: summary.totalAttempts, cls: 'text-slate-950' },
+          { label: 'Tổng khái niệm', val: summary.totalConcepts, cls: 'text-[#17243A] dark:text-[#E5EDF9]' },
+          { label: 'Tạm nắm vững', val: summary.mastered, cls: 'text-emerald-700 dark:text-emerald-400' },
+          { label: 'Đang củng cố', val: summary.reinforcing, cls: 'text-indigo-700 dark:text-indigo-400' },
+          { label: 'Cần ôn tập', val: summary.needsReview, cls: 'text-rose-700 dark:text-rose-400' },
+          { label: 'Đã tiếp cận / học qua', val: summary.studiedOrSeen, cls: 'text-blue-700 dark:text-blue-400' },
+          { label: 'Câu trắc nghiệm đã làm', val: summary.totalAttempts, cls: 'text-[#17243A] dark:text-[#E5EDF9]' },
           {
             label: 'Đúng trắc nghiệm TB',
             val: summary.avgQuizAccuracy !== null ? `${summary.avgQuizAccuracy}%` : '—',
-            cls: 'text-emerald-700',
+            cls: 'text-emerald-700 dark:text-emerald-400',
           },
         ].map((card) => (
           <GlassSurface key={card.label} className="rounded-2xl p-4">
-            <p className="text-[11px] font-medium text-slate-500">{card.label}</p>
+            <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{card.label}</p>
             <p className={`font-mono text-2xl font-bold tabular-nums mt-1 ${card.cls}`}>{card.val}</p>
           </GlassSurface>
         ))}
@@ -258,7 +260,9 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-5 glass-surface rounded-2xl p-6 space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-display text-base font-bold text-slate-950">Mức độ theo môn học</h2>
+            <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+              Mức độ theo môn học
+            </h2>
             {selectedSubject !== 'all' && (
               <button
                 type="button"
@@ -266,7 +270,7 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
                   setSelectedSubject('all');
                   setSelectedChapter(null);
                 }}
-                className="text-xs text-sky-700 hover:underline cursor-pointer"
+                className="text-xs text-blue-700 dark:text-blue-400 hover:underline cursor-pointer"
               >
                 Xem tất cả môn
               </button>
@@ -286,22 +290,24 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
                     setSelectedChapter(null);
                   }}
                   className={`w-full text-left rounded-xl p-3.5 border transition-colors cursor-pointer ${
-                    active ? 'border-sky-500 bg-sky-50/80' : 'border-slate-200 bg-white/80 hover:bg-white'
+                    active
+                      ? 'border-blue-500 bg-blue-50/80 dark:bg-blue-950/50'
+                      : 'border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/80 hover:bg-white dark:hover:bg-slate-900'
                   }`}
                 >
-                  <div className="flex items-center justify-between text-xs font-semibold text-slate-900">
+                  <div className="flex items-center justify-between text-xs font-semibold text-[#17243A] dark:text-[#E5EDF9]">
                     <span>{SUBJECT_LABELS[st.subject]}</span>
-                    <span className="font-mono tabular-nums text-emerald-700">
+                    <span className="font-mono tabular-nums text-emerald-700 dark:text-emerald-400">
                       {st.mastered}/{st.total} nắm vững ({masteryPct}%)
                     </span>
                   </div>
-                  <div className="h-2 rounded-full bg-slate-200 overflow-hidden mt-2">
+                  <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden mt-2">
                     <div
-                      className="h-full bg-gradient-to-r from-sky-500 to-emerald-500"
+                      className="h-full bg-gradient-to-r from-blue-500 to-emerald-500"
                       style={{ width: `${Math.max(4, masteryPct)}%` }}
                     />
                   </div>
-                  <p className="text-[11px] text-slate-500 mt-1.5">
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5">
                     Cần ôn: {st.needsReview} · Lượt làm câu hỏi: {st.attempts}
                   </p>
                 </button>
@@ -312,15 +318,15 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
 
         <div className="lg:col-span-7 glass-surface rounded-2xl p-6 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-display text-base font-bold text-slate-950 flex items-center gap-2">
-              <BookOpen className="w-4 h-4 text-indigo-700" />
+            <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9] flex items-center gap-2">
+              <BookOpen className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
               Bản đồ chương học & Chi tiết khái niệm
             </h2>
             {selectedChapter && (
               <button
                 type="button"
                 onClick={() => setSelectedChapter(null)}
-                className="text-xs text-sky-700 hover:underline cursor-pointer"
+                className="text-xs text-blue-700 dark:text-blue-400 hover:underline cursor-pointer"
               >
                 Hiện tất cả chương
               </button>
@@ -336,7 +342,7 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
                 className={`px-3 py-1.5 rounded-xl text-xs font-medium border cursor-pointer ${
                   selectedChapter === ch.chapter
                     ? 'bg-indigo-600 text-white border-indigo-600'
-                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'
                 }`}
               >
                 {ch.chapter} ({ch.total})
@@ -348,25 +354,21 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
             {filteredConcepts.map((c) => (
               <div
                 key={c.conceptId}
-                className="rounded-xl bg-white/90 border border-slate-200 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                className="document-paper rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
               >
                 <div className="min-w-0">
-                  <p className="font-semibold text-slate-900">{c.conceptTitle}</p>
-                  <p className="text-slate-500 mt-0.5">
+                  <p className="font-semibold text-[#17243A] dark:text-[#E5EDF9]">{c.conceptTitle}</p>
+                  <p className="text-slate-500 dark:text-slate-400 mt-0.5">
                     {SUBJECT_LABELS[c.subjectId]} · {c.chapterId} · Gặp {c.encounteredCount} lần
                   </p>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
-                  <span className="font-mono text-slate-600 tabular-nums">
+                  <span className="font-mono text-slate-600 dark:text-slate-300 tabular-nums">
                     {c.practiceAttemptCount > 0
                       ? `${c.correctAttempts}/${c.practiceAttemptCount} đúng (${c.recentAccuracy ?? 0}%)`
                       : 'Chưa làm quiz'}
                   </span>
-                  <span
-                    className={`px-2.5 py-0.5 rounded-md border text-[11px] font-semibold ${
-                      MASTERY_BADGE[c.masteryStatus]
-                    }`}
-                  >
+                  <span className={`text-[11px] font-semibold ${MASTERY_BADGE[c.masteryStatus]}`}>
                     {c.masteryStatus}
                   </span>
                 </div>
@@ -379,11 +381,13 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
       {/* Time-Series Progress Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <GlassSurface className="rounded-2xl p-6 space-y-4">
-          <h2 className="font-display text-base font-bold text-slate-950">
+          <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
             Xu hướng độ chính xác tài liệu kiểm định
           </h2>
           {docScoreSeries.length === 0 ? (
-            <p className="text-xs text-slate-500">Chưa có bài phân tích nào trong khoảng thời gian này.</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Chưa có bài phân tích nào trong khoảng thời gian này.
+            </p>
           ) : (
             <div className="space-y-2">
               <svg viewBox="0 0 420 150" className="w-full h-40 overflow-visible">
@@ -391,8 +395,23 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
                   const y = 130 - (tick / 100) * 110;
                   return (
                     <g key={tick}>
-                      <line x1={32} y1={y} x2={410} y2={y} stroke="#e2e8f0" strokeDasharray="3 3" />
-                      <text x={0} y={y + 4} fontSize="10" fill="#64748b" fontFamily="monospace">
+                      <line
+                        x1={32}
+                        y1={y}
+                        x2={410}
+                        y2={y}
+                        stroke="currentColor"
+                        className="text-slate-200 dark:text-slate-700"
+                        strokeDasharray="3 3"
+                      />
+                      <text
+                        x={0}
+                        y={y + 4}
+                        fontSize="10"
+                        fill="currentColor"
+                        className="text-slate-500 dark:text-slate-400"
+                        fontFamily="monospace"
+                      >
                         {tick}%
                       </text>
                     </g>
@@ -401,7 +420,7 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
                 {docScoreSeries.length > 1 && (
                   <polyline
                     fill="none"
-                    stroke="#0284c7"
+                    stroke="#2563EB"
                     strokeWidth="2.5"
                     points={docScoreSeries
                       .map((d, i) => {
@@ -420,7 +439,7 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
                   const y = 130 - ((d.accuracyScore ?? 0) / 100) * 110;
                   return (
                     <g key={d.analysisId}>
-                      <circle cx={x} cy={y} r="4.5" fill="#0284c7" stroke="#ffffff" strokeWidth="1.5" />
+                      <circle cx={x} cy={y} r="4.5" fill="#2563EB" stroke="#ffffff" strokeWidth="1.5" />
                       <title>{`${d.documentTitle}: ${d.accuracyScore}%`}</title>
                     </g>
                   );
@@ -431,24 +450,26 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
         </GlassSurface>
 
         <GlassSurface className="rounded-2xl p-6 space-y-4">
-          <h2 className="font-display text-base font-bold text-slate-950">
+          <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
             Tiến độ luyện tập câu hỏi theo ngày
           </h2>
           {timelineSeries.length === 0 ? (
-            <p className="text-xs text-slate-500">Chưa có lượt trả lời trắc nghiệm trong khoảng thời gian này.</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Chưa có lượt trả lời trắc nghiệm trong khoảng thời gian này.
+            </p>
           ) : (
             <div className="space-y-2.5 max-h-44 overflow-y-auto pr-1">
               {timelineSeries.map((row) => {
                 const pct = row.total > 0 ? Math.round((row.correct / row.total) * 100) : 0;
                 return (
                   <div key={row.date} className="text-xs space-y-1">
-                    <div className="flex items-center justify-between font-mono text-slate-700">
+                    <div className="flex items-center justify-between font-mono text-slate-700 dark:text-slate-200">
                       <span>{row.date}</span>
                       <span>
                         {row.correct}/{row.total} đúng ({pct}%)
                       </span>
                     </div>
-                    <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
+                    <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
                       <div className="h-full bg-emerald-500" style={{ width: `${pct}%` }} />
                     </div>
                   </div>
@@ -463,15 +484,15 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
       <GlassSurface className="rounded-2xl p-6 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h2 className="font-display text-base font-bold text-slate-950 flex items-center gap-2">
+            <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9] flex items-center gap-2">
               {weakConcepts.length > 0 ? (
-                <AlertTriangle className="w-5 h-5 text-rose-600" />
+                <AlertTriangle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
               ) : (
-                <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
               )}
               Kiến thức yếu / hay nhầm lẫn ({weakConcepts.length})
             </h2>
-            <p className="text-xs text-slate-600 mt-0.5">
+            <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
               Các khái niệm cần ưu tiên luyện tập lại trong Ngân hàng luyện tập.
             </p>
           </div>
@@ -485,7 +506,7 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
         </div>
 
         {weakConcepts.length === 0 ? (
-          <p className="text-xs text-slate-600">
+          <p className="text-xs text-slate-600 dark:text-slate-300">
             Hiện chưa có khái niệm nào ở trạng thái “Cần ôn tập”. Tiếp tục duy trì luyện tập đa phiên!
           </p>
         ) : (
@@ -493,17 +514,23 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
             {weakConcepts.map((wc) => (
               <div
                 key={wc.conceptId}
-                className="rounded-xl bg-rose-50/70 border border-rose-200 p-4 text-xs space-y-1.5"
+                className="rounded-xl bg-rose-50/70 dark:bg-rose-950/35 border border-rose-200 dark:border-rose-800/70 p-4 text-xs space-y-1.5"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-rose-950">{wc.conceptTitle}</span>
-                  <span className="font-mono text-rose-700">Sai {wc.incorrectAttempts} lần</span>
+                  <span className="font-semibold text-rose-950 dark:text-rose-200">
+                    {wc.conceptTitle}
+                  </span>
+                  <span className="font-mono text-rose-700 dark:text-rose-400">
+                    Sai {wc.incorrectAttempts} lần
+                  </span>
                 </div>
-                <p className="text-slate-600">
+                <p className="text-slate-600 dark:text-slate-300">
                   {SUBJECT_LABELS[wc.subjectId]} · {wc.chapterId}
                 </p>
                 {wc.lastMistakeNote && (
-                  <p className="text-slate-700 italic line-clamp-2">“{wc.lastMistakeNote}”</p>
+                  <p className="text-slate-700 dark:text-slate-300 italic line-clamp-2">
+                    “{wc.lastMistakeNote}”
+                  </p>
                 )}
               </div>
             ))}

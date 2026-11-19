@@ -192,3 +192,117 @@ export async function ingestReferenceFromPdfBuffer(params: {
     extractedSummary: `Đã lập chỉ mục ${pages.length} trang thành ${chunks.length} đoạn tri thức.`,
   };
 }
+
+export async function ingestReferenceFromDocxBuffer(params: {
+  buffer: Buffer;
+  referenceId: string;
+  grade: GradeLevel;
+  subject: SubjectId;
+  textbookSeries: string;
+}): Promise<IngestResult> {
+  const mammoth = await import('mammoth');
+  const result = await mammoth.extractRawText({ buffer: params.buffer });
+  const raw = (result.value || '').trim();
+  if (raw.length < 30) {
+    throw new Error('File DOCX không chứa văn bản học thuật đọc được.');
+  }
+  return ingestReferenceFromTextOrJson({
+    mode: 'text',
+    content: raw,
+    referenceId: params.referenceId,
+    grade: params.grade,
+    subject: params.subject,
+    textbookSeries: params.textbookSeries,
+  });
+}
+
+export function ingestReferenceFromTextOrJson(params: {
+  mode: 'text' | 'json';
+  content: string;
+  referenceId: string;
+  grade: GradeLevel;
+  subject: SubjectId;
+  textbookSeries: string;
+}): IngestResult {
+  const raw = (params.content || '').trim();
+  if (raw.length < 20) {
+    throw new Error('Nội dung tài liệu tham chiếu quá ngắn (tối thiểu 20 ký tự).');
+  }
+
+  if (params.mode === 'json') {
+    const parsed = JSON.parse(raw) as Array<{
+      chapter?: string;
+      lesson?: string;
+      pageNumber?: number;
+      sectionTitle?: string;
+      content?: string;
+      keywords?: string[];
+    }>;
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      throw new Error('JSON phải là mảng các đoạn tri thức (ví dụ: [{ chapter, lesson, pageNumber, content }]).');
+    }
+    const chunks: ReferenceChunk[] = parsed
+      .filter((item) => item && typeof item.content === 'string' && item.content.trim().length > 0)
+      .slice(0, 120)
+      .map((item, idx) => ({
+        chunkId: `${params.referenceId}_j${idx + 1}`,
+        referenceId: params.referenceId,
+        grade: params.grade,
+        subject: params.subject,
+        textbookSeries: params.textbookSeries,
+        chapter: (item.chapter || 'Chương tổng hợp').slice(0, 180),
+        lesson: (item.lesson || `Mục ${idx + 1}`).slice(0, 180),
+        pageNumber: Number(item.pageNumber) || idx + 1,
+        sectionTitle: (item.sectionTitle || item.lesson || `Mục ${idx + 1}`).slice(0, 180),
+        content: item.content!.trim().slice(0, 6000),
+        keywords: Array.isArray(item.keywords) ? item.keywords.slice(0, 12) : [],
+        learningObjectives: [],
+        conceptTags: [],
+      }));
+
+    if (chunks.length === 0) {
+      throw new Error('Không tìm thấy mục nào có trường "content" hợp lệ trong JSON.');
+    }
+
+    const chapters = Array.from(new Set(chunks.map((c) => c.chapter)));
+    return {
+      chunks,
+      chapters,
+      pageCount: chunks.length,
+      extractedSummary: `Đã nhập ${chunks.length} đoạn tri thức từ JSON cấu trúc.`,
+    };
+  }
+
+  // Plain text / Markdown split into logical pages (~1800 chars each)
+  const blocks = raw.split(/\n{2,}/).filter((b) => b.trim().length > 0);
+  const pages: { pageNumber: number; text: string }[] = [];
+  let buf = '';
+  let pageNum = 1;
+  for (const b of blocks) {
+    if (buf.length + b.length > 1800 && buf.length > 0) {
+      pages.push({ pageNumber: pageNum, text: buf.trim() });
+      pageNum += 1;
+      buf = b;
+    } else {
+      buf += (buf ? '\n\n' : '') + b;
+    }
+  }
+  if (buf.trim()) {
+    pages.push({ pageNumber: pageNum, text: buf.trim() });
+  }
+
+  const chunks = buildChunksFromPages({
+    referenceId: params.referenceId,
+    grade: params.grade,
+    subject: params.subject,
+    textbookSeries: params.textbookSeries,
+    pages,
+  });
+  const chapters = Array.from(new Set(chunks.map((c) => c.chapter)));
+  return {
+    chunks,
+    chapters,
+    pageCount: pages.length,
+    extractedSummary: `Đã lập chỉ mục ${pages.length} phần văn bản thành ${chunks.length} đoạn tri thức.`,
+  };
+}

@@ -19,5 +19,12 @@ test('firestore.rules enforces Eight Pillars and Dirty Dozen defenses', () => {
   assert.match(rules, /match\s+\/adminSecrets\/\{secretId\}/);
   assert.match(rules, /match\s+\/systemConfig\/\{configId\}/);
   assert.match(rules, /match\s+\/practiceItems\/\{itemId\}/);
+  assert.match(rules, /match\s+\/examBlueprints\/\{blueprintId\}/);
+  assert.match(rules, /match\s+\/exams\/\{examId\}/);
+  assert.match(rules, /match\s+\/examAttempts\/\{attemptId\}[\s\S]*allow\s+update,\s*delete:\s*if\s+false;/);
+  assert.match(rules, /match\s+\/leaderboard\/\{uid\}/);
+  assert.match(rules, /match\s+\/flashcards\/\{flashcardId\}/);
+  assert.match(rules, /match\s+\/feedback\/\{feedbackId\}/);
+  assert.match(rules, /match\s+\/aiJobs\/\{jobId\}/);
   assert.match(rules, /match\s+\/auditLogs\/\{logId\}[\s\S]*allow\s+update,\s*delete:\s*if\s+false;/);
 });

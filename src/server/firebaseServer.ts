@@ -17,7 +17,24 @@ export interface FirebaseAppletConfig {
 const configPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
 export const firebaseConfig: FirebaseAppletConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
-export const SUPER_ADMIN_EMAIL = (process.env.SUPER_ADMIN_EMAIL || 'tuankhang2011pm@gmail.com').trim().toLowerCase();
+const DEFAULT_SUPER_ADMIN_EMAILS = ['tuankhang2011pm@gmail.com', 'tuankhangnek@gmail.com'];
+
+export const PROTECTED_SUPER_ADMIN_EMAILS = new Set(
+  DEFAULT_SUPER_ADMIN_EMAILS.map((e) => e.trim().toLowerCase())
+);
+
+export const SUPER_ADMIN_EMAILS: Set<string> = new Set(
+  [
+    ...DEFAULT_SUPER_ADMIN_EMAILS,
+    ...(process.env.SUPER_ADMIN_EMAIL || '').split(','),
+    ...(process.env.SUPER_ADMIN_EMAILS || '').split(','),
+  ]
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean)
+);
+
+export const SUPER_ADMIN_EMAIL =
+  (process.env.SUPER_ADMIN_EMAIL || 'tuankhang2011pm@gmail.com').trim().toLowerCase();
 export const SUPER_ADMIN_UID = (process.env.SUPER_ADMIN_UID || '').trim();
 
 const adminApp = getApps().length
@@ -44,7 +61,7 @@ export function isDecodedSuperAdmin(decoded: DecodedIdToken): boolean {
   if (SUPER_ADMIN_UID && decoded.uid === SUPER_ADMIN_UID) {
     return true;
   }
-  if (decoded.email_verified === true && decoded.email && decoded.email.toLowerCase() === SUPER_ADMIN_EMAIL) {
+  if (decoded.email_verified === true && decoded.email && SUPER_ADMIN_EMAILS.has(decoded.email.toLowerCase())) {
     return true;
   }
   return false;
@@ -60,11 +77,24 @@ export async function verifyFirebaseRequest(req: Request): Promise<Authenticated
     throw new Error('AUTH_MISSING_TOKEN');
   }
   const decoded = await adminAuth.verifyIdToken(idToken);
+  let isSuperAdmin = isDecodedSuperAdmin(decoded);
+
+  if (!isSuperAdmin && decoded.email_verified === true) {
+    try {
+      const adminDoc = await firestoreRestGet<{ role?: string }>(`admins/${decoded.uid}`, idToken);
+      if (adminDoc?.role === 'super_admin') {
+        isSuperAdmin = true;
+      }
+    } catch {
+      // User is not in /admins/{uid}
+    }
+  }
+
   return {
     uid: decoded.uid,
     email: decoded.email || '',
     emailVerified: Boolean(decoded.email_verified),
-    isSuperAdmin: isDecodedSuperAdmin(decoded),
+    isSuperAdmin,
     idToken,
     decoded,
   };
