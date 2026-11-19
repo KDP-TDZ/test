@@ -4,7 +4,7 @@ const API_BASE = ((import.meta as { env?: Record<string, string | undefined> }).
   .trim()
   .replace(/\/+$/, '');
 
-function resolveApiUrl(input: RequestInfo | URL): RequestInfo | URL {
+export function resolveApiUrl(input: RequestInfo | URL): RequestInfo | URL {
   if (typeof input === 'string' && input.startsWith('/') && API_BASE) {
     return `${API_BASE}${input}`;
   }

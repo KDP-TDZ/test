@@ -11,10 +11,16 @@ import {
   updateProfile,
   type User,
 } from 'firebase/auth';
-import { auth } from '../firebase';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, db } from '../firebase';
 import { upsertUserProfile } from '../services/firestoreService';
-import { authorizedFetch } from '../services/apiClient';
+import { authorizedFetch, resolveApiUrl } from '../services/apiClient';
 import type { SystemAiConfig, UserProfile } from '../core/types';
+
+const DEFAULT_SUPER_ADMIN_EMAILS = new Set([
+  'tuankhang2011pm@gmail.com',
+  'tuankhangnek@gmail.com',
+]);
 
 interface AuthContextValue {
   user: User | null;
@@ -52,7 +58,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const syncUserSession = async (firebaseUser: User | null) => {
+  const syncUserSession = async (firebaseUser: User | null, forceTokenRefresh = false) => {
     if (!firebaseUser) {
       setProfile(null);
       setIsSuperAdmin(false);
@@ -60,17 +66,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    let resolvedAdmin = false;
+    const lowerEmail = (firebaseUser.email || '').trim().toLowerCase();
+    if (firebaseUser.emailVerified && DEFAULT_SUPER_ADMIN_EMAILS.has(lowerEmail)) {
+      resolvedAdmin = true;
+    }
+
     try {
-      const res = await authorizedFetch('/api/auth/session', { method: 'POST' });
-      if (res.ok) {
-        const session = (await res.json()) as {
-          isSuperAdmin: boolean;
+      const token = await firebaseUser.getIdToken(forceTokenRefresh);
+      const tokenResult = await firebaseUser.getIdTokenResult(false);
+      if (
+        tokenResult.claims?.superAdmin === true ||
+        tokenResult.claims?.role === 'super_admin'
+      ) {
+        resolvedAdmin = true;
+      }
+
+      const [sessionRes, adminSnap] = await Promise.all([
+        fetch(resolveApiUrl('/api/auth/session'), {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }).catch(() => null),
+        firebaseUser.emailVerified
+          ? getDoc(doc(db, 'admins', firebaseUser.uid)).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+
+      if (adminSnap?.exists() && adminSnap.data()?.role === 'super_admin') {
+        resolvedAdmin = true;
+      }
+
+      if (sessionRes && sessionRes.ok) {
+        const session = (await sessionRes.json()) as {
+          isSuperAdmin?: boolean;
         };
-        setIsSuperAdmin(Boolean(session.isSuperAdmin));
+        if (session.isSuperAdmin) {
+          resolvedAdmin = true;
+        }
       }
     } catch {
-      setIsSuperAdmin(false);
+      // Keep resolvedAdmin from verified default email / token claims if network call fails
     }
+
+    setIsSuperAdmin(resolvedAdmin);
 
     if (firebaseUser.emailVerified) {
       try {
@@ -130,7 +168,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const refreshProfile = async (u = user) => {
-    await syncUserSession(u);
+    await syncUserSession(u, true);
   };
 
   return (

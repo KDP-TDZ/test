@@ -67,6 +67,38 @@ export function isDecodedSuperAdmin(decoded: DecodedIdToken): boolean {
   return false;
 }
 
+async function verifyTokenViaIdentityToolkit(idToken: string): Promise<{
+  uid: string;
+  email: string;
+  emailVerified: boolean;
+}> {
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(firebaseConfig.apiKey)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idToken }),
+  });
+  if (!res.ok) {
+    throw new Error(`AUTH_LOOKUP_FAILED (${res.status})`);
+  }
+  const data = (await res.json()) as {
+    users?: Array<{
+      localId?: string;
+      email?: string;
+      emailVerified?: boolean;
+    }>;
+  };
+  const fbUser = data.users?.[0];
+  if (!fbUser?.localId) {
+    throw new Error('AUTH_USER_NOT_FOUND');
+  }
+  return {
+    uid: fbUser.localId,
+    email: fbUser.email || '',
+    emailVerified: Boolean(fbUser.emailVerified),
+  };
+}
+
 export async function verifyFirebaseRequest(req: Request): Promise<AuthenticatedUser> {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -76,12 +108,33 @@ export async function verifyFirebaseRequest(req: Request): Promise<Authenticated
   if (!idToken) {
     throw new Error('AUTH_MISSING_TOKEN');
   }
-  const decoded = await adminAuth.verifyIdToken(idToken);
-  let isSuperAdmin = isDecodedSuperAdmin(decoded);
 
-  if (!isSuperAdmin && decoded.email_verified === true) {
+  let uid = '';
+  let email = '';
+  let emailVerified = false;
+  let decoded: DecodedIdToken | undefined;
+  let isSuperAdmin = false;
+
+  try {
+    decoded = await adminAuth.verifyIdToken(idToken);
+    uid = decoded.uid;
+    email = decoded.email || '';
+    emailVerified = Boolean(decoded.email_verified);
+    isSuperAdmin = isDecodedSuperAdmin(decoded);
+  } catch {
+    const verified = await verifyTokenViaIdentityToolkit(idToken);
+    uid = verified.uid;
+    email = verified.email;
+    emailVerified = verified.emailVerified;
+    isSuperAdmin =
+      (SUPER_ADMIN_UID && uid === SUPER_ADMIN_UID) ||
+      (emailVerified && email && SUPER_ADMIN_EMAILS.has(email.toLowerCase())) ||
+      false;
+  }
+
+  if (!isSuperAdmin && emailVerified) {
     try {
-      const adminDoc = await firestoreRestGet<{ role?: string }>(`admins/${decoded.uid}`, idToken);
+      const adminDoc = await firestoreRestGet<{ role?: string }>(`admins/${uid}`, idToken);
       if (adminDoc?.role === 'super_admin') {
         isSuperAdmin = true;
       }
@@ -91,12 +144,12 @@ export async function verifyFirebaseRequest(req: Request): Promise<Authenticated
   }
 
   return {
-    uid: decoded.uid,
-    email: decoded.email || '',
-    emailVerified: Boolean(decoded.email_verified),
+    uid,
+    email,
+    emailVerified,
     isSuperAdmin,
     idToken,
-    decoded,
+    decoded: (decoded || { uid, email, email_verified: emailVerified }) as DecodedIdToken,
   };
 }
 
