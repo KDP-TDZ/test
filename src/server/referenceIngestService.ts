@@ -1,6 +1,6 @@
-import { validateReferenceUrl } from '../core/urlSecurity';
-import { buildChunksFromPages } from '../core/retrieval';
-import type { GradeLevel, ReferenceChunk, SubjectId } from '../core/types';
+import { validateReferenceUrl } from '../core/urlSecurity.js';
+import { buildChunksFromPages } from '../core/retrieval.js';
+import type { GradeLevel, ReferenceChunk, SubjectId } from '../core/types.js';
 
 const MAX_REMOTE_PDF_BYTES = 35 * 1024 * 1024; // 35MB
 

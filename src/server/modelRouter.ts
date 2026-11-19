@@ -1,13 +1,13 @@
 import crypto from 'node:crypto';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
-import { BoundedTtlCache, buildDeterministicCacheKey } from '../core/cache';
+import { BoundedTtlCache, buildDeterministicCacheKey } from '../core/cache.js';
 import type {
   AiExecutionLog,
   AiTaskType,
   SystemAiConfig,
   TaskModelConfig,
-} from '../core/types';
-import { resolveActiveGeminiApiKey } from './singleKeyService';
+} from '../core/types.js';
+import { resolveActiveGeminiApiKey } from './singleKeyService.js';
 
 export interface ModelCatalogItem {
   modelId: string;

@@ -1,16 +1,15 @@
 import crypto from 'node:crypto';
 import { ThinkingLevel, Type, type GenerateContentResponse } from '@google/genai';
-import mammoth from 'mammoth';
 import {
   calculateAccuracyScore,
   calculateCompletenessScore,
-} from '../core/scoring';
+} from '../core/scoring.js';
 import {
   normalizeCognitiveLevel,
   validateExamBlueprint,
   validateQuizQuestionSet,
-} from '../core/quizValidation';
-import { retrieveRelevantChunks } from '../core/retrieval';
+} from '../core/quizValidation.js';
+import { retrieveRelevantChunks } from '../core/retrieval.js';
 import type {
   AiTaskType,
   AnalysisStrength,
@@ -38,13 +37,13 @@ import type {
   ReferenceEvidence,
   SubjectId,
   SystemAiConfig,
-} from '../core/types';
-import { EXAM_TYPE_LABELS, SUBJECT_LABELS } from '../core/types';
+} from '../core/types.js';
+import { EXAM_TYPE_LABELS, SUBJECT_LABELS } from '../core/types.js';
 import {
   consumeOneTimeModelOverride,
   getAuthoritativeAiConfigSnapshot,
-} from './aiGuardService';
-import { createServerAiClient, executeRoutedAiTask } from './modelRouter';
+} from './aiGuardService.js';
+import { createServerAiClient, executeRoutedAiTask } from './modelRouter.js';
 
 export interface TokenTelemetry {
   promptTokens: number;
@@ -350,7 +349,9 @@ export class DocumentExtractionService {
   }
 
   static async extractFromDocxBuffer(buffer: Buffer): Promise<ExtractedPage[]> {
-    const result = await mammoth.extractRawText({ buffer });
+    const mammothMod = await import('mammoth');
+    const mammothApi = mammothMod.default || mammothMod;
+    const result = await mammothApi.extractRawText({ buffer });
     const raw = (result.value || '').trim();
     if (!raw) {
       throw new Error('File DOCX không có văn bản đọc được hoặc bị hỏng.');

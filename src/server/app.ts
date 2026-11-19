@@ -9,7 +9,7 @@ import {
   PROTECTED_SUPER_ADMIN_EMAILS,
   verifyFirebaseRequest,
   type AuthenticatedUser,
-} from './firebaseServer';
+} from './firebaseServer.js';
 import {
   checkAiRequestGuard,
   decrementConcurrentJob,
@@ -24,14 +24,14 @@ import {
   setIdempotentResult,
   setOneTimeTaskOverride,
   updateAuthoritativeAiConfig,
-} from './aiGuardService';
+} from './aiGuardService.js';
 import {
   clearSingleGeminiApiKey,
   getSingleKeyStatus,
   hydrateSingleKeyForSuperAdmin,
   setSingleGeminiApiKey,
   testSingleGeminiKey,
-} from './singleKeyService';
+} from './singleKeyService.js';
 import {
   DocumentExtractionService,
   ExamPipelineService,
@@ -41,18 +41,18 @@ import {
   QuizGenerationService,
   SubjectDetectionService,
   type TokenTelemetry,
-} from './geminiPipeline';
+} from './geminiPipeline.js';
 import {
   ingestReferenceFromDocxBuffer,
   ingestReferenceFromPdfBuffer,
   ingestReferenceFromTextOrJson,
   ingestReferenceFromUrl,
-} from './referenceIngestService';
+} from './referenceIngestService.js';
 import {
   getRecentExecutionLogs,
   MODEL_CATALOG,
   testModelConnectivity,
-} from './modelRouter';
+} from './modelRouter.js';
 import type {
   AiTaskType,
   ExamBlueprint,
@@ -64,7 +64,7 @@ import type {
   QuizScope,
   ReferenceChunk,
   SubjectId,
-} from '../core/types';
+} from '../core/types.js';
 
 declare global {
   namespace Express {

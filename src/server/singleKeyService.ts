@@ -3,14 +3,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
-import type { KeyTestStatus, SingleApiKeyStatus } from '../core/types';
+import type { KeyTestStatus, SingleApiKeyStatus } from '../core/types.js';
 import {
   firebaseConfig,
   firestoreRestDelete,
   firestoreRestGet,
   firestoreRestSet,
-} from './firebaseServer';
-import { recordAuditLog } from './aiGuardService';
+} from './firebaseServer.js';
+import { recordAuditLog } from './aiGuardService.js';
 
 interface StoredEncryptedSecret {
   secretId: string;

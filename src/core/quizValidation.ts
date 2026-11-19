@@ -4,7 +4,7 @@ import type {
   ExamDocument,
   ExamQuestion,
   QuizQuestion,
-} from './types';
+} from './types.js';
 
 export interface QuizValidationReport {
   validCount: number;

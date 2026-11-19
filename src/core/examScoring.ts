@@ -5,7 +5,7 @@ import type {
   ExamQuestionAnswer,
   GradeLevel,
   LeaderboardEntry,
-} from './types';
+} from './types.js';
 
 function normalizeShortAnswer(raw: string): string {
   return raw

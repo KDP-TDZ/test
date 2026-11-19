@@ -1,4 +1,4 @@
-import type { ReferenceChunk } from './types';
+import type { ReferenceChunk } from './types.js';
 
 function tokenizeVietnamese(text: string): string[] {
   return text

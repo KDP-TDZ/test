@@ -5,7 +5,7 @@ import type {
   ExtractedClaim,
   KnowledgeCoverageItem,
   MasteryStatus,
-} from './types';
+} from './types.js';
 
 export interface MasteryRuleConfig {
   minAttempts: number;

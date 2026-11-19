@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type express from 'express';
-import { createApiApp } from '../src/server/app';
+import { createApiApp } from '../src/server/app.js';
 
 let cachedApp: express.Express | null = null;
 let initError: unknown = null;

@@ -6,14 +6,14 @@ import type {
   RateLimitConfig,
   SystemAiConfig,
   TaskModelConfig,
-} from '../core/types';
+} from '../core/types.js';
 import {
   firestoreRestGet,
   firestoreRestSet,
   firestoreRestList,
   SUPER_ADMIN_EMAIL,
-} from './firebaseServer';
-import { clearAiResponseCache, DEFAULT_TASK_MODELS } from './modelRouter';
+} from './firebaseServer.js';
+import { clearAiResponseCache, DEFAULT_TASK_MODELS } from './modelRouter.js';
 
 export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
   requestsPerMinute: 12,
