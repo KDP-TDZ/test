@@ -100,15 +100,23 @@ export class DocumentExtractionService {
     for (let idx = 0; idx < files.length; idx += 1) {
       const file = files[idx];
       const pageNum = pageOffset + idx + 1;
-      const base64 = file.buffer.toString('base64');
+      const contentHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
 
-      const { data: response } = await runTaskWithRouter({
+      const { data: parsed } = await runTaskWithRouter<{
+        blocks: Array<{
+          extractedText: string;
+          textType: string;
+          confidence: number;
+          formulaText?: string;
+        }>;
+      }>({
         taskType: 'curriculum_extraction',
         config: opts?.config,
         idToken: opts?.idToken,
-        bypassCache: true,
-        runWithModel: (modelId) =>
-          callWithTimeout((signal) =>
+        cacheInput: { ocrKind: 'image', mimeType: file.mimeType, sha256: contentHash },
+        runWithModel: async (modelId) => {
+          const base64 = file.buffer.toString('base64');
+          const response = await callWithTimeout((signal) =>
             ai.models.generateContent({
               model: modelId,
               contents: {
@@ -157,18 +165,18 @@ export class DocumentExtractionService {
                 },
               },
             })
-          ),
+          );
+          accumulateTokens(tokensOut, response);
+          return JSON.parse((response.text || '{"blocks":[]}').trim()) as {
+            blocks: Array<{
+              extractedText: string;
+              textType: string;
+              confidence: number;
+              formulaText?: string;
+            }>;
+          };
+        },
       });
-
-      accumulateTokens(tokensOut, response);
-      const parsed = JSON.parse((response.text || '{"blocks":[]}').trim()) as {
-        blocks: Array<{
-          extractedText: string;
-          textType: string;
-          confidence: number;
-          formulaText?: string;
-        }>;
-      };
 
       const blocks: ExtractedTextBlock[] = (parsed.blocks || [])
         .filter((b) => b.extractedText && b.extractedText.trim().length > 0)
@@ -236,14 +244,25 @@ export class DocumentExtractionService {
     }
 
     const ai = await createServerAiClient();
-    const base64 = buffer.toString('base64');
-    const { data: response } = await runTaskWithRouter({
+    const pdfHash = crypto.createHash('sha256').update(buffer).digest('hex');
+    const { data: parsed } = await runTaskWithRouter<{
+      pages: Array<{
+        pageNumber: number;
+        blocks: Array<{
+          extractedText: string;
+          textType: string;
+          confidence: number;
+          formulaText?: string;
+        }>;
+      }>;
+    }>({
       taskType: 'curriculum_extraction',
       config: opts?.config,
       idToken: opts?.idToken,
-      bypassCache: true,
-      runWithModel: (modelId) =>
-        callWithTimeout((signal) =>
+      cacheInput: { ocrKind: 'pdf_scan', sha256: pdfHash },
+      runWithModel: async (modelId) => {
+        const base64 = buffer.toString('base64');
+        const response = await callWithTimeout((signal) =>
           ai.models.generateContent({
             model: modelId,
             contents: {
@@ -295,21 +314,21 @@ export class DocumentExtractionService {
               },
             },
           })
-        ),
+        );
+        accumulateTokens(tokensOut, response);
+        return JSON.parse((response.text || '{"pages":[]}').trim()) as {
+          pages: Array<{
+            pageNumber: number;
+            blocks: Array<{
+              extractedText: string;
+              textType: string;
+              confidence: number;
+              formulaText?: string;
+            }>;
+          }>;
+        };
+      },
     });
-
-    accumulateTokens(tokensOut, response);
-    const parsed = JSON.parse((response.text || '{"pages":[]}').trim()) as {
-      pages: Array<{
-        pageNumber: number;
-        blocks: Array<{
-          extractedText: string;
-          textType: string;
-          confidence: number;
-          formulaText?: string;
-        }>;
-      }>;
-    };
 
     const validTypes = new Set(['paragraph', 'heading', 'formula', 'table', 'list', 'handwriting']);
     return (parsed.pages || []).map((p, idx) => {
@@ -515,7 +534,7 @@ export class KnowledgeAnalysisService {
     const retrievedHits = retrieveRelevantChunks(fullText, referenceChunks, {
       referenceId: textbookReferenceId || undefined,
       selectedChapters: selectedChapters.length > 0 ? selectedChapters : undefined,
-      topK: 14,
+      topK: 10,
     });
 
     const textbookContext =
@@ -538,7 +557,7 @@ export class KnowledgeAnalysisService {
         const searchPrompt = [
           `Kiểm chứng các khái niệm nâng cao hoặc nội dung chưa có đủ trong sách giáo khoa đối với môn ${subjectName} lớp ${grade}, phạm vi: ${scope || selectedChapters.join(', ') || 'Tổng hợp'}.`,
           'Ưu tiên nguồn chính thống (Bộ GD&ĐT, NXB Giáo dục, đại học). Tóm tắt thật súc tích tối đa 6 gạch đầu dòng kiến thức chuẩn kèm trích dẫn để đối chiếu với bài ghi sau:',
-          fullText.slice(0, 5000),
+          fullText.slice(0, 3500),
         ].join('\n\n');
 
         const { data: groundResp } = await runTaskWithRouter({
@@ -622,13 +641,13 @@ export class KnowledgeAnalysisService {
       '8. VIẾT NGẮN GỌN: explanation, correctKnowledge, suggestedFix, suggestedAddition, detail và description mỗi mục viết súc tích tối đa 2 câu ngắn. strengths tối đa 3 ý, weaknesses tối đa 4 ý, suggestions tối đa 3 ý, coverageItems tối đa 8 ý.',
       '',
       '=== TÀI LIỆU CỦA HỌC SINH ===',
-      formattedStudentBlocks.slice(0, 28000),
+      formattedStudentBlocks.slice(0, 22000),
       '',
       '=== ĐOẠN TRÍCH SÁCH GIÁO KHOA THAM CHIẾU ===',
-      textbookContext.slice(0, 18000),
+      textbookContext.slice(0, 14000),
       '',
       webGroundingSummary
-        ? `=== TỔNG HỢP NGUỒN INTERNET ĐÃ GROUNDING ===\n${webGroundingSummary.slice(0, 5000)}`
+        ? `=== TỔNG HỢP NGUỒN INTERNET ĐÃ GROUNDING ===\n${webGroundingSummary.slice(0, 3500)}`
         : '',
     ].join('\n');
 
@@ -1346,7 +1365,17 @@ export class ExamPipelineService {
       taskType: 'quiz_blueprint',
       config,
       idToken,
-      bypassCache: true,
+      cacheInput: {
+        grade,
+        subject,
+        textbookSeries,
+        examType,
+        semester,
+        chapters: [...chapters].sort().join('|'),
+        durationMinutes,
+        totalScore,
+        relevantDigest: relevant.slice(0, 1200),
+      },
       runWithModel: async (modelId) => {
         const resp = await callWithTimeout((signal) =>
           ai.models.generateContent({

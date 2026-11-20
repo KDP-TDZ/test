@@ -16,11 +16,11 @@ import {
 import { clearAiResponseCache, DEFAULT_TASK_MODELS } from './modelRouter.js';
 
 export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
-  requestsPerMinute: 12,
-  requestsPerHour: 100,
-  analysesPerDay: 25,
-  cooldownSeconds: 4,
-  maximumConcurrentJobs: 2,
+  requestsPerMinute: 15,
+  requestsPerHour: 120,
+  analysesPerDay: 35,
+  cooldownSeconds: 2,
+  maximumConcurrentJobs: 3,
   maximumPagesPerAnalysis: 25,
   maximumFileSizeMb: 20,
 };
@@ -105,7 +105,7 @@ function mergeTaskModels(
 }
 
 let lastRemoteConfigSyncAt = 0;
-const CONFIG_SYNC_TTL_MS = 15_000;
+const CONFIG_SYNC_TTL_MS = 60_000;
 
 export function getAuthoritativeAiConfigSnapshot(): SystemAiConfig {
   return authoritativeAiConfig;
@@ -415,7 +415,7 @@ export function getIdempotentResult<T>(key: string): T | null {
   return hit.payload as T;
 }
 
-export function setIdempotentResult(key: string, payload: unknown, ttlMs = 120_000): void {
+export function setIdempotentResult(key: string, payload: unknown, ttlMs = 600_000): void {
   idempotencyCache.set(key, {
     expiresAt: Date.now() + ttlMs,
     payload,

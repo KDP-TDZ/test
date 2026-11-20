@@ -87,6 +87,20 @@ html.dark .text-muted-sky {
     0 2px 10px -2px rgba(56, 132, 224, 0.05),
     inset 0 1px 1px rgba(255, 255, 255, 0.96),
     inset 0 -1px 1px rgba(186, 220, 255, 0.38);
+  transition:
+    transform 210ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-card-hover:hover {
+  transform: translateY(-2.5px);
+  border-color: rgba(125, 211, 252, 0.88);
+  box-shadow:
+    0 20px 44px -16px rgba(2, 132, 199, 0.20),
+    0 6px 16px -4px rgba(37, 78, 145, 0.09),
+    inset 0 1px 1px rgba(255, 255, 255, 1),
+    inset 0 -1px 1px rgba(125, 211, 252, 0.42);
 }
 
 html.dark .glass-surface {
@@ -101,6 +115,15 @@ html.dark .glass-surface {
     0 18px 44px -16px rgba(9, 17, 30, 0.65),
     inset 0 1px 1px rgba(255, 255, 255, 0.10),
     inset 0 -1px 1px rgba(56, 189, 248, 0.06);
+}
+
+html.dark .glass-card-hover:hover {
+  border-color: rgba(56, 189, 248, 0.38);
+  box-shadow:
+    0 22px 48px -14px rgba(9, 17, 30, 0.78),
+    0 6px 18px -4px rgba(56, 189, 248, 0.14),
+    inset 0 1px 1px rgba(255, 255, 255, 0.18),
+    inset 0 -1px 1px rgba(56, 189, 248, 0.16);
 }
 
 /* LiquidCard Custom Glassmorphism Surface (Dynamic liquid feel + crisp refraction edge) */
@@ -119,7 +142,9 @@ html.dark .glass-surface {
     0 4px 14px -4px rgba(37, 78, 145, 0.08),
     inset 0 1.5px 1px rgba(255, 255, 255, 0.98),
     inset 0 -1.5px 2px rgba(125, 211, 252, 0.34);
-  transition: border-color 220ms ease, box-shadow 220ms ease;
+  transition:
+    border-color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 220ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .liquid-card-glass:hover {
@@ -202,6 +227,34 @@ html.dark .glass-nav {
     inset 0 -1px 0 rgba(56, 189, 248, 0.08);
 }
 
+/* Smooth animated underline for top navigation links */
+.nav-link-underline {
+  position: relative;
+}
+
+.nav-link-underline::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  height: 1.5px;
+  border-radius: 9999px;
+  background-color: #0284C7;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+html.dark .nav-link-underline::after {
+  background-color: #38BDF8;
+}
+
+.nav-link-underline:hover::after,
+.nav-link-underline:focus-visible::after {
+  transform: scaleX(1);
+}
+
 /* Subtle Nested Frosted Glass Surface */
 .glass-panel-subtle {
   background: linear-gradient(
@@ -215,6 +268,10 @@ html.dark .glass-nav {
   box-shadow:
     0 6px 20px -10px rgba(37, 78, 145, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  transition:
+    border-color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 html.dark .glass-panel-subtle {
@@ -229,47 +286,78 @@ html.dark .glass-panel-subtle {
     inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
 
-/* Interactive Glass Input / Select / Control */
+/* Interactive Glass Input / Select / Button Control */
 .glass-control {
-  background: rgba(255, 255, 255, 0.76);
+  background: rgba(255, 255, 255, 0.78);
   backdrop-filter: blur(10px) saturate(145%);
   -webkit-backdrop-filter: blur(10px) saturate(145%);
   border: 1px solid rgba(191, 219, 254, 0.82);
   color: #16243E;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  box-shadow:
+    0 2px 6px -3px rgba(37, 78, 145, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  transition:
+    background-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    color 160ms ease,
+    transform 160ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.glass-control:hover {
-  background: rgba(255, 255, 255, 0.92);
-  border-color: rgba(125, 211, 252, 0.95);
+.glass-control:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.94);
+  border-color: rgba(56, 189, 248, 0.78);
+  box-shadow:
+    0 6px 16px -8px rgba(2, 132, 199, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98);
 }
 
-.glass-control:focus {
+button.glass-control:hover:not(:disabled),
+label.glass-control:hover {
+  transform: translateY(-1px);
+}
+
+button.glass-control:active:not(:disabled),
+label.glass-control:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.glass-control:focus,
+.glass-control:focus-visible {
   outline: none;
+  background: rgba(255, 255, 255, 0.98);
   border-color: #0284C7;
   box-shadow:
-    0 0 0 3px rgba(56, 189, 248, 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+    0 0 0 3.5px rgba(56, 189, 248, 0.26),
+    0 4px 12px -6px rgba(2, 132, 199, 0.20),
+    inset 0 1px 0 rgba(255, 255, 255, 1);
 }
 
 html.dark .glass-control {
-  background: rgba(15, 26, 46, 0.74);
+  background: rgba(15, 26, 46, 0.76);
   border: 1px solid rgba(148, 163, 184, 0.24);
   color: #E6EFFC;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow:
+    0 2px 8px -4px rgba(9, 17, 30, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
-html.dark .glass-control:hover {
-  background: rgba(21, 36, 62, 0.88);
-  border-color: rgba(56, 189, 248, 0.44);
+html.dark .glass-control:hover:not(:disabled) {
+  background: rgba(22, 38, 66, 0.90);
+  border-color: rgba(56, 189, 248, 0.48);
+  box-shadow:
+    0 6px 18px -8px rgba(56, 189, 248, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.10);
 }
 
-html.dark .glass-control:focus {
+html.dark .glass-control:focus,
+html.dark .glass-control:focus-visible {
+  background: rgba(18, 32, 56, 0.96);
   border-color: #38BDF8;
   box-shadow:
-    0 0 0 3px rgba(56, 189, 248, 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    0 0 0 3.5px rgba(56, 189, 248, 0.26),
+    0 4px 14px -6px rgba(56, 189, 248, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.10);
 }
 
 /* Segmented Control Track */
@@ -285,6 +373,20 @@ html.dark .glass-segment {
   background: rgba(12, 22, 39, 0.74);
   border: 1px solid rgba(148, 163, 184, 0.16);
   box-shadow: inset 0 1px 2px rgba(9, 17, 30, 0.40);
+}
+
+/* Subtle Hero ambient floating motion (compositor-only, disabled in reduced motion) */
+@keyframes hero-subtle-float {
+  0%, 100% {
+    transform: translate3d(0, 0px, 0);
+  }
+  50% {
+    transform: translate3d(0, -5px, 0);
+  }
+}
+
+.hero-float-slow {
+  animation: hero-subtle-float 5.6s ease-in-out infinite;
 }
 
 /* Solid reading & assessment paper inside Liquid Glass frames — crystal sharp without blur */
@@ -348,9 +450,204 @@ html.dark .document-paper {
     animation: none !important;
     opacity: 0 !important;
   }
+  .hero-float-slow,
+  .ethereal-orbit-slow,
+  .ethereal-orbit-reverse {
+    animation: none !important;
+  }
+  .glass-card-hover:hover,
+  button.glass-control:hover:not(:disabled),
+  label.glass-control:hover {
+    transform: none !important;
+  }
   * {
     scroll-behavior: auto !important;
   }
+}
+
+/* === Ethereal Youthful Liquid Glass & Bento Studio Theme (UI Mode 2) === */
+html[data-ui-mode="ethereal"] {
+  background-color: #E3E7FF;
+  color: #171B3A;
+}
+
+html.dark[data-ui-mode="ethereal"] {
+  background-color: #080B1A;
+  color: #EEF1FF;
+}
+
+html[data-ui-mode="ethereal"] .glass-surface {
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.86) 0%,
+    rgba(246, 248, 255, 0.74) 55%,
+    rgba(238, 241, 255, 0.80) 100%
+  );
+  backdrop-filter: blur(26px) saturate(195%);
+  -webkit-backdrop-filter: blur(26px) saturate(195%);
+  border: 1px solid rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 20px 48px -20px rgba(79, 70, 229, 0.16),
+    0 4px 16px -4px rgba(139, 92, 246, 0.08),
+    inset 0 1.5px 1px rgba(255, 255, 255, 1),
+    inset 0 -1px 2px rgba(199, 210, 254, 0.45);
+}
+
+html.dark[data-ui-mode="ethereal"] .glass-surface {
+  background: linear-gradient(
+    145deg,
+    rgba(24, 29, 64, 0.82) 0%,
+    rgba(16, 20, 46, 0.74) 58%,
+    rgba(27, 24, 66, 0.80) 100%
+  );
+  border: 1px solid rgba(199, 210, 254, 0.16);
+  box-shadow:
+    0 22px 52px -18px rgba(4, 6, 18, 0.75),
+    inset 0 1px 1px rgba(255, 255, 255, 0.14),
+    inset 0 -1px 2px rgba(139, 92, 246, 0.14);
+}
+
+html[data-ui-mode="ethereal"] .glass-card-hover:hover {
+  border-color: rgba(129, 140, 248, 0.72);
+  box-shadow:
+    0 24px 52px -16px rgba(79, 70, 229, 0.24),
+    0 8px 20px -6px rgba(192, 132, 252, 0.14),
+    inset 0 1.5px 1px rgba(255, 255, 255, 1),
+    inset 0 -1.5px 2px rgba(165, 180, 252, 0.55);
+}
+
+html.dark[data-ui-mode="ethereal"] .glass-card-hover:hover {
+  border-color: rgba(167, 139, 250, 0.48);
+  box-shadow:
+    0 26px 56px -16px rgba(4, 6, 18, 0.88),
+    0 6px 22px -6px rgba(139, 92, 246, 0.22),
+    inset 0 1px 1px rgba(255, 255, 255, 0.22);
+}
+
+html[data-ui-mode="ethereal"] .glass-nav {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.84) 0%,
+    rgba(246, 247, 255, 0.76) 100%
+  );
+  backdrop-filter: blur(26px) saturate(195%);
+  -webkit-backdrop-filter: blur(26px) saturate(195%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.88);
+  box-shadow:
+    0 8px 30px -14px rgba(79, 70, 229, 0.12),
+    inset 0 -1px 0 rgba(199, 210, 254, 0.50);
+}
+
+html.dark[data-ui-mode="ethereal"] .glass-nav {
+  background: linear-gradient(
+    180deg,
+    rgba(13, 17, 40, 0.86) 0%,
+    rgba(16, 20, 48, 0.78) 100%
+  );
+  border-bottom: 1px solid rgba(165, 180, 252, 0.16);
+}
+
+html[data-ui-mode="ethereal"] .glass-control:focus,
+html[data-ui-mode="ethereal"] .glass-control:focus-visible {
+  border-color: #4F46E5;
+  box-shadow:
+    0 0 0 3.5px rgba(99, 102, 241, 0.24),
+    0 4px 12px -6px rgba(79, 70, 229, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 1);
+}
+
+html.dark[data-ui-mode="ethereal"] .glass-control:focus,
+html.dark[data-ui-mode="ethereal"] .glass-control:focus-visible {
+  border-color: #818CF8;
+  box-shadow:
+    0 0 0 3.5px rgba(129, 140, 248, 0.26),
+    0 4px 14px -6px rgba(129, 140, 248, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+
+/* Ethereal Elevated Floating Workspace Shell (inspired by reference dashboard canvas) */
+.ethereal-studio-canvas {
+  background: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0.86) 0%,
+    rgba(248, 249, 255, 0.80) 50%,
+    rgba(245, 246, 255, 0.84) 100%
+  );
+  backdrop-filter: blur(28px) saturate(195%);
+  -webkit-backdrop-filter: blur(28px) saturate(195%);
+  border: 1px solid rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 32px 72px -28px rgba(79, 70, 229, 0.22),
+    0 10px 28px -10px rgba(99, 102, 241, 0.10),
+    inset 0 1.5px 1px rgba(255, 255, 255, 1);
+}
+
+html.dark .ethereal-studio-canvas {
+  background: linear-gradient(
+    165deg,
+    rgba(19, 24, 54, 0.86) 0%,
+    rgba(14, 18, 42, 0.82) 55%,
+    rgba(20, 22, 56, 0.85) 100%
+  );
+  border: 1px solid rgba(165, 180, 252, 0.16);
+  box-shadow:
+    0 34px 76px -26px rgba(4, 6, 20, 0.82),
+    inset 0 1px 1px rgba(255, 255, 255, 0.12);
+}
+
+/* Floating Liquid Glass Bottom Dock */
+.ethereal-dock {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.82) 0%,
+    rgba(241, 244, 255, 0.72) 100%
+  );
+  backdrop-filter: blur(26px) saturate(210%);
+  -webkit-backdrop-filter: blur(26px) saturate(210%);
+  border: 1px solid rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 20px 44px -12px rgba(79, 70, 229, 0.24),
+    0 4px 14px -4px rgba(15, 23, 42, 0.10),
+    inset 0 1.5px 1px rgba(255, 255, 255, 1),
+    inset 0 -1px 2px rgba(165, 180, 252, 0.4);
+}
+
+html.dark .ethereal-dock {
+  background: linear-gradient(
+    135deg,
+    rgba(22, 27, 62, 0.86) 0%,
+    rgba(15, 19, 44, 0.80) 100%
+  );
+  border: 1px solid rgba(165, 180, 252, 0.22);
+  box-shadow:
+    0 22px 48px -12px rgba(2, 4, 16, 0.85),
+    inset 0 1px 1px rgba(255, 255, 255, 0.16);
+}
+
+@keyframes ethereal-orbit {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) rotate(-22deg);
+  }
+  50% {
+    transform: translate3d(0, -10px, 0) rotate(-17deg);
+  }
+}
+
+@keyframes ethereal-orbit-rev {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) rotate(24deg);
+  }
+  50% {
+    transform: translate3d(0, 10px, 0) rotate(29deg);
+  }
+}
+
+.ethereal-orbit-slow {
+  animation: ethereal-orbit 9s ease-in-out infinite;
+}
+
+.ethereal-orbit-reverse {
+  animation: ethereal-orbit-rev 10.5s ease-in-out infinite;
 }
 
 @media (prefers-reduced-transparency: reduce) {

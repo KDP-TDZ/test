@@ -10,6 +10,7 @@ interface GlassSurfaceProps extends React.HTMLAttributes<HTMLDivElement> {
   children: React.ReactNode;
   enableCursorLight?: boolean;
   enableRipple?: boolean;
+  hoverLift?: boolean;
   subtle?: boolean;
 }
 
@@ -18,6 +19,7 @@ interface GlassSurfaceProps extends React.HTMLAttributes<HTMLDivElement> {
  * - Subtle top-edge optical specular sheen
  * - Pointer-relative specular light reflection (disabled on coarse/touch pointers)
  * - Optional concentric water-ripple reaction on click/tap
+ * - Refined 2.5px hover lift & border illumination on interactive cards
  * - Proper RAF & timer cleanup with zero pointer interception
  */
 export const GlassSurface: React.FC<GlassSurfaceProps> = ({
@@ -25,10 +27,12 @@ export const GlassSurface: React.FC<GlassSurfaceProps> = ({
   className = '',
   enableCursorLight = true,
   enableRipple = false,
+  hoverLift,
   subtle = false,
   onClick,
   ...rest
 }) => {
+  const shouldLift = hoverLift ?? Boolean(enableRipple || onClick);
   const containerRef = useRef<HTMLDivElement>(null);
   const lightRef = useRef<HTMLDivElement>(null);
   const targetPos = useRef({ x: 50, y: 50, active: false });
@@ -106,7 +110,7 @@ export const GlassSurface: React.FC<GlassSurfaceProps> = ({
       onClick={handleClick}
       className={`relative overflow-hidden transition-[border-color,box-shadow,transform] duration-200 ease-out ${
         subtle ? 'glass-panel-subtle' : 'glass-surface'
-      } ${className}`}
+      } ${shouldLift ? 'glass-card-hover' : ''} ${className}`}
       {...rest}
     >
       {/* Subtle optical top-edge refraction highlight */}

@@ -1,8 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Mail, Lock, User, CheckCircle2, AlertCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
-import { GlassSurface } from './LiquidGlass/GlassSurface';
+import { AnimatedModal } from './LiquidGlass/AnimatedModal';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
 interface AuthModalProps {
@@ -33,7 +32,6 @@ function mapFirebaseAuthError(err: unknown): string {
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login', onClose }) => {
-  const modalRef = useRef<HTMLDivElement>(null);
   const { signInWithGoogle, signInWithEmail, registerWithEmail, resetPassword } = useAuth();
   const [mode, setMode] = useState<'login' | 'register' | 'reset'>(initialMode);
   const [email, setEmail] = useState('');
@@ -48,53 +46,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
       setMode(initialMode);
       setError(null);
       setNotice(null);
-      const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === 'Escape') onClose();
-      };
-      window.addEventListener('keydown', handleKeyDown);
-      return () => window.removeEventListener('keydown', handleKeyDown);
     }
-  }, [open, initialMode, onClose]);
-
-  useGSAP(
-    () => {
-      if (!open || !modalRef.current) return;
-      const mm = gsap.matchMedia();
-      mm.add(MOTION_ALLOWED_MEDIA, () => {
-        const tl = gsap.timeline({ defaults: { ease: 'power2.out' } });
-        tl.from(modalRef.current, {
-          autoAlpha: 0,
-          duration: 0.2,
-          clearProps: 'opacity,visibility',
-        })
-          .from(
-            '.auth-dialog',
-            {
-              scale: 0.96,
-              y: 14,
-              autoAlpha: 0,
-              duration: 0.28,
-              clearProps: 'transform,opacity,visibility',
-            },
-            '-=0.12'
-          )
-          .from(
-            '.auth-stagger',
-            {
-              y: 8,
-              autoAlpha: 0,
-              duration: 0.24,
-              stagger: 0.04,
-              clearProps: 'transform,opacity,visibility',
-            },
-            '-=0.18'
-          );
-      });
-    },
-    { scope: modalRef, dependencies: [open] }
-  );
-
-  if (!open) return null;
+  }, [open, initialMode]);
 
   const handleGoogle = async () => {
     setError(null);
@@ -138,15 +91,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
   };
 
   return (
-    <div
-      ref={modalRef}
-      className="auth-backdrop fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/45 backdrop-blur-sm"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="auth-modal-title"
+    <AnimatedModal
+      open={open}
+      onClose={onClose}
+      ariaLabelledBy="auth-modal-title"
+      maxWidthClassName="max-w-md"
+      panelClassName="p-5 sm:p-8"
     >
-      <GlassSurface className="auth-dialog w-full max-w-md rounded-3xl p-5 sm:p-8 shadow-2xl">
-        <div className="auth-stagger flex items-start justify-between gap-4 mb-5">
+      <div className="flex items-start justify-between gap-4 mb-5">
           <div>
             <h2 id="auth-modal-title" className="text-lg sm:text-xl font-bold text-[#16243E] dark:text-[#E6EFFC]">
               {mode === 'login'
@@ -336,7 +288,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, initialMode = 'login
             </button>
           )}
         </div>
-      </GlassSurface>
-    </div>
+    </AnimatedModal>
   );
 };

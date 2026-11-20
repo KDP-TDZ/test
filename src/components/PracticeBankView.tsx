@@ -33,7 +33,9 @@ import {
   togglePracticeItemFlag,
   updateFlashcardMastery,
 } from '../services/firestoreService';
+import { AnimatedModal } from './LiquidGlass/AnimatedModal';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
+import { SlidingTabs, TabContentFade } from './LiquidGlass/SlidingTabs';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
 interface PracticeBankViewProps {
@@ -67,8 +69,6 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
   const practiceRef = useRef<HTMLDivElement>(null);
   const cardInnerRef = useRef<HTMLDivElement>(null);
   const flashcardTiltRef = useRef<HTMLDivElement>(null);
-  const tabContainerRef = useRef<HTMLDivElement>(null);
-  const tabIndicatorRef = useRef<HTMLSpanElement>(null);
   const pointerFineRef = useRef(false);
   const { user, profile } = useAuth();
   const [subTab, setSubTab] = useState<'bank' | 'sprint10' | 'flashcards'>(initialSubTab);
@@ -202,42 +202,6 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
   const dueCount = useMemo(
     () => items.filter((i) => !i.nextReviewAt || i.nextReviewAt <= nowIso).length,
     [items, nowIso]
-  );
-
-  useGSAP(
-    () => {
-      if (!tabContainerRef.current || !tabIndicatorRef.current) return;
-      const activeBtn = tabContainerRef.current.querySelector<HTMLButtonElement>(
-        `[data-subtab="${subTab}"]`
-      );
-      if (!activeBtn) return;
-
-      const x = activeBtn.offsetLeft + 10;
-      const y = activeBtn.offsetTop + activeBtn.offsetHeight - 4;
-      const scaleX = Math.max(0.2, (activeBtn.offsetWidth - 20) / 100);
-
-      const mm = gsap.matchMedia();
-      mm.add(MOTION_ALLOWED_MEDIA, () => {
-        gsap.to(tabIndicatorRef.current, {
-          x,
-          y,
-          scaleX,
-          autoAlpha: 1,
-          duration: 0.28,
-          ease: 'power3.out',
-          overwrite: 'auto',
-        });
-      });
-      mm.add(REDUCED_MOTION_MEDIA, () => {
-        gsap.set(tabIndicatorRef.current, {
-          x,
-          y,
-          scaleX,
-          autoAlpha: 1,
-        });
-      });
-    },
-    { scope: practiceRef, dependencies: [subTab, items.length, dueCount, flashcards.length] }
   );
 
   const filtered = useMemo(() => {
@@ -427,54 +391,31 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
           </p>
         </div>
 
-        <div ref={tabContainerRef} className="relative glass-segment inline-flex flex-wrap items-center gap-1.5 rounded-2xl p-1.5">
-          <span
-            ref={tabIndicatorRef}
-            aria-hidden="true"
-            className="pointer-events-none absolute top-0 left-0 h-[3px] w-[100px] origin-left rounded-full bg-white/95 dark:bg-sky-200/90 shadow-[0_0_8px_rgba(255,255,255,0.65)] opacity-0 z-20"
-          />
-          <button
-            type="button"
-            data-subtab="bank"
-            onClick={() => setSubTab('bank')}
-            className={`relative z-10 min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-colors ${
-              subTab === 'bank'
-                ? 'bg-gradient-to-r from-sky-500 to-sky-600 text-white shadow-sm'
-                : 'text-[#475B78] dark:text-[#B4C7E2] hover:bg-white/60 dark:hover:bg-slate-800/60'
-            }`}
-          >
-            Câu hỏi lưu ({items.length}) · Đến hạn ({dueCount})
-          </button>
-          <button
-            type="button"
-            data-subtab="sprint10"
-            disabled={items.length === 0}
-            onClick={startSprint10}
-            className={`relative z-10 min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer disabled:opacity-50 transition-colors ${
-              subTab === 'sprint10'
-                ? 'bg-gradient-to-r from-sky-500 to-sky-600 text-white shadow-sm'
-                : 'text-[#475B78] dark:text-[#B4C7E2] hover:bg-white/60 dark:hover:bg-slate-800/60'
-            }`}
-          >
-            <Play className="w-3.5 h-3.5" />
-            Làm bộ 10 câu từ câu sai
-          </button>
-          <button
-            type="button"
-            data-subtab="flashcards"
-            onClick={() => setSubTab('flashcards')}
-            className={`relative z-10 min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-colors ${
-              subTab === 'flashcards'
-                ? 'bg-gradient-to-r from-sky-500 to-sky-600 text-white shadow-sm'
-                : 'text-[#475B78] dark:text-[#B4C7E2] hover:bg-white/60 dark:hover:bg-slate-800/60'
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            Thẻ Flashcard ({flashcards.length})
-          </button>
-        </div>
+        <SlidingTabs<'bank' | 'sprint10' | 'flashcards'>
+          layoutGroupId="practice-subtabs"
+          ariaLabel="Chế độ luyện tập"
+          activeId={subTab}
+          onChange={(next) => {
+            if (next === 'sprint10') {
+              startSprint10();
+            } else {
+              setSubTab(next);
+            }
+          }}
+          items={[
+            { id: 'bank', label: `Câu hỏi lưu (${items.length}) · Đến hạn (${dueCount})` },
+            {
+              id: 'sprint10',
+              label: 'Làm bộ 10 câu từ câu sai',
+              icon: Play,
+              disabled: items.length === 0,
+            },
+            { id: 'flashcards', label: `Thẻ Flashcard (${flashcards.length})`, icon: Layers },
+          ]}
+        />
       </div>
 
+      <TabContentFade activeKey={subTab} className="space-y-4 sm:space-y-6">
       {/* SUBTAB 1: Question Bank + Spaced Repetition */}
       {subTab === 'bank' && (
         <>
@@ -1016,41 +957,44 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
           )}
         </div>
       )}
+      </TabContentFade>
 
       {/* Manual Delete Confirmation Modal */}
-      {confirmDeleteId && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/45 backdrop-blur-sm"
-          role="dialog"
-          aria-modal="true"
-        >
-          <GlassSurface className="w-full max-w-sm rounded-3xl p-6 space-y-4">
-            <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
-              Xác nhận xóa câu hỏi luyện tập?
-            </h3>
-            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              Thao tác này sẽ xóa thủ công câu hỏi khỏi Ngân hàng luyện tập của bạn. Dữ liệu thống kê
-              kiến thức lịch sử vẫn được giữ nguyên.
-            </p>
-            <div className="flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirmDeleteId(null)}
-                className="glass-control px-3.5 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
-              >
-                Hủy
-              </button>
-              <WaterRippleButton
-                variant="danger"
-                size="sm"
-                onClick={() => handleConfirmDelete(confirmDeleteId)}
-              >
-                Xóa câu hỏi
-              </WaterRippleButton>
-            </div>
-          </GlassSurface>
+      <AnimatedModal
+        open={Boolean(confirmDeleteId)}
+        onClose={() => setConfirmDeleteId(null)}
+        ariaLabel="Xác nhận xóa câu hỏi luyện tập"
+        maxWidthClassName="max-w-sm"
+        panelClassName="p-6 space-y-4"
+      >
+        <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
+          Xác nhận xóa câu hỏi luyện tập?
+        </h3>
+        <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+          Thao tác này sẽ xóa thủ công câu hỏi khỏi Ngân hàng luyện tập của bạn. Dữ liệu thống kê
+          kiến thức lịch sử vẫn được giữ nguyên.
+        </p>
+        <div className="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setConfirmDeleteId(null)}
+            className="glass-control px-3.5 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+          >
+            Hủy
+          </button>
+          <WaterRippleButton
+            variant="danger"
+            size="sm"
+            onClick={() => {
+              if (confirmDeleteId) {
+                void handleConfirmDelete(confirmDeleteId);
+              }
+            }}
+          >
+            Xóa câu hỏi
+          </WaterRippleButton>
         </div>
-      )}
+      </AnimatedModal>
     </div>
   );
 };

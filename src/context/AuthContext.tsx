@@ -28,7 +28,7 @@ interface AuthContextValue {
   isSuperAdmin: boolean;
   loading: boolean;
   systemStatus: SystemAiConfig | null;
-  refreshSystemStatus: () => Promise<void>;
+  refreshSystemStatus: (force?: boolean) => Promise<void>;
   refreshProfile: (u?: User | null) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<void>;
@@ -46,16 +46,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
   const [systemStatus, setSystemStatus] = useState<SystemAiConfig | null>(null);
 
-  const refreshSystemStatus = async () => {
-    try {
-      const res = await authorizedFetch('/api/system/status');
-      if (res.ok) {
-        const data = (await res.json()) as SystemAiConfig;
-        setSystemStatus(data);
-      }
-    } catch {
-      // Ignore transient offline error
+  const statusFetchInFlight = React.useRef<Promise<void> | null>(null);
+  const lastStatusFetchAt = React.useRef<number>(0);
+
+  const refreshSystemStatus = async (force = false) => {
+    const now = Date.now();
+    if (!force && lastStatusFetchAt.current > 0 && now - lastStatusFetchAt.current < 30_000) {
+      return;
     }
+    if (statusFetchInFlight.current) {
+      return statusFetchInFlight.current;
+    }
+    const run = (async () => {
+      try {
+        const res = await authorizedFetch('/api/system/status');
+        if (res.ok) {
+          const data = (await res.json()) as SystemAiConfig;
+          setSystemStatus(data);
+          lastStatusFetchAt.current = Date.now();
+        }
+      } catch {
+        // Ignore transient offline error
+      } finally {
+        statusFetchInFlight.current = null;
+      }
+    })();
+    statusFetchInFlight.current = run;
+    return run;
   };
 
   const syncUserSession = async (firebaseUser: User | null, forceTokenRefresh = false) => {

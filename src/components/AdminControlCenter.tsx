@@ -90,6 +90,7 @@ import {
   updateReferenceChunkContent,
 } from '../services/firestoreService';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
+import { SlidingTabs } from './LiquidGlass/SlidingTabs';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
 type AdminTab =
@@ -1294,33 +1295,22 @@ export const AdminControlCenter: React.FC = () => {
       </div>
 
       {/* Consolidated 7 Live Admin Tabs */}
-      <div className="glass-segment rounded-2xl p-1.5 flex flex-wrap gap-1.5">
-        {(
-          [
-            ['overview', 'Tổng quan & Công tắc AI', Power],
-            ['models', 'Model Router (11 tác vụ)', Cpu],
-            ['api_security', 'API Key & Bảo mật', KeyRound],
-            ['references', 'Thư viện nguồn chuẩn', BookOpen],
-            ['exams', 'Quản trị Đề kiểm tra', ClipboardCheck],
-            ['feedback_roles', 'Phản hồi & Phân quyền', UserCheck],
-            ['limits_audit', 'Giới hạn & Nhật ký', Sliders],
-          ] as const
-        ).map(([id, label, Icon]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setTab(id)}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
-              tab === id
-                ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
-                : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800/60 hover:text-[#16243E] dark:hover:text-[#E6EFFC]'
-            }`}
-          >
-            <Icon className="w-3.5 h-3.5" />
-            {label}
-          </button>
-        ))}
-      </div>
+      <SlidingTabs<AdminTab>
+        layoutGroupId="admin-control-tabs"
+        ariaLabel="Điều hướng quản trị"
+        activeId={tab}
+        onChange={setTab}
+        className="w-full"
+        items={[
+          { id: 'overview', label: 'Tổng quan & Công tắc AI', icon: Power },
+          { id: 'models', label: 'Model Router (11 tác vụ)', icon: Cpu },
+          { id: 'api_security', label: 'API Key & Bảo mật', icon: KeyRound },
+          { id: 'references', label: 'Thư viện nguồn chuẩn', icon: BookOpen },
+          { id: 'exams', label: 'Quản trị Đề kiểm tra', icon: ClipboardCheck },
+          { id: 'feedback_roles', label: 'Phản hồi & Phân quyền', icon: UserCheck },
+          { id: 'limits_audit', label: 'Giới hạn & Nhật ký', icon: Sliders },
+        ]}
+      />
 
       {error && (
         <div className="rounded-xl border border-rose-200 dark:border-rose-800/70 bg-rose-50 dark:bg-rose-950/50 px-4 py-3 text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2">

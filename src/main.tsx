@@ -1,11 +1,14 @@
 import { createRoot } from 'react-dom/client';
 import './lib/gsapSetup';
 import { ThemeProvider } from './context/ThemeContext';
+import { UiModeProvider } from './context/UiModeContext';
 import App from './App.tsx';
 import './index.css';
 
 createRoot(document.getElementById('root')!).render(
   <ThemeProvider>
-    <App />
+    <UiModeProvider>
+      <App />
+    </UiModeProvider>
   </ThemeProvider>
 );

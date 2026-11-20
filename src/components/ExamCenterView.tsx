@@ -32,6 +32,7 @@ import {
 } from '../services/firestoreService';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { LiquidCard } from './LiquidGlass/LiquidCard';
+import { SlidingTabs } from './LiquidGlass/SlidingTabs';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
 interface ExamCenterViewProps {
@@ -658,32 +659,21 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
       </div>
 
       {/* Category Tabs */}
-      <div className="glass-segment inline-flex flex-wrap gap-1.5 rounded-2xl p-1.5">
-        {(
-          [
-            ['all', 'Tất cả kỳ thi'],
-            ['giua_ky_1', 'Giữa kỳ I'],
-            ['cuoi_ky_1', 'Cuối kỳ I'],
-            ['giua_ky_2', 'Giữa kỳ II'],
-            ['cuoi_ky_2', 'Cuối kỳ II'],
-            ['on_tap_tong_hop', 'Ôn tập tổng hợp'],
-            ['history', `Lịch sử bài thi (${attempts.length})`],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setActiveTab(id)}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
-              activeTab === id
-                ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
-                : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800/60'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <SlidingTabs<'all' | ExamType | 'history'>
+        layoutGroupId="exam-center-tabs"
+        ariaLabel="Phân loại kỳ thi"
+        activeId={activeTab}
+        onChange={setActiveTab}
+        items={[
+          { id: 'all', label: 'Tất cả kỳ thi' },
+          { id: 'giua_ky_1', label: 'Giữa kỳ I' },
+          { id: 'cuoi_ky_1', label: 'Cuối kỳ I' },
+          { id: 'giua_ky_2', label: 'Giữa kỳ II' },
+          { id: 'cuoi_ky_2', label: 'Cuối kỳ II' },
+          { id: 'on_tap_tong_hop', label: 'Ôn tập tổng hợp' },
+          { id: 'history', label: `Lịch sử bài thi (${attempts.length})` },
+        ]}
+      />
 
       {activeTab !== 'history' && (
         <GlassSurface className="rounded-3xl p-4 flex flex-wrap gap-3">

@@ -25,6 +25,7 @@ import { authorizedFetch, parseApiResponse } from '../services/apiClient';
 import { saveFlashcard, submitFeedback } from '../services/firestoreService';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { ScoreRing } from './LiquidGlass/ScoreRing';
+import { SmoothAccordion } from './LiquidGlass/SmoothAccordion';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 import { SplitDocumentViewer } from './SplitDocumentViewer';
 
@@ -468,55 +469,53 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       )}
 
       {/* Formula Transparency Drawer */}
-      <div className="report-scroll-section glass-panel-subtle rounded-3xl overflow-hidden no-print">
-        <button
-          type="button"
-          onClick={() => setShowFormula((v) => !v)}
-          className="w-full min-h-[44px] px-4 sm:px-5 py-3.5 flex items-center justify-between text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
-        >
-          <span className="inline-flex items-center gap-2">
-            <Calculator className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+      <SmoothAccordion
+        open={showFormula}
+        onToggle={(next) => {
+          setShowFormula(next);
+          window.setTimeout(() => ScrollTrigger.refresh(), 260);
+        }}
+        icon={<Calculator className="w-4 h-4 text-sky-600 dark:text-sky-400" />}
+        title={
+          <span className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
             Xem công thức tách biệt Độ chính xác và Độ đầy đủ
           </span>
-          <ChevronDown
-            className={`w-4 h-4 text-[#475B78] dark:text-[#B4C7E2] transition-transform ${showFormula ? 'rotate-180' : ''}`}
-          />
-        </button>
-        {showFormula && (
-          <div className="px-4 sm:px-5 pb-4 pt-2 border-t border-sky-200/60 dark:border-slate-700/70 grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-slate-700 dark:text-slate-300 leading-[1.6]">
-            <div>
-              <p className="font-semibold text-sky-800 dark:text-sky-300 mb-1">
-                Độ chính xác = Trọng số đúng đạt được / Tổng trọng số đã xác minh
-              </p>
-              <p>
-                Đúng = 1,0 · Thiếu điều kiện = 0,5 · Sai = 0. Các ý chưa đủ căn cứ (Chưa xác định),
-                chữ OCR mờ (OCR_UNCERTAIN) hoặc kiến thức ngoài phạm vi không bị phạt vào mẫu số.
-              </p>
-              {acc && (
-                <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC]">
-                  Thực tế: {acc.earnedWeight} / {acc.verifiedWeight} ={' '}
-                  {acc.accuracyScore !== null ? `${acc.accuracyScore}%` : 'Chưa đủ dữ liệu'}
-                </p>
-              )}
-            </div>
-            <div>
-              <p className="font-semibold text-sky-800 dark:text-sky-300 mb-1">
-                Độ đầy đủ = Trọng số ý đã bao phủ / Tổng trọng số khung kiến thức chương
-              </p>
-              <p>
-                Chỉ chấm khi có sách giáo khoa hoặc khung mục tiêu chương rõ ràng. Thiếu ý chỉ ảnh
-                hưởng Độ đầy đủ, tuyệt đối không làm giảm Độ chính xác.
-              </p>
-              {comp && (
-                <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC]">
-                  Thực tế: {comp.coveredWeight} / {comp.totalRequiredWeight} ={' '}
-                  {comp.completenessScore !== null ? `${comp.completenessScore}%` : 'Không áp dụng'}
-                </p>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
+        }
+        className="report-scroll-section glass-panel-subtle !rounded-3xl no-print"
+        triggerClassName="px-4 sm:px-5 py-3.5 hover:bg-white/45 dark:hover:bg-slate-800/45"
+        contentClassName="px-4 sm:px-5 pb-4 pt-3 border-t border-sky-200/60 dark:border-slate-700/70 grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-slate-700 dark:text-slate-300 leading-[1.6]"
+      >
+        <div>
+          <p className="font-semibold text-sky-800 dark:text-sky-300 mb-1">
+            Độ chính xác = Trọng số đúng đạt được / Tổng trọng số đã xác minh
+          </p>
+          <p>
+            Đúng = 1,0 · Thiếu điều kiện = 0,5 · Sai = 0. Các ý chưa đủ căn cứ (Chưa xác định),
+            chữ OCR mờ (OCR_UNCERTAIN) hoặc kiến thức ngoài phạm vi không bị phạt vào mẫu số.
+          </p>
+          {acc && (
+            <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC]">
+              Thực tế: {acc.earnedWeight} / {acc.verifiedWeight} ={' '}
+              {acc.accuracyScore !== null ? `${acc.accuracyScore}%` : 'Chưa đủ dữ liệu'}
+            </p>
+          )}
+        </div>
+        <div>
+          <p className="font-semibold text-sky-800 dark:text-sky-300 mb-1">
+            Độ đầy đủ = Trọng số ý đã bao phủ / Tổng trọng số khung kiến thức chương
+          </p>
+          <p>
+            Chỉ chấm khi có sách giáo khoa hoặc khung mục tiêu chương rõ ràng. Thiếu ý chỉ ảnh
+            hưởng Độ đầy đủ, tuyệt đối không làm giảm Độ chính xác.
+          </p>
+          {comp && (
+            <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC]">
+              Thực tế: {comp.coveredWeight} / {comp.totalRequiredWeight} ={' '}
+              {comp.completenessScore !== null ? `${comp.completenessScore}%` : 'Không áp dụng'}
+            </p>
+          )}
+        </div>
+      </SmoothAccordion>
 
       {/* Explicit Quiz Offer Banner */}
       <GlassSurface enableRipple className="report-scroll-section rounded-3xl p-4 sm:p-6 border border-sky-200/80 dark:border-sky-800/60 no-print">

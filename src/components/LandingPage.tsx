@@ -1,57 +1,111 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowRight,
+  BookMarked,
   BookOpenCheck,
   CheckCircle2,
-  ChevronDown,
+  ChevronRight,
   FileSearch,
   Layers,
   Repeat,
   ShieldCheck,
   Trophy,
   Upload,
+  XCircle,
 } from 'lucide-react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { BRAND_CONFIG } from '../config/brand';
+import { useUiMode } from '../context/UiModeContext';
 import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import heroPrismImage from '../assets/images/hero_liquid_prism_1795012421683.jpg';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { HamburgerButton, NavigationDrawer } from './LiquidGlass/NavigationDrawer';
+import { SmoothAccordion } from './LiquidGlass/SmoothAccordion';
 import { ThemeToggle } from './LiquidGlass/ThemeToggle';
+import { UiModeSwitcher } from './LiquidGlass/UiModeSwitcher';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
 interface LandingPageProps {
   onOpenAuth: (mode: 'login' | 'register') => void;
 }
 
-const SPECIMEN_ANNOTATIONS = [
+interface SpecimenAnnotation {
+  id: string;
+  orderLabel: string;
+  color: 'red' | 'orange' | 'green';
+  statusTag: string;
+  label: string;
+  studentExcerpt: string;
+  correctKnowledge: string;
+  reason: string;
+  actionTip: string;
+  source: string;
+  sourceBook: string;
+  sourceExcerpt: string;
+  verificationRule: string;
+}
+
+const SPECIMEN_ANNOTATIONS: SpecimenAnnotation[] = [
   {
     id: 'err-1',
-    color: 'red' as const,
-    label: 'Sai kiến thức',
+    orderLabel: 'Nhận định 1 / 3',
+    color: 'red',
+    statusTag: 'Sai kiến thức',
+    label: 'Sai bản chất kiến thức',
     studentExcerpt: 'Liên kết hydrogen chỉ hình thành giữa nguyên tử H và nguyên tử C hoặc N.',
     correctKnowledge:
       'Liên kết hydrogen hình thành giữa nguyên tử H (đã liên kết với nguyên tử có độ âm điện lớn như F, O, N) với nguyên tử khác có độ âm điện lớn (F, O, N) và còn cặp electron hóa trị chưa liên kết.',
-    reason: 'Nguyên tử Carbon (C) có độ âm điện nhỏ (2,55), không đủ phân cực liên kết C–H để tạo liên kết hydrogen điển hình.',
+    reason:
+      'Nguyên tử Carbon (C) có độ âm điện nhỏ (2,55), không đủ phân cực liên kết C–H để tạo liên kết hydrogen điển hình.',
+    actionTip:
+      'Thay cụm "nguyên tử C hoặc N" bằng "các nguyên tử có độ âm điện lớn như F, O, N còn cặp electron chưa liên kết".',
     source: 'SGK Hóa học 10 · Chương 3 · Trang 54',
+    sourceBook: 'Hóa học 10 (GDPT 2018) · Bài 11: Liên kết hydrogen và tương tác van der Waals',
+    sourceExcerpt:
+      '“Liên kết hydrogen là một loại liên kết yếu được hình thành giữa nguyên tử H (đã liên kết với một nguyên tử có độ âm điện lớn, thường là F, O, N) với một nguyên tử khác có độ âm điện lớn (thường là F, O, N) còn cặp electron hóa trị chưa liên kết.”',
+    verificationRule:
+      'Đối chiếu trực tiếp khái niệm cốt lõi (trọng số 3) với kho sách giáo khoa chuẩn. Mệnh đề sai bản chất sẽ trừ vào chỉ số Độ chính xác.',
   },
   {
     id: 'part-1',
-    color: 'orange' as const,
-    label: 'Thiếu điều kiện',
+    orderLabel: 'Nhận định 2 / 3',
+    color: 'orange',
+    statusTag: 'Cần bổ sung',
+    label: 'Đúng hướng nhưng thiếu điều kiện',
     studentExcerpt: 'Nước có nhiệt độ sôi cao hơn H₂S vì phân tử nước có liên kết hydrogen.',
     correctKnowledge:
       'Nhận định đúng về xu hướng nhưng cần nêu rõ: liên kết hydrogen liên phân tử làm tăng năng lượng cần thiết để tách các phân tử nước khi chuyển pha.',
-    reason: 'Cần phân biệt liên kết hydrogen liên phân tử (tăng nhiệt độ sôi) với liên kết nội phân tử.',
+    reason:
+      'Cần phân biệt liên kết hydrogen liên phân tử (làm tăng nhiệt độ sôi) với liên kết hydrogen nội phân tử.',
+    actionTip:
+      'Bổ sung cụm "liên kết hydrogen liên phân tử" và nêu ngắn gọn tác động làm tăng năng lượng tách phân tử khi sôi.',
     source: 'SGK Hóa học 10 · Chương 3 · Trang 55',
+    sourceBook: 'Hóa học 10 (GDPT 2018) · Mục II: Ảnh hưởng của liên kết hydrogen đến tính chất vật lý',
+    sourceExcerpt:
+      '“Các chất có liên kết hydrogen liên phân tử thường có nhiệt độ nóng chảy và nhiệt độ sôi cao hơn so với các chất có khối lượng phân tử tương đương nhưng không tạo được liên kết hydrogen liên phân tử.”',
+    verificationRule:
+      'Mệnh đề đúng hướng nhưng thiếu điều kiện/phạm vi áp dụng được tính hệ số 0,5 thay vì chấm sai hoàn toàn.',
   },
   {
     id: 'ok-1',
-    color: 'green' as const,
-    label: 'Đúng chuẩn',
-    studentExcerpt: 'Liên kết hydrogen yếu hơn liên kết cộng hóa trị nhưng mạnh hơn tương tác van der Waals.',
+    orderLabel: 'Nhận định 3 / 3',
+    color: 'green',
+    statusTag: 'Đúng chuẩn',
+    label: 'Đã xác minh đúng chuẩn SGK',
+    studentExcerpt:
+      'Liên kết hydrogen yếu hơn liên kết cộng hóa trị nhưng mạnh hơn tương tác van der Waals.',
     correctKnowledge: 'Thứ tự độ bền liên kết được trình bày chính xác theo chuẩn chương trình.',
-    reason: 'Năng lượng liên kết hydrogen thường từ 10–40 kJ/mol, nhỏ hơn liên kết cộng hóa trị nhưng lớn hơn tương tác van der Waals.',
+    reason:
+      'Năng lượng liên kết hydrogen thường từ 10–40 kJ/mol, nhỏ hơn liên kết cộng hóa trị nhưng lớn hơn tương tác van der Waals.',
+    actionTip:
+      'Giữ nguyên ý này trong đề cương ôn tập; có thể ghi chú thêm khoảng năng lượng 10–40 kJ/mol để nhớ lâu hơn.',
     source: 'SGK Hóa học 10 · Bài 11 · Trang 56',
+    sourceBook: 'Hóa học 10 (GDPT 2018) · So sánh bản chất và độ bền các loại liên kết yếu',
+    sourceExcerpt:
+      '“Liên kết hydrogen có bản chất tĩnh điện, yếu hơn liên kết ion và liên kết cộng hóa trị nhưng mạnh hơn tương tác van der Waals.”',
+    verificationRule:
+      'Mệnh đề đúng về nghĩa học thuật (không yêu cầu chép nguyên văn) và khớp nguồn chuẩn được tính hệ số tối đa 1,0.',
   },
 ];
 
@@ -101,11 +155,50 @@ const FAQS = [
   },
 ];
 
+const STATUS_META = {
+  red: {
+    icon: XCircle,
+    textClass: 'text-rose-700 dark:text-rose-300',
+    iconClass: 'text-rose-600 dark:text-rose-400',
+    activeItemClass:
+      'bg-rose-50/95 dark:bg-rose-950/55 border-rose-300 dark:border-rose-600/80 ring-2 ring-rose-200/80 dark:ring-rose-900/70 shadow-[0_8px_22px_-12px_rgba(225,29,72,0.35)]',
+    idleItemClass:
+      'bg-rose-50/45 dark:bg-rose-950/20 border-rose-200/70 dark:border-rose-900/60 hover:bg-rose-50/85 dark:hover:bg-rose-950/38 hover:border-rose-300/90 dark:hover:border-rose-700/80',
+    resultHeaderBg:
+      'bg-rose-50/75 dark:bg-rose-950/40 border-rose-200/80 dark:border-rose-800/60',
+  },
+  orange: {
+    icon: AlertTriangle,
+    textClass: 'text-amber-700 dark:text-amber-300',
+    iconClass: 'text-amber-600 dark:text-amber-400',
+    activeItemClass:
+      'bg-amber-50/95 dark:bg-amber-950/55 border-amber-300 dark:border-amber-600/80 ring-2 ring-amber-200/80 dark:ring-amber-900/70 shadow-[0_8px_22px_-12px_rgba(217,119,6,0.32)]',
+    idleItemClass:
+      'bg-amber-50/45 dark:bg-amber-950/20 border-amber-200/70 dark:border-amber-900/60 hover:bg-amber-50/85 dark:hover:bg-amber-950/38 hover:border-amber-300/90 dark:hover:border-amber-700/80',
+    resultHeaderBg:
+      'bg-amber-50/75 dark:bg-amber-950/40 border-amber-200/80 dark:border-amber-800/60',
+  },
+  green: {
+    icon: CheckCircle2,
+    textClass: 'text-emerald-700 dark:text-emerald-300',
+    iconClass: 'text-emerald-600 dark:text-emerald-400',
+    activeItemClass:
+      'bg-emerald-50/95 dark:bg-emerald-950/55 border-emerald-300 dark:border-emerald-600/80 ring-2 ring-emerald-200/80 dark:ring-emerald-900/70 shadow-[0_8px_22px_-12px_rgba(5,150,105,0.32)]',
+    idleItemClass:
+      'bg-emerald-50/45 dark:bg-emerald-950/20 border-emerald-200/70 dark:border-emerald-900/60 hover:bg-emerald-50/85 dark:hover:bg-emerald-950/38 hover:border-emerald-300/90 dark:hover:border-emerald-700/80',
+    resultHeaderBg:
+      'bg-emerald-50/75 dark:bg-emerald-950/40 border-emerald-200/80 dark:border-emerald-800/60',
+  },
+} as const;
+
 export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
+  const { isEthereal } = useUiMode();
   const pageRef = useRef<HTMLDivElement>(null);
   const hamburgerBtnRef = useRef<HTMLButtonElement>(null);
+  const prefersReduced = useReducedMotion();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [selectedSpecimenId, setSelectedSpecimenId] = useState<string>('err-1');
+  const [sourceAccordionOpen, setSourceAccordionOpen] = useState<boolean>(true);
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
   const [heroImgError, setHeroImgError] = useState(false);
   const landingDrawerId = 'landing-navigation-drawer';
@@ -121,51 +214,51 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
 
   const activeSpecimen =
     SPECIMEN_ANNOTATIONS.find((s) => s.id === selectedSpecimenId) || SPECIMEN_ANNOTATIONS[0];
+  const activeMeta = STATUS_META[activeSpecimen.color];
+  const ActiveStatusIcon = activeMeta.icon;
 
-  const { contextSafe } = useGSAP(
+  useGSAP(
     () => {
       const mm = gsap.matchMedia();
       mm.add(MOTION_ALLOWED_MEDIA, () => {
-        const tl = gsap.timeline({ defaults: { ease: 'power2.out' } });
+        const tl = gsap.timeline({ defaults: { ease: 'power3.out' } });
         tl.from('.hero-stagger', {
-          y: 16,
+          y: 18,
           autoAlpha: 0,
-          duration: 0.42,
-          stagger: 0.08,
+          duration: 0.46,
+          stagger: 0.075,
           clearProps: 'transform,opacity,visibility',
-        }).from(
-          '.hero-visual',
-          {
-            scale: 0.97,
-            y: 12,
-            autoAlpha: 0,
-            duration: 0.48,
-            clearProps: 'transform,opacity,visibility',
-          },
-          '-=0.28'
-        );
+        })
+          .from(
+            '.hero-visual',
+            {
+              scale: 0.975,
+              y: 14,
+              autoAlpha: 0,
+              duration: 0.52,
+              clearProps: 'transform,opacity,visibility',
+            },
+            '-=0.34'
+          )
+          .from(
+            '.hero-overlay-card',
+            {
+              y: 14,
+              autoAlpha: 0,
+              duration: 0.42,
+              stagger: 0.08,
+              clearProps: 'transform,opacity,visibility',
+            },
+            '-=0.26'
+          );
       });
     },
     { scope: pageRef }
   );
 
-  const handleSelectSpecimen = contextSafe((id: string) => {
+  const handleSelectSpecimen = (id: string) => {
     setSelectedSpecimenId(id);
-    const mm = gsap.matchMedia();
-    mm.add(MOTION_ALLOWED_MEDIA, () => {
-      gsap.fromTo(
-        '.specimen-detail',
-        { y: 6, autoAlpha: 0.45 },
-        {
-          y: 0,
-          autoAlpha: 1,
-          duration: 0.24,
-          ease: 'power2.out',
-          clearProps: 'transform,opacity,visibility',
-        }
-      );
-    });
-  });
+  };
 
   return (
     <div ref={pageRef} className="flex flex-col min-h-screen">
@@ -182,30 +275,53 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
             />
             <a
               href="#top"
-              className="font-display text-base sm:text-lg font-bold tracking-tight text-[#16243E] dark:text-[#E6EFFC] whitespace-nowrap shrink-0"
+              className="font-display text-base sm:text-lg font-bold tracking-tight text-[#16243E] dark:text-[#E6EFFC] whitespace-nowrap shrink-0 transition-opacity duration-180 hover:opacity-85"
             >
               {BRAND_CONFIG.name}
             </a>
           </div>
 
           <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-[#475B78] dark:text-[#B4C7E2]">
-            <a href="#workflow" className="hover:text-[#16243E] dark:hover:text-white transition-colors whitespace-nowrap shrink-0">
+            <a
+              href="#workflow"
+              className="nav-link-underline hover:text-[#16243E] dark:hover:text-white transition-colors duration-180 whitespace-nowrap shrink-0"
+            >
               Quy trình
             </a>
-            <a href="#specimen" className="hover:text-[#16243E] dark:hover:text-white transition-colors whitespace-nowrap shrink-0">
+            <a
+              href="#specimen"
+              className="nav-link-underline hover:text-[#16243E] dark:hover:text-white transition-colors duration-180 whitespace-nowrap shrink-0"
+            >
               Kiểm chứng
             </a>
-            <a href="#practice" className="hover:text-[#16243E] dark:hover:text-white transition-colors whitespace-nowrap shrink-0">
+            <a
+              href="#practice"
+              className="nav-link-underline hover:text-[#16243E] dark:hover:text-white transition-colors duration-180 whitespace-nowrap shrink-0"
+            >
               Thi & Đua Top
             </a>
-            <a href="#faq" className="hover:text-[#16243E] dark:hover:text-white transition-colors whitespace-nowrap shrink-0">
+            <a
+              href="#faq"
+              className="nav-link-underline hover:text-[#16243E] dark:hover:text-white transition-colors duration-180 whitespace-nowrap shrink-0"
+            >
               Hỏi đáp
             </a>
           </nav>
 
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+            <div className="hidden sm:block">
+              <UiModeSwitcher />
+            </div>
             <ThemeToggle />
-            <WaterRippleButton size="sm" onClick={() => onOpenAuth('login')}>
+            <WaterRippleButton
+              size="sm"
+              onClick={() => onOpenAuth('login')}
+              className={
+                isEthereal
+                  ? '!bg-gradient-to-r !from-[#4338CA] !via-[#4F46E5] !to-[#6366F1]'
+                  : ''
+              }
+            >
               Đăng nhập
             </WaterRippleButton>
           </div>
@@ -219,10 +335,20 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
         triggerRef={hamburgerBtnRef}
         ariaLabel="Điều hướng trang chủ"
         footer={
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-center justify-between gap-2 px-1 sm:hidden">
+              <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
+                Giao diện
+              </span>
+              <UiModeSwitcher />
+            </div>
             <WaterRippleButton
               size="md"
-              className="w-full"
+              className={`w-full ${
+                isEthereal
+                  ? '!bg-gradient-to-r !from-[#4338CA] !via-[#4F46E5] !to-[#6366F1]'
+                  : ''
+              }`}
               onClick={() => {
                 setMobileNavOpen(false);
                 onOpenAuth('login');
@@ -267,46 +393,104 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
 
       {/* Hero Section */}
       <main id="top" className="flex-1">
-        <section className="mx-auto max-w-7xl px-4 sm:px-6 pt-8 pb-10 sm:pt-12 sm:pb-16 lg:pt-20 lg:pb-24">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-7 sm:gap-10 lg:gap-12 items-stretch">
+        <section className="mx-auto max-w-7xl px-4 sm:px-6 pt-8 pb-12 sm:pt-12 sm:pb-20 lg:pt-16 lg:pb-24">
+          <div
+            className={`grid grid-cols-1 lg:grid-cols-12 gap-8 sm:gap-10 lg:gap-12 items-stretch ${
+              isEthereal
+                ? 'ethereal-studio-canvas rounded-[30px] sm:rounded-[36px] p-5 sm:p-8 lg:p-10'
+                : ''
+            }`}
+          >
+            {/* Left Column: Editorial Hierarchy & Primary CTA */}
             <div className="lg:col-span-6 flex flex-col justify-center">
-              <p className="hero-stagger text-xs font-semibold text-sky-700 dark:text-sky-400 tracking-wide mb-2.5 sm:mb-3">
+              <p
+                className={`hero-stagger text-xs sm:text-[13px] font-semibold tracking-wide mb-3 sm:mb-4 ${
+                  isEthereal
+                    ? 'text-indigo-600 dark:text-indigo-300'
+                    : 'text-sky-700 dark:text-sky-400'
+                }`}
+              >
                 Nền tảng kiểm chứng học tập THPT · Lớp 10 · 11 · 12
               </p>
-              <h1 className="hero-stagger font-display text-[clamp(1.65rem,5vw,2.75rem)] font-bold tracking-tight text-[#16243E] dark:text-[#E6EFFC] leading-[1.2] [text-wrap:balance]">
-                Đừng chỉ học thuộc. Hãy kiểm chứng những gì bạn học.
+
+              <h1 className="hero-stagger font-display text-[clamp(1.9rem,4.5vw,3.15rem)] font-bold tracking-[-0.025em] text-[#16243E] dark:text-[#E6EFFC] leading-[1.14] [text-wrap:balance]">
+                Đừng chỉ học thuộc.{' '}
+                <span
+                  className={
+                    isEthereal
+                      ? 'bg-gradient-to-r from-[#4338CA] via-[#6366F1] to-[#9333EA] dark:from-indigo-300 dark:via-violet-300 dark:to-fuchsia-300 bg-clip-text text-transparent'
+                      : 'text-sky-700 dark:text-sky-400'
+                  }
+                >
+                  Hãy kiểm chứng
+                </span>{' '}
+                những gì bạn học.
               </h1>
-              <p className="hero-stagger mt-4 sm:mt-5 text-sm sm:text-base text-[#475B78] dark:text-[#B4C7E2] leading-[1.6] prose-measure">
-                Tải tài liệu học tập lên, đối chiếu với sách giáo khoa chuẩn, phát hiện chỗ sai, bổ sung kiến thức thiếu và thi thử đua top theo khối.
+
+              <p className="hero-stagger mt-5 text-sm sm:text-base text-[#475B78] dark:text-[#B4C7E2] leading-[1.65] prose-measure">
+                Tải tài liệu ghi chép, ảnh chụp vở hoặc PDF lên để đối chiếu trực tiếp với sách giáo khoa chuẩn — tách rõ lỗi sai, bổ sung ý thiếu và luyện tập có mục tiêu.
               </p>
 
-              <div className="hero-stagger mt-6 sm:mt-8 flex flex-wrap items-center gap-3 sm:gap-4">
-                <WaterRippleButton size="lg" onClick={() => onOpenAuth('login')}>
+              <div className="hero-stagger mt-7 sm:mt-9 flex flex-wrap items-center gap-3 sm:gap-3.5">
+                <WaterRippleButton
+                  size="lg"
+                  onClick={() => onOpenAuth('login')}
+                  className={`min-h-[48px] px-6 sm:px-7 text-sm font-semibold ${
+                    isEthereal
+                      ? '!bg-gradient-to-r !from-[#4338CA] !via-[#4F46E5] !to-[#6366F1] !shadow-[0_14px_30px_-10px_rgba(79,70,229,0.62)]'
+                      : ''
+                  }`}
+                >
                   <Upload className="w-4 h-4" />
                   Tải tài liệu lên
                 </WaterRippleButton>
+
                 <button
                   type="button"
                   onClick={() => onOpenAuth('register')}
-                  className="inline-flex items-center gap-1.5 min-h-[44px] px-4 py-2.5 rounded-2xl text-sm font-medium text-[#16243E] dark:text-[#E6EFFC] hover:text-sky-700 dark:hover:text-sky-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className="group glass-control inline-flex items-center gap-2 min-h-[48px] px-5 py-2.5 rounded-2xl text-sm font-semibold text-[#16243E] dark:text-[#E6EFFC] whitespace-nowrap shrink-0 cursor-pointer"
                 >
-                  Tạo tài khoản mới
-                  <ArrowRight className="w-4 h-4" />
+                  <span>Tạo tài khoản mới</span>
+                  <ArrowRight
+                    className={`w-4 h-4 transition-transform duration-200 ease-out group-hover:translate-x-0.5 ${
+                      isEthereal
+                        ? 'text-indigo-600 dark:text-indigo-300'
+                        : 'text-sky-600 dark:text-sky-400'
+                    }`}
+                  />
                 </button>
               </div>
 
-              <div className="hero-stagger mt-6 sm:mt-8 pt-5 border-t border-sky-200/70 dark:border-slate-800 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-[#475B78] dark:text-[#B4C7E2]">
-                <span>Nhận diện PDF, DOCX & chữ viết tay</span>
-                <span aria-hidden="true">·</span>
-                <span>Đối chiếu sách giáo khoa theo bộ</span>
-                <span aria-hidden="true">·</span>
-                <span>Thi giữa kỳ/cuối kỳ & Đua Top</span>
+              <div className="hero-stagger mt-8 pt-6 border-t border-sky-200/75 dark:border-slate-800/90 grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 text-xs">
+                <div>
+                  <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">Đa định dạng OCR</p>
+                  <p className="mt-0.5 text-[#475B78] dark:text-[#B4C7E2]">
+                    PDF, DOCX và ảnh chụp vở viết tay
+                  </p>
+                </div>
+                <div>
+                  <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">Tách biệt hai chỉ số</p>
+                  <p className="mt-0.5 text-[#475B78] dark:text-[#B4C7E2]">
+                    Độ chính xác độc lập với độ đầy đủ
+                  </p>
+                </div>
+                <div>
+                  <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">Thi thử & Đua Top</p>
+                  <p className="mt-0.5 text-[#475B78] dark:text-[#B4C7E2]">
+                    Đề chuẩn GDPT 2018 theo khối 10–12
+                  </p>
+                </div>
               </div>
             </div>
 
+            {/* Right Column: Existing Hero Prism Illustration + React/CSS Verification Preview Layer */}
             <div className="hero-visual lg:col-span-6">
-              <GlassSurface enableRipple className="h-full rounded-3xl p-2 sm:p-2.5 flex flex-col">
-                <div className="relative w-full h-full min-h-[220px] sm:min-h-[340px] rounded-2xl overflow-hidden bg-gradient-to-br from-sky-50 via-white to-sky-100/70 dark:from-slate-900 dark:via-[#111C2E] dark:to-slate-900">
+              <GlassSurface
+                enableRipple
+                hoverLift={false}
+                className="h-full rounded-3xl p-2.5 sm:p-3 flex flex-col"
+              >
+                <div className="relative w-full h-full min-h-[320px] sm:min-h-[410px] lg:min-h-[440px] rounded-2xl overflow-hidden bg-gradient-to-br from-sky-50 via-white to-sky-100/70 dark:from-slate-900 dark:via-[#111C2E] dark:to-slate-900">
                   {!heroImgError ? (
                     <img
                       src={heroPrismImage}
@@ -325,13 +509,80 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                       </div>
                     </div>
                   )}
+
+                  {/* Measured scrim for crisp WCAG contrast of the React/CSS overlay cards */}
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#09111E]/78 via-[#09111E]/22 to-transparent"
+                  />
+
+                  {/* Top subtle CSS verification scope strip */}
+                  <div className="hero-overlay-card absolute top-3.5 left-3.5 right-3.5 sm:top-4 sm:left-4 sm:right-4 flex items-center justify-between gap-2 px-3.5 py-2 rounded-xl bg-white/86 dark:bg-[#0D182B]/86 backdrop-blur-md border border-white/80 dark:border-sky-200/15 shadow-sm text-xs">
+                    <span className="font-medium text-[#16243E] dark:text-[#E6EFFC] truncate">
+                      Đối chiếu trực tiếp · Đề cương Hóa học 10
+                    </span>
+                    <span className="font-mono text-[11px] font-semibold text-sky-700 dark:text-sky-300 shrink-0 tabular-nums">
+                      SGK Chương 3
+                    </span>
+                  </div>
+
+                  {/* Bottom interactive React/CSS verification preview card */}
+                  <div className="hero-overlay-card hero-float-slow absolute bottom-3.5 left-3.5 right-3.5 sm:bottom-4 sm:left-4 sm:right-4 rounded-2xl bg-white/92 dark:bg-[#0E1B31]/92 backdrop-blur-xl border border-white/85 dark:border-sky-200/20 p-3.5 sm:p-4 shadow-[0_18px_38px_-14px_rgba(9,17,30,0.45)]">
+                    <div className="grid grid-cols-2 gap-3 pb-3 border-b border-sky-200/60 dark:border-slate-700/70">
+                      <div>
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
+                            Độ chính xác
+                          </span>
+                          <span className="font-display text-base sm:text-lg font-bold text-emerald-700 dark:text-emerald-400 tabular-nums">
+                            84%
+                          </span>
+                        </div>
+                        <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
+                          <div className="h-full w-[84%] rounded-full bg-emerald-500" />
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
+                            Độ đầy đủ chương
+                          </span>
+                          <span className="font-display text-base sm:text-lg font-bold text-sky-700 dark:text-sky-400 tabular-nums">
+                            76%
+                          </span>
+                        </div>
+                        <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
+                          <div className="h-full w-[76%] rounded-full bg-sky-500" />
+                        </div>
+                      </div>
+                    </div>
+
+                    <a
+                      href="#specimen"
+                      className="group mt-3 flex items-center justify-between gap-3 rounded-xl px-2.5 py-2 -mx-1 hover:bg-sky-50/90 dark:hover:bg-white/5 transition-colors duration-180"
+                    >
+                      <div className="min-w-0 flex items-start gap-2">
+                        <XCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
+                            Phát hiện 1 nhận định sai · Liên kết hydrogen với C
+                          </p>
+                          <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2] truncate">
+                            Dẫn chứng: SGK Hóa học 10 · Trang 54 — Xem mẫu tương tác
+                          </p>
+                        </div>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0 transition-transform duration-180 group-hover:translate-x-0.5" />
+                    </a>
+                  </div>
                 </div>
               </GlassSurface>
             </div>
           </div>
         </section>
 
-        {/* Workflow Section (Asymmetric 12-col editorial flow, not repetitive identical card grid) */}
+        {/* Workflow Section (Asymmetric 12-col editorial flow, preserved) */}
         <section id="workflow" className="mx-auto max-w-7xl px-4 sm:px-6 py-10 sm:py-16 border-t border-sky-200/50 dark:border-slate-800/80">
           <div className="max-w-2xl mt-2 mb-6 sm:mb-10">
             <h2 className="font-display text-[clamp(1.35rem,3.6vw,1.875rem)] font-bold text-[#16243E] dark:text-[#E6EFFC] leading-[1.25] [text-wrap:balance]">
@@ -373,136 +624,217 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
           </div>
         </section>
 
-        {/* Interactive Document Annotation Specimen */}
-        <section id="specimen" className="mx-auto max-w-7xl px-4 sm:px-6 py-10 sm:py-16 border-t border-sky-200/50 dark:border-slate-800">
-          <div className="max-w-2xl mt-2 mb-6 sm:mb-10">
-            <p className="text-xs font-semibold text-sky-700 dark:text-sky-400 mb-2">
-              Ví dụ minh họa không gian đối chiếu hai cột
-            </p>
-            <h2 className="font-display text-[clamp(1.35rem,3.6vw,1.875rem)] font-bold text-[#16243E] dark:text-[#E6EFFC] leading-[1.25] [text-wrap:balance]">
-              Nhấn trực tiếp vào từng vùng đánh dấu để xem lý do và dẫn chứng sách giáo khoa
-            </h2>
+        {/* Section 2C: Interactive Sample Analysis (Upgraded) */}
+        <section id="specimen" className="mx-auto max-w-7xl px-4 sm:px-6 py-12 sm:py-18 border-t border-sky-200/50 dark:border-slate-800">
+          <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 mt-2 mb-7 sm:mb-10">
+            <div className="max-w-2xl">
+              <p className="text-xs font-semibold text-sky-700 dark:text-sky-400 mb-2">
+                Mẫu đối chiếu hai cột tương tác · Sample Analysis
+              </p>
+              <h2 className="font-display text-[clamp(1.35rem,3.6vw,1.95rem)] font-bold text-[#16243E] dark:text-[#E6EFFC] leading-[1.24] [text-wrap:balance]">
+                Nhấn trực tiếp vào từng nhận định để xem phân tích và dẫn chứng sách giáo khoa
+              </h2>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#475B78] dark:text-[#B4C7E2] tabular-nums">
+              <span className="font-medium text-[#16243E] dark:text-[#E6EFFC]">3 nhận định mẫu</span>
+              <span aria-hidden="true">·</span>
+              <span className="text-rose-700 dark:text-rose-300 font-medium">1 sai</span>
+              <span aria-hidden="true">·</span>
+              <span className="text-amber-700 dark:text-amber-300 font-medium">1 cần bổ sung</span>
+              <span aria-hidden="true">·</span>
+              <span className="text-emerald-700 dark:text-emerald-300 font-medium">1 đúng chuẩn</span>
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6 items-stretch">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-stretch">
             {/* Left: Simulated Student Document (Solid Reading Surface) */}
-            <div className="lg:col-span-7 document-paper rounded-3xl p-4 sm:p-8 flex flex-col justify-between">
+            <div className="lg:col-span-7 document-paper rounded-3xl p-5 sm:p-8 flex flex-col justify-between">
               <div>
-                <div className="flex items-center justify-between pb-3 sm:pb-4 mb-4 sm:mb-5 border-b border-slate-100 dark:border-slate-800 text-xs text-[#475B78] dark:text-[#B4C7E2]">
+                <div className="flex items-center justify-between pb-3.5 mb-5 border-b border-slate-200/80 dark:border-slate-800 text-xs text-[#475B78] dark:text-[#B4C7E2]">
                   <span>Tài liệu học sinh · Đề cương Hóa học 10</span>
-                  <span className="font-mono">Trang 1 / 1</span>
+                  <span className="font-mono tabular-nums">Trang 1 / 1</span>
                 </div>
 
-                <h3 className="font-display text-base sm:text-lg font-bold text-[#16243E] dark:text-[#E6EFFC] mb-3 sm:mb-4">
+                <h3 className="font-display text-base sm:text-lg font-bold text-[#16243E] dark:text-[#E6EFFC] mb-4">
                   Bài 11: Liên kết hydrogen và tương tác van der Waals
                 </h3>
 
-                <div className="space-y-3 sm:space-y-4 text-sm leading-[1.6] text-[#16243E] dark:text-slate-200">
-                  <button
-                    type="button"
-                    onClick={() => handleSelectSpecimen('err-1')}
-                    className={`w-full min-h-[44px] text-left px-3.5 py-2.5 rounded-xl transition-colors cursor-pointer border ${
-                      selectedSpecimenId === 'err-1'
-                        ? 'bg-rose-50 dark:bg-rose-950/50 border-rose-300 dark:border-rose-700 ring-2 ring-rose-200 dark:ring-rose-900'
-                        : 'bg-rose-50/60 dark:bg-rose-950/30 border-rose-200/70 dark:border-rose-800/60 hover:bg-rose-50 dark:hover:bg-rose-950/40'
-                    }`}
-                  >
-                    <span className="font-semibold text-rose-700 dark:text-rose-300 mr-2">[Sai]</span>
-                    {SPECIMEN_ANNOTATIONS[0].studentExcerpt}
-                  </button>
+                <div className="space-y-3" role="listbox" aria-label="Danh sách nhận định mẫu">
+                  {SPECIMEN_ANNOTATIONS.map((item, idx) => {
+                    const isSelected = selectedSpecimenId === item.id;
+                    const meta = STATUS_META[item.color];
+                    const StatusIcon = meta.icon;
 
-                  <button
-                    type="button"
-                    onClick={() => handleSelectSpecimen('part-1')}
-                    className={`w-full min-h-[44px] text-left px-3.5 py-2.5 rounded-xl transition-colors cursor-pointer border ${
-                      selectedSpecimenId === 'part-1'
-                        ? 'bg-amber-50 dark:bg-amber-950/50 border-amber-300 dark:border-amber-700 ring-2 ring-amber-200 dark:ring-amber-900'
-                        : 'bg-amber-50/60 dark:bg-amber-950/30 border-amber-200/70 dark:border-amber-800/60 hover:bg-amber-50 dark:hover:bg-amber-950/40'
-                    }`}
-                  >
-                    <span className="font-semibold text-amber-700 dark:text-amber-300 mr-2">[Thiếu điều kiện]</span>
-                    {SPECIMEN_ANNOTATIONS[1].studentExcerpt}
-                  </button>
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        role="option"
+                        aria-selected={isSelected}
+                        onClick={() => handleSelectSpecimen(item.id)}
+                        className={`group relative w-full min-h-[52px] text-left px-4 py-3.5 rounded-2xl border cursor-pointer select-none transition-[transform,background-color,border-color,box-shadow] duration-200 ease-out hover:-translate-y-[2px] active:scale-[0.992] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${
+                          isSelected ? meta.activeItemClass : meta.idleItemClass
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1 space-y-1.5">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                              <span className={`inline-flex items-center gap-1.5 font-semibold ${meta.textClass}`}>
+                                <StatusIcon className={`w-3.5 h-3.5 shrink-0 ${meta.iconClass}`} />
+                                <span>{item.statusTag}</span>
+                              </span>
+                              <span aria-hidden="true" className="text-slate-400 dark:text-slate-600">
+                                ·
+                              </span>
+                              <span className="font-mono text-[11px] text-[#475B78] dark:text-[#B4C7E2] tabular-nums">
+                                Ý {idx + 1}
+                              </span>
+                            </div>
+                            <p className="text-sm leading-[1.6] text-[#16243E] dark:text-slate-100">
+                              {item.studentExcerpt}
+                            </p>
+                          </div>
 
-                  <button
-                    type="button"
-                    onClick={() => handleSelectSpecimen('ok-1')}
-                    className={`w-full min-h-[44px] text-left px-3.5 py-2.5 rounded-xl transition-colors cursor-pointer border ${
-                      selectedSpecimenId === 'ok-1'
-                        ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-300 dark:border-emerald-700 ring-2 ring-emerald-200 dark:ring-emerald-900'
-                        : 'bg-emerald-50/60 dark:bg-emerald-950/30 border-emerald-200/70 dark:border-emerald-800/60 hover:bg-emerald-50 dark:hover:bg-emerald-950/40'
-                    }`}
-                  >
-                    <span className="font-semibold text-emerald-700 dark:text-emerald-300 mr-2">[Đúng]</span>
-                    {SPECIMEN_ANNOTATIONS[2].studentExcerpt}
-                  </button>
+                          <ChevronRight
+                            aria-hidden="true"
+                            className={`w-4 h-4 shrink-0 mt-1 transition-all duration-200 ease-out ${
+                              isSelected
+                                ? `${meta.iconClass} translate-x-0.5 opacity-100`
+                                : 'text-slate-400 dark:text-slate-500 opacity-50 group-hover:opacity-90 group-hover:translate-x-0.5'
+                            }`}
+                          />
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              <div className="mt-5 sm:mt-6 pt-4 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-[#475B78] dark:text-[#B4C7E2]">
-                <span className="inline-flex items-center gap-1.5 text-rose-700 dark:text-rose-300 font-medium">
-                  <span className="h-2 w-2 rounded-full bg-rose-600" aria-hidden="true" />
-                  Đỏ: Lỗi kiến thức
-                </span>
-                <span className="inline-flex items-center gap-1.5 text-amber-700 dark:text-amber-300 font-medium">
-                  <span className="h-2 w-2 rounded-full bg-amber-500" aria-hidden="true" />
-                  Cam: Thiếu điều kiện
-                </span>
-                <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300 font-medium">
-                  <span className="h-2 w-2 rounded-full bg-emerald-600" aria-hidden="true" />
-                  Xanh lá: Đã kiểm chứng
-                </span>
+              <div className="mt-6 pt-4 border-t border-slate-200/80 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs text-[#475B78] dark:text-[#B4C7E2]">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                  <span className="inline-flex items-center gap-1.5 text-rose-700 dark:text-rose-300 font-medium">
+                    <XCircle className="w-3.5 h-3.5" />
+                    Sai kiến thức
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-amber-700 dark:text-amber-300 font-medium">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Cần bổ sung
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300 font-medium">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    Đúng chuẩn
+                  </span>
+                </div>
+                <span className="text-[11px]">Chọn từng ý để xem đối chiếu</span>
               </div>
             </div>
 
-            {/* Right: Reference & Explanation Panel */}
+            {/* Right: Verification Result Panel with Smooth Crossfade & Source Accordion */}
             <div className="lg:col-span-5">
-              <GlassSurface className="h-full rounded-3xl p-5 sm:p-7 flex flex-col justify-between">
-                <div className="specimen-detail">
-                  <div className="flex items-center justify-between mb-4 text-xs">
-                    <span
-                      className={`font-semibold ${
-                        activeSpecimen.color === 'red'
-                          ? 'text-rose-700 dark:text-rose-300'
-                          : activeSpecimen.color === 'orange'
-                          ? 'text-amber-700 dark:text-amber-300'
-                          : 'text-emerald-700 dark:text-emerald-300'
-                      }`}
-                    >
-                      {activeSpecimen.label}
+              <GlassSurface
+                hoverLift={false}
+                className="h-full rounded-3xl p-5 sm:p-7 flex flex-col justify-between"
+              >
+                <div className="flex-1">
+                  <div className="flex items-center justify-between gap-2 pb-3.5 mb-4 border-b border-sky-200/60 dark:border-slate-700/70 text-xs">
+                    <span className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                      Kết quả kiểm chứng
                     </span>
-                    <span className="font-mono text-[#475B78] dark:text-[#B4C7E2]">{activeSpecimen.source}</span>
+                    <span className="font-mono text-[#475B78] dark:text-[#B4C7E2] tabular-nums">
+                      {activeSpecimen.orderLabel}
+                    </span>
                   </div>
 
-                  <div className="space-y-4">
-                    <div>
-                      <p className="text-xs font-medium text-[#475B78] dark:text-[#B4C7E2] mb-1">
-                        Kiến thức chuẩn theo tài liệu
-                      </p>
-                      <p className="text-sm text-[#16243E] dark:text-[#E6EFFC] leading-[1.6] font-medium bg-emerald-50/80 dark:bg-emerald-950/40 border border-emerald-200/80 dark:border-emerald-800/60 rounded-2xl p-3.5 prose-measure">
-                        {activeSpecimen.correctKnowledge}
-                      </p>
-                    </div>
+                  <AnimatePresence mode="wait" initial={false}>
+                    <motion.div
+                      key={activeSpecimen.id}
+                      initial={prefersReduced ? { opacity: 1 } : { opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={prefersReduced ? { opacity: 0 } : { opacity: 0, y: -5 }}
+                      transition={{
+                        duration: prefersReduced ? 0 : 0.2,
+                        ease: [0.16, 1, 0.3, 1],
+                      }}
+                      className="space-y-4"
+                    >
+                      {/* Dual-coded Semantic Status Summary */}
+                      <div
+                        className={`rounded-2xl border px-3.5 py-3 flex items-start gap-2.5 ${activeMeta.resultHeaderBg}`}
+                      >
+                        <ActiveStatusIcon className={`w-4 h-4 shrink-0 mt-0.5 ${activeMeta.iconClass}`} />
+                        <div className="min-w-0">
+                          <p className={`text-xs font-bold ${activeMeta.textClass}`}>
+                            {activeSpecimen.statusTag}
+                          </p>
+                          <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] mt-0.5">
+                            {activeSpecimen.label}
+                          </p>
+                        </div>
+                      </div>
 
-                    <div>
-                      <p className="text-xs font-medium text-[#475B78] dark:text-[#B4C7E2] mb-1">
-                        Phân tích chi tiết
-                      </p>
-                      <p className="text-sm text-[#16243E] dark:text-slate-200 leading-[1.6] prose-measure">
-                        {activeSpecimen.reason}
-                      </p>
-                    </div>
-                  </div>
+                      {/* Correct Standard Knowledge */}
+                      <div>
+                        <p className="text-xs font-semibold text-[#475B78] dark:text-[#B4C7E2] mb-1.5">
+                          Kiến thức chuẩn theo tài liệu
+                        </p>
+                        <p className="text-sm text-[#16243E] dark:text-[#E6EFFC] leading-[1.6] font-medium bg-emerald-50/75 dark:bg-emerald-950/35 border border-emerald-200/80 dark:border-emerald-800/60 rounded-2xl p-3.5 prose-measure">
+                          {activeSpecimen.correctKnowledge}
+                        </p>
+                      </div>
+
+                      {/* Detailed Explanation */}
+                      <div>
+                        <p className="text-xs font-semibold text-[#475B78] dark:text-[#B4C7E2] mb-1">
+                          Giải thích chi tiết
+                        </p>
+                        <p className="text-sm text-[#16243E] dark:text-slate-200 leading-[1.6] prose-measure">
+                          {activeSpecimen.reason}
+                        </p>
+                      </div>
+
+                      {/* Actionable Fix / Note */}
+                      <div className="rounded-2xl bg-sky-50/70 dark:bg-slate-900/60 border border-sky-200/70 dark:border-slate-700/70 p-3.5">
+                        <p className="text-xs font-semibold text-sky-800 dark:text-sky-300 mb-1">
+                          {activeSpecimen.color === 'green' ? 'Gợi ý ghi nhớ' : 'Gợi ý chỉnh sửa nhanh'}
+                        </p>
+                        <p className="text-xs text-[#16243E] dark:text-slate-200 leading-[1.6]">
+                          {activeSpecimen.actionTip}
+                        </p>
+                      </div>
+
+                      {/* Collapsible Reference Source Accordion */}
+                      <SmoothAccordion
+                        open={sourceAccordionOpen}
+                        onToggle={setSourceAccordionOpen}
+                        icon={<BookMarked className="w-4 h-4 text-sky-600 dark:text-sky-400" />}
+                        title={<span className="text-xs font-semibold">Nguồn tham chiếu & trích dẫn</span>}
+                        subtitle={<span className="font-mono text-[11px]">{activeSpecimen.source}</span>}
+                        className="border border-sky-200/75 dark:border-slate-700/75 bg-white/65 dark:bg-slate-900/50"
+                        triggerClassName="px-3.5 py-2.5 hover:bg-sky-50/60 dark:hover:bg-white/5"
+                        contentClassName="px-3.5 pb-3.5 pt-2.5 border-t border-sky-200/60 dark:border-slate-700/60 space-y-2 text-xs text-[#475B78] dark:text-[#B4C7E2] leading-[1.6]"
+                      >
+                        <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                          {activeSpecimen.sourceBook}
+                        </p>
+                        <blockquote className="italic text-[#16243E] dark:text-slate-200 bg-white/75 dark:bg-slate-950/50 border border-sky-100 dark:border-slate-800 rounded-xl p-2.5">
+                          {activeSpecimen.sourceExcerpt}
+                        </blockquote>
+                        <p className="text-[11px]">{activeSpecimen.verificationRule}</p>
+                      </SmoothAccordion>
+                    </motion.div>
+                  </AnimatePresence>
                 </div>
 
-                <div className="mt-6 pt-4 border-t border-sky-200/60 dark:border-slate-700/70 flex items-center justify-between text-xs text-[#475B78] dark:text-[#B4C7E2]">
-                  <span>Nhấp các đoạn bên trái để đối chiếu</span>
+                <div className="mt-5 pt-4 border-t border-sky-200/60 dark:border-slate-700/70 flex items-center justify-between gap-3 text-xs text-[#475B78] dark:text-[#B4C7E2]">
+                  <span>Nhấp nhận định bên trái để đối chiếu</span>
                   <button
                     type="button"
                     onClick={() => onOpenAuth('login')}
-                    className="font-semibold text-sky-700 dark:text-sky-400 hover:underline cursor-pointer min-h-[36px] inline-flex items-center"
+                    className="group font-semibold text-sky-700 dark:text-sky-400 hover:text-sky-800 dark:hover:text-sky-300 cursor-pointer min-h-[36px] inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors"
                   >
-                    Thử với tài liệu của bạn →
+                    <span>Thử với tài liệu của bạn</span>
+                    <ArrowRight className="w-3.5 h-3.5 transition-transform duration-180 group-hover:translate-x-0.5" />
                   </button>
                 </div>
               </GlassSurface>
@@ -510,7 +842,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
           </div>
         </section>
 
-        {/* Exam Center & Practice Highlights (Single Sky Accent + semantic icons) */}
+        {/* Exam Center & Practice Highlights (Preserved) */}
         <section id="practice" className="mx-auto max-w-7xl px-4 sm:px-6 py-10 sm:py-16 border-t border-sky-200/50 dark:border-slate-800">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
             <GlassSurface enableRipple className="rounded-3xl p-5 sm:p-6">
@@ -545,7 +877,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
           </div>
         </section>
 
-        {/* FAQ */}
+        {/* FAQ with Smooth Accordion */}
         <section id="faq" className="mx-auto max-w-4xl px-4 sm:px-6 py-10 sm:py-16 border-t border-sky-200/50 dark:border-slate-800">
           <h2 className="font-display text-[clamp(1.35rem,3.6vw,1.875rem)] font-bold text-[#16243E] dark:text-[#E6EFFC] mt-2 mb-6 sm:mb-8 text-center">
             Câu hỏi thường gặp
@@ -554,26 +886,17 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
             {FAQS.map((item, idx) => {
               const isOpen = openFaqIndex === idx;
               return (
-                <div key={item.q} className="glass-surface rounded-3xl overflow-hidden">
-                  <button
-                    type="button"
-                    aria-expanded={isOpen}
-                    onClick={() => setOpenFaqIndex(isOpen ? null : idx)}
-                    className="w-full min-h-[48px] px-4 sm:px-6 py-3.5 sm:py-4 text-left flex items-center justify-between gap-4 font-medium text-sm sm:text-base text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
-                  >
-                    <span>{item.q}</span>
-                    <ChevronDown
-                      className={`w-4 h-4 text-[#475B78] dark:text-[#B4C7E2] shrink-0 transition-transform duration-200 ${
-                        isOpen ? 'rotate-180' : ''
-                      }`}
-                    />
-                  </button>
-                  {isOpen && (
-                    <div className="px-4 sm:px-6 pb-4 sm:pb-5 text-sm text-[#475B78] dark:text-[#B4C7E2] leading-[1.6] prose-measure border-t border-sky-200/50 dark:border-slate-700/60 pt-3">
-                      {item.a}
-                    </div>
-                  )}
-                </div>
+                <SmoothAccordion
+                  key={item.q}
+                  open={isOpen}
+                  onToggle={(next) => setOpenFaqIndex(next ? idx : null)}
+                  title={<span className="text-sm sm:text-base font-medium">{item.q}</span>}
+                  className="glass-surface rounded-3xl"
+                  triggerClassName="min-h-[52px] px-4 sm:px-6 py-3.5 sm:py-4 hover:bg-white/40 dark:hover:bg-white/5"
+                  contentClassName="px-4 sm:px-6 pb-4 sm:pb-5 text-sm text-[#475B78] dark:text-[#B4C7E2] leading-[1.6] prose-measure border-t border-sky-200/50 dark:border-slate-700/60 pt-3"
+                >
+                  {item.a}
+                </SmoothAccordion>
               );
             })}
           </div>
@@ -584,11 +907,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 py-6 sm:py-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#475B78] dark:text-[#B4C7E2]">
           <p>© {new Date().getFullYear()} {BRAND_CONFIG.name}. Nền tảng kiểm chứng học tập THPT.</p>
           <div className="flex items-center gap-4">
-            <a href="#workflow" className="hover:text-[#16243E] dark:hover:text-white">Quy trình</a>
+            <a href="#workflow" className="hover:text-[#16243E] dark:hover:text-white transition-colors">Quy trình</a>
             <span aria-hidden="true">·</span>
-            <a href="#specimen" className="hover:text-[#16243E] dark:hover:text-white">Minh họa</a>
+            <a href="#specimen" className="hover:text-[#16243E] dark:hover:text-white transition-colors">Minh họa</a>
             <span aria-hidden="true">·</span>
-            <a href="#faq" className="hover:text-[#16243E] dark:hover:text-white">Hỏi đáp</a>
+            <a href="#faq" className="hover:text-[#16243E] dark:hover:text-white transition-colors">Hỏi đáp</a>
           </div>
         </div>
       </footer>

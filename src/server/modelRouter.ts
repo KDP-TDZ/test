@@ -41,87 +41,94 @@ export const DEFAULT_TASK_MODELS: Record<AiTaskType, TaskModelConfig> = {
   subject_classification: {
     defaultModel: 'gemini-3.1-flash-lite',
     fallbackModel: 'gemini-4-hydrogen',
-    enableFallback: false,
+    enableFallback: true,
     oneTimeOverrideModel: null,
     promptVersion: 'v2.1',
   },
   curriculum_extraction: {
     defaultModel: 'gemini-3.1-flash-lite',
     fallbackModel: 'gemini-4-hydrogen',
-    enableFallback: false,
+    enableFallback: true,
     oneTimeOverrideModel: null,
     promptVersion: 'v2.2',
   },
   knowledge_analysis: {
     defaultModel: 'gemini-4-hydrogen',
     fallbackModel: 'gemini-3.1-flash-lite',
-    enableFallback: false,
+    enableFallback: true,
     oneTimeOverrideModel: null,
     promptVersion: 'v2.2',
   },
   completeness_analysis: {
     defaultModel: 'gemini-4-hydrogen',
     fallbackModel: 'gemini-3.1-flash-lite',
-    enableFallback: false,
+    enableFallback: true,
     oneTimeOverrideModel: null,
     promptVersion: 'v2.1',
   },
   claim_validation: {
-    defaultModel: 'gemini-4-hydrogen',
-    fallbackModel: 'gemini-3.1-flash-lite',
-    enableFallback: false,
+    defaultModel: 'gemini-3.1-flash-lite',
+    fallbackModel: 'gemini-4-hydrogen',
+    enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v2.1',
+    promptVersion: 'v2.2',
   },
   quiz_blueprint: {
     defaultModel: 'gemini-4-hydrogen',
     fallbackModel: 'gemini-3.1-flash-lite',
-    enableFallback: false,
+    enableFallback: true,
     oneTimeOverrideModel: null,
     promptVersion: 'v2.1',
   },
   quiz_generation: {
     defaultModel: 'gemini-4-hydrogen',
     fallbackModel: 'gemini-3.1-flash-lite',
-    enableFallback: false,
+    enableFallback: true,
     oneTimeOverrideModel: null,
     promptVersion: 'v2.2',
   },
   quiz_validation: {
     defaultModel: 'gemini-3.1-flash-lite',
     fallbackModel: 'gemini-4-hydrogen',
-    enableFallback: false,
+    enableFallback: true,
     oneTimeOverrideModel: null,
     promptVersion: 'v2.1',
   },
   answer_explanation: {
     defaultModel: 'gemini-3.1-flash-lite',
     fallbackModel: 'gemini-4-hydrogen',
-    enableFallback: false,
+    enableFallback: true,
     oneTimeOverrideModel: null,
     promptVersion: 'v2.1',
   },
   flashcard_generation: {
     defaultModel: 'gemini-3.1-flash-lite',
     fallbackModel: 'gemini-4-hydrogen',
-    enableFallback: false,
+    enableFallback: true,
     oneTimeOverrideModel: null,
     promptVersion: 'v2.1',
   },
   feedback_analysis: {
     defaultModel: 'gemini-3.1-flash-lite',
     fallbackModel: 'gemini-4-hydrogen',
-    enableFallback: false,
+    enableFallback: true,
     oneTimeOverrideModel: null,
     promptVersion: 'v2.0',
   },
 };
 
-const aiResponseCache = new BoundedTtlCache<unknown>(160, 45 * 60 * 1000);
+// Extended 6-hour bounded cache (320 entries) tuned for small 2-3 user teams re-running documents
+const aiResponseCache = new BoundedTtlCache<unknown>(320, 6 * 60 * 60 * 1000);
+// Coalesce concurrent identical AI requests so simultaneous calls spend only 1 API invocation
+const inFlightTasks = new Map<
+  string,
+  Promise<{ data: unknown; modelId: string; usedFallback: boolean; usedOverride: boolean; cached: boolean }>
+>();
 const executionLogs: AiExecutionLog[] = [];
 
 export function clearAiResponseCache(): void {
   aiResponseCache.clear();
+  inFlightTasks.clear();
 }
 
 export function getRecentExecutionLogs(): AiExecutionLog[] {
@@ -321,102 +328,143 @@ export async function executeRoutedAiTask<T>(params: {
         cached: true,
       };
     }
+
+    const pending = inFlightTasks.get(cacheKey);
+    if (pending) {
+      const shared = await pending;
+      return {
+        data: shared.data as T,
+        modelId: shared.modelId,
+        usedFallback: shared.usedFallback,
+        usedOverride: shared.usedOverride,
+        cached: true,
+      };
+    }
   }
 
-  const start = Date.now();
-  try {
-    const result = await withExponentialBackoff(() => runWithModel(decision.modelId));
-    if (cacheKey) {
-      aiResponseCache.set(cacheKey, result);
-    }
-    appendExecutionLog({
-      executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
-      taskType,
-      modelId: decision.modelId,
-      usedFallback: false,
-      usedOverride: decision.usedOverride,
-      promptVersion: decision.promptVersion,
-      configVersion: decision.configVersion,
-      status: 'success',
-      durationMs: Date.now() - start,
-      cached: false,
-      timestamp: new Date().toISOString(),
-    });
-    return {
-      data: result,
-      modelId: decision.modelId,
-      usedFallback: false,
-      usedOverride: decision.usedOverride,
-      cached: false,
-    };
-  } catch (primaryErr) {
-    // Only fall back when Admin explicitly enabled fallback for this task AND fallback model differs
-    if (
-      decision.enableFallback &&
-      decision.fallbackModelId &&
-      decision.fallbackModelId !== decision.modelId
-    ) {
-      try {
-        const fbResult = await withExponentialBackoff(() => runWithModel(decision.fallbackModelId));
-        if (cacheKey) {
-          aiResponseCache.set(cacheKey, fbResult);
-        }
-        appendExecutionLog({
-          executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
-          taskType,
-          modelId: decision.fallbackModelId,
-          usedFallback: true,
-          usedOverride: decision.usedOverride,
-          promptVersion: decision.promptVersion,
-          configVersion: decision.configVersion,
-          status: 'success',
-          durationMs: Date.now() - start,
-          cached: false,
-          timestamp: new Date().toISOString(),
-        });
-        return {
-          data: fbResult,
-          modelId: decision.fallbackModelId,
-          usedFallback: true,
-          usedOverride: decision.usedOverride,
-          cached: false,
-        };
-      } catch (fbErr) {
-        appendExecutionLog({
-          executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
-          taskType,
-          modelId: decision.fallbackModelId,
-          usedFallback: true,
-          usedOverride: decision.usedOverride,
-          promptVersion: decision.promptVersion,
-          configVersion: decision.configVersion,
-          status: 'failed',
-          error: fbErr instanceof Error ? fbErr.message.slice(0, 180) : String(fbErr).slice(0, 180),
-          durationMs: Date.now() - start,
-          timestamp: new Date().toISOString(),
-        });
-        throw fbErr;
+  const canFallback =
+    decision.enableFallback &&
+    Boolean(decision.fallbackModelId) &&
+    decision.fallbackModelId !== decision.modelId;
+
+  const executeTask = async (): Promise<{
+    data: T;
+    modelId: string;
+    usedFallback: boolean;
+    usedOverride: boolean;
+    cached: boolean;
+  }> => {
+    const start = Date.now();
+    try {
+      // When fallback is active, retry primary at most once so 429/503 transitions quickly to fallback
+      const primaryRetries = canFallback ? 1 : 2;
+      const result = await withExponentialBackoff(() => runWithModel(decision.modelId), primaryRetries);
+      if (cacheKey) {
+        aiResponseCache.set(cacheKey, result);
       }
-    }
+      appendExecutionLog({
+        executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+        taskType,
+        modelId: decision.modelId,
+        usedFallback: false,
+        usedOverride: decision.usedOverride,
+        promptVersion: decision.promptVersion,
+        configVersion: decision.configVersion,
+        status: 'success',
+        durationMs: Date.now() - start,
+        cached: false,
+        timestamp: new Date().toISOString(),
+      });
+      return {
+        data: result,
+        modelId: decision.modelId,
+        usedFallback: false,
+        usedOverride: decision.usedOverride,
+        cached: false,
+      };
+    } catch (primaryErr) {
+      if (canFallback) {
+        try {
+          const fbResult = await withExponentialBackoff(() => runWithModel(decision.fallbackModelId), 1);
+          if (cacheKey) {
+            aiResponseCache.set(cacheKey, fbResult);
+          }
+          appendExecutionLog({
+            executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+            taskType,
+            modelId: decision.fallbackModelId,
+            usedFallback: true,
+            usedOverride: decision.usedOverride,
+            promptVersion: decision.promptVersion,
+            configVersion: decision.configVersion,
+            status: 'success',
+            durationMs: Date.now() - start,
+            cached: false,
+            timestamp: new Date().toISOString(),
+          });
+          return {
+            data: fbResult,
+            modelId: decision.fallbackModelId,
+            usedFallback: true,
+            usedOverride: decision.usedOverride,
+            cached: false,
+          };
+        } catch (fbErr) {
+          appendExecutionLog({
+            executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+            taskType,
+            modelId: decision.fallbackModelId,
+            usedFallback: true,
+            usedOverride: decision.usedOverride,
+            promptVersion: decision.promptVersion,
+            configVersion: decision.configVersion,
+            status: 'failed',
+            error: fbErr instanceof Error ? fbErr.message.slice(0, 180) : String(fbErr).slice(0, 180),
+            durationMs: Date.now() - start,
+            timestamp: new Date().toISOString(),
+          });
+          throw fbErr;
+        }
+      }
 
-    appendExecutionLog({
-      executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
-      taskType,
-      modelId: decision.modelId,
-      usedFallback: false,
-      usedOverride: decision.usedOverride,
-      promptVersion: decision.promptVersion,
-      configVersion: decision.configVersion,
-      status: 'failed',
-      error:
-        primaryErr instanceof Error
-          ? primaryErr.message.slice(0, 180)
-          : String(primaryErr).slice(0, 180),
-      durationMs: Date.now() - start,
-      timestamp: new Date().toISOString(),
-    });
-    throw primaryErr;
+      appendExecutionLog({
+        executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+        taskType,
+        modelId: decision.modelId,
+        usedFallback: false,
+        usedOverride: decision.usedOverride,
+        promptVersion: decision.promptVersion,
+        configVersion: decision.configVersion,
+        status: 'failed',
+        error:
+          primaryErr instanceof Error
+            ? primaryErr.message.slice(0, 180)
+            : String(primaryErr).slice(0, 180),
+        durationMs: Date.now() - start,
+        timestamp: new Date().toISOString(),
+      });
+      throw primaryErr;
+    }
+  };
+
+  if (!cacheKey) {
+    return executeTask();
   }
+
+  const taskPromise = executeTask().finally(() => {
+    inFlightTasks.delete(cacheKey);
+  });
+  inFlightTasks.set(
+    cacheKey,
+    taskPromise as Promise<{
+      data: unknown;
+      modelId: string;
+      usedFallback: boolean;
+      usedOverride: boolean;
+      cached: boolean;
+    }>
+  );
+  return taskPromise;
 }
 
 export async function testModelConnectivity(modelId: string): Promise<{
