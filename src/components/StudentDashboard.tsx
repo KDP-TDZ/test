@@ -16,6 +16,7 @@ import { useUiMode } from '../context/UiModeContext';
 import { SUBJECT_LABELS, type AnalysisRecord, type GradeLevel, type PracticeItem, type SubjectId } from '../core/types';
 import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import { updateUserPreferences } from '../services/firestoreService';
+import { useIsMobileViewport } from '../hooks/useIsMobileViewport';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { LiquidCard } from './LiquidGlass/LiquidCard';
 import { ScoreRing } from './LiquidGlass/ScoreRing';
@@ -39,6 +40,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 }) => {
   const { user, profile, refreshProfile } = useAuth();
   const { isEthereal } = useUiMode();
+  const isMobile = useIsMobileViewport();
   const dashboardRef = useRef<HTMLDivElement>(null);
   const [editingProfile, setEditingProfile] = useState(false);
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
@@ -87,7 +89,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
   useGSAP(
     () => {
-      if (loading || !isEthereal) return;
+      if (loading || !isEthereal || isMobile) return;
       const mm = gsap.matchMedia();
       mm.add(MOTION_ALLOWED_MEDIA, () => {
         gsap.from('.dashboard-card', {
@@ -100,12 +102,12 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         });
       });
     },
-    { scope: dashboardRef, dependencies: [loading, isEthereal, analyses.length === 0 && practiceItems.length === 0] }
+    { scope: dashboardRef, dependencies: [loading, isEthereal, isMobile, analyses.length === 0 && practiceItems.length === 0] }
   );
 
   useGSAP(
     () => {
-      if (!editingProfile || !isEthereal) return;
+      if (!editingProfile || !isEthereal || isMobile) return;
       const mm = gsap.matchMedia();
       mm.add(MOTION_ALLOWED_MEDIA, () => {
         gsap.from('.profile-editor-panel', {
@@ -117,7 +119,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         });
       });
     },
-    { scope: dashboardRef, dependencies: [editingProfile, isEthereal] }
+    { scope: dashboardRef, dependencies: [editingProfile, isEthereal, isMobile] }
   );
 
   return (
@@ -236,44 +238,46 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         </GlassSurface>
       )}
 
-      {/* Quick Exam Center & Đua Top Shortcuts (always available) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+      {/* Quick Exam Center & Đua Top Shortcuts (compact 2-col on tablet/desktop, crisp rows on mobile) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-5">
         <LiquidCard
-          enableRipple
+          enableRipple={!isMobile}
+          enableTilt={false}
           onClick={() => onNavigate('exams')}
-          className="dashboard-card rounded-3xl p-6 cursor-pointer flex items-center justify-between gap-4"
+          className="dashboard-card rounded-2xl sm:rounded-3xl p-4 sm:p-6 cursor-pointer flex items-center justify-between gap-4 active:scale-[0.99] transition-transform duration-100"
         >
-          <div className="space-y-1">
+          <div className="space-y-1 min-w-0">
             <p className="text-xs font-semibold text-sky-700 dark:text-sky-400">
               Kiểm tra định kỳ · Lớp 10 / 11 / 12
             </p>
-            <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
+            <h2 className="font-display text-base sm:text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
               Trung tâm Đề Kiểm Tra Giữa kỳ & Cuối kỳ
             </h2>
-            <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] leading-[1.6]">
+            <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] leading-[1.55]">
               Thi thử đề chuẩn ABCD, Đúng/Sai, Trả lời ngắn và nhận điểm ngay.
             </p>
           </div>
-          <Award className="w-8 h-8 text-sky-600 dark:text-sky-400 shrink-0" />
+          <Award className="w-7 h-7 sm:w-8 sm:h-8 text-sky-600 dark:text-sky-400 shrink-0" />
         </LiquidCard>
 
         <LiquidCard
-          enableRipple
+          enableRipple={!isMobile}
+          enableTilt={false}
           onClick={() => onNavigate('leaderboard')}
-          className="dashboard-card rounded-3xl p-6 cursor-pointer flex items-center justify-between gap-4"
+          className="dashboard-card rounded-2xl sm:rounded-3xl p-4 sm:p-6 cursor-pointer flex items-center justify-between gap-4 active:scale-[0.99] transition-transform duration-100"
         >
-          <div className="space-y-1">
+          <div className="space-y-1 min-w-0">
             <p className="text-xs font-semibold text-amber-600 dark:text-amber-400">
               Bảng xếp hạng thành tích
             </p>
-            <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
+            <h2 className="font-display text-base sm:text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
               Đua Top theo Khối & Toàn trường
             </h2>
-            <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] leading-[1.6]">
+            <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] leading-[1.55]">
               Xem thứ hạng của bạn trong Khối 10 / 11 / 12 và toàn trường theo điểm thi.
             </p>
           </div>
-          <Trophy className="w-8 h-8 text-amber-500 shrink-0" />
+          <Trophy className="w-7 h-7 sm:w-8 sm:h-8 text-amber-500 shrink-0" />
         </LiquidCard>
       </div>
 
@@ -314,8 +318,12 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         </LiquidCard>
       ) : (
         <>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
-            <LiquidCard className="dashboard-card rounded-3xl p-5 flex items-center justify-between">
+          {/* Smooth horizontal swipeable stat strip on Mobile (<768px), 2/4-col grid on Tablet/Desktop */}
+          <div className="flex overflow-x-auto snap-x snap-mandatory gap-3 -mx-4 px-4 pb-1 no-scrollbar md:mx-0 md:px-0 md:pb-0 md:grid md:grid-cols-2 xl:grid-cols-4 md:gap-5">
+            <LiquidCard
+              enableTilt={false}
+              className="dashboard-card snap-start shrink-0 w-[78vw] max-w-[270px] md:w-auto md:max-w-none rounded-2xl sm:rounded-3xl p-4 sm:p-5 flex items-center justify-between"
+            >
               <div>
                 <p className="text-xs font-medium text-[#475B78] dark:text-[#B4C7E2]">
                   Tài liệu đã kiểm định
@@ -327,20 +335,26 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   {completed.length} bài đã hoàn tất
                 </p>
               </div>
-              <FileCheck2 className="w-7 h-7 text-sky-600 dark:text-sky-400" />
+              <FileCheck2 className="w-7 h-7 text-sky-600 dark:text-sky-400 shrink-0" />
             </LiquidCard>
 
-            <LiquidCard className="dashboard-card rounded-3xl p-5">
+            <LiquidCard
+              enableTilt={false}
+              className="dashboard-card snap-start shrink-0 w-[78vw] max-w-[270px] md:w-auto md:max-w-none rounded-2xl sm:rounded-3xl p-4 sm:p-5"
+            >
               <ScoreRing
                 label="Độ chính xác trung bình"
                 value={avgAccuracy}
                 subtitle={accValues.length > 0 ? `Tính trên ${accValues.length} bài đã xác minh` : 'Chưa đủ dữ liệu'}
                 color="sky"
-                size={76}
+                size={isMobile ? 64 : 76}
               />
             </LiquidCard>
 
-            <LiquidCard className="dashboard-card rounded-3xl p-4 sm:p-5">
+            <LiquidCard
+              enableTilt={false}
+              className="dashboard-card snap-start shrink-0 w-[78vw] max-w-[270px] md:w-auto md:max-w-none rounded-2xl sm:rounded-3xl p-4 sm:p-5"
+            >
               <ScoreRing
                 label="Độ đầy đủ trung bình"
                 value={avgCompleteness}
@@ -350,14 +364,15 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                     : 'Cần chọn sách/chương tham chiếu'
                 }
                 color="sky"
-                size={76}
+                size={isMobile ? 64 : 76}
               />
             </LiquidCard>
 
             <LiquidCard
-              enableRipple
+              enableRipple={!isMobile}
+              enableTilt={false}
               onClick={() => onNavigate('practice')}
-              className="dashboard-card rounded-3xl p-5 flex items-center justify-between cursor-pointer"
+              className="dashboard-card snap-start shrink-0 w-[78vw] max-w-[270px] md:w-auto md:max-w-none rounded-2xl sm:rounded-3xl p-4 sm:p-5 flex items-center justify-between cursor-pointer active:scale-[0.99] transition-transform duration-100"
             >
               <div>
                 <p className="text-xs font-medium text-[#475B78] dark:text-[#B4C7E2]">
@@ -370,7 +385,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   {dueTodayCount} câu đến hạn ôn hôm nay
                 </p>
               </div>
-              <Repeat className="w-7 h-7 text-amber-600 dark:text-amber-400" />
+              <Repeat className="w-7 h-7 text-amber-600 dark:text-amber-400 shrink-0" />
             </LiquidCard>
           </div>
 

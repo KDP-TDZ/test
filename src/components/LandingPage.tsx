@@ -16,7 +16,9 @@ import {
 } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { BRAND_CONFIG } from '../config/brand';
+import { usePrivacyBlur } from '../context/PrivacyBlurContext';
 import { useUiMode } from '../context/UiModeContext';
+import { useIsMobileViewport } from '../hooks/useIsMobileViewport';
 import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import heroPrismImage from '../assets/images/hero_liquid_prism_1795012421683.jpg';
 import { Carousel } from './LiquidGlass/Carousel';
@@ -196,6 +198,9 @@ const STATUS_META = {
 
 export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
   const { isEthereal } = useUiMode();
+  const { privacyBlur } = usePrivacyBlur();
+  const isMobile = useIsMobileViewport();
+  const useDesktopEthereal = isEthereal && !isMobile;
   const pageRef = useRef<HTMLDivElement>(null);
   const hamburgerBtnRef = useRef<HTMLButtonElement>(null);
   const prefersReduced = useReducedMotion();
@@ -266,7 +271,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
 
   useGSAP(
     () => {
-      if (!isEthereal) return;
+      if (!useDesktopEthereal) return;
       const mm = gsap.matchMedia();
       mm.add(MOTION_ALLOWED_MEDIA, () => {
         const tl = gsap.timeline({ defaults: { ease: 'power3.out' } });
@@ -301,7 +306,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
           );
       });
     },
-    { scope: pageRef, dependencies: [isEthereal] }
+    { scope: pageRef, dependencies: [useDesktopEthereal] }
   );
 
   const handleSelectSpecimen = (id: string) => {
@@ -317,21 +322,21 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
 
   return (
     <div ref={pageRef} className="flex flex-col min-h-dvh">
-      {/* Site Header + Semantic Navigation Bar (NameThatUI / web/header-navbar) */}
+      {/* Site Header + Semantic Navigation Bar (Compact 52px on Mobile, Zero-Overflow on Tablet/Desktop) */}
       <header className="sticky top-0 z-[45] glass-nav">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 h-16 flex items-center justify-between gap-4 sm:gap-8">
-          <div className="flex items-center gap-2.5 shrink-0">
+        <div className="mx-auto max-w-7xl px-3.5 sm:px-6 h-[52px] md:h-16 flex items-center justify-between gap-3 sm:gap-6">
+          <div className="flex items-center gap-2 shrink-0 min-w-0">
             <HamburgerButton
               buttonRef={hamburgerBtnRef}
               open={mobileNavOpen}
               controlsId={landingDrawerId}
               onToggle={() => setMobileNavOpen((v) => !v)}
-              className="md:hidden"
+              className="lg:hidden"
             />
             <a
               href="#top"
               onClick={() => setActiveSection('top')}
-              className="font-display text-base sm:text-lg font-bold tracking-tight text-[#16243E] dark:text-[#E6EFFC] whitespace-nowrap shrink-0 transition-opacity duration-150 hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-lg px-1 -mx-1"
+              className="font-display text-[15px] sm:text-lg font-bold tracking-tight text-[#16243E] dark:text-[#E6EFFC] whitespace-nowrap shrink-0 transition-opacity duration-150 hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-lg px-1 -mx-1"
             >
               {BRAND_CONFIG.name}
             </a>
@@ -339,7 +344,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
 
           <nav
             aria-label="Điều hướng chính trang chủ"
-            className="hidden md:flex items-center gap-1 lg:gap-2 text-sm font-medium text-[#475B78] dark:text-[#B4C7E2]"
+            className="hidden lg:flex items-center gap-1 xl:gap-2 text-sm font-medium text-[#475B78] dark:text-[#B4C7E2]"
           >
             {navLinks.map((link) => {
               const isCurrent = activeSection === link.id;
@@ -349,7 +354,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                   href={link.href}
                   aria-current={isCurrent ? 'page' : undefined}
                   onClick={() => setActiveSection(link.id)}
-                  className={`relative px-3.5 py-2 rounded-xl whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 ${
+                  className={`relative px-3 py-2 rounded-xl whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 ${
                     isEthereal ? 'focus-visible:ring-indigo-500' : 'focus-visible:ring-sky-500'
                   } ${
                     isCurrent
@@ -359,7 +364,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                       : 'hover:text-[#16243E] dark:hover:text-white'
                   } ${!isEthereal ? 'nav-link-underline' : ''}`}
                 >
-                  {isEthereal && isCurrent && (
+                  {useDesktopEthereal && isCurrent && (
                     <motion.span
                       layoutId="landing-navbar-active-pill"
                       aria-hidden="true"
@@ -377,17 +382,21 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
             })}
           </nav>
 
-          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
-            <div className="hidden sm:block">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <div className="hidden lg:block">
               <UiModeSwitcher />
             </div>
-            <PrivacyBlurToggle />
-            <ThemeToggle />
+            <div className={privacyBlur ? 'block' : 'hidden md:block'}>
+              <PrivacyBlurToggle />
+            </div>
+            <div className="hidden md:block">
+              <ThemeToggle />
+            </div>
             <WaterRippleButton
               size="sm"
               onClick={() => onOpenAuth('login')}
               className={
-                isEthereal
+                useDesktopEthereal
                   ? '!bg-gradient-to-r !from-[#4338CA] !via-[#4F46E5] !to-[#6366F1]'
                   : ''
               }
@@ -406,13 +415,21 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
         ariaLabel="Điều hướng trang chủ"
         footer={
           <div className="flex flex-col gap-2.5">
-            <div className="flex items-center justify-between gap-2 px-1 sm:hidden">
+            <div className="flex flex-col gap-1.5 px-1 lg:hidden">
               <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
-                Giao diện
+                Giao diện máy tính (điện thoại dùng bản nhẹ)
               </span>
-              <UiModeSwitcher />
+              <div className="w-fit">
+                <UiModeSwitcher />
+              </div>
             </div>
-            <div className="flex items-center justify-between gap-2 px-1 sm:hidden">
+            <div className="flex items-center justify-between gap-2 px-1 md:hidden">
+              <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
+                Màu hiển thị
+              </span>
+              <ThemeToggle />
+            </div>
+            <div className="flex items-center justify-between gap-2 px-1 md:hidden">
               <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
                 Chế độ khoe CSS
               </span>
@@ -421,7 +438,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
             <WaterRippleButton
               size="md"
               className={`w-full ${
-                isEthereal
+                useDesktopEthereal
                   ? '!bg-gradient-to-r !from-[#4338CA] !via-[#4F46E5] !to-[#6366F1]'
                   : ''
               }`}
@@ -477,11 +494,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
 
       {/* Hero Section */}
       <main id="top" className="flex-1">
-        <section className="mx-auto max-w-7xl px-4 sm:px-6 pt-8 pb-12 sm:pt-12 sm:pb-20 lg:pt-16 lg:pb-24">
+        <section className="mx-auto max-w-7xl px-4 sm:px-6 pt-6 pb-10 sm:pt-12 sm:pb-20 lg:pt-16 lg:pb-24">
           <div
-            className={`grid grid-cols-1 lg:grid-cols-12 gap-8 sm:gap-10 lg:gap-12 items-stretch ${
-              isEthereal
-                ? 'ethereal-studio-canvas rounded-[30px] sm:rounded-[36px] p-5 sm:p-8 lg:p-10'
+            className={`grid grid-cols-1 lg:grid-cols-12 gap-7 sm:gap-10 lg:gap-12 items-stretch ${
+              useDesktopEthereal
+                ? 'ethereal-studio-canvas rounded-[30px] sm:rounded-[36px] p-6 sm:p-8 lg:p-10'
                 : ''
             }`}
           >
@@ -489,12 +506,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
             <div className="lg:col-span-6 flex flex-col justify-center">
               <p
                 className={`hero-stagger text-xs sm:text-[13px] font-semibold tracking-wide mb-3 sm:mb-4 ${
-                  isEthereal
+                  useDesktopEthereal
                     ? 'text-indigo-600 dark:text-indigo-300'
                     : 'text-sky-700 dark:text-sky-400'
                 }`}
               >
-                {isEthereal ? (
+                {useDesktopEthereal ? (
                   <TypewriterText
                     text="Nền tảng kiểm chứng học tập THPT · Lớp 10 · 11 · 12"
                     charIntervalMs={28}
@@ -529,7 +546,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                   size="lg"
                   onClick={() => onOpenAuth('login')}
                   className={`min-h-[48px] px-6 sm:px-7 text-sm font-semibold ${
-                    isEthereal
+                    useDesktopEthereal
                       ? '!bg-gradient-to-r !from-[#4338CA] !via-[#4F46E5] !to-[#6366F1] !shadow-[0_14px_30px_-10px_rgba(79,70,229,0.62)]'
                       : ''
                   }`}

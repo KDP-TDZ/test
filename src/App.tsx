@@ -34,17 +34,17 @@ import {
   listUserQuizAttempts,
 } from './services/firestoreService';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { AccountMenu } from './components/LiquidGlass/AccountMenu';
 import { AmbientCanvas } from './components/LiquidGlass/AmbientCanvas';
 import { CommandPalette } from './components/LiquidGlass/CommandPalette';
 import { FloatingDock } from './components/LiquidGlass/FloatingDock';
 import { GlassSurface } from './components/LiquidGlass/GlassSurface';
 import { MaintenanceBanner } from './components/LiquidGlass/MaintenanceBanner';
+import { MobileBottomNav } from './components/LiquidGlass/MobileBottomNav';
 import { HamburgerButton, NavigationDrawer } from './components/LiquidGlass/NavigationDrawer';
-import { PrivacyBlurToggle } from './components/LiquidGlass/PrivacyBlurToggle';
 import { TabContentFade } from './components/LiquidGlass/SlidingTabs';
-import { ThemeToggle } from './components/LiquidGlass/ThemeToggle';
-import { UiModeSwitcher } from './components/LiquidGlass/UiModeSwitcher';
 import { WaterRippleButton } from './components/LiquidGlass/WaterRippleButton';
+import { useIsMobileViewport } from './hooks/useIsMobileViewport';
 import { LandingPage } from './components/LandingPage';
 import { AuthModal } from './components/AuthModal';
 import { StudentDashboard } from './components/StudentDashboard';
@@ -74,6 +74,7 @@ type AppView =
 const StudyCheckShell: React.FC = () => {
   const { user, profile, isSuperAdmin, loading, systemStatus, logout, refreshProfile } = useAuth();
   const { isEthereal } = useUiMode();
+  const isMobile = useIsMobileViewport();
   const prefersReduced = useReducedMotion();
 
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -387,21 +388,16 @@ const StudyCheckShell: React.FC = () => {
       : []),
   ];
 
-  const etherealTopTabs: AppView[] = ['dashboard', 'upload', 'exams', 'leaderboard', 'practice'];
+  const etherealTopTabs: AppView[] = ['dashboard', 'upload', 'practice', 'exams'];
   const nowIso = new Date().toISOString();
   const duePracticeCount = practiceItems.filter(
     (p) => !p.nextReviewAt || p.nextReviewAt <= nowIso
   ).length;
 
-  const userInitial = (profile?.displayName || user.displayName || user.email || 'H')
-    .trim()
-    .charAt(0)
-    .toUpperCase();
-
   const renderActiveWorkspaceView = () => (
     <TabContentFade activeKey={activeView}>
       {activeView === 'dashboard' &&
-        (isEthereal ? (
+        (isEthereal && !isMobile ? (
           <EtherealStudentDashboard
             analyses={analyses}
             practiceItems={practiceItems}
@@ -508,18 +504,6 @@ const StudyCheckShell: React.FC = () => {
       ariaLabel="Điều hướng chính"
       footer={
         <div className="space-y-2.5">
-          <div className="flex items-center justify-between gap-2 px-1 sm:hidden">
-            <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
-              Giao diện
-            </span>
-            <UiModeSwitcher />
-          </div>
-          <div className="flex items-center justify-between gap-2 px-1 sm:hidden">
-            <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
-              Chế độ khoe CSS
-            </span>
-            <PrivacyBlurToggle showLabelOnMobile />
-          </div>
           <div className="px-2">
             <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
               {profile?.displayName || user.displayName || user.email}
@@ -627,7 +611,60 @@ const StudyCheckShell: React.FC = () => {
     />
   );
 
-  // === MODERN LIQUID GLASS & BENTO STUDIO SHELL (UI MODE 2) ===
+  // === DEDICATED ULTRA-LIGHTWEIGHT MOBILE NATIVE SHELL (< 768px) ===
+  // Separate flat high-performance CSS & thumb-first Bottom Tab Bar (zero Liquid Glass lag)
+  if (isMobile) {
+    return (
+      <div className="min-h-dvh flex flex-col bg-[#F8FAFC] dark:bg-[#0B1120]">
+        <header className="sticky top-0 z-[45] no-print bg-white dark:bg-[#111827] border-b border-slate-200 dark:border-slate-800 h-[52px] px-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <HamburgerButton
+              buttonRef={hamburgerBtnRef}
+              open={mobileMenuOpen}
+              controlsId={mobileNavDrawerId}
+              onToggle={() => setMobileMenuOpen((v) => !v)}
+            />
+            <button
+              type="button"
+              onClick={() => handleNavigate('dashboard')}
+              className="font-display text-[15px] font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap truncate cursor-pointer"
+            >
+              {BRAND_CONFIG.name}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => setCommandPaletteOpen(true)}
+              aria-label="Tìm kiếm nhanh"
+              title="Tìm kiếm nhanh"
+              className="size-10 inline-flex items-center justify-center rounded-xl text-slate-600 dark:text-slate-300 active:bg-slate-100 dark:active:bg-slate-800 cursor-pointer"
+            >
+              <Search className="size-[18px]" />
+            </button>
+            <AccountMenu />
+          </div>
+        </header>
+
+        <MaintenanceBanner config={systemStatus} />
+        {sharedDrawer}
+        {sharedCommandPalette}
+
+        <main className="flex-1 min-w-0 w-full px-4 pt-4 pb-20">
+          {renderActiveWorkspaceView()}
+        </main>
+
+        <MobileBottomNav
+          activeId={activeView}
+          duePracticeCount={duePracticeCount}
+          onSelect={(id) => handleNavigate(id)}
+        />
+      </div>
+    );
+  }
+
+  // === MODERN LIQUID GLASS & BENTO STUDIO SHELL (UI MODE 2 — TABLET & DESKTOP) ===
   if (isEthereal) {
     return (
       <div className="min-h-dvh flex flex-col">
@@ -635,10 +672,10 @@ const StudyCheckShell: React.FC = () => {
         {sharedDrawer}
         {sharedCommandPalette}
 
-        <div className="flex-1 mx-auto w-full max-w-[1240px] px-2.5 sm:px-6 pt-3 sm:pt-6 pb-8 md:pb-28">
-          <div className="ethereal-studio-canvas rounded-[28px] sm:rounded-[34px] overflow-hidden min-h-[calc(100dvh-3rem)] md:min-h-[calc(100dvh-8.5rem)] flex flex-col">
-            {/* Site Header + Semantic Navigation Bar (NameThatUI / web/header-navbar) */}
-            <header className="sticky top-0 z-[40] no-print bg-white/88 dark:bg-[#14193A]/88 backdrop-blur-xl border-b border-indigo-100/80 dark:border-indigo-400/15 px-3.5 sm:px-7 h-16 flex items-center justify-between gap-3">
+        <div className="flex-1 mx-auto w-full max-w-[1240px] px-4 sm:px-6 pt-4 sm:pt-6 pb-28">
+          <div className="ethereal-studio-canvas rounded-[30px] sm:rounded-[34px] overflow-x-clip min-h-[calc(100dvh-8.5rem)] flex flex-col">
+            {/* Site Header + Semantic Navigation Bar (3-Zone Zero-Overflow Contract) */}
+            <header className="sticky top-0 z-[40] no-print bg-white/88 dark:bg-[#14193A]/88 backdrop-blur-xl border-b border-indigo-100/80 dark:border-indigo-400/15 px-5 lg:px-7 h-16 flex items-center justify-between gap-4 rounded-t-[30px] sm:rounded-t-[34px]">
               <div className="flex items-center gap-2.5 min-w-0 shrink-0">
                 <HamburgerButton
                   buttonRef={hamburgerBtnRef}
@@ -701,50 +738,28 @@ const StudyCheckShell: React.FC = () => {
                   })}
               </nav>
 
-              {/* Right Utility Cluster */}
-              <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+              {/* Right Utility Cluster — Clean Search + Unified Account Avatar Popover */}
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
                   onClick={() => setCommandPaletteOpen(true)}
                   aria-label="Tìm kiếm nhanh (Ctrl+K)"
                   title="Tìm kiếm nhanh (Ctrl+K)"
-                  className="size-10 inline-flex items-center justify-center rounded-xl text-[#6B7499] dark:text-[#A5B1D8] hover:text-[#4F46E5] dark:hover:text-white hover:bg-indigo-50/90 dark:hover:bg-white/10 transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                  className="inline-flex items-center gap-1.5 min-h-[38px] px-2.5 sm:px-3 rounded-xl text-xs font-medium text-[#5A648C] dark:text-[#B4C0E8] hover:text-[#4338CA] dark:hover:text-white bg-indigo-50/70 dark:bg-white/8 hover:bg-indigo-100/80 dark:hover:bg-white/14 border border-indigo-200/60 dark:border-indigo-400/20 transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
                 >
-                  <Search className="size-4" />
+                  <Search className="size-3.5 shrink-0" />
+                  <span className="hidden xl:inline">Tìm nhanh</span>
+                  <kbd className="hidden md:inline font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/90 dark:bg-white/10 border border-indigo-200/70 dark:border-indigo-400/25 text-[#4338CA] dark:text-indigo-200">
+                    Ctrl K
+                  </kbd>
                 </button>
 
-                <div className="hidden sm:block">
-                  <UiModeSwitcher />
-                </div>
-
-                <PrivacyBlurToggle />
-
-                <ThemeToggle />
-
-                <div
-                  title={`${profile?.displayName || user.displayName || user.email} · ${
-                    isSuperAdmin ? 'Super Admin' : `Lớp ${profile?.grade || '10'}`
-                  }`}
-                  className="hidden sm:flex items-center justify-center size-9 rounded-full bg-gradient-to-br from-[#6366F1] to-[#A855F7] text-white font-display text-xs font-bold shadow-[0_6px_14px_-4px_rgba(99,102,241,0.5)] select-none"
-                >
-                  {userInitial}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={logout}
-                  aria-label="Đăng xuất"
-                  title="Đăng xuất"
-                  className="inline-flex items-center justify-center gap-1.5 min-h-[38px] px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold glass-control whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
-                >
-                  <LogOut className="size-3.5" />
-                  <span className="hidden xl:inline">Đăng xuất</span>
-                </button>
+                <AccountMenu />
               </div>
             </header>
 
             {/* Main Studio Content */}
-            <main className="flex-1 min-w-0 px-4 sm:px-7 lg:px-9 py-5 sm:py-8">
+            <main className="flex-1 min-w-0 px-6 lg:px-9 py-6 sm:py-8">
               {renderActiveWorkspaceView()}
             </main>
           </div>
@@ -766,7 +781,7 @@ const StudyCheckShell: React.FC = () => {
     );
   }
 
-  // === CLASSIC ACADEMIC UI SHELL (UI MODE 1 — CLEAN & SIMPLE FOR GRADING) ===
+  // === CLASSIC ACADEMIC UI SHELL (UI MODE 1 — TABLET & DESKTOP) ===
   return (
     <div className="min-h-dvh flex flex-col">
       {/* Authenticated Top Header */}
@@ -788,28 +803,22 @@ const StudyCheckShell: React.FC = () => {
             </button>
           </div>
 
-          <div className="flex items-center gap-2 sm:gap-3.5 shrink-0">
-            <div className="hidden sm:block">
-              <UiModeSwitcher />
-            </div>
-            <PrivacyBlurToggle />
-            <ThemeToggle />
-            <div className="hidden md:block text-right">
-              <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate max-w-[180px]">
-                {profile?.displayName || user.displayName || user.email}
-              </p>
-              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">
-                {isSuperAdmin ? 'Super Admin' : `Học sinh · Lớp ${profile?.grade || '10'}`}
-              </p>
-            </div>
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <button
               type="button"
-              onClick={logout}
-              className="inline-flex items-center justify-center gap-1.5 min-h-[40px] px-3 sm:px-3.5 py-2 rounded-xl text-xs font-medium glass-control whitespace-nowrap shrink-0 cursor-pointer"
+              onClick={() => setCommandPaletteOpen(true)}
+              aria-label="Tìm kiếm nhanh (Ctrl+K)"
+              title="Tìm kiếm nhanh (Ctrl+K)"
+              className="inline-flex items-center gap-1.5 min-h-[38px] px-3 rounded-xl text-xs font-medium glass-control cursor-pointer whitespace-nowrap shrink-0"
             >
-              <LogOut className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Đăng xuất</span>
+              <Search className="size-3.5 shrink-0" />
+              <span className="hidden lg:inline">Tìm nhanh</span>
+              <kbd className="hidden sm:inline font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300">
+                Ctrl K
+              </kbd>
             </button>
+
+            <AccountMenu showIdentityText />
           </div>
         </div>
       </header>
@@ -819,7 +828,7 @@ const StudyCheckShell: React.FC = () => {
       {sharedCommandPalette}
 
       {/* Main Workspace Container */}
-      <div className="flex-1 mx-auto w-full max-w-6xl px-3.5 sm:px-6 py-4 sm:py-6">
+      <div className="flex-1 mx-auto w-full max-w-6xl px-4 sm:px-6 py-5 sm:py-6">
         <main className="min-w-0">{renderActiveWorkspaceView()}</main>
       </div>
     </div>

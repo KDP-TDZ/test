@@ -963,6 +963,109 @@ html[data-privacy-blur="true"] [data-privacy-exempt="true"] * {
   -webkit-user-select: auto !important;
 }
 
+/* Smooth horizontal swipeable stat strips without visible scrollbars */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* === Dedicated Ultra-Lightweight Mobile Native CSS (< 768px) ===
+ * Completely separates mobile styling from heavy desktop Liquid Glass CSS:
+ * - Zero backdrop-filter / -webkit-backdrop-filter (eliminates mobile GPU scroll jank)
+ * - Solid crisp native surfaces with 1px hairline borders instead of multi-layer glass shadows
+ * - Disables continuous background decorative animations on phones
+ */
+@media (max-width: 767px) {
+  .glass-surface,
+  .liquid-card-glass,
+  .ethereal-studio-canvas {
+    background: #FFFFFF !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border: 1px solid #E2E8F0 !important;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+  }
+
+  html.dark .glass-surface,
+  html.dark .liquid-card-glass,
+  html.dark .ethereal-studio-canvas {
+    background: #111827 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border: 1px solid #1E293B !important;
+    box-shadow: none !important;
+  }
+
+  .glass-panel-subtle,
+  .document-paper {
+    background: #F8FAFC !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border: 1px solid #E2E8F0 !important;
+    box-shadow: none !important;
+  }
+
+  html.dark .glass-panel-subtle,
+  html.dark .document-paper {
+    background: #0F172A !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border: 1px solid #1E293B !important;
+    box-shadow: none !important;
+  }
+
+  .glass-nav {
+    background: #FFFFFF !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border-bottom: 1px solid #E2E8F0 !important;
+    box-shadow: none !important;
+  }
+
+  html.dark .glass-nav {
+    background: #111827 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border-bottom: 1px solid #1E293B !important;
+    box-shadow: none !important;
+  }
+
+  .glass-control,
+  .glass-segment,
+  .ui-switcher-track {
+    background: #FFFFFF !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border: 1px solid #CBD5E1 !important;
+    box-shadow: none !important;
+  }
+
+  html.dark .glass-control,
+  html.dark .glass-segment,
+  html.dark .ui-switcher-track {
+    background: #1E293B !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    border: 1px solid #334155 !important;
+    box-shadow: none !important;
+  }
+
+  .glass-card-hover:hover,
+  button.glass-control:hover:not(:disabled) {
+    transform: none !important;
+    box-shadow: none !important;
+  }
+
+  .ethereal-orbit-slow,
+  .ethereal-orbit-reverse,
+  .hero-float-slow {
+    animation: none !important;
+  }
+}
+
 @media (prefers-reduced-transparency: reduce) {
   .glass-surface,
   .liquid-card-glass,

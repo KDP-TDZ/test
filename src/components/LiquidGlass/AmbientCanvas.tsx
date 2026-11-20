@@ -1,12 +1,15 @@
 import React from 'react';
 import { useUiMode } from '../../context/UiModeContext';
+import { useIsMobileViewport } from '../../hooks/useIsMobileViewport';
 
 export const AmbientCanvas: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isEthereal } = useUiMode();
+  const isMobile = useIsMobileViewport();
 
-  if (!isEthereal) {
+  // Classic mode OR Mobile (< 768px): dedicated ultra-lightweight solid native canvas (0% GPU blur orbs / 3D layers)
+  if (!isEthereal || isMobile) {
     return (
-      <div className="relative min-h-dvh overflow-x-clip bg-[#F8FAFC] dark:bg-[#0F172A] text-[#0F172A] dark:text-[#F1F5F9]">
+      <div className="relative min-h-dvh overflow-x-clip bg-[#F8FAFC] dark:bg-[#0B1120] text-[#0F172A] dark:text-[#F1F5F9]">
         <div className="relative z-10 min-h-dvh flex flex-col">{children}</div>
       </div>
     );
@@ -14,7 +17,7 @@ export const AmbientCanvas: React.FC<{ children: React.ReactNode }> = ({ childre
 
   return (
     <div className="relative min-h-dvh overflow-x-clip bg-gradient-to-br from-[#DFE4FF] via-[#ECEFFF] to-[#F2E6FF] dark:from-[#080B1A] dark:via-[#0F132B] dark:to-[#161336] text-[#171B3A] dark:text-[#EEF1FF] transition-colors duration-300">
-      {/* Dreamy Ethereal Liquid Glass & Floating 3D-inspired Geometric Ornaments */}
+      {/* Dreamy Ethereal Liquid Glass & Floating 3D-inspired Geometric Ornaments (Tablet/Desktop only) */}
       <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
         {/* Soft aurora depth spheres */}
         <div

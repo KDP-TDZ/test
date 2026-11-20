@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { useUiMode } from '../../context/UiModeContext';
+import { useIsMobileViewport } from '../../hooks/useIsMobileViewport';
 import { gsap, MOTION_ALLOWED_MEDIA, REDUCED_MOTION_MEDIA, useGSAP } from '../../lib/gsapSetup';
 
 interface RippleInstance {
@@ -33,6 +34,8 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
   ...rest
 }) => {
   const { isEthereal } = useUiMode();
+  const isMobile = useIsMobileViewport();
+  const useGlassEffects = isEthereal && !isMobile;
   const cardRef = useRef<HTMLDivElement>(null);
   const sheenRef = useRef<HTMLDivElement>(null);
   const pointerMotionEnabledRef = useRef(false);
@@ -41,7 +44,7 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
 
   const { contextSafe } = useGSAP(
     () => {
-      if (!isEthereal) {
+      if (!useGlassEffects) {
         pointerMotionEnabledRef.current = false;
         return;
       }
@@ -56,12 +59,12 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
         pointerMotionEnabledRef.current = false;
       });
     },
-    { scope: cardRef, dependencies: [isEthereal] }
+    { scope: cardRef, dependencies: [useGlassEffects] }
   );
 
   const handleMouseEnter = contextSafe((e: React.MouseEvent<HTMLDivElement>) => {
     onMouseEnter?.(e);
-    if (!isEthereal || !pointerMotionEnabledRef.current || !cardRef.current) return;
+    if (!useGlassEffects || !pointerMotionEnabledRef.current || !cardRef.current) return;
 
     const rect = cardRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -91,7 +94,7 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
 
   const handleMouseMove = contextSafe((e: React.MouseEvent<HTMLDivElement>) => {
     onMouseMove?.(e);
-    if (!isEthereal || !pointerMotionEnabledRef.current || !cardRef.current) return;
+    if (!useGlassEffects || !pointerMotionEnabledRef.current || !cardRef.current) return;
 
     const rect = cardRef.current.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
@@ -126,7 +129,7 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
 
   const handleMouseLeave = contextSafe((e: React.MouseEvent<HTMLDivElement>) => {
     onMouseLeave?.(e);
-    if (!isEthereal || !pointerMotionEnabledRef.current || !cardRef.current) return;
+    if (!useGlassEffects || !pointerMotionEnabledRef.current || !cardRef.current) return;
 
     gsap.to(cardRef.current, {
       y: 0,
@@ -151,7 +154,7 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
   });
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (isEthereal && enableRipple && cardRef.current) {
+    if (useGlassEffects && enableRipple && cardRef.current) {
       const rect = cardRef.current.getBoundingClientRect();
       const id = ++nextRippleId.current;
       const x = e.clientX ? e.clientX - rect.left : rect.width / 2;
@@ -167,14 +170,14 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
   return (
     <div
       ref={cardRef}
-      onMouseEnter={isEthereal ? handleMouseEnter : onMouseEnter}
-      onMouseMove={isEthereal ? handleMouseMove : onMouseMove}
-      onMouseLeave={isEthereal ? handleMouseLeave : onMouseLeave}
+      onMouseEnter={useGlassEffects ? handleMouseEnter : onMouseEnter}
+      onMouseMove={useGlassEffects ? handleMouseMove : onMouseMove}
+      onMouseLeave={useGlassEffects ? handleMouseLeave : onMouseLeave}
       onClick={handleClick}
       className={`liquid-card-glass relative overflow-hidden ${className}`}
       {...rest}
     >
-      {isEthereal && (
+      {useGlassEffects && (
         <>
           <div
             aria-hidden="true"
@@ -188,7 +191,7 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
         </>
       )}
 
-      {isEthereal &&
+      {useGlassEffects &&
         enableRipple &&
         ripples.map((r) => (
           <span

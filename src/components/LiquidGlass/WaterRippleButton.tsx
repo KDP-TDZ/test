@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { useUiMode } from '../../context/UiModeContext';
+import { useIsMobileViewport } from '../../hooks/useIsMobileViewport';
 import { gsap, MOTION_ALLOWED_MEDIA, REDUCED_MOTION_MEDIA, useGSAP } from '../../lib/gsapSetup';
 
 interface WaterRippleButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -22,6 +23,8 @@ export const WaterRippleButton: React.FC<WaterRippleButtonProps> = ({
   ...rest
 }) => {
   const { isEthereal } = useUiMode();
+  const isMobile = useIsMobileViewport();
+  const useGlassEffects = isEthereal && !isMobile;
   const btnRef = useRef<HTMLButtonElement>(null);
   const motionAllowedRef = useRef(true);
   const [ripples, setRipples] = useState<Array<{ id: number; x: number; y: number }>>([]);
@@ -29,7 +32,7 @@ export const WaterRippleButton: React.FC<WaterRippleButtonProps> = ({
 
   const { contextSafe } = useGSAP(
     () => {
-      if (!isEthereal) {
+      if (!useGlassEffects) {
         motionAllowedRef.current = false;
         return;
       }
@@ -44,12 +47,12 @@ export const WaterRippleButton: React.FC<WaterRippleButtonProps> = ({
         motionAllowedRef.current = false;
       });
     },
-    { scope: btnRef, dependencies: [isEthereal] }
+    { scope: btnRef, dependencies: [useGlassEffects] }
   );
 
   const handlePressDown = contextSafe((e: React.PointerEvent<HTMLButtonElement>) => {
     onPointerDown?.(e);
-    if (!isEthereal || disabled || !motionAllowedRef.current || !btnRef.current) return;
+    if (!useGlassEffects || disabled || !motionAllowedRef.current || !btnRef.current) return;
     gsap.to(btnRef.current, {
       scale: 0.97,
       y: 0,
@@ -60,7 +63,7 @@ export const WaterRippleButton: React.FC<WaterRippleButtonProps> = ({
   });
 
   const handlePressRelease = contextSafe(() => {
-    if (!isEthereal || !motionAllowedRef.current || !btnRef.current) return;
+    if (!useGlassEffects || !motionAllowedRef.current || !btnRef.current) return;
     gsap.to(btnRef.current, {
       scale: 1,
       duration: 0.2,
@@ -70,7 +73,7 @@ export const WaterRippleButton: React.FC<WaterRippleButtonProps> = ({
     });
   });
 
-  const variantClasses: Record<NonNullable<WaterRippleButtonProps['variant']>, string> = isEthereal
+  const variantClasses: Record<NonNullable<WaterRippleButtonProps['variant']>, string> = useGlassEffects
     ? {
         primary:
           'bg-gradient-to-b from-sky-500 to-blue-600 text-white shadow-[0_8px_22px_-8px_rgba(37,99,235,0.52),inset_0_1px_1px_rgba(255,255,255,0.45)] hover:from-sky-400 hover:to-blue-600 hover:shadow-[0_12px_26px_-8px_rgba(2,132,199,0.58),inset_0_1px_1px_rgba(255,255,255,0.55)] border border-sky-400/40',
@@ -82,8 +85,9 @@ export const WaterRippleButton: React.FC<WaterRippleButtonProps> = ({
           'bg-gradient-to-b from-rose-500 to-rose-600 text-white hover:from-rose-400 hover:to-rose-600 border border-rose-400/35 shadow-[0_6px_18px_-6px_rgba(225,29,72,0.45),inset_0_1px_0_rgba(255,255,255,0.3)] hover:shadow-[0_10px_24px_-6px_rgba(225,29,72,0.55)]',
       }
     : {
-        primary:
-          'bg-sky-700 hover:bg-sky-800 dark:bg-sky-600 dark:hover:bg-sky-500 text-white border border-sky-700 dark:border-sky-600',
+        primary: isEthereal && isMobile
+          ? 'bg-indigo-600 active:bg-indigo-700 text-white border border-indigo-600'
+          : 'bg-sky-700 hover:bg-sky-800 dark:bg-sky-600 dark:hover:bg-sky-500 text-white border border-sky-700 dark:border-sky-600',
         secondary:
           'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800',
         ghost:
@@ -93,13 +97,13 @@ export const WaterRippleButton: React.FC<WaterRippleButtonProps> = ({
       };
 
   const sizeClasses: Record<NonNullable<WaterRippleButtonProps['size']>, string> = {
-    sm: isEthereal ? 'px-3.5 py-1.5 text-xs rounded-xl' : 'px-3.5 py-1.5 text-xs rounded-lg',
-    md: isEthereal ? 'px-4 py-2 text-sm rounded-xl' : 'px-4 py-2 text-sm rounded-lg',
-    lg: isEthereal ? 'px-6 py-3 text-sm rounded-2xl' : 'px-5 py-2.5 text-sm rounded-lg',
+    sm: useGlassEffects ? 'px-3.5 py-1.5 text-xs rounded-xl' : 'px-3.5 py-1.5 text-xs rounded-xl',
+    md: useGlassEffects ? 'px-4 py-2 text-sm rounded-xl' : 'px-4 py-2 text-sm rounded-xl',
+    lg: useGlassEffects ? 'px-6 py-3 text-sm rounded-2xl' : 'px-5 py-2.5 text-sm rounded-xl',
   };
 
   const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (isEthereal && !disabled && btnRef.current) {
+    if (useGlassEffects && !disabled && btnRef.current) {
       const rect = btnRef.current.getBoundingClientRect();
       const x = e.clientX ? e.clientX - rect.left : rect.width / 2;
       const y = e.clientY ? e.clientY - rect.top : rect.height / 2;
@@ -132,13 +136,13 @@ export const WaterRippleButton: React.FC<WaterRippleButtonProps> = ({
         handlePressRelease();
       }}
       className={`relative inline-flex items-center justify-center gap-2 font-medium whitespace-nowrap shrink-0 overflow-hidden select-none cursor-pointer ${
-        isEthereal
+        useGlassEffects
           ? 'transition-[transform,box-shadow,background-color,border-color,color] duration-180 ease-out hover:not(:disabled):-translate-y-[1.5px]'
-          : 'transition-colors duration-150'
+          : 'active:scale-[0.98] transition-transform duration-100'
       } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-950 disabled:opacity-50 disabled:cursor-not-allowed ${variantClasses[variant]} ${sizeClasses[size]} ${className}`}
       {...rest}
     >
-      {isEthereal &&
+      {useGlassEffects &&
         ripples.map((r) => (
           <span key={r.id} aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
             <span
