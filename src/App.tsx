@@ -40,6 +40,7 @@ import { FloatingDock } from './components/LiquidGlass/FloatingDock';
 import { GlassSurface } from './components/LiquidGlass/GlassSurface';
 import { MaintenanceBanner } from './components/LiquidGlass/MaintenanceBanner';
 import { HamburgerButton, NavigationDrawer } from './components/LiquidGlass/NavigationDrawer';
+import { PrivacyBlurToggle } from './components/LiquidGlass/PrivacyBlurToggle';
 import { TabContentFade } from './components/LiquidGlass/SlidingTabs';
 import { ThemeToggle } from './components/LiquidGlass/ThemeToggle';
 import { UiModeSwitcher } from './components/LiquidGlass/UiModeSwitcher';
@@ -513,6 +514,12 @@ const StudyCheckShell: React.FC = () => {
             </span>
             <UiModeSwitcher />
           </div>
+          <div className="flex items-center justify-between gap-2 px-1 sm:hidden">
+            <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
+              Chế độ khoe CSS
+            </span>
+            <PrivacyBlurToggle showLabelOnMobile />
+          </div>
           <div className="px-2">
             <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
               {profile?.displayName || user.displayName || user.email}
@@ -710,6 +717,8 @@ const StudyCheckShell: React.FC = () => {
                   <UiModeSwitcher />
                 </div>
 
+                <PrivacyBlurToggle />
+
                 <ThemeToggle />
 
                 <div
@@ -783,6 +792,7 @@ const StudyCheckShell: React.FC = () => {
             <div className="hidden sm:block">
               <UiModeSwitcher />
             </div>
+            <PrivacyBlurToggle />
             <ThemeToggle />
             <div className="hidden md:block text-right">
               <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate max-w-[180px]">

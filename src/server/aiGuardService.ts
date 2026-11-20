@@ -13,7 +13,8 @@ import {
   firestoreRestList,
   SUPER_ADMIN_EMAIL,
 } from './firebaseServer.js';
-import { clearAiResponseCache, DEFAULT_TASK_MODELS } from './modelRouter.js';
+import { DEFAULT_TASK_MODELS } from './modelDefaults.js';
+import { clearAiResponseCache } from './modelRouter.js';
 
 export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
   requestsPerMinute: 15,

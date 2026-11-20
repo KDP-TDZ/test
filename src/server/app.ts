@@ -2,11 +2,11 @@ import crypto from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
 import {
-  adminAuth,
   firestoreRestDelete,
   firestoreRestGet,
   firestoreRestList,
   firestoreRestSet,
+  getAdminAuth,
   invalidateVerifiedTokenCacheForUid,
   PROTECTED_SUPER_ADMIN_EMAILS,
   verifyFirebaseRequest,
@@ -139,19 +139,27 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
 }
 
 async function requireSuperAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
-  let authed = false;
-  await requireAuth(req, res, () => {
-    authed = true;
-  });
-  if (!authed) return;
-  if (!req.authUser?.isSuperAdmin) {
-    res.status(403).json({
-      code: 'FORBIDDEN_SUPER_ADMIN',
-      error: 'Chỉ tài khoản Super Admin được ủy quyền mới có quyền truy cập khu vực quản trị này.',
+  try {
+    let authed = false;
+    await requireAuth(req, res, () => {
+      authed = true;
     });
-    return;
+    if (!authed) return;
+    if (!req.authUser?.isSuperAdmin) {
+      res.status(403).json({
+        code: 'FORBIDDEN_SUPER_ADMIN',
+        error: 'Chỉ tài khoản Super Admin được ủy quyền mới có quyền truy cập khu vực quản trị này.',
+      });
+      return;
+    }
+    next();
+  } catch (err) {
+    if (res.headersSent) return;
+    res.status(500).json({
+      code: 'AUTH_MIDDLEWARE_ERROR',
+      error: err instanceof Error ? err.message : 'Lỗi xác thực quyền quản trị.',
+    });
   }
-  next();
 }
 
 function mapGeminiErrorResponse(err: unknown): { status: number; code: string; error: string } {
@@ -232,7 +240,7 @@ export function createApiApp(): express.Express {
     next();
   });
 
-  app.get('/api/health', (_req, res) => {
+  app.get(['/api', '/api/index', '/api/health'], (_req, res) => {
     res.json({ ok: true, service: 'StudyCheck AI Backend', timestamp: new Date().toISOString() });
   });
 
@@ -830,6 +838,7 @@ export function createApiApp(): express.Express {
       let targetUid = clean;
       if (clean.includes('@')) {
         let resolvedFromAdmin = '';
+        const adminAuth = await getAdminAuth();
         if (adminAuth) {
           try {
             const fbUser = await adminAuth.getUserByEmail(clean);
@@ -1216,32 +1225,32 @@ export function createApiApp(): express.Express {
       return;
     }
 
-    const cfg = await loadAuthoritativeAiConfig(user.idToken);
-    const maxBytes = (cfg.rateLimitConfig?.maximumFileSizeMb || 20) * 1024 * 1024;
-    for (const f of uploadedFiles) {
-      if (!ALLOWED_UPLOAD_MIMES.has(f.mimetype)) {
-        res.status(400).json({
-          error: `Định dạng file "${f.originalname}" không được hỗ trợ. Chỉ chấp nhận PDF, DOCX, JPG, PNG, WEBP.`,
-        });
-        return;
-      }
-      if (f.size > maxBytes) {
-        res.status(400).json({
-          error: `File "${f.originalname}" vượt quá giới hạn ${cfg.rateLimitConfig?.maximumFileSizeMb || 20}MB.`,
-        });
-        return;
-      }
-      if (!hasValidMagicSignature(f.buffer, f.mimetype)) {
-        res.status(400).json({
-          error: `File "${f.originalname}" có chữ ký nhị phân không khớp định dạng hoặc bị hỏng.`,
-        });
-        return;
-      }
-    }
-
     const body = (req.body || {}) as Record<string, string | undefined>;
     const tokens: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
     try {
+      const cfg = await loadAuthoritativeAiConfig(user.idToken);
+      const maxBytes = (cfg.rateLimitConfig?.maximumFileSizeMb || 20) * 1024 * 1024;
+      for (const f of uploadedFiles) {
+        if (!ALLOWED_UPLOAD_MIMES.has(f.mimetype)) {
+          res.status(400).json({
+            error: `Định dạng file "${f.originalname}" không được hỗ trợ. Chỉ chấp nhận PDF, DOCX, JPG, PNG, WEBP.`,
+          });
+          return;
+        }
+        if (f.size > maxBytes) {
+          res.status(400).json({
+            error: `File "${f.originalname}" vượt quá giới hạn ${cfg.rateLimitConfig?.maximumFileSizeMb || 20}MB.`,
+          });
+          return;
+        }
+        if (!hasValidMagicSignature(f.buffer, f.mimetype)) {
+          res.status(400).json({
+            error: `File "${f.originalname}" có chữ ký nhị phân không khớp định dạng hoặc bị hỏng.`,
+          });
+          return;
+        }
+      }
+
       const result = await ExamPipelineService.extractQuestionsFromSampleExam({
         files: uploadedFiles.map((f) => ({
           buffer: f.buffer,

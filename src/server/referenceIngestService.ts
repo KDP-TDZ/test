@@ -200,8 +200,9 @@ export async function ingestReferenceFromDocxBuffer(params: {
   subject: SubjectId;
   textbookSeries: string;
 }): Promise<IngestResult> {
-  const mammoth = await import('mammoth');
-  const result = await mammoth.extractRawText({ buffer: params.buffer });
+  const mammothMod = await import('mammoth');
+  const mammothApi = mammothMod.default || mammothMod;
+  const result = await mammothApi.extractRawText({ buffer: params.buffer });
   const raw = (result.value || '').trim();
   if (raw.length < 30) {
     throw new Error('File DOCX không chứa văn bản học thuật đọc được.');

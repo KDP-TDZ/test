@@ -213,7 +213,7 @@ export class DocumentExtractionService {
     opts?: { config?: SystemAiConfig; idToken?: string }
   ): Promise<ExtractedPage[]> {
     try {
-      const { extractPdfPagesFromBuffer } = await import('./referenceIngestService');
+      const { extractPdfPagesFromBuffer } = await import('./referenceIngestService.js');
       const textPages = await extractPdfPagesFromBuffer(buffer);
       const totalChars = textPages.reduce((sum, p) => sum + p.text.trim().length, 0);
       if (totalChars >= 80) {
@@ -1858,7 +1858,7 @@ export class ExamPipelineService {
       }
     } else if (first.mimeType === 'application/pdf') {
       try {
-        const { extractPdfPagesFromBuffer } = await import('./referenceIngestService');
+        const { extractPdfPagesFromBuffer } = await import('./referenceIngestService.js');
         const textPages = await extractPdfPagesFromBuffer(first.buffer);
         const joined = textPages.map((p) => `--- TRANG ${p.pageNumber} ---\n${p.text}`).join('\n\n');
         if (joined.replace(/\s+/g, '').length >= 80) {

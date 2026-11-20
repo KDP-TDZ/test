@@ -849,6 +849,120 @@ html[data-ui-mode="classic"] .hero-float-slow {
   animation: none;
 }
 
+/* === Privacy Content Blur Mode (Blur all text, preserve 100% of CSS layout & visuals) === */
+html[data-privacy-blur="true"] :where(body *:not([data-privacy-exempt]):not([data-privacy-exempt] *):not(svg):not(svg *)) {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  text-shadow:
+    0 0 max(11px, 0.56em) rgba(22, 36, 62, 0.94),
+    0 0 max(19px, 0.92em) rgba(71, 91, 120, 0.58) !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+html.dark[data-privacy-blur="true"] :where(body *:not([data-privacy-exempt]):not([data-privacy-exempt] *):not(svg):not(svg *)) {
+  text-shadow:
+    0 0 max(11px, 0.56em) rgba(230, 239, 252, 0.94),
+    0 0 max(19px, 0.92em) rgba(148, 163, 184, 0.56) !important;
+}
+
+/* Keep light blurred mist on dark/colored primary buttons and active pills (never gradient spans!) */
+html[data-privacy-blur="true"] button.text-white:not([data-privacy-exempt]),
+html[data-privacy-blur="true"] button.text-white:not([data-privacy-exempt]) *:not(svg):not(svg *),
+html[data-privacy-blur="true"] button[class*="from-[#4338CA]"]:not([data-privacy-exempt]),
+html[data-privacy-blur="true"] button[class*="from-[#4338CA]"]:not([data-privacy-exempt]) *:not(svg):not(svg *),
+html[data-privacy-blur="true"] button[class*="from-[#4F46E5]"]:not([data-privacy-exempt]),
+html[data-privacy-blur="true"] button[class*="from-[#4F46E5]"]:not([data-privacy-exempt]) *:not(svg):not(svg *),
+html[data-privacy-blur="true"] button[class*="bg-sky-700"]:not([data-privacy-exempt]),
+html[data-privacy-blur="true"] button[class*="bg-sky-700"]:not([data-privacy-exempt]) *:not(svg):not(svg *),
+html[data-privacy-blur="true"] a[class*="from-[#4338CA]"]:not([data-privacy-exempt]),
+html[data-privacy-blur="true"] a[class*="from-[#4338CA]"]:not([data-privacy-exempt]) *:not(svg):not(svg *),
+html[data-privacy-blur="true"] [aria-pressed="true"][class*="from-[#4F46E5]"]:not([data-privacy-exempt]),
+html[data-privacy-blur="true"] [aria-pressed="true"][class*="from-[#4F46E5]"]:not([data-privacy-exempt]) *:not(svg):not(svg *) {
+  text-shadow:
+    0 0 max(10px, 0.54em) rgba(255, 255, 255, 0.95),
+    0 0 max(18px, 0.88em) rgba(255, 255, 255, 0.58) !important;
+}
+
+/* Neutralize gradient bg-clip-text headings so accent headlines blur in rich violet mist */
+html[data-privacy-blur="true"] .bg-clip-text:not([data-privacy-exempt]):not([data-privacy-exempt] *) {
+  background-image: none !important;
+  -webkit-background-clip: border-box !important;
+  background-clip: border-box !important;
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  text-shadow:
+    0 0 max(13px, 0.54em) rgba(79, 70, 229, 0.96),
+    0 0 max(24px, 0.92em) rgba(147, 51, 234, 0.62) !important;
+}
+
+html.dark[data-privacy-blur="true"] .bg-clip-text:not([data-privacy-exempt]):not([data-privacy-exempt] *) {
+  text-shadow:
+    0 0 max(13px, 0.54em) rgba(165, 180, 252, 0.96),
+    0 0 max(24px, 0.92em) rgba(196, 181, 253, 0.62) !important;
+}
+
+/* Blur form input / textarea placeholders too */
+html[data-privacy-blur="true"] input::placeholder,
+html[data-privacy-blur="true"] textarea::placeholder {
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  text-shadow: 0 0 11px rgba(71, 91, 120, 0.88) !important;
+}
+
+html.dark[data-privacy-blur="true"] input::placeholder,
+html.dark[data-privacy-blur="true"] textarea::placeholder {
+  text-shadow: 0 0 11px rgba(203, 213, 225, 0.88) !important;
+}
+
+/* Keep SVG icons crisp (zero specificity wrapper so colored button overrides always win) */
+html[data-privacy-blur="true"] :where(svg:not([data-privacy-exempt]):not([data-privacy-exempt] *)) {
+  color: #334155 !important;
+  -webkit-text-fill-color: initial !important;
+  text-shadow: none !important;
+}
+
+html.dark[data-privacy-blur="true"] :where(svg:not([data-privacy-exempt]):not([data-privacy-exempt] *)) {
+  color: #CBD5E1 !important;
+}
+
+html[data-privacy-blur="true"] button.text-white svg,
+html[data-privacy-blur="true"] button[class*="from-[#4338CA]"] svg,
+html[data-privacy-blur="true"] button[class*="from-[#4F46E5]"] svg,
+html[data-privacy-blur="true"] button[class*="bg-sky-700"] svg,
+html[data-privacy-blur="true"] button[class*="bg-indigo-600"] svg,
+html[data-privacy-blur="true"] a[class*="from-[#4338CA]"] svg {
+  color: #FFFFFF !important;
+}
+
+/* Blur SVG text elements (e.g. ScoreRing percentage text) */
+html[data-privacy-blur="true"] svg text:not([data-privacy-exempt]) {
+  filter: blur(7px) !important;
+}
+
+/* PrivacyBlurToggle active button & explicit inheritance reset for [data-privacy-exempt] */
+.privacy-blur-toggle-active.privacy-blur-toggle-modern {
+  background: linear-gradient(135deg, #4338CA 0%, #4F46E5 55%, #6366F1 100%) !important;
+  border: 1px solid #4F46E5 !important;
+  box-shadow: 0 6px 18px -6px rgba(79, 70, 229, 0.55) !important;
+}
+
+.privacy-blur-toggle-active.privacy-blur-toggle-classic {
+  background: #0369A1 !important;
+  border: 1px solid #0369A1 !important;
+  box-shadow: none !important;
+}
+
+html[data-privacy-blur="true"] [data-privacy-exempt="true"],
+html[data-privacy-blur="true"] [data-privacy-exempt="true"] * {
+  color: #FFFFFF !important;
+  -webkit-text-fill-color: #FFFFFF !important;
+  text-shadow: none !important;
+  filter: none !important;
+  user-select: auto !important;
+  -webkit-user-select: auto !important;
+}
+
 @media (prefers-reduced-transparency: reduce) {
   .glass-surface,
   .liquid-card-glass,

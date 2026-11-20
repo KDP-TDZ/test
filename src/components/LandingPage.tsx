@@ -22,6 +22,7 @@ import heroPrismImage from '../assets/images/hero_liquid_prism_1795012421683.jpg
 import { Carousel } from './LiquidGlass/Carousel';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { HamburgerButton, NavigationDrawer } from './LiquidGlass/NavigationDrawer';
+import { PrivacyBlurToggle } from './LiquidGlass/PrivacyBlurToggle';
 import { SmoothAccordion } from './LiquidGlass/SmoothAccordion';
 import { ThemeToggle } from './LiquidGlass/ThemeToggle';
 import { TypewriterText } from './LiquidGlass/TypewriterText';
@@ -380,6 +381,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
             <div className="hidden sm:block">
               <UiModeSwitcher />
             </div>
+            <PrivacyBlurToggle />
             <ThemeToggle />
             <WaterRippleButton
               size="sm"
@@ -409,6 +411,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                 Giao diện
               </span>
               <UiModeSwitcher />
+            </div>
+            <div className="flex items-center justify-between gap-2 px-1 sm:hidden">
+              <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
+                Chế độ khoe CSS
+              </span>
+              <PrivacyBlurToggle showLabelOnMobile />
             </div>
             <WaterRippleButton
               size="md"

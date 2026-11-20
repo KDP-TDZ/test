@@ -96,13 +96,15 @@ let cachedSingleKey: CachedSingleKey | null = null;
 
 function writeLocalEncryptedFile(record: StoredEncryptedSecret): void {
   const serialized = JSON.stringify(record, null, 2);
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  if (process.env.VERCEL !== '1') {
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+      }
+      fs.writeFileSync(ENCRYPTED_KEY_FILE, serialized, { mode: 0o600 });
+    } catch {
+      // Fallback to os.tmpdir() on read-only serverless containers
     }
-    fs.writeFileSync(ENCRYPTED_KEY_FILE, serialized, { mode: 0o600 });
-  } catch {
-    // Fallback to os.tmpdir() on read-only serverless containers (e.g. Vercel)
   }
   try {
     fs.writeFileSync(TMP_ENCRYPTED_KEY_FILE, serialized, { mode: 0o600 });

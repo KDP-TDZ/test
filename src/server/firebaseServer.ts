@@ -3,8 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Request } from 'express';
-import { getApp, getApps, initializeApp } from 'firebase-admin/app';
-import { getAuth, type Auth, type DecodedIdToken } from 'firebase-admin/auth';
+import type { Auth, DecodedIdToken } from 'firebase-admin/auth';
 
 export interface FirebaseAppletConfig {
   projectId: string;
@@ -92,18 +91,40 @@ export const SUPER_ADMIN_EMAIL =
 export const SUPER_ADMIN_UID = (process.env.SUPER_ADMIN_UID || '').trim();
 
 let adminAuthInstance: Auth | null = null;
-try {
-  const adminApp = getApps().length
-    ? getApp()
-    : initializeApp({
-        projectId: firebaseConfig.projectId,
-      });
-  adminAuthInstance = getAuth(adminApp);
-} catch (err) {
-  console.warn('Warning: firebase-admin auth init skipped, using IdentityToolkit fallback:', err);
-}
+let adminAuthInitAttempted = false;
 
-export const adminAuth: Auth | null = adminAuthInstance;
+/**
+ * Lazily loads firebase-admin only when needed. On Vercel without GCP service account
+ * credentials, skips loading firebase-admin entirely and uses the lightweight
+ * IdentityToolkit REST verification path to avoid cold-start crashes and bundle bloat.
+ */
+export async function getAdminAuth(): Promise<Auth | null> {
+  if (adminAuthInitAttempted) {
+    return adminAuthInstance;
+  }
+  adminAuthInitAttempted = true;
+
+  if (process.env.VERCEL === '1' && !process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    return null;
+  }
+
+  try {
+    const [{ getApp, getApps, initializeApp }, { getAuth }] = await Promise.all([
+      import('firebase-admin/app'),
+      import('firebase-admin/auth'),
+    ]);
+    const adminApp = getApps().length
+      ? getApp()
+      : initializeApp({
+          projectId: firebaseConfig.projectId,
+        });
+    adminAuthInstance = getAuth(adminApp);
+  } catch (err) {
+    console.warn('Warning: firebase-admin auth init skipped, using IdentityToolkit fallback:', err);
+    adminAuthInstance = null;
+  }
+  return adminAuthInstance;
+}
 
 export interface AuthenticatedUser {
   uid: string;
@@ -228,6 +249,7 @@ export async function verifyFirebaseRequest(req: Request): Promise<Authenticated
   let isSuperAdmin = false;
 
   try {
+    const adminAuth = await getAdminAuth();
     if (!adminAuth) {
       throw new Error('ADMIN_AUTH_UNAVAILABLE');
     }
