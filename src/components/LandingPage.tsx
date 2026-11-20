@@ -16,7 +16,6 @@ import {
 } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { BRAND_CONFIG } from '../config/brand';
-import { usePrivacyBlur } from '../context/PrivacyBlurContext';
 import { useUiMode } from '../context/UiModeContext';
 import { useIsMobileViewport } from '../hooks/useIsMobileViewport';
 import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
@@ -24,7 +23,6 @@ import heroPrismImage from '../assets/images/hero_liquid_prism_1795012421683.jpg
 import { Carousel } from './LiquidGlass/Carousel';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { HamburgerButton, NavigationDrawer } from './LiquidGlass/NavigationDrawer';
-import { PrivacyBlurToggle } from './LiquidGlass/PrivacyBlurToggle';
 import { SmoothAccordion } from './LiquidGlass/SmoothAccordion';
 import { ThemeToggle } from './LiquidGlass/ThemeToggle';
 import { TypewriterText } from './LiquidGlass/TypewriterText';
@@ -198,7 +196,6 @@ const STATUS_META = {
 
 export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
   const { isEthereal } = useUiMode();
-  const { privacyBlur } = usePrivacyBlur();
   const isMobile = useIsMobileViewport();
   const useDesktopEthereal = isEthereal && !isMobile;
   const pageRef = useRef<HTMLDivElement>(null);
@@ -386,9 +383,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
             <div className="hidden lg:block">
               <UiModeSwitcher />
             </div>
-            <div className={privacyBlur ? 'block' : 'hidden md:block'}>
-              <PrivacyBlurToggle />
-            </div>
             <div className="hidden md:block">
               <ThemeToggle />
             </div>
@@ -428,12 +422,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                 Màu hiển thị
               </span>
               <ThemeToggle />
-            </div>
-            <div className="flex items-center justify-between gap-2 px-1 md:hidden">
-              <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
-                Chế độ khoe CSS
-              </span>
-              <PrivacyBlurToggle showLabelOnMobile />
             </div>
             <WaterRippleButton
               size="md"

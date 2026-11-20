@@ -14,6 +14,7 @@ import {
   type QueryDocumentSnapshot,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
+import { stripUndefinedDeep } from '../core/firestoreSanitizer';
 import { evaluateMasteryStatus } from '../core/scoring';
 import type {
   AnalysisRecord,
@@ -67,7 +68,7 @@ export async function upsertUserProfile(params: {
       if (params.avatarUrl && params.avatarUrl !== existing.avatarUrl) {
         updates.avatarUrl = params.avatarUrl.slice(0, 1024);
       }
-      await updateDoc(ref, updates);
+      await updateDoc(ref, stripUndefinedDeep(updates));
       return { ...existing, ...updates };
     }
 
@@ -82,7 +83,7 @@ export async function upsertUserProfile(params: {
       createdAt: now,
       lastLoginAt: now,
     };
-    await setDoc(ref, profile);
+    await setDoc(ref, stripUndefinedDeep(profile));
     return profile;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -101,7 +102,7 @@ export async function updateUserPreferences(
     if (updates.displayName) clean.displayName = updates.displayName.trim().slice(0, 100);
     if (updates.grade) clean.grade = updates.grade;
     if (updates.preferredSubjects) clean.preferredSubjects = updates.preferredSubjects.slice(0, 12);
-    await updateDoc(doc(db, 'users', uid), clean);
+    await updateDoc(doc(db, 'users', uid), stripUndefinedDeep(clean));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -111,25 +112,42 @@ export async function saveAnalysisRecord(record: AnalysisRecord): Promise<void> 
   const safeId = makeSafeId(record.analysisId);
   const path = `analyses/${safeId}`;
   try {
-    const sanitized: AnalysisRecord = {
+    const safeTitle = (record.documentTitle || 'Tài liệu kiểm định').trim().slice(0, 200) || 'Tài liệu kiểm định';
+    const safeFileName = (record.originalFileName || 'tai_lieu.txt').trim().slice(0, 255) || 'tai_lieu.txt';
+
+    const sanitizedPages = (record.extractedPages || []).slice(0, 50).map((p) => {
+      const { imageUrl, ...rest } = p;
+      const validHttpsUrl =
+        typeof imageUrl === 'string' && imageUrl.startsWith('https://')
+          ? imageUrl.slice(0, 1024)
+          : null;
+      return validHttpsUrl ? { ...rest, imageUrl: validHttpsUrl } : rest;
+    });
+
+    const sanitized = stripUndefinedDeep<AnalysisRecord>({
       ...record,
       analysisId: safeId,
-      documentTitle: record.documentTitle.slice(0, 200),
-      originalFileName: record.originalFileName.slice(0, 255),
+      documentTitle: safeTitle,
+      originalFileName: safeFileName,
+      mimeType: (record.mimeType || 'text/plain').slice(0, 100),
+      storagePath: (record.storagePath || '').slice(0, 500),
+      storageDownloadUrl: (record.storageDownloadUrl || '').slice(0, 2048),
+      textbookReferenceId: (record.textbookReferenceId || '').slice(0, 128),
+      textbookTitle: (record.textbookTitle || '').slice(0, 200),
+      textbookVersion: (record.textbookVersion || '').slice(0, 64),
+      selectedChapters: (record.selectedChapters || []).slice(0, 30),
       scope: (record.scope || '').slice(0, 300),
-      extractedPages: record.extractedPages.slice(0, 50).map((p) => ({
-        ...p,
-        // Never save giant base64 image data inside Firestore
-        imageUrl: p.imageUrl && p.imageUrl.startsWith('https://') ? p.imageUrl.slice(0, 1024) : undefined,
-      })),
-      claims: record.claims.slice(0, 150),
-      coverageItems: record.coverageItems.slice(0, 100),
-      annotations: record.annotations.slice(0, 200),
-      strengths: record.strengths.slice(0, 30),
-      weaknesses: record.weaknesses.slice(0, 50),
-      suggestions: record.suggestions.slice(0, 30),
-      webSources: record.webSources.slice(0, 30),
-    };
+      extractedPages: sanitizedPages,
+      claims: (record.claims || []).slice(0, 150),
+      coverageItems: (record.coverageItems || []).slice(0, 100),
+      annotations: (record.annotations || []).slice(0, 200),
+      strengths: (record.strengths || []).slice(0, 30),
+      weaknesses: (record.weaknesses || []).slice(0, 50),
+      suggestions: (record.suggestions || []).slice(0, 30),
+      webSources: (record.webSources || []).slice(0, 30),
+      ...(record.modelUsed ? { modelUsed: String(record.modelUsed).slice(0, 100) } : {}),
+      ...(record.jobId ? { jobId: String(record.jobId).slice(0, 128) } : {}),
+    });
     await setDoc(doc(db, 'analyses', safeId), sanitized);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -210,9 +228,9 @@ export async function saveReferenceBookWithChunks(
 ): Promise<void> {
   const path = `referenceBooks/${book.referenceId}`;
   try {
-    await setDoc(doc(db, 'referenceBooks', book.referenceId), book);
+    await setDoc(doc(db, 'referenceBooks', book.referenceId), stripUndefinedDeep(book));
     for (const chunk of chunks) {
-      await setDoc(doc(db, 'referenceChunks', chunk.chunkId), chunk);
+      await setDoc(doc(db, 'referenceChunks', chunk.chunkId), stripUndefinedDeep(chunk));
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -236,10 +254,10 @@ export async function updateReferenceBookStatus(
 ): Promise<void> {
   const path = `referenceBooks/${referenceId}`;
   try {
-    await updateDoc(doc(db, 'referenceBooks', referenceId), {
+    await updateDoc(doc(db, 'referenceBooks', referenceId), stripUndefinedDeep({
       ...updates,
       updatedAt: new Date().toISOString(),
-    });
+    }));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -263,7 +281,7 @@ export async function saveQuizSet(quizSet: QuizSet): Promise<void> {
   const safeId = makeSafeId(quizSet.quizSetId);
   const path = `quizSets/${safeId}`;
   try {
-    await setDoc(doc(db, 'quizSets', safeId), { ...quizSet, quizSetId: safeId });
+    await setDoc(doc(db, 'quizSets', safeId), stripUndefinedDeep({ ...quizSet, quizSetId: safeId }));
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
@@ -351,7 +369,7 @@ export async function saveWrongAnswerToPracticeBank(
       masteryStatus: 'Cần ôn tập',
       createdAt: now,
     };
-    await setDoc(doc(db, 'practiceItems', itemId), item);
+    await setDoc(doc(db, 'practiceItems', itemId), stripUndefinedDeep(item));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -464,7 +482,7 @@ export async function syncEncounteredConceptsFromAnalysis(
           firstSeenAt: now,
           updatedAt: now,
         };
-        await setDoc(ref, fresh);
+        await setDoc(ref, stripUndefinedDeep(fresh));
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, path);
@@ -693,7 +711,7 @@ export async function flagQuizQuestionForReview(
       masteryStatus: 'Đang củng cố',
       createdAt: now,
     };
-    await setDoc(doc(db, 'practiceItems', itemId), item);
+    await setDoc(doc(db, 'practiceItems', itemId), stripUndefinedDeep(item));
     return true;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -768,7 +786,7 @@ export async function saveFlashcard(card: import('../core/types').FlashcardItem)
   const safeId = makeSafeId(card.flashcardId);
   const path = `flashcards/${safeId}`;
   try {
-    await setDoc(doc(db, 'flashcards', safeId), { ...card, flashcardId: safeId });
+    await setDoc(doc(db, 'flashcards', safeId), stripUndefinedDeep({ ...card, flashcardId: safeId }));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -809,7 +827,7 @@ export async function updateReferenceChunkContent(
 ): Promise<void> {
   const path = `referenceChunks/${chunkId}`;
   try {
-    await updateDoc(doc(db, 'referenceChunks', chunkId), updates);
+    await updateDoc(doc(db, 'referenceChunks', chunkId), stripUndefinedDeep(updates));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -830,7 +848,7 @@ export async function saveExamBlueprint(bp: import('../core/types').ExamBlueprin
   const safeId = makeSafeId(bp.blueprintId);
   const path = `examBlueprints/${safeId}`;
   try {
-    await setDoc(doc(db, 'examBlueprints', safeId), { ...bp, blueprintId: safeId });
+    await setDoc(doc(db, 'examBlueprints', safeId), stripUndefinedDeep({ ...bp, blueprintId: safeId }));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -863,7 +881,7 @@ export async function saveExamDocument(exam: import('../core/types').ExamDocumen
   const safeId = makeSafeId(exam.examId);
   const path = `exams/${safeId}`;
   try {
-    await setDoc(doc(db, 'exams', safeId), { ...exam, examId: safeId });
+    await setDoc(doc(db, 'exams', safeId), stripUndefinedDeep({ ...exam, examId: safeId }));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -956,8 +974,8 @@ export async function submitExamAttemptAndSyncLeaderboard(params: {
   };
 
   try {
-    await setDoc(doc(db, 'examAttempts', attemptId), attempt);
-    await setDoc(lbRef, lbUpdate.nextEntry);
+    await setDoc(doc(db, 'examAttempts', attemptId), stripUndefinedDeep(attempt));
+    await setDoc(lbRef, stripUndefinedDeep(lbUpdate.nextEntry));
     return {
       attempt,
       pointsDelta: lbUpdate.pointsDelta,
@@ -1006,7 +1024,7 @@ export async function submitFeedback(
   const safeId = makeSafeId(entry.feedbackId);
   const path = `feedback/${safeId}`;
   try {
-    await setDoc(doc(db, 'feedback', safeId), { ...entry, feedbackId: safeId });
+    await setDoc(doc(db, 'feedback', safeId), stripUndefinedDeep({ ...entry, feedbackId: safeId }));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -1030,11 +1048,11 @@ export async function updateFeedbackStatus(
 ): Promise<void> {
   const path = `feedback/${feedbackId}`;
   try {
-    await updateDoc(doc(db, 'feedback', feedbackId), {
+    await updateDoc(doc(db, 'feedback', feedbackId), stripUndefinedDeep({
       status,
       ...(aiClassification ? { aiClassification } : {}),
       updatedAt: new Date().toISOString(),
-    });
+    }));
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -1045,7 +1063,7 @@ export async function saveAiJobRecord(job: import('../core/types').AiJobRecord):
   const safeId = makeSafeId(job.jobId);
   const path = `aiJobs/${safeId}`;
   try {
-    await setDoc(doc(db, 'aiJobs', safeId), { ...job, jobId: safeId });
+    await setDoc(doc(db, 'aiJobs', safeId), stripUndefinedDeep({ ...job, jobId: safeId }));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }

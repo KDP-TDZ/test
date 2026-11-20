@@ -12,8 +12,10 @@ export const PrivacyBlurToggle: React.FC<PrivacyBlurToggleProps> = ({
   className = '',
   showLabelOnMobile = false,
 }) => {
-  const { privacyBlur, togglePrivacyBlur } = usePrivacyBlur();
+  const { privacyBlur, canUsePrivacyBlur, togglePrivacyBlur } = usePrivacyBlur();
   const { isEthereal } = useUiMode();
+
+  if (!canUsePrivacyBlur) return null;
 
   return (
     <button
@@ -23,13 +25,13 @@ export const PrivacyBlurToggle: React.FC<PrivacyBlurToggleProps> = ({
       aria-pressed={privacyBlur}
       aria-label={
         privacyBlur
-          ? 'Hiện lại chữ và nội dung trang (Alt+B)'
-          : 'Che mờ toàn bộ chữ, giữ nguyên giao diện CSS (Alt+B)'
+          ? 'Hiện lại chữ và nội dung trang (Ctrl+H)'
+          : 'Che mờ toàn bộ chữ, giữ nguyên giao diện CSS (Ctrl+H)'
       }
       title={
         privacyBlur
-          ? 'Đang che chữ · Bấm để hiện lại (Alt+B)'
-          : 'Che mờ chữ để khoe giao diện CSS (Alt+B)'
+          ? 'Đang che chữ · Bấm để hiện lại (Ctrl+H)'
+          : 'Che mờ chữ để khoe giao diện CSS · Chỉ dành cho Admin (Ctrl+H)'
       }
       className={`inline-flex items-center gap-1.5 min-h-[38px] rounded-xl px-2.5 sm:px-3 py-2 text-xs font-medium cursor-pointer shrink-0 whitespace-nowrap transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 ${
         isEthereal ? 'focus-visible:ring-indigo-500' : 'focus-visible:ring-sky-500'

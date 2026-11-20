@@ -1,7 +1,12 @@
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+var __esm = (fn, res, err) => function __init() {
+  if (err) throw err[0];
+  try {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  } catch (e) {
+    throw err = [e], e;
+  }
 };
 var __export = (target, all) => {
   for (var name in all)
@@ -798,7 +803,7 @@ var DEFAULT_TASK_MODELS = {
     fallbackModel: "gemini-4-hydrogen",
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v2.1"
+    promptVersion: "v3.0"
   },
   curriculum_extraction: {
     defaultModel: "gemini-3.1-flash-lite",
@@ -812,7 +817,7 @@ var DEFAULT_TASK_MODELS = {
     fallbackModel: "gemini-3.1-flash-lite",
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v2.2"
+    promptVersion: "v3.0"
   },
   completeness_analysis: {
     defaultModel: "gemini-4-hydrogen",
@@ -2444,7 +2449,7 @@ var DocumentExtractionService = class {
         textType: validTypes.has(b.textType) ? b.textType : "paragraph",
         confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0.8)),
         readingOrder: bIdx + 1,
-        formulaText: b.formulaText || void 0,
+        ...b.formulaText ? { formulaText: b.formulaText } : {},
         boundingBox: null
       }));
       const avgConf = blocks.length > 0 ? Math.round(blocks.reduce((s, b) => s + b.confidence, 0) / blocks.length * 100) / 100 : 0;
@@ -2560,7 +2565,7 @@ var DocumentExtractionService = class {
         textType: validTypes.has(b.textType) ? b.textType : "paragraph",
         confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0.78)),
         readingOrder: bIdx + 1,
-        formulaText: b.formulaText || void 0,
+        ...b.formulaText ? { formulaText: b.formulaText } : {},
         boundingBox: null
       }));
       const avgConf = blocks.length > 0 ? Math.round(blocks.reduce((s, b) => s + b.confidence, 0) / blocks.length * 100) / 100 : 0.75;
@@ -2612,17 +2617,20 @@ var SubjectDetectionService = class {
       taskType: "subject_classification",
       config: opts?.config,
       idToken: opts?.idToken,
-      cacheInput: { sample: sampleText.slice(0, 1500) },
+      cacheInput: { sample: sampleText.slice(0, 1500), rev: "v3_topic_strict" },
       runWithModel: async (modelId) => {
         const response = await callWithTimeout(
           (signal) => ai.models.generateContent({
             model: modelId,
-            contents: `Ph\xE2n t\xEDch ng\u1EAFn g\u1ECDn \u0111o\u1EA1n ghi ch\xE9p sau \u0111\u1EC3 \u0111\u1EC1 xu\u1EA5t l\u1EDBp (10, 11 ho\u1EB7c 12), m\xF4n h\u1ECDc THPT, ti\xEAu \u0111\u1EC1 ng\u1EAFn v\xE0 t\u1ED1i \u0111a 3 ch\u01B0\u01A1ng ph\xF9 h\u1EE3p:
-
-${sampleText.slice(0, 1500)}`,
+            contents: [
+              "Ph\xE2n t\xEDch \u0111o\u1EA1n ghi ch\xE9p h\u1ECDc t\u1EADp sau \u0111\u1EC3 x\xE1c \u0111\u1ECBnh \u0110\xDANG l\u1EDBp (10, 11 ho\u1EB7c 12), m\xF4n h\u1ECDc THPT, ti\xEAu \u0111\u1EC1 ng\u1EAFn v\xE0 t\u1ED1i \u0111a 3 ch\u01B0\u01A1ng/ch\u1EE7 \u0111\u1EC1 ph\xF9 h\u1EE3p.",
+              'L\u01AFU \xDD QUAN TR\u1ECCNG: X\xE1c \u0111\u1ECBnh ch\u1EE7 \u0111\u1EC1 d\u1EF1a tr\xEAn KH\xC1I NI\u1EC6M/\u0110\u1ED0I T\u01AF\u1EE2NG CH\xCDNH m\xE0 t\xE0i li\u1EC7u \u0111ang tr\xECnh b\xE0y ho\u1EB7c \u0111\u1ECBnh ngh\u0129a (v\xED d\u1EE5: n\u1EBFu \u0111o\u1EA1n v\u0103n vi\u1EBFt "Chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u l\xE0..." nh\u01B0ng h\u1ECDc sinh vi\u1EBFt nh\u1EA7m chi ti\u1EBFt b\xEAn trong th\xE0nh "t\u1ED1c \u0111\u1ED9 thay \u0111\u1ED5i", ch\u1EE7 \u0111\u1EC1 V\u1EAAN L\xC0 "Chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u", TUY\u1EC6T \u0110\u1ED0I KH\xD4NG b\u1ECB l\u1ED7i sai c\u1EE7a h\u1ECDc sinh \u0111\xE1nh l\u1EEBa sang ch\u01B0\u01A1ng kh\xE1c nh\u01B0 "Chuy\u1EC3n \u0111\u1ED9ng bi\u1EBFn \u0111\u1ED5i").',
+              "",
+              sampleText.slice(0, 1800)
+            ].join("\n"),
             config: {
-              thinkingConfig: thinkingConfigForModel(modelId, "minimal"),
-              maxOutputTokens: 256,
+              thinkingConfig: thinkingConfigForModel(modelId, "low"),
+              maxOutputTokens: 384,
               abortSignal: signal,
               responseMimeType: "application/json",
               responseSchema: {
@@ -2761,25 +2769,42 @@ ${h.chunk.content}`
         webGroundingNotice = `Kh\xF4ng th\u1EC3 truy v\u1EA5n Google Search Grounding (${msg.slice(0, 90)}). \u0110\xE1nh gi\xE1 d\u1EF1a tr\xEAn kho s\xE1ch tham chi\u1EBFu.`;
       }
     }
+    const hasIndexedTextbookChunks = retrievedHits.length > 0;
     const analysisPrompt = [
-      "B\u1EA1n l\xE0 chuy\xEAn gia ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c gi\xE1o d\u1EE5c THPT Vi\u1EC7t Nam c\u1EE7a StudyCheck AI.",
-      `M\xF4n h\u1ECDc: ${subjectName} | L\u1EDBp: ${grade} | S\xE1ch tham chi\u1EBFu: ${textbookTitle || "Ch\u01B0a ch\u1ECDn s\xE1ch c\u1ED1 \u0111\u1ECBnh"} | Ph\u1EA1m vi: ${scope || selectedChapters.join(", ") || "Ch\u01B0a ch\u1EC9 \u0111\u1ECBnh ph\u1EA1m vi c\u1EE5 th\u1EC3"}`,
+      "B\u1EA1n l\xE0 chuy\xEAn gia ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c gi\xE1o d\u1EE5c THPT Vi\u1EC7t Nam c\u1EE7a StudyCheck AI. H\xE3y ch\u1EA5m c\u1EF1c k\u1EF3 ch\xEDnh x\xE1c, ch\u1EB7t ch\u1EBD, nh\u1EA5t qu\xE1n tuy\u1EC7t \u0111\u1ED1i gi\u1EEFa tr\u1EA1ng th\xE1i, l\u1EDDi gi\u1EA3i th\xEDch v\xE0 \u0111\xE1p \xE1n s\u1EEDa chu\u1EA9n.",
+      `M\xF4n h\u1ECDc: ${subjectName} | L\u1EDBp: ${grade} | S\xE1ch tham chi\u1EBFu: ${textbookTitle || "Chu\u1EA9n ch\u01B0\u01A1ng tr\xECnh GDPT 2018 & ki\u1EBFn th\u1EE9c khoa h\u1ECDc ph\u1ED5 th\xF4ng"} | Ph\u1EA1m vi: ${scope || selectedChapters.join(", ") || "Theo \u0111\xFAng ch\u1EE7 \u0111\u1EC1 ch\xEDnh trong t\xE0i li\u1EC7u"}`,
       "",
-      "NGUY\xCAN T\u1EAEC B\u1EAET BU\u1ED8C:",
-      "1. Chia t\xE0i li\u1EC7u h\u1ECDc sinh th\xE0nh c\xE1c \u0111\u01A1n v\u1ECB ki\u1EBFn th\u1EE9c (claims) c\xF3 ngh\u0129a, kh\xF4ng c\u1EAFt v\u1EE5n v\xF4 ngh\u0129a v\xE0 kh\xF4ng b\u1ECF qua c\xE1c trang gi\u1EEFa.",
-      "2. \u0110\u1ED1i chi\u1EBFu THEO NGH\u0128A H\u1ECCC THU\u1EACT (kh\xF4ng \u0111\xF2i h\u1ECFi \u0111\xFAng t\u1EEBng ch\u1EEF nguy\xEAn v\u0103n s\xE1ch gi\xE1o khoa; ki\u1EBFn th\u1EE9c m\u1EDF r\u1ED9ng b\xEAn ngo\xE0i \u0111\xFAng khoa h\u1ECDc KH\xD4NG b\u1ECB \u0111\xE1nh sai).",
-      "3. Ph\xE2n lo\u1EA1i r\xF5:",
-      "   - CORRECT: \u0111\xFAng b\u1EA3n ch\u1EA5t ki\u1EBFn th\u1EE9c.",
-      "   - PARTIALLY_CORRECT (Thi\u1EBFu \u0111i\u1EC1u ki\u1EC7n): \u0111\xFAng m\u1ED9t ph\u1EA7n nh\u01B0ng thi\u1EBFu \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng/ph\u1EA1m vi/bi\u1EBFn s\u1ED1 quan tr\u1ECDng.",
-      "   - INCORRECT: sai b\u1EA3n ch\u1EA5t c\xF3 c\u0103n c\u1EE9 r\xF5 r\xE0ng.",
-      "   - UNVERIFIED (Ch\u01B0a x\xE1c \u0111\u1ECBnh): ch\u01B0a \u0111\u1EE7 ngu\u1ED3n ki\u1EC3m ch\u1EE9ng \u0111\xE1ng tin \u2014 TUY\u1EC6T \u0110\u1ED0I KH\xD4NG t\u1EF1 k\u1EBFt lu\u1EADn l\xE0 sai.",
-      "   - OCR_UNCERTAIN: \u0111\u1ED9 tin c\u1EADy OCR < 0.65 \u2014 kh\xF4ng k\u1EBFt lu\u1EADn l\u1ED7i ki\u1EBFn th\u1EE9c.",
-      "   - OUT_OF_SCOPE: ngo\xE0i ph\u1EA1m vi ch\u01B0\u01A1ng tr\xECnh \u0111ang x\xE9t.",
-      "4. G\xE1n tr\u1ECDng s\u1ED1 importanceWeight: 3 (c\u1ED1t l\xF5i), 2 (h\u1ED7 tr\u1EE3), 1 (chi ti\u1EBFt m\u1EDF r\u1ED9ng).",
-      "5. V\u1EDBi m\u1ED7i claim c\u1EA7n s\u1EEDa, \u0111i\u1EC1n suggestedFix c\u1EE5 th\u1EC3 \u0111\u1EC3 h\u1ECDc sinh ch\xE9p s\u1EEDa l\u1EA1i ngay.",
-      "6. V\u1EDBi m\u1ED7i claim, ch\u1EC9 g\u1EAFn evidence t\u1EEB \u0111o\u1EA1n tr\xEDch s\xE1ch gi\xE1o khoa ho\u1EB7c ngu\u1ED3n web \u0111\u01B0\u1EE3c cung c\u1EA5p b\xEAn d\u01B0\u1EDBi. Tuy\u1EC7t \u0111\u1ED1i KH\xD4NG b\u1ECBa URL hay s\u1ED1 trang kh\xF4ng c\xF3 trong ng\u1EEF c\u1EA3nh.",
-      "7. X\xE2y d\u1EF1ng Knowledge Coverage Map (coverageItems) \u0111\xE1nh gi\xE1 m\u1EE9c \u0111\u1ED9 \u0111\u1EA7y \u0111\u1EE7 (COVERED, PARTIALLY_COVERED, MISSING).",
-      "8. VI\u1EBET NG\u1EAEN G\u1ECCN: explanation, correctKnowledge, suggestedFix, suggestedAddition, detail v\xE0 description m\u1ED7i m\u1EE5c vi\u1EBFt s\xFAc t\xEDch t\u1ED1i \u0111a 2 c\xE2u ng\u1EAFn. strengths t\u1ED1i \u0111a 3 \xFD, weaknesses t\u1ED1i \u0111a 4 \xFD, suggestions t\u1ED1i \u0111a 3 \xFD, coverageItems t\u1ED1i \u0111a 8 \xFD.",
+      "NGU\u1ED2N C\u0102N C\u1EE8 \u0110\u1ED0I CHI\u1EBEU:",
+      hasIndexedTextbookChunks ? "- \u01AFu ti\xEAn \u0111\u1ED1i chi\u1EBFu tr\u1EF1c ti\u1EBFp c\xE1c \u0111o\u1EA1n tr\xEDch SGK b\xEAn d\u01B0\u1EDBi v\xE0 g\u1EAFn \u0111\xFAng matchedChunkId, matchedPage. V\u1EDBi ki\u1EBFn th\u1EE9c khoa h\u1ECDc ph\u1ED5 th\xF4ng kh\xF4ng xu\u1EA5t hi\u1EC7n tr\u1EF1c ti\u1EBFp trong \u0111o\u1EA1n tr\xEDch nh\u01B0ng thu\u1ED9c chu\u1EA9n GDPT 2018, v\u1EABn ki\u1EC3m \u0111\u1ECBnh chu\u1EA9n x\xE1c theo khoa h\u1ECDc ph\u1ED5 th\xF4ng." : '- Hi\u1EC7n ch\u01B0a c\xF3 \u0111o\u1EA1n tr\xEDch SGK trong kho cho b\xE0i n\xE0y. B\u1EAET BU\u1ED8C d\xF9ng chu\u1EA9n ki\u1EBFn th\u1EE9c khoa h\u1ECDc ch\xEDnh th\u1ED1ng v\xE0 ch\u01B0\u01A1ng tr\xECnh GDPT 2018 c\u1EE7a B\u1ED9 GD&\u0110T \u0111\u1EC3 ki\u1EC3m \u0111\u1ECBnh d\u1EE9t kho\xE1t m\u1ECDi \u0111\u1ECBnh ngh\u0129a, \u0111\u1ECBnh lu\u1EADt, c\xF4ng th\u1EE9c, t\xEDnh ch\u1EA5t v\xE0 \u0111\u01A1n v\u1ECB \u0111o. TUY\u1EC6T \u0110\u1ED0I KH\xD4NG \u0111\xE1nh UNVERIFIED v\u1EDBi l\u1ED7i sai ki\u1EBFn th\u1EE9c hay sai c\xF4ng th\u1EE9c ph\u1ED5 th\xF4ng r\xF5 r\xE0ng (v\xED d\u1EE5: sai "t\u1ED1c \u0111\u1ED9 thay \u0111\u1ED5i" trong chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u, sai "t\u1EC9 l\u1EC7 ngh\u1ECBch", sai ph\xE9p to\xE1n "s = v + t").',
+      "",
+      "QUY TR\xCCNH KI\u1EC2M \u0110\u1ECANH 4 L\u1EDAP B\u1EAET BU\u1ED8C:",
+      "L\u1EDAP 1 \u2014 T\xC1CH M\u1EC6NH \u0110\u1EC0 & R\xC0 T\u1EEANG C\xC2U / T\u1EEANG V\u1EBE:",
+      '- T\xE1ch t\xE0i li\u1EC7u h\u1ECDc sinh th\xE0nh t\u1EEBng \u0111\u01A1n v\u1ECB ki\u1EBFn th\u1EE9c \u0111\u1ED9c l\u1EADp theo \u0111\xFAng t\u1EEBng c\xE2u, t\u1EEBng c\xF4ng th\u1EE9c v\xE0 t\u1EEBng \u0111o\u1EA1n gi\u1EA3i th\xEDch "Trong \u0111\xF3..." (kh\xF4ng g\u1ED9p nhi\u1EC1u l\u1ED7i kh\xE1c nhau v\xE0o chung 1 claim).',
+      '- Ki\u1EC3m tra k\u1EF9 m\u1ECDi t\u1EEB kh\xF3a mang t\xEDnh b\u1EA3n ch\u1EA5t: "kh\xF4ng \u0111\u1ED5i" vs "thay \u0111\u1ED5i", "t\u1EC9 l\u1EC7 thu\u1EADn" vs "t\u1EC9 l\u1EC7 ngh\u1ECBch", "t\u0103ng" vs "gi\u1EA3m", "c\xF9ng chi\u1EC1u" vs "ng\u01B0\u1EE3c chi\u1EC1u", "b\u1EA3o to\xE0n" vs "kh\xF4ng b\u1EA3o to\xE0n", \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng.',
+      "- \u0110\u1ED1i chi\u1EBFu theo ngh\u0129a h\u1ECDc thu\u1EADt (kh\xF4ng b\u1EAFt b\u1EBB c\xE1ch di\u1EC5n \u0111\u1EA1t t\u01B0\u01A1ng \u0111\u01B0\u01A1ng n\u1EBFu \u0111\xFAng b\u1EA3n ch\u1EA5t).",
+      "",
+      "L\u1EDAP 2 \u2014 SOI T\u1EEANG C\xD4NG TH\u1EE8C & PH\xC9P TO\xC1N:",
+      "- Ki\u1EC3m tra t\u1EEBng d\u1EA5u ph\xE9p to\xE1n (+, -, \xD7, ., /, ^), d\u1EA5u \xE2m/d\u01B0\u01A1ng, h\u1EC7 s\u1ED1, ch\u1EC9 s\u1ED1 d\u01B0\u1EDBi v\xE0 ki\u1EC3m tra th\u1EE9 nguy\xEAn v\u1EADt l\xFD/to\xE1n h\u1ECDc (v\xED d\u1EE5: v [m/s] kh\xF4ng th\u1EC3 c\u1ED9ng v\u1EDBi t [s] trong s = v + t; c\xF4ng th\u1EE9c \u0111\xFAng ph\u1EA3i l\xE0 s = v.t).",
+      '- T\xE1ch ri\xEAng claim cho c\xF4ng th\u1EE9c v\xE0 claim cho ph\u1EA7n ch\xFA th\xEDch "Trong \u0111\xF3..." \u0111i k\xE8m \u0111\u1EC3 ph\xE2n bi\u1EC7t r\xF5: c\xF4ng th\u1EE9c \u0111\xFAng nh\u01B0ng thi\u1EBFu gi\u1EA3i th\xEDch bi\u1EBFn s\u1ED1 kh\xE1c v\u1EDBi c\xF4ng th\u1EE9c vi\u1EBFt sai.',
+      "",
+      "L\u1EDAP 3 \u2014 KI\u1EC2M TRA \u0110\u1ED8 \u0110\u1EA6Y \u0110\u1EE6 CH\xDA TH\xCDCH K\xDD HI\u1EC6U & \u0110\u01A0N V\u1ECA C\u1EE6A M\u1ECCI C\xD4NG TH\u1EE8C:",
+      '- V\u1EDBi M\u1ECCI c\xF4ng th\u1EE9c xu\u1EA5t hi\u1EC7n trong t\xE0i li\u1EC7u (v\xED d\u1EE5 s = v.t, x = x0 + v.t, F = m.a...), li\u1EC7t k\xEA T\u1EA4T C\u1EA2 c\xE1c k\xFD hi\u1EC7u/bi\u1EBFn s\u1ED1 c\xF3 m\u1EB7t trong c\xF4ng th\u1EE9c \u0111\xF3 v\xE0 \u0111\u1ED1i chi\u1EBFu v\u1EDBi ph\u1EA7n gi\u1EA3i th\xEDch ("Trong \u0111\xF3...") ngay k\u1EBF ti\u1EBFp.',
+      "- N\u1EBFu h\u1ECDc sinh B\u1ECE S\xD3T gi\u1EA3i th\xEDch \xFD ngh\u0129a HO\u1EB6C thi\u1EBFu \u0111\u01A1n v\u1ECB \u0111o c\u1EE7a b\u1EA5t k\u1EF3 k\xFD hi\u1EC7u n\xE0o (v\xED d\u1EE5: vi\u1EBFt s v\xE0 v nh\u01B0ng kh\xF4ng gi\u1EA3i th\xEDch th\u1EDDi gian t v\xE0 \u0111\u01A1n v\u1ECB gi\xE2y s; ho\u1EB7c vi\u1EBFt x0 v\xE0 x nh\u01B0ng kh\xF4ng gi\u1EA3i th\xEDch v\u1EADn t\u1ED1c v trong ph\u01B0\u01A1ng tr\xECnh chuy\u1EC3n \u0111\u1ED9ng):",
+      "  + \u0110\xE1nh gi\xE1 ph\u1EA7n gi\u1EA3i th\xEDch \u0111\xF3 l\xE0 PARTIALLY_CORRECT (Thi\u1EBFu th\xF4ng tin / \u0110i\u1EC1u ki\u1EC7n), n\xEAu \u0110\xCDCH DANH k\xFD hi\u1EC7u v\xE0 \u0111\u01A1n v\u1ECB c\xF2n thi\u1EBFu trong explanation, v\xE0 vi\u1EBFt tr\u1ECDn b\u1ED9 ch\xFA th\xEDch \u0111\u1EA7y \u0111\u1EE7 trong suggestedFix.",
+      '  + B\u1EAET BU\u1ED8C th\xEAm t\u1EEBng m\u1EE5c thi\u1EBFu \u0111\xF3 v\xE0o coverageItems v\u1EDBi status = "MISSING" (ho\u1EB7c "PARTIALLY_COVERED") v\xE0 v\xE0o weaknesses \u0111\u1EC3 hi\u1EC3n th\u1ECB r\xF5 trong danh s\xE1ch "Thi\u1EBFu th\xF4ng tin".',
+      "",
+      "L\u1EDAP 4 \u2014 T\u1EF0 KI\u1EC2M CH\xC9O NH\u1EA4T QU\xC1N TR\u01AF\u1EDAC KHI TR\u1EA2 K\u1EBET QU\u1EA2:",
+      "- Ph\xE2n lo\u1EA1i tr\u1EA1ng th\xE1i chu\u1EA9n:",
+      "  + CORRECT: ho\xE0n to\xE0n \u0111\xFAng b\u1EA3n ch\u1EA5t, kh\xF4ng thi\u1EBFu k\xFD hi\u1EC7u hay \u0111i\u1EC1u ki\u1EC7n quan tr\u1ECDng.",
+      "  + INCORRECT: sai b\u1EA3n ch\u1EA5t ki\u1EBFn th\u1EE9c, sai quan h\u1EC7, sai c\xF4ng th\u1EE9c/ph\xE9p to\xE1n.",
+      "  + PARTIALLY_CORRECT: c\xF3 ph\u1EA7n \u0111\xFAng nh\u01B0ng thi\u1EBFu th\xF4ng tin quan tr\u1ECDng (thi\u1EBFu gi\u1EA3i th\xEDch k\xFD hi\u1EC7u/\u0111\u01A1n v\u1ECB, thi\u1EBFu \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng, ph\xE1t bi\u1EC3u ch\u01B0a tr\u1ECDn v\u1EB9n).",
+      "  + UNVERIFIED: CH\u1EC8 d\xF9ng khi th\xF4ng tin ri\xEAng l\u1EBB/m\u01A1 h\u1ED3/kh\xF4ng \u0111\u1EE7 ng\u1EEF c\u1EA3nh \u0111\u1EC3 x\xE1c minh. KH\xD4NG d\xF9ng cho \u0111\u1ECBnh ngh\u0129a/c\xF4ng th\u1EE9c ph\u1ED5 th\xF4ng.",
+      "  + OCR_UNCERTAIN: \u0111\u1ED9 tin c\u1EADy OCR < 0.65.",
+      "  + OUT_OF_SCOPE: n\u1ED9i dung l\u1EA1c \u0111\u1EC1 ho\xE0n to\xE0n kh\u1ECFi m\xF4n h\u1ECDc.",
+      "- KI\u1EC2M TRA CH\xC9O: N\u1EBFu explanation ch\u1EC9 ra h\u1ECDc sinh vi\u1EBFt sai \u2192 evaluationStatus B\u1EAET BU\u1ED8C l\xE0 INCORRECT. N\u1EBFu explanation ch\u1EC9 ra h\u1ECDc sinh vi\u1EBFt thi\u1EBFu k\xFD hi\u1EC7u/\u0111\u01A1n v\u1ECB/\u0111i\u1EC1u ki\u1EC7n \u2192 evaluationStatus B\u1EAET BU\u1ED8C l\xE0 PARTIALLY_CORRECT. C\u1EA4M TUY\u1EC6T \u0110\u1ED0I vi\u1EC7c gi\u1EA3i th\xEDch 1 \u0111\u1EB1ng m\xE0 ch\u1EA5m tr\u1EA1ng th\xE1i 1 n\u1EBBo.",
+      "- G\xE1n tr\u1ECDng s\u1ED1 importanceWeight: 3 (c\u1ED1t l\xF5i), 2 (h\u1ED7 tr\u1EE3/ch\xFA th\xEDch k\xFD hi\u1EC7u), 1 (chi ti\u1EBFt m\u1EDF r\u1ED9ng).",
+      "- Tuy\u1EC7t \u0111\u1ED1i KH\xD4NG b\u1ECBa URL hay s\u1ED1 trang SGK n\u1EBFu kh\xF4ng c\xF3 trong ng\u1EEF c\u1EA3nh.",
+      "- Vi\u1EBFt r\xF5 r\xE0ng, tr\u1EF1c di\u1EC7n, s\xFAc t\xEDch (m\u1ED7i explanation/correctKnowledge/suggestedFix t\u1ED1i \u0111a 2-3 c\xE2u ng\u1EAFn g\u1ECDn \u0111i th\u1EB3ng v\xE0o \u0111i\u1EC3m sai ho\u1EB7c \u0111i\u1EC3m thi\u1EBFu; weaknesses t\u1ED1i \u0111a 8 \xFD; coverageItems t\u1ED1i \u0111a 10 \xFD; strengths t\u1ED1i \u0111a 4 \xFD; suggestions t\u1ED1i \u0111a 4 \xFD).",
       "",
       "=== T\xC0I LI\u1EC6U C\u1EE6A H\u1ECCC SINH ===",
       formattedStudentBlocks.slice(0, 22e3),
@@ -2795,6 +2820,7 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
       config,
       idToken,
       cacheInput: {
+        promptRev: "v3_audit4layer",
         studentText: formattedStudentBlocks.slice(0, 12e3),
         textbookRef: textbookReferenceId,
         grade,
@@ -2809,7 +2835,7 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
             contents: analysisPrompt,
             config: {
               thinkingConfig: thinkingConfigForModel(modelId, "medium"),
-              maxOutputTokens: 4096,
+              maxOutputTokens: 6144,
               abortSignal: signal,
               responseMimeType: "application/json",
               responseSchema: {
@@ -2913,7 +2939,8 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
                 required: ["claims", "coverageItems", "strengths", "weaknesses", "suggestions"]
               }
             }
-          })
+          }),
+          45e3
         );
         accumulateTokens(tokensOut, evalResp);
         return JSON.parse((evalResp.text || "{}").trim());
@@ -2965,16 +2992,17 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
       } else if (c.matchedExcerpt) {
         evidences.push({
           evidenceId: `ev_${idx + 1}_ref`,
-          sourceType: textbookReferenceId ? "textbook" : "web",
-          referenceId: textbookReferenceId || void 0,
-          title: textbookTitle || "T\xE0i li\u1EC7u tham chi\u1EBFu",
-          pageNumber: c.matchedPage,
+          sourceType: "textbook",
+          ...textbookReferenceId ? { referenceId: textbookReferenceId } : {},
+          title: textbookTitle || "Chu\u1EA9n ch\u01B0\u01A1ng tr\xECnh GDPT 2018",
+          ...typeof c.matchedPage === "number" && c.matchedPage > 0 ? { pageNumber: c.matchedPage } : {},
           excerpt: c.matchedExcerpt
         });
       }
       if (usedWebGrounding && c.knowledgeType === "advanced_extension" && webSources.length > 0) {
         evidences.push(webSources[0]);
       }
+      const resolvedSuggestedFix = c.suggestedFix && c.suggestedFix.trim() ? c.suggestedFix.trim() : status !== "CORRECT" && c.correctKnowledge ? c.correctKnowledge : null;
       return {
         claimId: `claim_${idx + 1}_${crypto5.randomBytes(2).toString("hex")}`,
         sourceText: c.sourceText,
@@ -2985,14 +3013,14 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
         importanceLevel: importanceWeight === 3 ? "core" : importanceWeight === 1 ? "detail" : "supporting",
         importanceWeight,
         sourcePage: c.sourcePage || matchedBlock?.pageNumber || 1,
-        blockId: matchedBlock?.blockId,
+        ...matchedBlock?.blockId ? { blockId: matchedBlock.blockId } : {},
         boundingBox: matchedBlock?.boundingBox || null,
         ocrConfidence: ocrConf,
         knowledgeType: c.knowledgeType === "advanced_extension" ? "advanced_extension" : c.knowledgeType === "insufficient_evidence" ? "insufficient_evidence" : "textbook_core",
         evaluationStatus: status,
         explanation: c.explanation,
         correctKnowledge: c.correctKnowledge,
-        suggestedFix: c.suggestedFix || (status !== "CORRECT" ? c.correctKnowledge : void 0),
+        ...resolvedSuggestedFix ? { suggestedFix: resolvedSuggestedFix } : {},
         evidences
       };
     });
@@ -3008,11 +3036,13 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
         status: validCov,
         suggestedAddition: item.suggestedAddition,
         referenceExcerpt: item.referenceExcerpt,
-        referencePage: item.referencePage
+        ...typeof item.referencePage === "number" && item.referencePage > 0 ? { referencePage: item.referencePage } : {}
       };
     });
     const hasTextbook = Boolean(textbookReferenceId && referenceChunks.length > 0);
-    const hasValidScope = Boolean(hasTextbook || selectedChapters.length > 0 || scope.trim().length > 0);
+    const hasValidScope = Boolean(
+      hasTextbook || selectedChapters.length > 0 || scope.trim().length > 0 || coverageItems.length > 0
+    );
     const accuracyBreakdown = calculateAccuracyScore(claims, hasTextbook);
     const completenessBreakdown = calculateCompletenessScore(coverageItems, hasValidScope);
     const annotations = [];
@@ -3022,21 +3052,21 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
       annotations.push({
         annotationId: `ann_${claim.claimId}`,
         pageNumber: claim.sourcePage,
-        blockId: claim.blockId,
+        ...claim.blockId ? { blockId: claim.blockId } : {},
         textExcerpt: claim.sourceText,
         claimId: claim.claimId,
-        referenceId: claim.evidences[0]?.referenceId,
+        ...claim.evidences[0]?.referenceId ? { referenceId: claim.evidences[0].referenceId } : {},
         boundingBox: claim.boundingBox || null,
         annotationColor: color,
         reason: claim.explanation,
-        evidenceId: claim.evidences[0]?.evidenceId
+        ...claim.evidences[0]?.evidenceId ? { evidenceId: claim.evidences[0].evidenceId } : {}
       });
     }
     const mappedWeaknesses = (rawEval.weaknesses || []).map((w) => ({
       title: w.title,
       category: "knowledge_error",
       detail: w.detail,
-      pageNumber: w.pageNumber
+      ...typeof w.pageNumber === "number" && w.pageNumber > 0 ? { pageNumber: w.pageNumber } : {}
     }));
     const mappedSuggestions = (rawEval.suggestions || []).map((s, idx) => ({
       priority: Number(s.priority) || idx + 1,
@@ -3053,7 +3083,7 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
       suggestions: mappedSuggestions,
       webSources,
       usedWebGrounding,
-      webGroundingNotice,
+      ...webGroundingNotice ? { webGroundingNotice } : {},
       modelUsed,
       accuracyScore: accuracyBreakdown.accuracyScore,
       completenessScore: completenessBreakdown.completenessScore,

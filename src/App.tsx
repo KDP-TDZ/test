@@ -19,6 +19,7 @@ import { sendEmailVerification } from 'firebase/auth';
 import type { QueryDocumentSnapshot } from 'firebase/firestore';
 import { BRAND_CONFIG } from './config/brand';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { PrivacyBlurProvider } from './context/PrivacyBlurContext';
 import { useUiMode } from './context/UiModeContext';
 import { gsap, MOTION_ALLOWED_MEDIA, REDUCED_MOTION_MEDIA, useGSAP } from './lib/gsapSetup';
 import type {
@@ -839,9 +840,11 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AuthProvider>
-        <AmbientCanvas>
-          <StudyCheckShell />
-        </AmbientCanvas>
+        <PrivacyBlurProvider>
+          <AmbientCanvas>
+            <StudyCheckShell />
+          </AmbientCanvas>
+        </PrivacyBlurProvider>
       </AuthProvider>
     </ErrorBoundary>
   );

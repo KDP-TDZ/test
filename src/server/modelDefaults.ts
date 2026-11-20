@@ -34,7 +34,7 @@ export const DEFAULT_TASK_MODELS: Record<AiTaskType, TaskModelConfig> = {
     fallbackModel: 'gemini-4-hydrogen',
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v2.1',
+    promptVersion: 'v3.0',
   },
   curriculum_extraction: {
     defaultModel: 'gemini-3.1-flash-lite',
@@ -48,7 +48,7 @@ export const DEFAULT_TASK_MODELS: Record<AiTaskType, TaskModelConfig> = {
     fallbackModel: 'gemini-3.1-flash-lite',
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v2.2',
+    promptVersion: 'v3.0',
   },
   completeness_analysis: {
     defaultModel: 'gemini-4-hydrogen',

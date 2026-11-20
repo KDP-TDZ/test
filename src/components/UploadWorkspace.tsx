@@ -3,12 +3,10 @@ import {
   AlertCircle,
   ArrowDown,
   ArrowUp,
-  BookOpen,
   Camera,
   CheckCircle2,
   Clock,
   FileUp,
-  Globe,
   Loader2,
   RefreshCw,
   Trash2,
@@ -16,7 +14,6 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import {
-  SUBJECT_LABELS,
   type AiJobRecord,
   type AnalysisRecord,
   type AnalysisStage,
@@ -39,31 +36,32 @@ import {
 } from '../services/firestoreService';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
-import { OcrReviewPanel } from './OcrReviewPanel';
 
 interface UploadWorkspaceProps {
   onAnalysisCompleted: (analysis: AnalysisRecord, localFile: File | null) => void;
 }
 
-type WizardStep = 'select' | 'extracting' | 'ocr_review' | 'scope_confirm' | 'analyzing';
+type WizardStep = 'select' | 'processing';
 
 interface OcrDraftCache {
   documentId: string;
   documentTitle: string;
+  originalFileName: string;
+  mimeType: string;
   grade: GradeLevel;
   subject: SubjectId;
+  selectedChapters: string[];
   scopeNote: string;
   pages: ExtractedPage[];
   savedAt: string;
 }
 
 const PIPELINE_STAGES: Array<{ id: AnalysisStage; label: string }> = [
-  { id: 'uploading', label: 'Đang tải tệp & kiểm tra định dạng' },
-  { id: 'extracting', label: 'Trích xuất văn bản / OCR chữ viết tay' },
-  { id: 'awaiting_ocr_confirmation', label: 'Xác nhận văn bản OCR' },
-  { id: 'retrieving_references', label: 'Truy xuất học liệu & SGK chuẩn' },
-  { id: 'verifying', label: 'Kiểm định từng mệnh đề kiến thức' },
-  { id: 'calculating', label: 'Chấm điểm độc lập Độ chính xác & Đầy đủ' },
+  { id: 'uploading', label: 'Đang chuẩn bị & kiểm tra tệp tải lên' },
+  { id: 'extracting', label: 'Trích xuất văn bản, công thức & tự nhận diện chủ đề' },
+  { id: 'retrieving_references', label: 'Tự động tìm sách giáo khoa & chuẩn chương trình' },
+  { id: 'verifying', label: 'Kiểm định từng câu, công thức & độ đầy đủ ký hiệu' },
+  { id: 'calculating', label: 'Chấm điểm độc lập Độ chính xác & Độ đầy đủ' },
   { id: 'generating_report', label: 'Hoàn tất & lưu báo cáo phân tích' },
 ];
 
@@ -81,26 +79,11 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
   const [statusLabel, setStatusLabel] = useState<string>('');
   const [progressDetail, setProgressDetail] = useState<{ current: number; total: number } | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
-  const [lastFailedAction, setLastFailedAction] = useState<'extract' | 'analyze' | null>(null);
+  const [lastFailedAction, setLastFailedAction] = useState<'full' | 'verify_draft' | null>(null);
 
-  const [documentId, setDocumentId] = useState<string>('');
-  const [storagePath] = useState<string>('');
-  const [storageDownloadUrl] = useState<string>('');
-  const [extractedPages, setExtractedPages] = useState<ExtractedPage[]>([]);
-
-  // Resumable jobs & OCR Draft recovery
+  const [referenceBooks, setReferenceBooks] = useState<ReferenceBook[]>([]);
   const [recentJobs, setRecentJobs] = useState<AiJobRecord[]>([]);
   const [ocrDraft, setOcrDraft] = useState<OcrDraftCache | null>(null);
-
-  // Scope Confirmation State
-  const [documentTitle, setDocumentTitle] = useState('');
-  const [grade, setGrade] = useState<GradeLevel>(profile?.grade || '10');
-  const [subject, setSubject] = useState<SubjectId>('toan');
-  const [referenceBooks, setReferenceBooks] = useState<ReferenceBook[]>([]);
-  const [selectedBookId, setSelectedBookId] = useState<string>('');
-  const [selectedChapters, setSelectedChapters] = useState<string[]>([]);
-  const [scopeNote, setScopeNote] = useState('');
-  const [enableWebGrounding, setEnableWebGrounding] = useState(false);
 
   const aiEnabled = systemStatus ? systemStatus.enabled : true;
   const maxFileMb = systemStatus?.rateLimitConfig?.maximumFileSizeMb || 20;
@@ -121,18 +104,29 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     try {
       const raw = localStorage.getItem(`studycheck_ocr_draft_${user.uid}`);
       if (raw) {
-        const parsed = JSON.parse(raw) as OcrDraftCache;
+        const parsed = JSON.parse(raw) as Partial<OcrDraftCache>;
         if (Array.isArray(parsed.pages) && parsed.pages.length > 0) {
-          setOcrDraft(parsed);
+          setOcrDraft({
+            documentId: parsed.documentId || `doc_${Date.now()}`,
+            documentTitle: parsed.documentTitle || 'Tài liệu kiểm định',
+            originalFileName: parsed.originalFileName || 'tai_lieu.txt',
+            mimeType: parsed.mimeType || 'text/plain',
+            grade: parsed.grade || profile?.grade || '10',
+            subject: parsed.subject || 'khac',
+            selectedChapters: Array.isArray(parsed.selectedChapters) ? parsed.selectedChapters : [],
+            scopeNote: parsed.scopeNote || '',
+            pages: parsed.pages,
+            savedAt: parsed.savedAt || new Date().toISOString(),
+          });
         }
       }
     } catch {
       // Ignore malformed draft
     }
-  }, [user]);
+  }, [user, profile?.grade]);
 
   useEffect(() => {
-    if (step !== 'extracting' && step !== 'analyzing') {
+    if (step !== 'processing') {
       setElapsedSeconds(0);
       return;
     }
@@ -160,7 +154,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
 
   useGSAP(
     () => {
-      if (step !== 'extracting' && step !== 'analyzing') return;
+      if (step !== 'processing') return;
       const mm = gsap.matchMedia();
       mm.add(MOTION_ALLOWED_MEDIA, () => {
         gsap.fromTo(
@@ -197,11 +191,6 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     },
     { scope: workspaceRef, dependencies: [progressDetail?.current, progressDetail?.total, step] }
   );
-
-  const filteredBooks = referenceBooks.filter(
-    (b) => b.grade === grade && b.subject === subject && b.status === 'active'
-  );
-  const selectedBook = filteredBooks.find((b) => b.referenceId === selectedBookId) || null;
 
   const persistOcrDraft = (draft: OcrDraftCache | null) => {
     if (!user) return;
@@ -255,7 +244,9 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       setFiles([list[0]]);
       setWarning('Chỉ xử lý 1 file PDF hoặc DOCX cho mỗi lần kiểm định; các ảnh nhiều trang có thể chọn cùng lúc.');
     } else if (!firstIsDoc) {
-      const imagesOnly = list.filter((f) => !f.name.toLowerCase().endsWith('.pdf') && !f.name.toLowerCase().endsWith('.docx'));
+      const imagesOnly = list.filter(
+        (f) => !f.name.toLowerCase().endsWith('.pdf') && !f.name.toLowerCase().endsWith('.docx')
+      );
       if (imagesOnly.length > maxPages) {
         setError(`Số trang ảnh (${imagesOnly.length}) vượt quá giới hạn ${maxPages} trang.`);
         return;
@@ -284,7 +275,173 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     setFiles((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const handleStartExtraction = async () => {
+  const runVerificationOnDraft = async (
+    draft: OcrDraftCache,
+    primaryLocalFile: File | null
+  ) => {
+    if (!user || draft.pages.length === 0) return;
+
+    setActiveStage('retrieving_references');
+    setProgressDetail({ current: 1, total: 3 });
+    setStatusLabel('Đang tự động tìm sách giáo khoa & chuẩn chương trình phù hợp...');
+
+    const jobId = `job_an_${draft.documentId || Date.now()}`;
+    const nowStart = new Date().toISOString();
+    const baseJob: AiJobRecord = {
+      jobId,
+      ownerUid: user.uid,
+      jobType: 'analysis_verify',
+      status: 'processing',
+      currentStage: 'retrieving_references',
+      stagesCompleted: ['uploading', 'extracting'],
+      configVersion: systemStatus?.configVersion || 1,
+      createdAt: nowStart,
+      updatedAt: nowStart,
+    };
+    saveAiJobRecord(baseJob).catch(() => {});
+
+    try {
+      // Automatically select the best active reference book matching detected grade & subject (zero manual dropdowns)
+      let activeBooks = referenceBooks;
+      if (activeBooks.length === 0) {
+        activeBooks = await listReferenceBooks(true).catch(() => []);
+        if (activeBooks.length > 0) setReferenceBooks(activeBooks);
+      }
+
+      const matchedBook =
+        activeBooks.find(
+          (b) => b.status === 'active' && b.grade === draft.grade && b.subject === draft.subject
+        ) || null;
+
+      let relevantChunks: ReferenceChunk[] = [];
+      if (matchedBook) {
+        const allChunks = await listReferenceChunksForBook(matchedBook.referenceId).catch(() => []);
+        if (allChunks.length > 0) {
+          const queryText = draft.pages.map((p) => p.rawText).join(' ').slice(0, 2500);
+          const retrieved = retrieveRelevantChunks(queryText, allChunks, {
+            referenceId: matchedBook.referenceId,
+            selectedChapters: draft.selectedChapters.length > 0 ? draft.selectedChapters : undefined,
+            topK: 8,
+          });
+          relevantChunks =
+            retrieved.length > 0
+              ? retrieved.map((r) => r.chunk)
+              : allChunks
+                  .filter(
+                    (c) =>
+                      draft.selectedChapters.length === 0 ||
+                      draft.selectedChapters.some((ch) => c.chapter.includes(ch))
+                  )
+                  .slice(0, 6);
+        }
+      }
+
+      setActiveStage('verifying');
+      setProgressDetail({ current: 2, total: 3 });
+      setStatusLabel(
+        `Đang kiểm định từng câu, công thức & chú thích trên ${draft.pages.length} trang tài liệu...`
+      );
+
+      const idempotencyKey = `${draft.documentId}_${draft.grade}_${draft.subject}_${Date.now()}`;
+      const res = await authorizedFetch('/api/ai/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idempotencyKey,
+          pages: draft.pages,
+          grade: draft.grade,
+          subject: draft.subject,
+          textbookReferenceId: matchedBook?.referenceId || '',
+          textbookTitle: matchedBook?.title || '',
+          selectedChapters: draft.selectedChapters,
+          scope: draft.scopeNote,
+          referenceChunks: relevantChunks,
+          enableWebGrounding: false,
+        }),
+      });
+
+      const data = await parseApiResponse<any>(res, 'Quá trình phân tích kiến thức thất bại.');
+
+      setActiveStage('calculating');
+      setProgressDetail({ current: 3, total: 3 });
+      setStatusLabel('Đang chấm điểm độc lập & lưu báo cáo kết quả...');
+
+      const now = new Date().toISOString();
+      const record: AnalysisRecord = {
+        analysisId: draft.documentId || `an_${Date.now()}`,
+        ownerUid: user.uid,
+        documentTitle: draft.documentTitle.trim() || 'Tài liệu kiểm định',
+        originalFileName: draft.originalFileName || `${draft.documentTitle || 'tai_lieu'}.txt`,
+        mimeType: draft.mimeType || 'text/plain',
+        storagePath: '',
+        storageDownloadUrl: '',
+        grade: draft.grade,
+        subject: draft.subject,
+        textbookReferenceId: matchedBook?.referenceId || '',
+        textbookTitle: matchedBook?.title || 'Chuẩn chương trình GDPT 2018',
+        textbookVersion: matchedBook?.editionYear || '',
+        selectedChapters: draft.selectedChapters,
+        scope:
+          draft.scopeNote.trim() ||
+          draft.selectedChapters.join(', ') ||
+          'Toàn bộ nội dung tài liệu',
+        analysisStatus: 'completed',
+        extractedPages: draft.pages,
+        claims: data.claims || [],
+        coverageItems: data.coverageItems || [],
+        annotations: data.annotations || [],
+        accuracyScore: data.accuracyBreakdown?.accuracyScore ?? null,
+        completenessScore: data.completenessBreakdown?.completenessScore ?? null,
+        evidenceCoverage: data.accuracyBreakdown?.evidenceCoverage ?? null,
+        confidenceLevel: data.accuracyBreakdown?.confidenceLevel || 'Chưa đủ dữ liệu đánh giá',
+        confidenceReason: data.accuracyBreakdown?.confidenceReason || '',
+        accuracyBreakdown: data.accuracyBreakdown,
+        completenessBreakdown: data.completenessBreakdown,
+        strengths: data.strengths || [],
+        weaknesses: data.weaknesses || [],
+        suggestions: data.suggestions || [],
+        webSources: data.webSources || [],
+        usedWebGrounding: Boolean(data.usedWebGrounding),
+        ...(data.webGroundingNotice ? { webGroundingNotice: data.webGroundingNotice } : {}),
+        jobId,
+        ...(data.modelUsed ? { modelUsed: data.modelUsed } : {}),
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      setActiveStage('generating_report');
+      await saveAnalysisRecord(record);
+      await syncEncounteredConceptsFromAnalysis(user.uid, record);
+      persistOcrDraft(null);
+      setProgressDetail(null);
+
+      saveAiJobRecord({
+        ...baseJob,
+        status: 'completed',
+        currentStage: 'completed',
+        stagesCompleted: PIPELINE_STAGES.map((s) => s.id),
+        resultSummary: `Accuracy ${record.accuracyScore ?? 'N/A'}% · Completeness ${record.completenessScore ?? 'N/A'}%`,
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {});
+
+      onAnalysisCompleted(record, primaryLocalFile);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Không thể hoàn tất phân tích.';
+      setProgressDetail(null);
+      setError(msg);
+      setLastFailedAction('verify_draft');
+      setStep('select');
+      saveAiJobRecord({
+        ...baseJob,
+        status: 'failed',
+        currentStage: 'verifying',
+        error: msg.slice(0, 300),
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {});
+    }
+  };
+
+  const handleStartOneClickGrading = async () => {
     if (!user || files.length === 0) return;
     if (!aiEnabled) {
       setError(
@@ -297,10 +454,9 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     setError(null);
     setWarning(null);
     setLastFailedAction(null);
-    setStep('extracting');
+    setStep('processing');
     setActiveStage('uploading');
     const newDocId = `doc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    setDocumentId(newDocId);
     const jobId = `job_ocr_${newDocId}`;
     const now = new Date().toISOString();
 
@@ -329,8 +485,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
           setProgressDetail({ current: curr, total });
           setStatusLabel(
             total > 1
-              ? `Đang nén ảnh trang ${curr}/${total} để tải lên nhanh hơn...`
-              : 'Đang nén ảnh để tải lên nhanh hơn...'
+              ? `Đang nén ảnh trang ${curr}/${total} để xử lý nhanh hơn...`
+              : 'Đang nén ảnh để xử lý nhanh hơn...'
           );
         });
       } else {
@@ -347,8 +503,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         setProgressDetail({ current: 1, total: 2 });
         setStatusLabel(
           isPdf
-            ? 'Đang đọc & trích xuất từng trang tệp PDF...'
-            : 'Đang đọc nội dung tệp Word (DOCX)...'
+            ? 'Đang trích xuất từng trang tệp PDF & nhận diện môn học...'
+            : 'Đang đọc nội dung tệp Word (DOCX) & nhận diện môn học...'
         );
         const formData = new FormData();
         preparedFiles.forEach((f) => formData.append('files', f));
@@ -373,8 +529,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
           setProgressDetail({ current: offset + 1, total: totalPages });
           setStatusLabel(
             batch.length === 1
-              ? `Đang đọc trang ${offset + 1}/${totalPages}...`
-              : `Đang đọc trang ${offset + 1}–${endIdx}/${totalPages}...`
+              ? `Đang đọc OCR trang ${offset + 1}/${totalPages}...`
+              : `Đang đọc OCR trang ${offset + 1}–${endIdx}/${totalPages}...`
           );
 
           const formData = new FormData();
@@ -400,48 +556,50 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         }
       }
 
-      setExtractedPages(pages);
+      if (pages.length === 0) {
+        throw new Error('Không trích xuất được nội dung văn bản nào từ tệp tải lên. Hãy thử ảnh rõ nét hơn.');
+      }
+
       const nextTitle =
         suggestion.suggestedTitle || files[0].name.replace(/\.[^.]+$/, '') || 'Tài liệu học tập';
       const nextGrade: GradeLevel = suggestion.suggestedGrade || profile?.grade || '10';
-      const nextSubject: SubjectId = suggestion.suggestedSubject || 'toan';
-      const nextScope =
-        Array.isArray(suggestion.suggestedChapters) && suggestion.suggestedChapters.length > 0
-          ? suggestion.suggestedChapters.join(', ')
-          : '';
+      const nextSubject: SubjectId = suggestion.suggestedSubject || 'khac';
+      const nextChapters: string[] = Array.isArray(suggestion.suggestedChapters)
+        ? suggestion.suggestedChapters.slice(0, 5)
+        : [];
+      const nextScope = nextChapters.join(', ');
 
-      setDocumentTitle(nextTitle);
-      setGrade(nextGrade);
-      setSubject(nextSubject);
-      if (nextScope) setScopeNote(nextScope);
-
-      persistOcrDraft({
+      const readyDraft: OcrDraftCache = {
         documentId: newDocId,
         documentTitle: nextTitle,
+        originalFileName: files[0]?.name || `${nextTitle}.txt`,
+        mimeType: files[0]?.type || 'text/plain',
         grade: nextGrade,
         subject: nextSubject,
+        selectedChapters: nextChapters,
         scopeNote: nextScope,
         pages,
         savedAt: new Date().toISOString(),
-      });
+      };
+
+      persistOcrDraft(readyDraft);
 
       saveAiJobRecord({
         ...baseJob,
         status: 'completed',
-        currentStage: 'awaiting_ocr_confirmation',
+        currentStage: 'retrieving_references',
         stagesCompleted: ['uploading', 'extracting'],
         resultSummary: `Đã trích xuất ${pages.length} trang`,
         updatedAt: new Date().toISOString(),
       }).catch(() => {});
 
-      setProgressDetail(null);
-      setActiveStage('awaiting_ocr_confirmation');
-      setStep('ocr_review');
+      // Immediately continue into automatic verification & grading without any manual scope/option screen
+      await runVerificationOnDraft(readyDraft, files[0] || null);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Lỗi xử lý tải lên và trích xuất.';
       setProgressDetail(null);
       setError(msg);
-      setLastFailedAction('extract');
+      setLastFailedAction('full');
       setStep('select');
       saveAiJobRecord({
         ...baseJob,
@@ -453,191 +611,25 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     }
   };
 
-  const executeVerification = async () => {
-    if (!user || extractedPages.length === 0) return;
-    if (!aiEnabled) {
-      setError(systemStatus?.maintenanceMessage || 'Dịch vụ AI hiện đang tạm ngừng.');
-      return;
-    }
-
+  const handleGradeSavedDraftNow = async () => {
+    if (!ocrDraft || !aiEnabled) return;
     setError(null);
     setLastFailedAction(null);
-    setStep('analyzing');
-    setActiveStage('retrieving_references');
-    setProgressDetail({ current: 1, total: 3 });
-    setStatusLabel('Bước 1/3: Đang tìm kiến thức sách giáo khoa phù hợp...');
-
-    const jobId = `job_an_${documentId || Date.now()}`;
-    const nowStart = new Date().toISOString();
-    const baseJob: AiJobRecord = {
-      jobId,
-      ownerUid: user.uid,
-      jobType: 'analysis_verify',
-      status: 'processing',
-      currentStage: 'retrieving_references',
-      stagesCompleted: ['uploading', 'extracting', 'awaiting_ocr_confirmation'],
-      configVersion: systemStatus?.configVersion || 1,
-      createdAt: nowStart,
-      updatedAt: nowStart,
-    };
-    saveAiJobRecord(baseJob).catch(() => {});
-
-    try {
-      let relevantChunks: ReferenceChunk[] = [];
-      if (selectedBook) {
-        const allChunks = await listReferenceChunksForBook(selectedBook.referenceId);
-        const queryText = extractedPages.map((p) => p.rawText).join(' ').slice(0, 2500);
-        const retrieved = retrieveRelevantChunks(queryText, allChunks, {
-          referenceId: selectedBook.referenceId,
-          selectedChapters: selectedChapters.length > 0 ? selectedChapters : undefined,
-          topK: 8,
-        });
-        relevantChunks =
-          retrieved.length > 0
-            ? retrieved.map((r) => r.chunk)
-            : allChunks
-                .filter(
-                  (c) =>
-                    selectedChapters.length === 0 ||
-                    selectedChapters.some((ch) => c.chapter.includes(ch))
-                )
-                .slice(0, 6);
-      }
-
-      setActiveStage('verifying');
-      setProgressDetail({ current: 2, total: 3 });
-      setStatusLabel(
-        enableWebGrounding
-          ? `Bước 2/3: Đang đối chiếu ${extractedPages.length} trang với SGK & tìm kiếm bổ sung...`
-          : `Bước 2/3: Đang kiểm định & đối chiếu ${extractedPages.length} trang với kiến thức chuẩn...`
-      );
-
-      const idempotencyKey = `${documentId}_${grade}_${subject}_${Date.now()}`;
-      const res = await authorizedFetch('/api/ai/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          idempotencyKey,
-          pages: extractedPages,
-          grade,
-          subject,
-          textbookReferenceId: selectedBook?.referenceId || '',
-          textbookTitle: selectedBook?.title || '',
-          selectedChapters,
-          scope: scopeNote,
-          referenceChunks: relevantChunks,
-          enableWebGrounding,
-        }),
-      });
-
-      const data = await parseApiResponse<any>(res, 'Quá trình phân tích kiến thức thất bại.');
-
-      setActiveStage('calculating');
-      setProgressDetail({ current: 3, total: 3 });
-      setStatusLabel('Bước 3/3: Đang chấm điểm & lưu báo cáo kết quả...');
-
-      const now = new Date().toISOString();
-      const record: AnalysisRecord = {
-        analysisId: documentId || `an_${Date.now()}`,
-        ownerUid: user.uid,
-        documentTitle: documentTitle.trim() || 'Tài liệu kiểm định',
-        originalFileName: files[0]?.name || `${documentTitle || 'tai_lieu'}.txt`,
-        mimeType: files[0]?.type || 'text/plain',
-        storagePath,
-        storageDownloadUrl,
-        grade,
-        subject,
-        textbookReferenceId: selectedBook?.referenceId || '',
-        textbookTitle: selectedBook?.title || 'Chương trình GDPT chuẩn',
-        textbookVersion: selectedBook?.editionYear || '',
-        selectedChapters,
-        scope: scopeNote.trim() || selectedChapters.join(', ') || 'Toàn bộ nội dung tài liệu',
-        analysisStatus: 'completed',
-        extractedPages,
-        claims: data.claims || [],
-        coverageItems: data.coverageItems || [],
-        annotations: data.annotations || [],
-        accuracyScore: data.accuracyBreakdown?.accuracyScore ?? null,
-        completenessScore: data.completenessBreakdown?.completenessScore ?? null,
-        evidenceCoverage: data.accuracyBreakdown?.evidenceCoverage ?? null,
-        confidenceLevel: data.accuracyBreakdown?.confidenceLevel || 'Chưa đủ dữ liệu đánh giá',
-        confidenceReason: data.accuracyBreakdown?.confidenceReason || '',
-        accuracyBreakdown: data.accuracyBreakdown,
-        completenessBreakdown: data.completenessBreakdown,
-        strengths: data.strengths || [],
-        weaknesses: data.weaknesses || [],
-        suggestions: data.suggestions || [],
-        webSources: data.webSources || [],
-        usedWebGrounding: Boolean(data.usedWebGrounding),
-        webGroundingNotice: data.webGroundingNotice,
-        jobId,
-        modelUsed: data.modelUsed,
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      setActiveStage('generating_report');
-      await saveAnalysisRecord(record);
-      await syncEncounteredConceptsFromAnalysis(user.uid, record);
-      persistOcrDraft(null);
-      setProgressDetail(null);
-
-      saveAiJobRecord({
-        ...baseJob,
-        status: 'completed',
-        currentStage: 'completed',
-        stagesCompleted: PIPELINE_STAGES.map((s) => s.id),
-        resultSummary: `Accuracy ${record.accuracyScore ?? 'N/A'}% · Completeness ${record.completenessScore ?? 'N/A'}%`,
-        updatedAt: new Date().toISOString(),
-      }).catch(() => {});
-
-      onAnalysisCompleted(record, files[0] || null);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Không thể hoàn tất phân tích.';
-      setProgressDetail(null);
-      setError(msg);
-      setLastFailedAction('analyze');
-      setStep('scope_confirm');
-      saveAiJobRecord({
-        ...baseJob,
-        status: 'failed',
-        currentStage: 'verifying',
-        error: msg.slice(0, 300),
-        updatedAt: new Date().toISOString(),
-      }).catch(() => {});
-    }
-  };
-
-  const handleRunVerification = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await executeVerification();
-  };
-
-  const handleRestoreDraft = () => {
-    if (!ocrDraft) return;
-    setDocumentId(ocrDraft.documentId);
-    setDocumentTitle(ocrDraft.documentTitle);
-    setGrade(ocrDraft.grade);
-    setSubject(ocrDraft.subject);
-    setScopeNote(ocrDraft.scopeNote);
-    setExtractedPages(ocrDraft.pages);
-    setStep('ocr_review');
+    setStep('processing');
+    await runVerificationOnDraft(ocrDraft, files[0] || null);
   };
 
   const activeStageIdx = PIPELINE_STAGES.findIndex((s) => s.id === activeStage);
 
   return (
     <div ref={workspaceRef} className="space-y-4 sm:space-y-6">
-      {/* Progress Stepper */}
+      {/* Compact 2-Step Progress Stepper */}
       <div className="glass-segment rounded-2xl px-3.5 sm:px-4 py-2.5 flex flex-wrap items-center gap-1.5 sm:gap-2 text-xs font-medium">
         {[
           { id: 'select', label: '1. Tải tài liệu' },
-          { id: 'ocr_review', label: '2. Kiểm tra OCR' },
-          { id: 'scope_confirm', label: '3. Xác nhận phạm vi & SGK' },
-          { id: 'analyzing', label: '4. Đối chiếu & Chấm điểm' },
+          { id: 'processing', label: '2. Trích xuất & Chấm điểm tự động' },
         ].map((s, idx) => {
-          const active =
-            step === s.id || (step === 'extracting' && s.id === 'select');
+          const active = step === s.id;
           return (
             <React.Fragment key={s.id}>
               {idx > 0 && <span className="text-sky-300 dark:text-slate-600">/</span>}
@@ -655,16 +647,16 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         })}
       </div>
 
-      {/* Resumable OCR Draft Banner */}
+      {/* Resumable OCR Draft Banner (1-click direct grading) */}
       {step === 'select' && ocrDraft && (
         <GlassSurface className="rounded-3xl p-4 sm:p-5 border border-sky-200/80 dark:border-sky-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="text-xs space-y-0.5">
             <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
-              Bản nháp OCR chưa phân tích xong: {ocrDraft.documentTitle}
+              Tài liệu đã đọc OCR chưa chấm xong: {ocrDraft.documentTitle}
             </p>
             <p className="text-slate-600 dark:text-slate-300">
               {ocrDraft.pages.length} trang · Lưu lúc{' '}
-              {new Date(ocrDraft.savedAt).toLocaleString('vi-VN')} (Khôi phục ngay không tốn lượt AI OCR)
+              {new Date(ocrDraft.savedAt).toLocaleString('vi-VN')} (Bấm để chấm thẳng không cần đọc lại OCR)
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -675,8 +667,9 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
             >
               Bỏ nháp
             </button>
-            <WaterRippleButton size="sm" onClick={handleRestoreDraft}>
-              Tiếp tục từ bước OCR
+            <WaterRippleButton size="sm" disabled={!aiEnabled} onClick={handleGradeSavedDraftNow}>
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              Chấm điểm ngay
             </WaterRippleButton>
           </div>
         </GlassSurface>
@@ -692,12 +685,14 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
             <button
               type="button"
               onClick={() =>
-                lastFailedAction === 'extract' ? handleStartExtraction() : executeVerification()
+                lastFailedAction === 'verify_draft' && ocrDraft
+                  ? handleGradeSavedDraftNow()
+                  : handleStartOneClickGrading()
               }
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold shrink-0 cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              Thử lại bước hiện tại
+              Thử lại ngay
             </button>
           )}
         </div>
@@ -710,15 +705,16 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         </div>
       )}
 
-      {/* STEP 1: Select File / Camera */}
+      {/* STEP 1: Select File / Camera & 1-Click Grade */}
       {step === 'select' && (
         <GlassSurface className="upload-step-panel rounded-3xl p-4 sm:p-8 space-y-5 sm:space-y-6">
           <div>
             <h1 className="font-display text-[clamp(1.25rem,3.8vw,1.5rem)] font-bold text-[#16243E] dark:text-[#E6EFFC] leading-[1.25]">
-              Tải tài liệu để kiểm định kiến thức
+              Tải tài liệu để kiểm định & chấm điểm ngay
             </h1>
             <p className="text-sm text-[#475B78] dark:text-[#B4C7E2] mt-1.5 leading-[1.6] prose-measure">
-              Hỗ trợ PDF, DOCX hoặc nhiều ảnh chụp trang vở viết tay (JPG, PNG, WEBP). Giới hạn{' '}
+              Hỗ trợ PDF, DOCX hoặc nhiều ảnh chụp trang vở (JPG, PNG, WEBP). Bấm một nút duy nhất để hệ
+              thống tự trích xuất, nhận diện môn/chủ đề và chấm điểm chuẩn xác. Giới hạn{' '}
               <span className="font-mono font-medium">{maxFileMb}MB/file</span> · Tối đa{' '}
               <span className="font-mono font-medium">{maxPages} trang</span>.
             </p>
@@ -832,9 +828,10 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                 <WaterRippleButton
                   size="lg"
                   disabled={!aiEnabled}
-                  onClick={handleStartExtraction}
+                  onClick={handleStartOneClickGrading}
                 >
-                  Tiếp tục trích xuất & OCR
+                  <CheckCircle2 className="w-4 h-4" />
+                  Kiểm định & Chấm điểm ngay
                 </WaterRippleButton>
               </div>
             </div>
@@ -870,8 +867,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         </GlassSurface>
       )}
 
-      {/* STEP 1.5 / 4: Step-by-Step Progress State */}
-      {(step === 'extracting' || step === 'analyzing') && (
+      {/* STEP 2: Automatic End-to-End OCR & Grading Progress */}
+      {step === 'processing' && (
         <GlassSurface className="upload-step-panel rounded-3xl p-5 sm:p-10 space-y-5 sm:space-y-6">
           <div className="text-center space-y-3">
             <div className="glass-segment inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-sky-700 dark:text-sky-300">
@@ -935,206 +932,9 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
           </div>
 
           <p className="text-xs text-center text-[#475B78] dark:text-[#B4C7E2] max-w-md mx-auto leading-[1.6]">
-            Vui lòng giữ tab trình duyệt mở để hoàn tất quá trình xác minh và lưu kết quả vào tài
-            khoản Firebase của bạn.
+            Vui lòng giữ tab trình duyệt mở để hoàn tất quá trình kiểm định và lưu kết quả vào tài
+            khoản của bạn.
           </p>
-        </GlassSurface>
-      )}
-
-      {/* STEP 2: Mandatory OCR Review */}
-      {step === 'ocr_review' && (
-        <div className="upload-step-panel">
-        <OcrReviewPanel
-          pages={extractedPages}
-          previewFiles={files}
-          mimeType={files[0]?.type || ''}
-          onChangePages={(nextPages) => {
-            setExtractedPages(nextPages);
-            if (ocrDraft) {
-              persistOcrDraft({ ...ocrDraft, pages: nextPages, savedAt: new Date().toISOString() });
-            }
-          }}
-          onConfirmOcr={() => setStep('scope_confirm')}
-          onBack={() => setStep('select')}
-        />
-        </div>
-      )}
-
-      {/* STEP 3: Mandatory Scope & Reference Book Confirmation */}
-      {step === 'scope_confirm' && (
-        <GlassSurface className="upload-step-panel rounded-3xl p-4 sm:p-8">
-          <h2 className="font-display text-lg sm:text-xl font-bold text-[#16243E] dark:text-[#E6EFFC]">
-            Xác nhận phạm vi kiến thức & Sách giáo khoa tham chiếu
-          </h2>
-          <p className="text-xs sm:text-sm text-[#475B78] dark:text-[#B4C7E2] mt-1 mb-5 sm:mb-6 leading-[1.6] prose-measure">
-            AI đã gợi ý môn học và khối lớp từ nội dung bạn tải lên. Hãy kiểm tra và xác nhận lại để
-            chấm Độ chính xác và Độ đầy đủ đúng chương trình.
-          </p>
-
-          <form onSubmit={handleRunVerification} className="space-y-5">
-            <div>
-              <label htmlFor="doc-title" className="block text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5">
-                Tiêu đề tài liệu
-              </label>
-              <input
-                id="doc-title"
-                type="text"
-                required
-                value={documentTitle}
-                onChange={(e) => setDocumentTitle(e.target.value)}
-                className="glass-control w-full px-3.5 py-2.5 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
-              />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="scope-grade" className="block text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5">
-                  Khối lớp
-                </label>
-                <select
-                  id="scope-grade"
-                  value={grade}
-                  onChange={(e) => {
-                    setGrade(e.target.value as GradeLevel);
-                    setSelectedBookId('');
-                    setSelectedChapters([]);
-                  }}
-                  className="glass-control w-full px-3.5 py-2.5 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
-                >
-                  <option value="10">Lớp 10</option>
-                  <option value="11">Lớp 11</option>
-                  <option value="12">Lớp 12</option>
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="scope-subject" className="block text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5">
-                  Môn học
-                </label>
-                <select
-                  id="scope-subject"
-                  value={subject}
-                  onChange={(e) => {
-                    setSubject(e.target.value as SubjectId);
-                    setSelectedBookId('');
-                    setSelectedChapters([]);
-                  }}
-                  className="glass-control w-full px-3.5 py-2.5 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
-                >
-                  {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
-                    <option key={s} value={s}>
-                      {SUBJECT_LABELS[s]}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label htmlFor="scope-book" className="block text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5">
-                Bộ sách giáo khoa tham chiếu (từ Thư viện quản trị)
-              </label>
-              <select
-                id="scope-book"
-                value={selectedBookId}
-                onChange={(e) => {
-                  setSelectedBookId(e.target.value);
-                  setSelectedChapters([]);
-                }}
-                className="glass-control w-full px-3.5 py-2.5 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
-              >
-                <option value="">
-                  {filteredBooks.length > 0
-                    ? '-- Chọn sách giáo khoa chuẩn để đối chiếu trực tiếp --'
-                    : '-- Chưa có sách được lập chỉ mục cho môn/lớp này (dùng chuẩn chương trình & Web Grounding) --'}
-                </option>
-                {filteredBooks.map((book) => (
-                  <option key={book.referenceId} value={book.referenceId}>
-                    {book.title} ({book.textbookSeries} · {book.chunkCount} đoạn kiến thức)
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {selectedBook && selectedBook.chapters.length > 0 && (
-              <div>
-                <p className="text-xs font-medium text-slate-700 dark:text-slate-200 mb-2 flex items-center gap-1.5">
-                  <BookOpen className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
-                  Chọn chương / chủ đề cần đánh giá độ đầy đủ (tùy chọn)
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {selectedBook.chapters.map((ch) => {
-                    const active = selectedChapters.includes(ch);
-                    return (
-                      <button
-                        key={ch}
-                        type="button"
-                        onClick={() =>
-                          setSelectedChapters((prev) =>
-                            prev.includes(ch) ? prev.filter((c) => c !== ch) : [...prev, ch]
-                          )
-                        }
-                        className={`px-3 py-1.5 rounded-xl text-xs font-medium cursor-pointer transition-all ${
-                          active
-                            ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
-                            : 'glass-control text-slate-700 dark:text-slate-200'
-                        }`}
-                      >
-                        {ch}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            <div>
-              <label htmlFor="scope-note" className="block text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5">
-                Phạm vi bài học / Ghi chú cụ thể
-              </label>
-              <input
-                id="scope-note"
-                type="text"
-                value={scopeNote}
-                onChange={(e) => setScopeNote(e.target.value)}
-                placeholder="Ví dụ: Chương 3 - Liên kết hóa học, Bài Liên kết hydrogen"
-                className="glass-control w-full px-3.5 py-2.5 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
-              />
-            </div>
-
-            <label className="glass-panel-subtle flex items-start gap-3 rounded-2xl p-4 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={enableWebGrounding}
-                onChange={(e) => setEnableWebGrounding(e.target.checked)}
-                className="mt-1 h-4 w-4 accent-sky-600"
-              />
-              <div className="text-xs">
-                <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC] flex items-center gap-1.5">
-                  <Globe className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
-                  Tùy chọn: Bật tìm kiếm bổ sung ngoài sách qua Google Search Grounding
-                </p>
-                <p className="text-slate-600 dark:text-slate-300 mt-0.5">
-                  Tắt mặc định để tối ưu cho Gemini API miễn phí (dùng kho sách giáo khoa & kiến thức
-                  chuẩn). Chỉ bật nếu API key của bạn hỗ trợ Google Search Grounding.
-                </p>
-              </div>
-            </label>
-
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setStep('ocr_review')}
-                className="glass-control px-4 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
-              >
-                ← Quay lại sửa OCR
-              </button>
-              <WaterRippleButton type="submit" size="lg" disabled={!aiEnabled}>
-                <CheckCircle2 className="w-4 h-4" />
-                Bắt đầu đối chiếu & chấm điểm
-              </WaterRippleButton>
-            </div>
-          </form>
         </GlassSurface>
       )}
     </div>

@@ -187,7 +187,7 @@ export class DocumentExtractionService {
           textType: (validTypes.has(b.textType) ? b.textType : 'paragraph') as ExtractedTextBlock['textType'],
           confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0.8)),
           readingOrder: bIdx + 1,
-          formulaText: b.formulaText || undefined,
+          ...(b.formulaText ? { formulaText: b.formulaText } : {}),
           boundingBox: null,
         }));
 
@@ -340,7 +340,7 @@ export class DocumentExtractionService {
         textType: (validTypes.has(b.textType) ? b.textType : 'paragraph') as ExtractedTextBlock['textType'],
         confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0.78)),
         readingOrder: bIdx + 1,
-        formulaText: b.formulaText || undefined,
+        ...(b.formulaText ? { formulaText: b.formulaText } : {}),
         boundingBox: null,
       }));
       const avgConf =
@@ -410,15 +410,20 @@ export class SubjectDetectionService {
       taskType: 'subject_classification',
       config: opts?.config,
       idToken: opts?.idToken,
-      cacheInput: { sample: sampleText.slice(0, 1500) },
+      cacheInput: { sample: sampleText.slice(0, 1500), rev: 'v3_topic_strict' },
       runWithModel: async (modelId) => {
         const response = await callWithTimeout((signal) =>
           ai.models.generateContent({
             model: modelId,
-            contents: `Phân tích ngắn gọn đoạn ghi chép sau để đề xuất lớp (10, 11 hoặc 12), môn học THPT, tiêu đề ngắn và tối đa 3 chương phù hợp:\n\n${sampleText.slice(0, 1500)}`,
+            contents: [
+              'Phân tích đoạn ghi chép học tập sau để xác định ĐÚNG lớp (10, 11 hoặc 12), môn học THPT, tiêu đề ngắn và tối đa 3 chương/chủ đề phù hợp.',
+              'LƯU Ý QUAN TRỌNG: Xác định chủ đề dựa trên KHÁI NIỆM/ĐỐI TƯỢNG CHÍNH mà tài liệu đang trình bày hoặc định nghĩa (ví dụ: nếu đoạn văn viết "Chuyển động thẳng đều là..." nhưng học sinh viết nhầm chi tiết bên trong thành "tốc độ thay đổi", chủ đề VẪN LÀ "Chuyển động thẳng đều", TUYỆT ĐỐI KHÔNG bị lỗi sai của học sinh đánh lừa sang chương khác như "Chuyển động biến đổi").',
+              '',
+              sampleText.slice(0, 1800),
+            ].join('\n'),
             config: {
-              thinkingConfig: thinkingConfigForModel(modelId, 'minimal'),
-              maxOutputTokens: 256,
+              thinkingConfig: thinkingConfigForModel(modelId, 'low'),
+              maxOutputTokens: 384,
               abortSignal: signal,
               responseMimeType: 'application/json',
               responseSchema: {
@@ -620,25 +625,44 @@ export class KnowledgeAnalysisService {
       }
     }
 
+    const hasIndexedTextbookChunks = retrievedHits.length > 0;
     const analysisPrompt = [
-      'Bạn là chuyên gia kiểm định kiến thức giáo dục THPT Việt Nam của StudyCheck AI.',
-      `Môn học: ${subjectName} | Lớp: ${grade} | Sách tham chiếu: ${textbookTitle || 'Chưa chọn sách cố định'} | Phạm vi: ${scope || selectedChapters.join(', ') || 'Chưa chỉ định phạm vi cụ thể'}`,
+      'Bạn là chuyên gia kiểm định kiến thức giáo dục THPT Việt Nam của StudyCheck AI. Hãy chấm cực kỳ chính xác, chặt chẽ, nhất quán tuyệt đối giữa trạng thái, lời giải thích và đáp án sửa chuẩn.',
+      `Môn học: ${subjectName} | Lớp: ${grade} | Sách tham chiếu: ${textbookTitle || 'Chuẩn chương trình GDPT 2018 & kiến thức khoa học phổ thông'} | Phạm vi: ${scope || selectedChapters.join(', ') || 'Theo đúng chủ đề chính trong tài liệu'}`,
       '',
-      'NGUYÊN TẮC BẮT BUỘC:',
-      '1. Chia tài liệu học sinh thành các đơn vị kiến thức (claims) có nghĩa, không cắt vụn vô nghĩa và không bỏ qua các trang giữa.',
-      '2. Đối chiếu THEO NGHĨA HỌC THUẬT (không đòi hỏi đúng từng chữ nguyên văn sách giáo khoa; kiến thức mở rộng bên ngoài đúng khoa học KHÔNG bị đánh sai).',
-      '3. Phân loại rõ:',
-      '   - CORRECT: đúng bản chất kiến thức.',
-      '   - PARTIALLY_CORRECT (Thiếu điều kiện): đúng một phần nhưng thiếu điều kiện áp dụng/phạm vi/biến số quan trọng.',
-      '   - INCORRECT: sai bản chất có căn cứ rõ ràng.',
-      '   - UNVERIFIED (Chưa xác định): chưa đủ nguồn kiểm chứng đáng tin — TUYỆT ĐỐI KHÔNG tự kết luận là sai.',
-      '   - OCR_UNCERTAIN: độ tin cậy OCR < 0.65 — không kết luận lỗi kiến thức.',
-      '   - OUT_OF_SCOPE: ngoài phạm vi chương trình đang xét.',
-      '4. Gán trọng số importanceWeight: 3 (cốt lõi), 2 (hỗ trợ), 1 (chi tiết mở rộng).',
-      '5. Với mỗi claim cần sửa, điền suggestedFix cụ thể để học sinh chép sửa lại ngay.',
-      '6. Với mỗi claim, chỉ gắn evidence từ đoạn trích sách giáo khoa hoặc nguồn web được cung cấp bên dưới. Tuyệt đối KHÔNG bịa URL hay số trang không có trong ngữ cảnh.',
-      '7. Xây dựng Knowledge Coverage Map (coverageItems) đánh giá mức độ đầy đủ (COVERED, PARTIALLY_COVERED, MISSING).',
-      '8. VIẾT NGẮN GỌN: explanation, correctKnowledge, suggestedFix, suggestedAddition, detail và description mỗi mục viết súc tích tối đa 2 câu ngắn. strengths tối đa 3 ý, weaknesses tối đa 4 ý, suggestions tối đa 3 ý, coverageItems tối đa 8 ý.',
+      'NGUỒN CĂN CỨ ĐỐI CHIẾU:',
+      hasIndexedTextbookChunks
+        ? '- Ưu tiên đối chiếu trực tiếp các đoạn trích SGK bên dưới và gắn đúng matchedChunkId, matchedPage. Với kiến thức khoa học phổ thông không xuất hiện trực tiếp trong đoạn trích nhưng thuộc chuẩn GDPT 2018, vẫn kiểm định chuẩn xác theo khoa học phổ thông.'
+        : '- Hiện chưa có đoạn trích SGK trong kho cho bài này. BẮT BUỘC dùng chuẩn kiến thức khoa học chính thống và chương trình GDPT 2018 của Bộ GD&ĐT để kiểm định dứt khoát mọi định nghĩa, định luật, công thức, tính chất và đơn vị đo. TUYỆT ĐỐI KHÔNG đánh UNVERIFIED với lỗi sai kiến thức hay sai công thức phổ thông rõ ràng (ví dụ: sai "tốc độ thay đổi" trong chuyển động thẳng đều, sai "tỉ lệ nghịch", sai phép toán "s = v + t").',
+      '',
+      'QUY TRÌNH KIỂM ĐỊNH 4 LỚP BẮT BUỘC:',
+      'LỚP 1 — TÁCH MỆNH ĐỀ & RÀ TỪNG CÂU / TỪNG VẾ:',
+      '- Tách tài liệu học sinh thành từng đơn vị kiến thức độc lập theo đúng từng câu, từng công thức và từng đoạn giải thích "Trong đó..." (không gộp nhiều lỗi khác nhau vào chung 1 claim).',
+      '- Kiểm tra kỹ mọi từ khóa mang tính bản chất: "không đổi" vs "thay đổi", "tỉ lệ thuận" vs "tỉ lệ nghịch", "tăng" vs "giảm", "cùng chiều" vs "ngược chiều", "bảo toàn" vs "không bảo toàn", điều kiện áp dụng.',
+      '- Đối chiếu theo nghĩa học thuật (không bắt bẻ cách diễn đạt tương đương nếu đúng bản chất).',
+      '',
+      'LỚP 2 — SOI TỪNG CÔNG THỨC & PHÉP TOÁN:',
+      '- Kiểm tra từng dấu phép toán (+, -, ×, ., /, ^), dấu âm/dương, hệ số, chỉ số dưới và kiểm tra thứ nguyên vật lý/toán học (ví dụ: v [m/s] không thể cộng với t [s] trong s = v + t; công thức đúng phải là s = v.t).',
+      '- Tách riêng claim cho công thức và claim cho phần chú thích "Trong đó..." đi kèm để phân biệt rõ: công thức đúng nhưng thiếu giải thích biến số khác với công thức viết sai.',
+      '',
+      'LỚP 3 — KIỂM TRA ĐỘ ĐẦY ĐỦ CHÚ THÍCH KÝ HIỆU & ĐƠN VỊ CỦA MỌI CÔNG THỨC:',
+      '- Với MỌI công thức xuất hiện trong tài liệu (ví dụ s = v.t, x = x0 + v.t, F = m.a...), liệt kê TẤT CẢ các ký hiệu/biến số có mặt trong công thức đó và đối chiếu với phần giải thích ("Trong đó...") ngay kế tiếp.',
+      '- Nếu học sinh BỎ SÓT giải thích ý nghĩa HOẶC thiếu đơn vị đo của bất kỳ ký hiệu nào (ví dụ: viết s và v nhưng không giải thích thời gian t và đơn vị giây s; hoặc viết x0 và x nhưng không giải thích vận tốc v trong phương trình chuyển động):',
+      '  + Đánh giá phần giải thích đó là PARTIALLY_CORRECT (Thiếu thông tin / Điều kiện), nêu ĐÍCH DANH ký hiệu và đơn vị còn thiếu trong explanation, và viết trọn bộ chú thích đầy đủ trong suggestedFix.',
+      '  + BẮT BUỘC thêm từng mục thiếu đó vào coverageItems với status = "MISSING" (hoặc "PARTIALLY_COVERED") và vào weaknesses để hiển thị rõ trong danh sách "Thiếu thông tin".',
+      '',
+      'LỚP 4 — TỰ KIỂM CHÉO NHẤT QUÁN TRƯỚC KHI TRẢ KẾT QUẢ:',
+      '- Phân loại trạng thái chuẩn:',
+      '  + CORRECT: hoàn toàn đúng bản chất, không thiếu ký hiệu hay điều kiện quan trọng.',
+      '  + INCORRECT: sai bản chất kiến thức, sai quan hệ, sai công thức/phép toán.',
+      '  + PARTIALLY_CORRECT: có phần đúng nhưng thiếu thông tin quan trọng (thiếu giải thích ký hiệu/đơn vị, thiếu điều kiện áp dụng, phát biểu chưa trọn vẹn).',
+      '  + UNVERIFIED: CHỈ dùng khi thông tin riêng lẻ/mơ hồ/không đủ ngữ cảnh để xác minh. KHÔNG dùng cho định nghĩa/công thức phổ thông.',
+      '  + OCR_UNCERTAIN: độ tin cậy OCR < 0.65.',
+      '  + OUT_OF_SCOPE: nội dung lạc đề hoàn toàn khỏi môn học.',
+      '- KIỂM TRA CHÉO: Nếu explanation chỉ ra học sinh viết sai → evaluationStatus BẮT BUỘC là INCORRECT. Nếu explanation chỉ ra học sinh viết thiếu ký hiệu/đơn vị/điều kiện → evaluationStatus BẮT BUỘC là PARTIALLY_CORRECT. CẤM TUYỆT ĐỐI việc giải thích 1 đằng mà chấm trạng thái 1 nẻo.',
+      '- Gán trọng số importanceWeight: 3 (cốt lõi), 2 (hỗ trợ/chú thích ký hiệu), 1 (chi tiết mở rộng).',
+      '- Tuyệt đối KHÔNG bịa URL hay số trang SGK nếu không có trong ngữ cảnh.',
+      '- Viết rõ ràng, trực diện, súc tích (mỗi explanation/correctKnowledge/suggestedFix tối đa 2-3 câu ngắn gọn đi thẳng vào điểm sai hoặc điểm thiếu; weaknesses tối đa 8 ý; coverageItems tối đa 10 ý; strengths tối đa 4 ý; suggestions tối đa 4 ý).',
       '',
       '=== TÀI LIỆU CỦA HỌC SINH ===',
       formattedStudentBlocks.slice(0, 22000),
@@ -687,6 +711,7 @@ export class KnowledgeAnalysisService {
       config,
       idToken,
       cacheInput: {
+        promptRev: 'v3_audit4layer',
         studentText: formattedStudentBlocks.slice(0, 12000),
         textbookRef: textbookReferenceId,
         grade,
@@ -695,15 +720,16 @@ export class KnowledgeAnalysisService {
         chunksDigest: retrievedHits.map((h) => h.chunk.chunkId).join(','),
       },
       runWithModel: async (modelId) => {
-        const evalResp = await callWithTimeout((signal) =>
-          ai.models.generateContent({
-            model: modelId,
-            contents: analysisPrompt,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, 'medium'),
-              maxOutputTokens: 4096,
-              abortSignal: signal,
-              responseMimeType: 'application/json',
+        const evalResp = await callWithTimeout(
+          (signal) =>
+            ai.models.generateContent({
+              model: modelId,
+              contents: analysisPrompt,
+              config: {
+                thinkingConfig: thinkingConfigForModel(modelId, 'medium'),
+                maxOutputTokens: 6144,
+                abortSignal: signal,
+                responseMimeType: 'application/json',
               responseSchema: {
                 type: Type.OBJECT,
                 properties: {
@@ -806,7 +832,8 @@ export class KnowledgeAnalysisService {
                 required: ['claims', 'coverageItems', 'strengths', 'weaknesses', 'suggestions'],
               },
             },
-          })
+          }),
+          45_000
         );
         accumulateTokens(tokensOut, evalResp);
         return JSON.parse((evalResp.text || '{}').trim()) as RawEvalResult;
@@ -867,10 +894,10 @@ export class KnowledgeAnalysisService {
       } else if (c.matchedExcerpt) {
         evidences.push({
           evidenceId: `ev_${idx + 1}_ref`,
-          sourceType: textbookReferenceId ? 'textbook' : 'web',
-          referenceId: textbookReferenceId || undefined,
-          title: textbookTitle || 'Tài liệu tham chiếu',
-          pageNumber: c.matchedPage,
+          sourceType: 'textbook',
+          ...(textbookReferenceId ? { referenceId: textbookReferenceId } : {}),
+          title: textbookTitle || 'Chuẩn chương trình GDPT 2018',
+          ...(typeof c.matchedPage === 'number' && c.matchedPage > 0 ? { pageNumber: c.matchedPage } : {}),
           excerpt: c.matchedExcerpt,
         });
       }
@@ -878,6 +905,13 @@ export class KnowledgeAnalysisService {
       if (usedWebGrounding && c.knowledgeType === 'advanced_extension' && webSources.length > 0) {
         evidences.push(webSources[0]);
       }
+
+      const resolvedSuggestedFix =
+        c.suggestedFix && c.suggestedFix.trim()
+          ? c.suggestedFix.trim()
+          : status !== 'CORRECT' && c.correctKnowledge
+          ? c.correctKnowledge
+          : null;
 
       return {
         claimId: `claim_${idx + 1}_${crypto.randomBytes(2).toString('hex')}`,
@@ -889,7 +923,7 @@ export class KnowledgeAnalysisService {
         importanceLevel: importanceWeight === 3 ? 'core' : importanceWeight === 1 ? 'detail' : 'supporting',
         importanceWeight,
         sourcePage: c.sourcePage || matchedBlock?.pageNumber || 1,
-        blockId: matchedBlock?.blockId,
+        ...(matchedBlock?.blockId ? { blockId: matchedBlock.blockId } : {}),
         boundingBox: matchedBlock?.boundingBox || null,
         ocrConfidence: ocrConf,
         knowledgeType:
@@ -901,7 +935,7 @@ export class KnowledgeAnalysisService {
         evaluationStatus: status,
         explanation: c.explanation,
         correctKnowledge: c.correctKnowledge,
-        suggestedFix: c.suggestedFix || (status !== 'CORRECT' ? c.correctKnowledge : undefined),
+        ...(resolvedSuggestedFix ? { suggestedFix: resolvedSuggestedFix } : {}),
         evidences,
       };
     });
@@ -924,12 +958,16 @@ export class KnowledgeAnalysisService {
         status: validCov,
         suggestedAddition: item.suggestedAddition,
         referenceExcerpt: item.referenceExcerpt,
-        referencePage: item.referencePage,
+        ...(typeof item.referencePage === 'number' && item.referencePage > 0
+          ? { referencePage: item.referencePage }
+          : {}),
       };
     });
 
     const hasTextbook = Boolean(textbookReferenceId && referenceChunks.length > 0);
-    const hasValidScope = Boolean(hasTextbook || selectedChapters.length > 0 || scope.trim().length > 0);
+    const hasValidScope = Boolean(
+      hasTextbook || selectedChapters.length > 0 || scope.trim().length > 0 || coverageItems.length > 0
+    );
 
     const accuracyBreakdown = calculateAccuracyScore(claims, hasTextbook);
     const completenessBreakdown = calculateCompletenessScore(coverageItems, hasValidScope);
@@ -951,14 +989,14 @@ export class KnowledgeAnalysisService {
       annotations.push({
         annotationId: `ann_${claim.claimId}`,
         pageNumber: claim.sourcePage,
-        blockId: claim.blockId,
+        ...(claim.blockId ? { blockId: claim.blockId } : {}),
         textExcerpt: claim.sourceText,
         claimId: claim.claimId,
-        referenceId: claim.evidences[0]?.referenceId,
+        ...(claim.evidences[0]?.referenceId ? { referenceId: claim.evidences[0].referenceId } : {}),
         boundingBox: claim.boundingBox || null,
         annotationColor: color,
         reason: claim.explanation,
-        evidenceId: claim.evidences[0]?.evidenceId,
+        ...(claim.evidences[0]?.evidenceId ? { evidenceId: claim.evidences[0].evidenceId } : {}),
       });
     }
 
@@ -966,7 +1004,7 @@ export class KnowledgeAnalysisService {
       title: w.title,
       category: 'knowledge_error',
       detail: w.detail,
-      pageNumber: w.pageNumber,
+      ...(typeof w.pageNumber === 'number' && w.pageNumber > 0 ? { pageNumber: w.pageNumber } : {}),
     }));
 
     const mappedSuggestions: ImprovementSuggestion[] = (rawEval.suggestions || []).map((s, idx) => ({
@@ -985,7 +1023,7 @@ export class KnowledgeAnalysisService {
       suggestions: mappedSuggestions,
       webSources,
       usedWebGrounding,
-      webGroundingNotice,
+      ...(webGroundingNotice ? { webGroundingNotice } : {}),
       modelUsed,
       accuracyScore: accuracyBreakdown.accuracyScore,
       completenessScore: completenessBreakdown.completenessScore,

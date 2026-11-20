@@ -34,7 +34,7 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
   const { user, profile, isSuperAdmin, logout, refreshProfile } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { uiMode, isEthereal, setUiMode } = useUiMode();
-  const { privacyBlur, togglePrivacyBlur } = usePrivacyBlur();
+  const { privacyBlur, canUsePrivacyBlur, togglePrivacyBlur } = usePrivacyBlur();
   const isMobile = useIsMobileViewport();
 
   const [open, setOpen] = useState(false);
@@ -83,15 +83,15 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
 
   return (
     <div ref={containerRef} className="relative flex items-center gap-1.5 sm:gap-2 shrink-0">
-      {/* When Privacy Blur is active, keep an unmistakable 1-tap restore button right in the header */}
-      {privacyBlur && (
+      {/* When Privacy Blur is active (Admin-only), keep an unmistakable 1-tap restore button right in the header */}
+      {canUsePrivacyBlur && privacyBlur && (
         <button
           type="button"
           data-privacy-exempt="true"
           onClick={togglePrivacyBlur}
           aria-pressed={true}
-          aria-label="Hiện lại chữ và nội dung trang (Alt+B)"
-          title="Đang che chữ · Bấm để hiện lại (Alt+B)"
+          aria-label="Hiện lại chữ và nội dung trang (Ctrl+H)"
+          title="Đang che chữ · Bấm để hiện lại (Ctrl+H)"
           className={`inline-flex items-center gap-1.5 min-h-[36px] sm:min-h-[38px] rounded-xl px-2.5 sm:px-3 py-1.5 text-xs font-semibold cursor-pointer shrink-0 whitespace-nowrap transition-opacity duration-150 focus-visible:outline-none focus-visible:ring-2 ${
             isEthereal
               ? 'privacy-blur-toggle-active privacy-blur-toggle-modern focus-visible:ring-indigo-500'
@@ -283,29 +283,31 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
               </span>
             </button>
 
-            <button
-              type="button"
-              role="menuitem"
-              data-privacy-exempt="true"
-              onClick={togglePrivacyBlur}
-              className={`w-full min-h-[40px] px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-medium cursor-pointer transition-colors ${
-                privacyBlur
-                  ? isEthereal
-                    ? 'privacy-blur-toggle-active privacy-blur-toggle-modern'
-                    : 'privacy-blur-toggle-active privacy-blur-toggle-classic'
-                  : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
-              }`}
-            >
-              <span className="inline-flex items-center gap-2.5">
-                {privacyBlur ? (
-                  <Eye className="size-4 shrink-0" />
-                ) : (
-                  <EyeOff className="size-4 shrink-0 text-indigo-600 dark:text-indigo-400" />
-                )}
-                <span>{privacyBlur ? 'Đang che chữ · Bấm hiện lại' : 'Che chữ khoe CSS'}</span>
-              </span>
-              <span className="text-[10px] font-mono opacity-80">Alt+B</span>
-            </button>
+            {canUsePrivacyBlur && (
+              <button
+                type="button"
+                role="menuitem"
+                data-privacy-exempt="true"
+                onClick={togglePrivacyBlur}
+                className={`w-full min-h-[40px] px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-medium cursor-pointer transition-colors ${
+                  privacyBlur
+                    ? isEthereal
+                      ? 'privacy-blur-toggle-active privacy-blur-toggle-modern'
+                      : 'privacy-blur-toggle-active privacy-blur-toggle-classic'
+                    : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <span className="inline-flex items-center gap-2.5">
+                  {privacyBlur ? (
+                    <Eye className="size-4 shrink-0" />
+                  ) : (
+                    <EyeOff className="size-4 shrink-0 text-indigo-600 dark:text-indigo-400" />
+                  )}
+                  <span>{privacyBlur ? 'Đang che chữ · Bấm hiện lại' : 'Che chữ khoe CSS (Admin)'}</span>
+                </span>
+                <span className="text-[10px] font-mono opacity-80">Ctrl+H</span>
+              </button>
+            )}
           </div>
 
           {/* Sign Out */}

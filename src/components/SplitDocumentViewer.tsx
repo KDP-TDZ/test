@@ -35,14 +35,14 @@ const COLOR_STYLES: Record<
     bg: 'bg-rose-50/90 dark:bg-rose-950/45',
     border: 'border-rose-300 dark:border-rose-700',
     ring: 'ring-rose-200 dark:ring-rose-800',
-    label: 'Sai kiến thức',
+    label: 'Sai kiến thức / Công thức',
     text: 'text-rose-800 dark:text-rose-300',
   },
   orange: {
     bg: 'bg-amber-50/90 dark:bg-amber-950/45',
     border: 'border-amber-300 dark:border-amber-700',
     ring: 'ring-amber-200 dark:ring-amber-800',
-    label: 'Thiếu điều kiện',
+    label: 'Thiếu thông tin / Điều kiện',
     text: 'text-amber-800 dark:text-amber-300',
   },
   yellow: {
@@ -254,9 +254,9 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
       {/* Color Legend */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-slate-600 dark:text-slate-300 px-1">
         <span className="font-medium text-slate-700 dark:text-slate-200">Chú giải vùng đánh dấu:</span>
-        <span className="text-rose-700 dark:text-rose-400 font-medium">Đỏ: Sai kiến thức</span>
+        <span className="text-rose-700 dark:text-rose-400 font-medium">Đỏ: Sai kiến thức / Công thức</span>
         <span className="text-sky-300 dark:text-slate-600" aria-hidden="true">·</span>
-        <span className="text-amber-700 dark:text-amber-400 font-medium">Cam: Thiếu điều kiện</span>
+        <span className="text-amber-700 dark:text-amber-400 font-medium">Cam: Thiếu thông tin / Điều kiện</span>
         <span className="text-sky-300 dark:text-slate-600" aria-hidden="true">·</span>
         <span className="text-yellow-700 dark:text-yellow-400 font-medium">Vàng: Chưa xác định / OCR chưa rõ</span>
         <span className="text-sky-300 dark:text-slate-600" aria-hidden="true">·</span>
@@ -586,9 +586,9 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                             {claim.evaluationStatus === 'CORRECT'
                               ? 'Đúng'
                               : claim.evaluationStatus === 'PARTIALLY_CORRECT'
-                              ? 'Thiếu điều kiện'
+                              ? 'Thiếu thông tin / Điều kiện'
                               : claim.evaluationStatus === 'INCORRECT'
-                              ? 'Sai'
+                              ? 'Sai kiến thức / Công thức'
                               : claim.evaluationStatus === 'OCR_UNCERTAIN'
                               ? 'OCR chưa rõ'
                               : 'Chưa xác định'}

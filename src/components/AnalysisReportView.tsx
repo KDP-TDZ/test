@@ -154,6 +154,19 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
     [analysis.claims]
   );
 
+  const errorClaimsCount = useMemo(
+    () => analysis.claims.filter((c) => c.evaluationStatus === 'INCORRECT').length,
+    [analysis.claims]
+  );
+
+  const missingInfoCount = useMemo(() => {
+    const partialClaims = analysis.claims.filter(
+      (c) => c.evaluationStatus === 'PARTIALLY_CORRECT' || c.evaluationStatus === 'MISSING'
+    ).length;
+    const missingCoverage = analysis.coverageItems.filter((i) => i.status !== 'COVERED').length;
+    return Math.max(partialClaims, missingCoverage);
+  }, [analysis.claims, analysis.coverageItems]);
+
   const handleCreateFlashcards = async () => {
     if (!user || generatingCards) return;
     setGeneratingCards(true);
@@ -381,7 +394,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
             value={analysis.accuracyScore}
             subtitle={
               acc
-                ? `${acc.counts.correct} đúng · ${acc.counts.partiallyCorrect} thiếu ĐK · ${acc.counts.incorrect} sai`
+                ? `${acc.counts.correct} đúng · ${acc.counts.incorrect} sai kiến thức/CT · ${acc.counts.partiallyCorrect} thiếu thông tin`
                 : 'Chỉ chấm trên kiến thức đã viết & kiểm chứng'
             }
             color="sky"
@@ -550,9 +563,21 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       {analysis.claims.length > 0 && (
         <GlassSurface className="report-scroll-section rounded-3xl p-4 sm:p-6 space-y-4 no-print">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
-              Gợi ý sửa nhanh & Phản hồi kết quả kiểm định ({analysis.claims.length} mệnh đề)
-            </h2>
+            <div>
+              <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                Chi tiết lỗi sai & thiếu thông tin ({analysis.claims.length} mệnh đề)
+              </h2>
+              <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] mt-0.5">
+                Phát hiện{' '}
+                <strong className="text-rose-700 dark:text-rose-400">
+                  {errorClaimsCount} lỗi sai kiến thức / công thức
+                </strong>{' '}
+                ·{' '}
+                <strong className="text-amber-700 dark:text-amber-400">
+                  {missingInfoCount} mục thiếu thông tin / giải thích ký hiệu
+                </strong>
+              </p>
+            </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
               Phát hiện AI nhận định nhầm? Bấm “Báo sai / Phản hồi” để Admin rà soát.
             </p>
@@ -584,9 +609,9 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                         {c.evaluationStatus === 'CORRECT'
                           ? 'Đúng'
                           : c.evaluationStatus === 'INCORRECT'
-                          ? 'Sai'
+                          ? 'Sai kiến thức / Công thức'
                           : c.evaluationStatus === 'PARTIALLY_CORRECT'
-                          ? 'Thiếu điều kiện'
+                          ? 'Thiếu thông tin / Điều kiện'
                           : c.evaluationStatus === 'OCR_UNCERTAIN'
                           ? 'Chữ OCR mờ'
                           : c.evaluationStatus === 'OUT_OF_SCOPE'

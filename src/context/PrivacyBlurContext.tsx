@@ -1,7 +1,9 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { useAuth } from './AuthContext';
 
 interface PrivacyBlurContextValue {
   privacyBlur: boolean;
+  canUsePrivacyBlur: boolean;
   setPrivacyBlur: (next: boolean) => void;
   togglePrivacyBlur: () => void;
 }
@@ -10,6 +12,9 @@ const PrivacyBlurContext = createContext<PrivacyBlurContextValue | undefined>(un
 const STORAGE_KEY = 'studycheck_privacy_blur';
 
 export const PrivacyBlurProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user, isSuperAdmin } = useAuth();
+  const canUsePrivacyBlur = Boolean(user && isSuperAdmin);
+
   const [privacyBlur, setPrivacyBlurState] = useState<boolean>(() => {
     try {
       return sessionStorage.getItem(STORAGE_KEY) === 'true';
@@ -19,9 +24,18 @@ export const PrivacyBlurProvider: React.FC<{ children: React.ReactNode }> = ({ c
   });
   const originalTitleRef = useRef<string | null>(null);
 
+  const effectivePrivacyBlur = canUsePrivacyBlur && privacyBlur;
+
+  // Immediately reset state & storage if user is not an authenticated Admin
+  useEffect(() => {
+    if (!canUsePrivacyBlur && privacyBlur) {
+      setPrivacyBlurState(false);
+    }
+  }, [canUsePrivacyBlur, privacyBlur]);
+
   useEffect(() => {
     const root = document.documentElement;
-    if (privacyBlur) {
+    if (effectivePrivacyBlur) {
       root.dataset.privacyBlur = 'true';
       if (originalTitleRef.current === null) {
         originalTitleRef.current = document.title;
@@ -36,31 +50,48 @@ export const PrivacyBlurProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
 
     try {
-      sessionStorage.setItem(STORAGE_KEY, privacyBlur ? 'true' : 'false');
+      if (canUsePrivacyBlur) {
+        sessionStorage.setItem(STORAGE_KEY, effectivePrivacyBlur ? 'true' : 'false');
+      } else {
+        sessionStorage.removeItem(STORAGE_KEY);
+      }
     } catch {
       // Ignore storage access errors
     }
-  }, [privacyBlur]);
+  }, [effectivePrivacyBlur, canUsePrivacyBlur]);
 
-  // Quick toggle shortcut: Alt+B
+  // Admin-exclusive quick toggle shortcut: Ctrl+H
   useEffect(() => {
+    if (!canUsePrivacyBlur) return;
+
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'b') {
+      if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'h') {
         e.preventDefault();
         setPrivacyBlurState((prev) => !prev);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [canUsePrivacyBlur]);
 
-  const setPrivacyBlur = useCallback((next: boolean) => setPrivacyBlurState(next), []);
-  const togglePrivacyBlur = useCallback(() => setPrivacyBlurState((prev) => !prev), []);
+  const setPrivacyBlur = useCallback(
+    (next: boolean) => {
+      if (!canUsePrivacyBlur) return;
+      setPrivacyBlurState(next);
+    },
+    [canUsePrivacyBlur]
+  );
+
+  const togglePrivacyBlur = useCallback(() => {
+    if (!canUsePrivacyBlur) return;
+    setPrivacyBlurState((prev) => !prev);
+  }, [canUsePrivacyBlur]);
 
   return (
     <PrivacyBlurContext.Provider
       value={{
-        privacyBlur,
+        privacyBlur: effectivePrivacyBlur,
+        canUsePrivacyBlur,
         setPrivacyBlur,
         togglePrivacyBlur,
       }}
