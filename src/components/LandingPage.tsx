@@ -19,10 +19,12 @@ import { BRAND_CONFIG } from '../config/brand';
 import { useUiMode } from '../context/UiModeContext';
 import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import heroPrismImage from '../assets/images/hero_liquid_prism_1795012421683.jpg';
+import { Carousel } from './LiquidGlass/Carousel';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { HamburgerButton, NavigationDrawer } from './LiquidGlass/NavigationDrawer';
 import { SmoothAccordion } from './LiquidGlass/SmoothAccordion';
 import { ThemeToggle } from './LiquidGlass/ThemeToggle';
+import { TypewriterText } from './LiquidGlass/TypewriterText';
 import { UiModeSwitcher } from './LiquidGlass/UiModeSwitcher';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
@@ -201,6 +203,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
   const [sourceAccordionOpen, setSourceAccordionOpen] = useState<boolean>(true);
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
   const [heroImgError, setHeroImgError] = useState(false);
+  const [activeSection, setActiveSection] = useState<string>('top');
   const landingDrawerId = 'landing-navigation-drawer';
 
   useEffect(() => {
@@ -210,6 +213,49 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
     };
     mq.addEventListener('change', handleChange);
     return () => mq.removeEventListener('change', handleChange);
+  }, []);
+
+  // Track active landing section via IntersectionObserver (never raw scrollY)
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const sectionIds = ['top', 'workflow', 'specimen', 'practice', 'faq'];
+    const elements = sectionIds
+      .map((id) => document.getElementById(id))
+      .filter((el): el is HTMLElement => Boolean(el));
+    if (elements.length === 0) return;
+
+    const visibleRatios = new Map<string, number>();
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.target.id) {
+            if (entry.isIntersecting) {
+              visibleRatios.set(entry.target.id, entry.intersectionRatio);
+            } else {
+              visibleRatios.delete(entry.target.id);
+            }
+          }
+        }
+
+        let bestId: string | null = null;
+        let bestRatio = -1;
+        for (const id of sectionIds) {
+          const ratio = visibleRatios.get(id);
+          if (ratio !== undefined && ratio > bestRatio) {
+            bestRatio = ratio;
+            bestId = id;
+          }
+        }
+        if (bestId) {
+          setActiveSection(bestId);
+        }
+      },
+      { rootMargin: '-12% 0px -40% 0px', threshold: [0.05, 0.2, 0.4] }
+    );
+
+    elements.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
   }, []);
 
   const activeSpecimen =
@@ -260,12 +306,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
     setSelectedSpecimenId(id);
   };
 
+  const navLinks = [
+    { id: 'workflow', href: '#workflow', label: 'Quy trình' },
+    { id: 'specimen', href: '#specimen', label: 'Kiểm chứng' },
+    { id: 'practice', href: '#practice', label: 'Thi & Đua Top' },
+    { id: 'faq', href: '#faq', label: 'Hỏi đáp' },
+  ] as const;
+
   return (
-    <div ref={pageRef} className="flex flex-col min-h-screen">
-      {/* Top Bar */}
+    <div ref={pageRef} className="flex flex-col min-h-dvh">
+      {/* Site Header + Semantic Navigation Bar (NameThatUI / web/header-navbar) */}
       <header className="sticky top-0 z-[45] glass-nav">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 h-16 flex items-center justify-between gap-4 sm:gap-8">
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2.5 shrink-0">
             <HamburgerButton
               buttonRef={hamburgerBtnRef}
               open={mobileNavOpen}
@@ -275,37 +328,51 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
             />
             <a
               href="#top"
-              className="font-display text-base sm:text-lg font-bold tracking-tight text-[#16243E] dark:text-[#E6EFFC] whitespace-nowrap shrink-0 transition-opacity duration-180 hover:opacity-85"
+              onClick={() => setActiveSection('top')}
+              className="font-display text-base sm:text-lg font-bold tracking-tight text-[#16243E] dark:text-[#E6EFFC] whitespace-nowrap shrink-0 transition-opacity duration-150 hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 rounded-lg px-1 -mx-1"
             >
               {BRAND_CONFIG.name}
             </a>
           </div>
 
-          <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-[#475B78] dark:text-[#B4C7E2]">
-            <a
-              href="#workflow"
-              className="nav-link-underline hover:text-[#16243E] dark:hover:text-white transition-colors duration-180 whitespace-nowrap shrink-0"
-            >
-              Quy trình
-            </a>
-            <a
-              href="#specimen"
-              className="nav-link-underline hover:text-[#16243E] dark:hover:text-white transition-colors duration-180 whitespace-nowrap shrink-0"
-            >
-              Kiểm chứng
-            </a>
-            <a
-              href="#practice"
-              className="nav-link-underline hover:text-[#16243E] dark:hover:text-white transition-colors duration-180 whitespace-nowrap shrink-0"
-            >
-              Thi & Đua Top
-            </a>
-            <a
-              href="#faq"
-              className="nav-link-underline hover:text-[#16243E] dark:hover:text-white transition-colors duration-180 whitespace-nowrap shrink-0"
-            >
-              Hỏi đáp
-            </a>
+          <nav
+            aria-label="Điều hướng chính trang chủ"
+            className="hidden md:flex items-center gap-1 lg:gap-2 text-sm font-medium text-[#475B78] dark:text-[#B4C7E2]"
+          >
+            {navLinks.map((link) => {
+              const isCurrent = activeSection === link.id;
+              return (
+                <a
+                  key={link.id}
+                  href={link.href}
+                  aria-current={isCurrent ? 'page' : undefined}
+                  onClick={() => setActiveSection(link.id)}
+                  className={`relative px-3.5 py-2 rounded-xl whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 ${
+                    isEthereal ? 'focus-visible:ring-indigo-500' : 'focus-visible:ring-sky-500'
+                  } ${
+                    isCurrent
+                      ? isEthereal
+                        ? 'text-[#312E81] dark:text-white font-semibold'
+                        : 'text-sky-700 dark:text-sky-300 font-semibold'
+                      : 'hover:text-[#16243E] dark:hover:text-white'
+                  } ${!isEthereal ? 'nav-link-underline' : ''}`}
+                >
+                  {isEthereal && isCurrent && (
+                    <motion.span
+                      layoutId="landing-navbar-active-pill"
+                      aria-hidden="true"
+                      transition={
+                        prefersReduced
+                          ? { duration: 0 }
+                          : { type: 'spring', stiffness: 520, damping: 38, mass: 0.65 }
+                      }
+                      className="absolute inset-0 rounded-xl bg-[#EEF0FF] dark:bg-indigo-500/25 border border-indigo-200/75 dark:border-indigo-400/30"
+                    />
+                  )}
+                  <span className="relative z-10">{link.label}</span>
+                </a>
+              );
+            })}
           </nav>
 
           <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
@@ -374,16 +441,24 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
         </p>
         <div className="space-y-1">
           {[
-            { href: '#workflow', label: 'Quy trình kiểm chứng' },
-            { href: '#specimen', label: 'Mẫu đối chiếu SGK' },
-            { href: '#practice', label: 'Thi thử & Đua Top' },
-            { href: '#faq', label: 'Câu hỏi thường gặp' },
+            { id: 'workflow', href: '#workflow', label: 'Quy trình kiểm chứng' },
+            { id: 'specimen', href: '#specimen', label: 'Mẫu đối chiếu SGK' },
+            { id: 'practice', href: '#practice', label: 'Thi thử & Đua Top' },
+            { id: 'faq', href: '#faq', label: 'Câu hỏi thường gặp' },
           ].map((link) => (
             <a
               key={link.href}
               href={link.href}
-              onClick={() => setMobileNavOpen(false)}
-              className="w-full min-h-[42px] flex items-center px-3 py-2 rounded-xl text-sm font-medium text-[#334155] dark:text-[#CBD5E1] hover:bg-sky-50/80 dark:hover:bg-white/10 transition-colors"
+              aria-current={activeSection === link.id ? 'page' : undefined}
+              onClick={() => {
+                setActiveSection(link.id);
+                setMobileNavOpen(false);
+              }}
+              className={`w-full min-h-[42px] flex items-center px-3 py-2 rounded-xl text-sm font-medium transition-colors ${
+                activeSection === link.id
+                  ? 'bg-indigo-500/12 dark:bg-white/12 text-[#16243E] dark:text-white font-semibold'
+                  : 'text-[#334155] dark:text-[#CBD5E1] hover:bg-sky-50/80 dark:hover:bg-white/10'
+              }`}
             >
               {link.label}
             </a>
@@ -410,10 +485,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                     : 'text-sky-700 dark:text-sky-400'
                 }`}
               >
-                Nền tảng kiểm chứng học tập THPT · Lớp 10 · 11 · 12
+                <TypewriterText
+                  text="Nền tảng kiểm chứng học tập THPT · Lớp 10 · 11 · 12"
+                  charIntervalMs={28}
+                  startDelayMs={160}
+                  caretClassName={
+                    isEthereal
+                      ? 'bg-indigo-600 dark:bg-indigo-300'
+                      : 'bg-sky-700 dark:bg-sky-400'
+                  }
+                />
               </p>
 
-              <h1 className="hero-stagger font-display text-[clamp(1.9rem,4.5vw,3.15rem)] font-bold tracking-[-0.025em] text-[#16243E] dark:text-[#E6EFFC] leading-[1.14] [text-wrap:balance]">
+              <h1 className="hero-stagger font-display text-[clamp(1.9rem,4.5vw,3.15rem)] font-bold tracking-[-0.025em] text-[#16243E] dark:text-[#E6EFFC] leading-[1.14] text-balance">
                 Đừng chỉ học thuộc.{' '}
                 <span
                   className={
@@ -427,7 +511,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                 những gì bạn học.
               </h1>
 
-              <p className="hero-stagger mt-5 text-sm sm:text-base text-[#475B78] dark:text-[#B4C7E2] leading-[1.65] prose-measure">
+              <p className="hero-stagger mt-5 text-sm sm:text-base text-[#475B78] dark:text-[#B4C7E2] leading-[1.65] prose-measure text-pretty">
                 Tải tài liệu ghi chép, ảnh chụp vở hoặc PDF lên để đối chiếu trực tiếp với sách giáo khoa chuẩn — tách rõ lỗi sai, bổ sung ý thiếu và luyện tập có mục tiêu.
               </p>
 
@@ -582,46 +666,120 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
           </div>
         </section>
 
-        {/* Workflow Section (Asymmetric 12-col editorial flow, preserved) */}
+        {/* Workflow Section: Accessible Carousel in Modern Mode, Classic 12-col Grid in Classic Mode */}
         <section id="workflow" className="mx-auto max-w-7xl px-4 sm:px-6 py-10 sm:py-16 border-t border-sky-200/50 dark:border-slate-800/80">
-          <div className="max-w-2xl mt-2 mb-6 sm:mb-10">
-            <h2 className="font-display text-[clamp(1.35rem,3.6vw,1.875rem)] font-bold text-[#16243E] dark:text-[#E6EFFC] leading-[1.25] [text-wrap:balance]">
-              Chu trình học tập khép kín từ tài liệu ghi chép đến nắm vững kiến thức
-            </h2>
-            <p className="mt-3 text-sm sm:text-base text-[#475B78] dark:text-[#B4C7E2] leading-[1.6] prose-measure">
-              Không chỉ chấm điểm, StudyCheck AI đồng hành qua từng bước kiểm chứng có dẫn chứng và ôn luyện có mục tiêu.
-            </p>
-          </div>
+          {isEthereal ? (
+            <Carousel
+              ariaLabel="Chu trình kiểm chứng kiến thức 4 bước"
+              slideClassName="w-[88%] sm:w-[62%] lg:w-[46%]"
+              headerLeft={
+                <div className="max-w-2xl">
+                  <h2 className="font-display text-[clamp(1.35rem,3.6vw,1.875rem)] font-bold text-[#171B3A] dark:text-[#EEF1FF] leading-[1.25] text-balance">
+                    Chu trình học tập khép kín từ tài liệu ghi chép đến nắm vững kiến thức
+                  </h2>
+                  <p className="mt-2.5 text-sm sm:text-base text-[#5E678E] dark:text-[#A8B4DB] leading-[1.6] prose-measure text-pretty">
+                    Lướt qua 4 bước kiểm chứng có dẫn chứng sách giáo khoa và ôn luyện có mục tiêu.
+                  </p>
+                </div>
+              }
+              slides={WORKFLOW_STEPS.map((step, idx) => {
+                const Icon = step.icon;
+                const accents = [
+                  'from-[#EEF0FF] via-[#E4E8FF] to-[#D7DCFF] dark:from-[#262C63] dark:to-[#1D2250]',
+                  'from-[#F5EDFF] via-[#ECE0FF] to-[#E2D2FF] dark:from-[#30245E] dark:to-[#221A48]',
+                  'from-[#EBF6FF] via-[#DFF0FF] to-[#D1E8FF] dark:from-[#1B3357] dark:to-[#162744]',
+                  'from-[#FFF0F4] via-[#FFE4EC] to-[#FBD6E2] dark:from-[#4C2239] dark:to-[#3A192B]',
+                ];
+                return {
+                  id: step.stage,
+                  label: step.title,
+                  content: (
+                    <GlassSurface
+                      enableRipple
+                      className="h-full rounded-[28px] p-5 sm:p-7 flex flex-col justify-between gap-5"
+                    >
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-300 tabular-nums">
+                            0{idx + 1} · {step.stage}
+                          </span>
+                          <span
+                            className={`size-11 rounded-2xl bg-gradient-to-br ${accents[idx % accents.length]} flex items-center justify-center shrink-0 border border-white/80 dark:border-white/10`}
+                          >
+                            <Icon className="size-5 text-indigo-700 dark:text-indigo-200" />
+                          </span>
+                        </div>
+                        <h3 className="font-display text-lg font-bold text-[#171B3A] dark:text-[#EEF1FF] text-balance">
+                          {step.title}
+                        </h3>
+                        <p className="text-sm text-[#586289] dark:text-[#B4C0E5] leading-[1.65] text-pretty">
+                          {step.desc}
+                        </p>
+                      </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-4 sm:gap-6">
-            {WORKFLOW_STEPS.map((step, idx) => {
-              const Icon = step.icon;
-              const colSpanClass =
-                idx === 0 || idx === 3 ? 'md:col-span-7' : 'md:col-span-5';
-              return (
-                <GlassSurface
-                  key={step.stage}
-                  enableRipple
-                  className={`${colSpanClass} rounded-3xl p-5 sm:p-6 flex flex-col justify-between`}
-                >
-                  <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="text-xs font-semibold text-sky-700 dark:text-sky-400">
-                        {step.stage}
-                      </span>
-                      <Icon className="w-5 h-5 text-sky-600 dark:text-sky-400 shrink-0" />
-                    </div>
-                    <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC] mt-1 mb-2">
-                      {step.title}
-                    </h3>
-                    <p className="text-sm text-[#475B78] dark:text-[#B4C7E2] leading-[1.6] prose-measure">
-                      {step.desc}
-                    </p>
-                  </div>
-                </GlassSurface>
-              );
-            })}
-          </div>
+                      <div className="pt-3 border-t border-indigo-100/80 dark:border-indigo-400/15 flex items-center justify-between text-xs">
+                        <a
+                          href="#specimen"
+                          className="font-semibold text-indigo-600 dark:text-indigo-300 hover:underline inline-flex items-center gap-1"
+                        >
+                          Xem mẫu đối chiếu
+                          <ArrowRight className="size-3.5" />
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => onOpenAuth('login')}
+                          className="font-medium text-[#586289] dark:text-[#A5B1D8] hover:text-[#171B3A] dark:hover:text-white cursor-pointer"
+                        >
+                          Dùng ngay
+                        </button>
+                      </div>
+                    </GlassSurface>
+                  ),
+                };
+              })}
+            />
+          ) : (
+            <>
+              <div className="max-w-2xl mt-2 mb-6 sm:mb-10">
+                <h2 className="font-display text-[clamp(1.35rem,3.6vw,1.875rem)] font-bold text-[#16243E] dark:text-[#E6EFFC] leading-[1.25] text-balance">
+                  Chu trình học tập khép kín từ tài liệu ghi chép đến nắm vững kiến thức
+                </h2>
+                <p className="mt-3 text-sm sm:text-base text-[#475B78] dark:text-[#B4C7E2] leading-[1.6] prose-measure text-pretty">
+                  Không chỉ chấm điểm, StudyCheck AI đồng hành qua từng bước kiểm chứng có dẫn chứng và ôn luyện có mục tiêu.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-4 sm:gap-6">
+                {WORKFLOW_STEPS.map((step, idx) => {
+                  const Icon = step.icon;
+                  const colSpanClass =
+                    idx === 0 || idx === 3 ? 'md:col-span-7' : 'md:col-span-5';
+                  return (
+                    <GlassSurface
+                      key={step.stage}
+                      enableRipple
+                      className={`${colSpanClass} rounded-3xl p-5 sm:p-6 flex flex-col justify-between`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-xs font-semibold text-sky-700 dark:text-sky-400">
+                            {step.stage}
+                          </span>
+                          <Icon className="size-5 text-sky-600 dark:text-sky-400 shrink-0" />
+                        </div>
+                        <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC] mt-1 mb-2">
+                          {step.title}
+                        </h3>
+                        <p className="text-sm text-[#475B78] dark:text-[#B4C7E2] leading-[1.6] prose-measure text-pretty">
+                          {step.desc}
+                        </p>
+                      </div>
+                    </GlassSurface>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </section>
 
         {/* Section 2C: Interactive Sample Analysis (Upgraded) */}

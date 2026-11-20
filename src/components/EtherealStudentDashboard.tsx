@@ -26,6 +26,7 @@ import {
 } from '../core/types';
 import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import { updateUserPreferences } from '../services/firestoreService';
+import { Carousel } from './LiquidGlass/Carousel';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
 interface EtherealStudentDashboardProps {
@@ -162,22 +163,36 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
 
   const guideCards = [
     {
+      id: 'guide-upload',
+      label: 'Kiểm định vở viết tay hoặc PDF',
       title: 'Chụp vở viết tay hoặc tải PDF để đối chiếu trực tiếp với SGK',
       actionLabel: 'Bắt đầu kiểm định',
       colorClass: 'bg-rose-500/15 text-rose-500 dark:bg-rose-500/20 dark:text-rose-300',
       onClick: () => onNavigate('upload'),
     },
     {
+      id: 'guide-flashcards',
+      label: 'Flashcard và bộ 10 câu sai',
       title: 'Ôn nhanh bằng Flashcard & bộ 10 câu sai (không tốn lượt AI)',
       actionLabel: 'Mở Flashcard',
       colorClass: 'bg-indigo-500/15 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300',
       onClick: () => onNavigate('practice', undefined, 'flashcards'),
     },
     {
+      id: 'guide-exams',
+      label: 'Thi thử đề GDPT 2018',
       title: 'Thi thử đề Giữa kỳ / Cuối kỳ GDPT 2018 và lên bảng Đua Top',
       actionLabel: 'Vào phòng thi',
       colorClass: 'bg-violet-500/15 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300',
       onClick: () => onNavigate('exams'),
+    },
+    {
+      id: 'guide-analytics',
+      label: 'Thống kê bản đồ kiến thức',
+      title: 'Theo dõi bản đồ chương học, lỗ hổng kiến thức và biểu đồ tiến bộ',
+      actionLabel: 'Xem thống kê',
+      colorClass: 'bg-sky-500/15 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300',
+      onClick: () => onNavigate('analytics'),
     },
   ];
 
@@ -228,16 +243,15 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
         </div>
       </div>
 
-      {/* Smooth Collapsible Inline Profile Editor */}
+      {/* Smooth Collapsible Inline Profile Editor (compositor-only opacity + y) */}
       <AnimatePresence initial={false}>
         {editingProfile && (
           <motion.div
             key="ethereal-profile-editor"
-            initial={prefersReduced ? { opacity: 1 } : { opacity: 0, height: 0, y: -6 }}
-            animate={{ opacity: 1, height: 'auto', y: 0 }}
-            exit={prefersReduced ? { opacity: 0 } : { opacity: 0, height: 0, y: -6 }}
-            transition={{ duration: prefersReduced ? 0 : 0.24, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden"
+            initial={prefersReduced ? { opacity: 1 } : { opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={prefersReduced ? { opacity: 0 } : { opacity: 0, y: -6 }}
+            transition={{ duration: prefersReduced ? 0 : 0.18, ease: [0.16, 1, 0.3, 1] }}
           >
             <div className="glass-surface rounded-3xl p-5 sm:p-6">
               <h2 className="font-display text-base font-bold text-[#171B3A] dark:text-[#EEF1FF] mb-4">
@@ -644,41 +658,47 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
         </div>
       </section>
 
-      {/* Section 3: Bottom 3 Quick Guides & Workflow Tips Row */}
-      <section className="ethereal-stagger space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-display text-base sm:text-lg font-bold text-[#171B3A] dark:text-[#EEF1FF]">
-            Gợi ý & Lối tắt học hiệu quả
-          </h2>
-          <span className="text-xs text-[#6B7499] dark:text-[#A5B1D8]">
-            Nhấn Ctrl + K để tìm nhanh
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {guideCards.map((card) => (
-            <button
-              key={card.title}
-              type="button"
-              onClick={card.onClick}
-              className="group text-left rounded-[22px] bg-white/95 dark:bg-[#191E43]/90 border border-white/95 dark:border-indigo-400/20 px-4 py-4 shadow-[0_12px_30px_-16px_rgba(79,70,229,0.18)] hover:-translate-y-0.5 hover:border-indigo-300/80 dark:hover:border-indigo-400/45 hover:shadow-[0_18px_36px_-14px_rgba(79,70,229,0.26)] transition-all duration-200 cursor-pointer flex items-center gap-3.5"
-            >
-              <span
-                className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-transform duration-200 group-hover:scale-105 ${card.colorClass}`}
+      {/* Section 3: Accessible Quick Guides & Workflow Carousel */}
+      <section className="ethereal-stagger">
+        <Carousel
+          ariaLabel="Gợi ý và lối tắt học hiệu quả"
+          slideClassName="w-[86%] sm:w-[48%] lg:w-[32.2%]"
+          headerLeft={
+            <div>
+              <h2 className="font-display text-base sm:text-lg font-bold text-[#171B3A] dark:text-[#EEF1FF] text-balance">
+                Gợi ý & Lối tắt học hiệu quả
+              </h2>
+              <p className="text-xs text-[#6B7499] dark:text-[#A5B1D8] mt-0.5 text-pretty">
+                Lướt ngang hoặc nhấn Ctrl + K để tìm nhanh mọi chức năng
+              </p>
+            </div>
+          }
+          slides={guideCards.map((card) => ({
+            id: card.id,
+            label: card.label,
+            content: (
+              <button
+                type="button"
+                onClick={card.onClick}
+                className="group w-full h-full text-left rounded-[22px] bg-white/95 dark:bg-[#191E43]/90 border border-white/95 dark:border-indigo-400/20 px-4 py-4 shadow-[0_12px_30px_-16px_rgba(79,70,229,0.18)] hover:-translate-y-0.5 hover:border-indigo-300/80 dark:hover:border-indigo-400/45 hover:shadow-[0_18px_36px_-14px_rgba(79,70,229,0.26)] transition-[transform,border-color,box-shadow] duration-180 ease-out cursor-pointer flex items-center gap-3.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
               >
-                <Play className="w-4 h-4 fill-current" />
-              </span>
-              <div className="min-w-0">
-                <p className="text-xs font-semibold text-[#171B3A] dark:text-[#EEF1FF] leading-snug">
-                  {card.title}
-                </p>
-                <p className="text-[11px] font-medium text-[#4F46E5] dark:text-indigo-300 mt-1">
-                  {card.actionLabel} →
-                </p>
-              </div>
-            </button>
-          ))}
-        </div>
+                <span
+                  className={`size-10 rounded-xl flex items-center justify-center shrink-0 transition-transform duration-180 group-hover:scale-105 ${card.colorClass}`}
+                >
+                  <Play className="size-4 fill-current" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-[#171B3A] dark:text-[#EEF1FF] leading-snug text-pretty">
+                    {card.title}
+                  </p>
+                  <p className="text-[11px] font-medium text-[#4F46E5] dark:text-indigo-300 mt-1">
+                    {card.actionLabel} →
+                  </p>
+                </div>
+              </button>
+            ),
+          }))}
+        />
       </section>
     </div>
   );

@@ -67,10 +67,10 @@ export const SmoothAccordion: React.FC<SmoothAccordionProps> = ({
         <motion.span
           aria-hidden="true"
           animate={{ rotate: isOpen ? 180 : 0 }}
-          transition={{ duration: prefersReduced ? 0 : 0.22, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: prefersReduced ? 0 : 0.18, ease: [0.16, 1, 0.3, 1] }}
           className="shrink-0 text-[#475B78] dark:text-[#B4C7E2] inline-flex items-center justify-center"
         >
-          <ChevronDown className="w-4 h-4" />
+          <ChevronDown className="size-4" />
         </motion.span>
       </button>
 
@@ -78,14 +78,13 @@ export const SmoothAccordion: React.FC<SmoothAccordionProps> = ({
         {isOpen && (
           <motion.div
             key="accordion-body"
-            initial={prefersReduced ? { opacity: 1 } : { height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={prefersReduced ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            initial={prefersReduced ? { opacity: 1 } : { opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={prefersReduced ? { opacity: 0 } : { opacity: 0, y: -3 }}
             transition={{
-              duration: prefersReduced ? 0 : 0.24,
+              duration: prefersReduced ? 0 : 0.18,
               ease: [0.16, 1, 0.3, 1],
             }}
-            className="overflow-hidden"
           >
             <div className={contentClassName}>{children}</div>
           </motion.div>

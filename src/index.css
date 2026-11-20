@@ -452,7 +452,8 @@ html.dark .document-paper {
   }
   .hero-float-slow,
   .ethereal-orbit-slow,
-  .ethereal-orbit-reverse {
+  .ethereal-orbit-reverse,
+  .typewriter-caret-blink {
     animation: none !important;
   }
   .glass-card-hover:hover,
@@ -463,6 +464,75 @@ html.dark .document-paper {
   * {
     scroll-behavior: auto !important;
   }
+}
+
+/* Typewriter caret (compositor-only opacity) */
+@keyframes typewriter-caret {
+  0%, 49% {
+    opacity: 0.95;
+  }
+  50%, 100% {
+    opacity: 0.15;
+  }
+}
+
+.typewriter-caret-blink {
+  animation: typewriter-caret 900ms ease-in-out infinite;
+}
+
+/* Horizontal scroll-snap carousel track with clean hidden scrollbar */
+.carousel-track {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.carousel-track::-webkit-scrollbar {
+  display: none;
+}
+
+/* Refined Liquid Glass UI Mode Switcher Track */
+.ui-switcher-track {
+  background: linear-gradient(
+    180deg,
+    rgba(226, 236, 255, 0.78) 0%,
+    rgba(241, 246, 255, 0.88) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  box-shadow:
+    inset 0 1.5px 3px rgba(30, 58, 138, 0.08),
+    0 6px 18px -10px rgba(37, 78, 145, 0.18);
+}
+
+html.dark .ui-switcher-track {
+  background: linear-gradient(
+    180deg,
+    rgba(13, 18, 42, 0.88) 0%,
+    rgba(20, 26, 56, 0.82) 100%
+  );
+  border: 1px solid rgba(165, 180, 252, 0.22);
+  box-shadow:
+    inset 0 1.5px 4px rgba(4, 6, 18, 0.55),
+    0 8px 20px -10px rgba(4, 6, 18, 0.65);
+}
+
+html[data-ui-mode="ethereal"] .ui-switcher-track {
+  background: linear-gradient(
+    180deg,
+    rgba(232, 235, 255, 0.86) 0%,
+    rgba(247, 248, 255, 0.92) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.96);
+  box-shadow:
+    inset 0 1.5px 3px rgba(79, 70, 229, 0.10),
+    0 8px 20px -10px rgba(79, 70, 229, 0.20);
+}
+
+html.dark[data-ui-mode="ethereal"] .ui-switcher-track {
+  background: linear-gradient(
+    180deg,
+    rgba(16, 20, 50, 0.90) 0%,
+    rgba(25, 30, 68, 0.84) 100%
+  );
+  border: 1px solid rgba(165, 180, 252, 0.26);
 }
 
 /* === Ethereal Youthful Liquid Glass & Bento Studio Theme (UI Mode 2) === */
@@ -595,33 +665,35 @@ html.dark .ethereal-studio-canvas {
     inset 0 1px 1px rgba(255, 255, 255, 0.12);
 }
 
-/* Floating Liquid Glass Bottom Dock */
+/* Floating macOS-inspired Liquid Glass Bottom Dock */
 .ethereal-dock {
   background: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.82) 0%,
-    rgba(241, 244, 255, 0.72) 100%
+    rgba(255, 255, 255, 0.84) 0%,
+    rgba(241, 244, 255, 0.74) 100%
   );
-  backdrop-filter: blur(26px) saturate(210%);
-  -webkit-backdrop-filter: blur(26px) saturate(210%);
-  border: 1px solid rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(22px) saturate(190%);
+  -webkit-backdrop-filter: blur(22px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.95);
   box-shadow:
-    0 20px 44px -12px rgba(79, 70, 229, 0.24),
+    0 22px 46px -12px rgba(79, 70, 229, 0.26),
     0 4px 14px -4px rgba(15, 23, 42, 0.10),
+    0 0 0 1px rgba(129, 140, 248, 0.18),
     inset 0 1.5px 1px rgba(255, 255, 255, 1),
-    inset 0 -1px 2px rgba(165, 180, 252, 0.4);
+    inset 0 -1px 2px rgba(165, 180, 252, 0.42);
 }
 
 html.dark .ethereal-dock {
   background: linear-gradient(
     135deg,
-    rgba(22, 27, 62, 0.86) 0%,
-    rgba(15, 19, 44, 0.80) 100%
+    rgba(22, 27, 62, 0.88) 0%,
+    rgba(15, 19, 44, 0.82) 100%
   );
-  border: 1px solid rgba(165, 180, 252, 0.22);
+  border: 1px solid rgba(199, 210, 254, 0.24);
   box-shadow:
-    0 22px 48px -12px rgba(2, 4, 16, 0.85),
-    inset 0 1px 1px rgba(255, 255, 255, 0.16);
+    0 24px 50px -12px rgba(2, 4, 16, 0.88),
+    0 0 0 1px rgba(129, 140, 248, 0.14),
+    inset 0 1px 1px rgba(255, 255, 255, 0.18);
 }
 
 @keyframes ethereal-orbit {

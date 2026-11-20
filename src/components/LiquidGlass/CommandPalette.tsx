@@ -96,7 +96,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       {
         key: 'toggle-ui-mode',
         group: 'Tùy chỉnh giao diện',
-        label: isEthereal ? 'Chuyển sang giao diện Cổ điển (tối giản)' : 'Chuyển sang giao diện Kì ảo (Liquid Glass)',
+        label: isEthereal
+          ? 'Chuyển sang giao diện Cổ điển (tối giản)'
+          : 'Chuyển sang giao diện Hiện đại (Liquid Glass)',
         subtitle: 'Giữ nguyên toàn bộ dữ liệu và tính năng',
         icon: Sparkles,
         run: () => {

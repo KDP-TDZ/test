@@ -283,9 +283,9 @@ const StudyCheckShell: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6">
+      <div className="min-h-dvh flex items-center justify-center p-6">
         <GlassSurface className="rounded-3xl px-8 py-7 text-center">
-          <div className="h-6 w-6 rounded-full border-2 border-sky-500 border-t-transparent animate-spin mx-auto mb-3" />
+          <div className="size-6 rounded-full border-2 border-sky-500 border-t-transparent animate-spin mx-auto mb-3" />
           <p className="text-sm font-medium text-[#16243E] dark:text-[#E6EFFC]">
             Đang khởi tạo {BRAND_CONFIG.name}...
           </p>
@@ -316,7 +316,7 @@ const StudyCheckShell: React.FC = () => {
   // Email Verification Gate (matches Firestore Rules email_verified == true requirement)
   if (!user.emailVerified) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6">
+      <div className="min-h-dvh flex items-center justify-center p-6">
         <GlassSurface className="max-w-md w-full rounded-3xl p-8 text-center space-y-4">
           <MailCheck className="w-12 h-12 text-sky-600 dark:text-sky-400 mx-auto" />
           <h1 className="font-display text-[clamp(1.25rem,3.2vw,1.5rem)] font-bold text-[#16243E] dark:text-[#E6EFFC]">
@@ -620,19 +620,19 @@ const StudyCheckShell: React.FC = () => {
     />
   );
 
-  // === ETHEREAL YOUTH LIQUID GLASS & BENTO STUDIO SHELL (UI MODE 2) ===
+  // === MODERN LIQUID GLASS & BENTO STUDIO SHELL (UI MODE 2) ===
   if (isEthereal) {
     return (
-      <div className="min-h-screen flex flex-col">
+      <div className="min-h-dvh flex flex-col">
         <MaintenanceBanner config={systemStatus} />
         {sharedDrawer}
         {sharedCommandPalette}
 
         <div className="flex-1 mx-auto w-full max-w-[1240px] px-2.5 sm:px-6 pt-3 sm:pt-6 pb-8 md:pb-28">
-          <div className="ethereal-studio-canvas rounded-[28px] sm:rounded-[34px] overflow-hidden min-h-[calc(100vh-3rem)] md:min-h-[calc(100vh-8.5rem)] flex flex-col">
-            {/* Integrated Studio Top Bar (mirrors reference floating dashboard nav) */}
-            <header className="sticky top-0 z-[40] no-print bg-white/85 dark:bg-[#14193A]/85 backdrop-blur-xl border-b border-indigo-100/80 dark:border-indigo-400/15 px-3.5 sm:px-7 h-16 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5 min-w-0">
+          <div className="ethereal-studio-canvas rounded-[28px] sm:rounded-[34px] overflow-hidden min-h-[calc(100dvh-3rem)] md:min-h-[calc(100dvh-8.5rem)] flex flex-col">
+            {/* Site Header + Semantic Navigation Bar (NameThatUI / web/header-navbar) */}
+            <header className="sticky top-0 z-[40] no-print bg-white/88 dark:bg-[#14193A]/88 backdrop-blur-xl border-b border-indigo-100/80 dark:border-indigo-400/15 px-3.5 sm:px-7 h-16 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0 shrink-0">
                 <HamburgerButton
                   buttonRef={hamburgerBtnRef}
                   open={mobileMenuOpen}
@@ -642,10 +642,10 @@ const StudyCheckShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => handleNavigate('dashboard')}
-                  className="inline-flex items-center gap-2 cursor-pointer shrink-0 group"
+                  className="inline-flex items-center gap-2 cursor-pointer shrink-0 group rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
                 >
-                  <span className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#4F46E5] via-[#6366F1] to-[#9333EA] text-white flex items-center justify-center shadow-[0_6px_16px_-4px_rgba(79,70,229,0.55)] group-hover:scale-105 transition-transform duration-180">
-                    <Sparkles className="w-4 h-4" />
+                  <span className="size-8 rounded-xl bg-gradient-to-br from-[#4F46E5] via-[#6366F1] to-[#9333EA] text-white flex items-center justify-center shadow-[0_6px_16px_-4px_rgba(79,70,229,0.55)] group-hover:scale-105 transition-transform duration-150">
+                    <Sparkles className="size-4" />
                   </span>
                   <span className="font-display text-base sm:text-lg font-bold tracking-tight text-[#4338CA] dark:text-[#C7D2FE] whitespace-nowrap">
                     {BRAND_CONFIG.name}
@@ -653,9 +653,9 @@ const StudyCheckShell: React.FC = () => {
                 </button>
               </div>
 
-              {/* Centered Pill Navigation (Desktop) */}
+              {/* Centered Pill Navigation Bar (Desktop) */}
               <nav
-                aria-label="Điều hướng nhanh"
+                aria-label="Điều hướng chính"
                 className="hidden lg:flex items-center gap-1"
               >
                 {navItems
@@ -668,8 +668,9 @@ const StudyCheckShell: React.FC = () => {
                       <button
                         key={item.id}
                         type="button"
+                        aria-current={active ? 'page' : undefined}
                         onClick={() => handleNavigate(item.id)}
-                        className={`relative px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors duration-180 cursor-pointer whitespace-nowrap ${
+                        className={`relative px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
                           active
                             ? 'text-[#312E81] dark:text-white'
                             : 'text-[#6B7499] dark:text-[#A5B1D8] hover:text-[#171B3A] dark:hover:text-white'
@@ -682,7 +683,7 @@ const StudyCheckShell: React.FC = () => {
                             transition={
                               prefersReduced
                                 ? { duration: 0 }
-                                : { type: 'spring', stiffness: 460, damping: 36, mass: 0.7 }
+                                : { type: 'spring', stiffness: 520, damping: 38, mass: 0.65 }
                             }
                             className="absolute inset-0 rounded-xl bg-[#EEF0FF] dark:bg-indigo-500/25 border border-indigo-200/70 dark:border-indigo-400/30"
                           />
@@ -700,9 +701,9 @@ const StudyCheckShell: React.FC = () => {
                   onClick={() => setCommandPaletteOpen(true)}
                   aria-label="Tìm kiếm nhanh (Ctrl+K)"
                   title="Tìm kiếm nhanh (Ctrl+K)"
-                  className="min-h-[38px] min-w-[38px] inline-flex items-center justify-center rounded-xl text-[#6B7499] dark:text-[#A5B1D8] hover:text-[#4F46E5] dark:hover:text-white hover:bg-indigo-50/90 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                  className="size-10 inline-flex items-center justify-center rounded-xl text-[#6B7499] dark:text-[#A5B1D8] hover:text-[#4F46E5] dark:hover:text-white hover:bg-indigo-50/90 dark:hover:bg-white/10 transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
                 >
-                  <Search className="w-4 h-4" />
+                  <Search className="size-4" />
                 </button>
 
                 <div className="hidden sm:block">
@@ -715,7 +716,7 @@ const StudyCheckShell: React.FC = () => {
                   title={`${profile?.displayName || user.displayName || user.email} · ${
                     isSuperAdmin ? 'Super Admin' : `Lớp ${profile?.grade || '10'}`
                   }`}
-                  className="hidden sm:flex items-center justify-center w-9 h-9 rounded-full bg-gradient-to-br from-[#6366F1] to-[#A855F7] text-white font-display text-xs font-bold shadow-[0_6px_14px_-4px_rgba(99,102,241,0.5)] select-none"
+                  className="hidden sm:flex items-center justify-center size-9 rounded-full bg-gradient-to-br from-[#6366F1] to-[#A855F7] text-white font-display text-xs font-bold shadow-[0_6px_14px_-4px_rgba(99,102,241,0.5)] select-none"
                 >
                   {userInitial}
                 </div>
@@ -725,9 +726,9 @@ const StudyCheckShell: React.FC = () => {
                   onClick={logout}
                   aria-label="Đăng xuất"
                   title="Đăng xuất"
-                  className="inline-flex items-center justify-center gap-1.5 min-h-[38px] px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold glass-control whitespace-nowrap shrink-0 cursor-pointer"
+                  className="inline-flex items-center justify-center gap-1.5 min-h-[38px] px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold glass-control whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
                 >
-                  <LogOut className="w-3.5 h-3.5" />
+                  <LogOut className="size-3.5" />
                   <span className="hidden xl:inline">Đăng xuất</span>
                 </button>
               </div>
@@ -740,7 +741,7 @@ const StudyCheckShell: React.FC = () => {
           </div>
         </div>
 
-        {/* Floating Liquid Glass Bottom Dock */}
+        {/* Floating macOS-inspired Liquid Glass Bottom Dock */}
         <FloatingDock
           items={navItems.map((item) => ({
             id: item.id,
@@ -758,7 +759,7 @@ const StudyCheckShell: React.FC = () => {
 
   // === CLASSIC ACADEMIC UI SHELL (UI MODE 1 — CLEAN & SIMPLE FOR GRADING) ===
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-dvh flex flex-col">
       {/* Authenticated Top Header */}
       <header className="sticky top-0 z-[45] glass-nav no-print">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 h-16 flex items-center justify-between gap-4 sm:gap-6">
