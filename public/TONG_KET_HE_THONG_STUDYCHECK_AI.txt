@@ -1,0 +1,130 @@
+================================================================================
+BÁO CÁO ĐÁNH GIÁ & TỔNG KẾT KỸ THUẬT HỆ THỐNG STUDYCHECK AI (v3.2)
+Nền tảng Kiểm định Vở ghi, Đề cương & Luyện thi THPT Chuẩn GDPT 2018
+================================================================================
+
+1. TỔNG QUAN KIẾN TRÚC & HIỆU NĂNG HỆ THỐNG
+--------------------------------------------------------------------------------
+- Kiến trúc Full-Stack:
+  + Frontend: React 19 + TypeScript + Vite 8 + Tailwind CSS v4.
+  + Backend / Serverless API: Express (`src/server/app.ts`) tương thích song song
+    môi trường Dev (`tsx server.ts`) và Vercel Serverless Function (`api/index.mjs`).
+  + Cơ sở dữ liệu & Xác thực: Firebase Authentication (Google + Email xác minh)
+    và Cloud Firestore với `firestore.rules` phân quyền chặt chẽ theo `uid` và
+    Super Admin (`duongvantiendat2009@gmail.com`).
+- Tối ưu hóa Bundle & Tốc độ tải (Code-Splitting v3.2):
+  + Đã tách rời các module nặng (`AnalysisReportView` kèm `pdfjs-dist`,
+    `AdminControlCenter`, `ExamCenterView`, `LeaderboardView`, `QuizWorkspace`,
+    `PracticeBankView`, `LearningAnalyticsView`, `HistoryView`) bằng `React.lazy`
+    và `<Suspense>`.
+  + Bundle khởi tạo chính (`index-*.js`) giảm từ ~2.39 MB xuống ~720 KB, giúp
+    trang chủ và bảng điều khiển học sinh phản hồi tức thì trên cả máy tính và
+    điện thoại 4G.
+  + Loại bỏ hoàn toàn cảnh báo `__dirname` của Vite 8 (`import.meta.dirname`) và
+    cảnh báo `[INEFFECTIVE_DYNAMIC_IMPORT]` của `examScoring.ts`.
+
+2. BA CHẾ ĐỘ GIAO DIỆN ĐA THIẾT BỊ (3-MODE RESPONSIVE ARCHITECTURE)
+--------------------------------------------------------------------------------
+- Chế độ 1 — Cổ điển Học thuật (Classic Academic Mode):
+  + Giao diện sáng rõ, tương phản cao, thanh điều hướng chuẩn mực phù hợp cho
+    màn hình máy tính học tập dài giờ.
+- Chế độ 2 — Hiện đại Bento & Liquid Glass (Modern Ethereal Studio Mode):
+  + Bố cục Asymmetric Bento Grid, thanh điều hướng trung tâm kết hợp Floating
+    Bottom Dock cảm hứng macOS và bảng lệnh nhanh `Ctrl+K` (Command Palette).
+- Chế độ 3 — Giao diện Điện thoại Siêu nhẹ (< 768px Native Mobile Shell):
+  + Tự động kích hoạt trên thiết bị di động với CSS phẳng chống giật lag (tắt
+    toàn bộ `backdrop-filter` nặng và WebGL), kèm thanh Bottom Tab Bar 5 nút
+    chuẩn thao tác một ngón cái (Thumb-first UX).
+- Chế độ Sáng / Tối (Light / Dark Mode):
+  + Đồng bộ toàn hệ thống, lưu trạng thái bền vững.
+
+3. TÍNH NĂNG ĐỘC QUYỀN ADMIN: CHE CHỮ KHOE CSS (`Ctrl+H`)
+--------------------------------------------------------------------------------
+- Phân quyền nghiêm ngặt:
+  + Chỉ hiển thị và cho phép bật/tắt bằng phím tắt `Ctrl+H` (hoặc trong menu
+    Avatar) khi đăng nhập bằng tài khoản Super Admin (`isSuperAdmin === true`).
+  + Tự động tắt và xóa cờ trong `sessionStorage` ngay khi đăng xuất hoặc chuyển
+    sang tài khoản học sinh thường.
+- Cơ chế hoạt động:
+  + Làm mờ nghệ thuật toàn bộ văn bản và dữ liệu cá nhân (`filter: blur(7px)`)
+    nhưng giữ nguyên 100% khung kính mờ, đổ bóng, màu sắc và hiệu ứng chuyển động
+    để trình diễn giao diện an toàn.
+
+4. QUY TRÌNH CHẤM & KIỂM ĐỊNH 1 CHẠM — 4 LỚP KIỂM ĐỊNH KHOA HỌC (v3.0)
+--------------------------------------------------------------------------------
+- Luồng tải lên 1 chạm (1-Click Grading):
+  + Học sinh chọn tệp và bấm "Bắt đầu chấm & kiểm định ngay" — hệ thống tự động
+    chạy liền mạch từ OCR -> Đối chiếu SGK -> Chấm điểm -> Mở báo cáo chi tiết
+    mà không bắt xác nhận trung gian.
+- Chọn trước Khối lớp (10 / 11 / 12) & Môn học (kèm nút "Tự động"):
+  + Khi học sinh chọn trước Khối lớp và Môn học ngay tại khung tải lên:
+    * Hệ thống tải song song (Parallel Prefetch) kho đoạn chuẩn SGK từ Firestore
+      ngay trong lúc đang OCR tài liệu.
+    * Bỏ qua bước gọi AI nhận diện phạm vi (`skipScope = true`), rút ngắn 25–40%
+      tổng thời gian chờ.
+- Bộ tiêu chí Kiểm định 4 Lớp (4-Layer Scientific & Formula Audit):
+  + Lớp 1: Kiểm định Định nghĩa, Định luật & Mệnh đề điều kiện (điều kiện cần/đủ,
+    phạm vi áp dụng, dấu vector/vô hướng).
+  + Lớp 2: Kiểm định Công thức Toán/Lý/Hóa/Sinh đến từng toán tử (`+`, `-`, `*`,
+    `/`, số mũ, hệ số, chỉ số dưới, chiều bất đẳng thức).
+  + Lớp 3: Kiểm định Giải thích Đại lượng & Đơn vị đo ("Trong đó...") — phát hiện
+    ngay lỗi đánh tráo tên đại lượng hoặc gán sai đơn vị SI (ví dụ nhầm vận tốc
+    góc omega với gia tốc góc, rad/s với m/s^2).
+  + Lớp 4: Kiểm định Tính nhất quán nội tại & Chuẩn Chương trình GDPT 2018.
+
+5. TẢI TỆP LÊN TỚI 5MB & CHỐNG CRASH API TRÊN VERCEL
+--------------------------------------------------------------------------------
+- Giới hạn tệp thông minh:
+  + Ảnh chụp vở (JPG, PNG, WEBP): hỗ trợ chọn tệp gốc lên tới 5MB/ảnh (tối đa
+    10 trang/lần).
+  + Tài liệu PDF & DOCX: giới hạn cứng 4MB/tệp để luôn nằm dưới ngưỡng cứng
+    4.5MB Request Body của Vercel Serverless Function (tránh lỗi `413`).
+- Nén ảnh thích ứng đa tầng (Adaptive Multi-Pass JPEG Compression):
+  + Tự động hạ kích thước và chất lượng qua 4 nấc (`1600px/0.82` -> `1360px/0.72`
+    -> `1120px/0.62` -> `960px/0.54`) để đưa mỗi trang ảnh về dưới ~900KB nhưng
+    vẫn giữ độ sắc nét của công thức viết tay.
+- Chia lô theo ngân sách Byte (`splitFilesIntoByteBudgetBatches`):
+  + Thay vì chỉ chia theo số lượng ảnh, hệ thống chia các trang ảnh theo tổng
+    dung lượng tối đa 2.6MB/request (và tối đa 4 trang/lô), kèm cơ chế tự động
+    thử lại (Auto-Retry) khi gặp lỗi mạng hoặc `502`/`503` tạm thời.
+
+6. BỘ ĐỊNH TUYẾN ĐA NHÀ CUNG CẤP AI MIỄN PHÍ (GEMINI FREE + GROQ FREE)
+--------------------------------------------------------------------------------
+- Danh mục 5 Model Miễn phí trong `modelRouter.ts`:
+  1. `gemini-4-hydrogen` (Google Gemini Flash Free — đa phương thức: OCR ảnh/PDF
+     và phân tích văn bản tốc độ cao).
+  2. `gemini-4-helium` (Google Gemini Lite Free — tác vụ phân loại & trích xuất
+     nhẹ, hạn mức RPM cao).
+  3. `gemini-4-neon` (Google Gemini Free mở rộng — dự phòng phân tích).
+  4. `groq:llama-3.3-70b-versatile` (Groq Cloud Free — 70 tỷ tham số, tốc độ
+     suy luận siêu nhanh cho chấm kiến thức, sinh đề trắc nghiệm & flashcard).
+  5. `groq:llama-3.1-8b-instant` (Groq Cloud Free — 8 tỷ tham số, phản hồi tức
+     thì cho phân loại môn học, thẩm định câu hỏi và gợi ý).
+- Cơ chế Dự phòng Chéo Tự động (Cross-Provider Rescue Fallback):
+  + Tác vụ OCR Ảnh/PDF: luôn khóa an toàn trên `gemini-4-hydrogen` (Multimodal).
+  + Tác vụ Văn bản & JSON (Chấm kiến thức, Sinh Quiz, Flashcard, Nhận diện môn):
+    nếu cả model chính và model dự phòng đã cấu hình gặp lỗi `429 Quota` hoặc
+    nghẽn mạng, hệ thống tự động kích hoạt bước "Cứu hộ chéo" sang Groq Free
+    (nếu có `GROQ_API_KEY`) hoặc model Gemini Free còn lại mà không làm gián
+    đoạn bài chấm của học sinh.
+
+7. HỆ SINH THÁI HỌC TẬP & QUẢN TRỊ TOÀN DIỆN
+--------------------------------------------------------------------------------
+- Báo cáo Kiểm định tương tác: đối chiếu song song tài liệu gốc (hiển thị khoanh
+  vùng tọa độ lỗi trên ảnh/PDF) với kiến thức chuẩn SGK, xuất báo cáo PDF/In ấn.
+- Ngân hàng Luyện tập & Spaced Repetition (Lặp lại ngắt quãng): tự động lưu các
+  lỗi sai thành câu hỏi ôn tập theo lịch 1 - 3 - 7 - 14 ngày, chế độ Sprint 10
+  phút và Flashcard lật 2 mặt.
+- Trung tâm Đề kiểm tra chuẩn cấu trúc mới 2025 & Bảng xếp hạng Đua Top theo
+  Khối lớp (chống cày điểm ảo bằng cơ chế chỉ cộng phần điểm cải thiện).
+- Trung tâm Quản trị (Super Admin): cấu hình Model Router trực quan, kiểm tra
+  kết nối từng model (Ping test), nạp SGK chuẩn, tạo đề thi chuẩn từ văn bản thô
+  hoặc AI, và bật/tắt thông báo bảo trì toàn hệ thống.
+
+8. HƯỚNG DẪN CẤU HÌNH BIẾN MÔI TRƯỜNG KHI DEPLOY (VERCEL / SERVER)
+--------------------------------------------------------------------------------
+- `GEMINI_API_KEY`: Khóa API Google AI Studio (bắt buộc cho OCR ảnh/PDF và
+  Gemini Free).
+- `GROQ_API_KEY`: Khóa API miễn phí từ `console.groq.com` (tùy chọn khuyến nghị
+  để kích hoạt tầng dự phòng Groq Llama 3.3 70B & Llama 3.1 8B).
+================================================================================

@@ -565,14 +565,14 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
                   <div className="divide-y divide-indigo-100/75 dark:divide-indigo-400/12">
                     {analyses.slice(0, 5).map((item) => {
                       const acc = item.accuracyScore;
-                      const accStyle =
+                      const accColor =
                         acc === null
-                          ? 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300'
+                          ? 'text-slate-400 dark:text-slate-500'
                           : acc >= 80
-                          ? 'bg-emerald-100/85 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+                          ? 'text-emerald-700 dark:text-emerald-300'
                           : acc >= 60
-                          ? 'bg-amber-100/85 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300'
-                          : 'bg-rose-100/85 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300';
+                          ? 'text-amber-700 dark:text-amber-300'
+                          : 'text-rose-700 dark:text-rose-300';
                       return (
                         <button
                           key={item.analysisId}
@@ -587,12 +587,10 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
                             {SUBJECT_LABELS[item.subject]} ·{' '}
                             {new Date(item.createdAt).toLocaleDateString('vi-VN')}
                           </span>
-                          <span className="col-span-2 flex justify-center">
-                            <span
-                              className={`font-mono text-[11px] font-semibold px-2.5 py-0.5 rounded-full tabular-nums ${accStyle}`}
-                            >
-                              {acc !== null ? `${acc}%` : '—'}
-                            </span>
+                          <span
+                            className={`col-span-2 text-center font-mono text-xs font-semibold tabular-nums ${accColor}`}
+                          >
+                            {acc !== null ? `${acc}%` : '—'}
                           </span>
                           <span className="col-span-2 text-right font-mono text-xs font-semibold text-[#171B3A] dark:text-[#EEF1FF] tabular-nums">
                             {item.completenessScore !== null ? `${item.completenessScore}%` : '—'}

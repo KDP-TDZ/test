@@ -4,6 +4,7 @@ import {
   ChevronDown,
   Eye,
   EyeOff,
+  FileText,
   LayoutGrid,
   LogOut,
   Moon,
@@ -308,6 +309,20 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
                 <span className="text-[10px] font-mono opacity-80">Ctrl+H</span>
               </button>
             )}
+
+            <a
+              href="/TONG_KET_HE_THONG_STUDYCHECK_AI.txt"
+              download="TONG_KET_HE_THONG_STUDYCHECK_AI.txt"
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className="w-full min-h-[40px] px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition-colors"
+            >
+              <span className="inline-flex items-center gap-2.5">
+                <FileText className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <span>Tải bản Tổng kết hệ thống</span>
+              </span>
+              <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">.txt</span>
+            </a>
           </div>
 
           {/* Sign Out */}

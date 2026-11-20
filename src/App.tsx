@@ -51,14 +51,31 @@ import { AuthModal } from './components/AuthModal';
 import { StudentDashboard } from './components/StudentDashboard';
 import { EtherealStudentDashboard } from './components/EtherealStudentDashboard';
 import { UploadWorkspace } from './components/UploadWorkspace';
-import { AnalysisReportView } from './components/AnalysisReportView';
-import { QuizWorkspace } from './components/QuizWorkspace';
-import { PracticeBankView } from './components/PracticeBankView';
-import { LearningAnalyticsView } from './components/LearningAnalyticsView';
-import { HistoryView } from './components/HistoryView';
-import { ExamCenterView } from './components/ExamCenterView';
-import { LeaderboardView } from './components/LeaderboardView';
-import { AdminControlCenter } from './components/AdminControlCenter';
+
+const AnalysisReportView = React.lazy(() =>
+  import('./components/AnalysisReportView').then((m) => ({ default: m.AnalysisReportView }))
+);
+const QuizWorkspace = React.lazy(() =>
+  import('./components/QuizWorkspace').then((m) => ({ default: m.QuizWorkspace }))
+);
+const PracticeBankView = React.lazy(() =>
+  import('./components/PracticeBankView').then((m) => ({ default: m.PracticeBankView }))
+);
+const LearningAnalyticsView = React.lazy(() =>
+  import('./components/LearningAnalyticsView').then((m) => ({ default: m.LearningAnalyticsView }))
+);
+const HistoryView = React.lazy(() =>
+  import('./components/HistoryView').then((m) => ({ default: m.HistoryView }))
+);
+const ExamCenterView = React.lazy(() =>
+  import('./components/ExamCenterView').then((m) => ({ default: m.ExamCenterView }))
+);
+const LeaderboardView = React.lazy(() =>
+  import('./components/LeaderboardView').then((m) => ({ default: m.LeaderboardView }))
+);
+const AdminControlCenter = React.lazy(() =>
+  import('./components/AdminControlCenter').then((m) => ({ default: m.AdminControlCenter }))
+);
 
 type AppView =
   | 'dashboard'
@@ -396,7 +413,17 @@ const StudyCheckShell: React.FC = () => {
   ).length;
 
   const renderActiveWorkspaceView = () => (
-    <TabContentFade activeKey={activeView}>
+    <React.Suspense
+      fallback={
+        <div className="py-12 flex items-center justify-center">
+          <div className="inline-flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-white/80 dark:bg-slate-900/80 border border-slate-200/80 dark:border-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300">
+            <span className="size-4 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin" />
+            <span>Đang tải không gian học tập...</span>
+          </div>
+        </div>
+      }
+    >
+      <TabContentFade activeKey={activeView}>
       {activeView === 'dashboard' &&
         (isEthereal && !isMobile ? (
           <EtherealStudentDashboard
@@ -492,7 +519,8 @@ const StudyCheckShell: React.FC = () => {
       )}
 
       {activeView === 'admin' && <AdminControlCenter />}
-    </TabContentFade>
+      </TabContentFade>
+    </React.Suspense>
   );
 
   const sharedDrawer = (

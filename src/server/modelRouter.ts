@@ -9,12 +9,31 @@ import type {
 } from '../core/types.js';
 import { resolveActiveGeminiApiKey } from './singleKeyService.js';
 import {
+  callGroqChatCompletion,
+  GROQ_RESCUE_MODEL_FAST,
+  GROQ_RESCUE_MODEL_STRONG,
+  isGroqConfigured,
+  isGroqModelId,
+} from './groqProvider.js';
+import {
   DEFAULT_TASK_MODELS,
   MODEL_CATALOG,
   type ModelCatalogItem,
 } from './modelDefaults.js';
 
 export { DEFAULT_TASK_MODELS, MODEL_CATALOG, type ModelCatalogItem };
+
+function defaultGroqRescueModelForTask(taskType: AiTaskType): string {
+  switch (taskType) {
+    case 'knowledge_analysis':
+    case 'completeness_analysis':
+    case 'quiz_generation':
+    case 'quiz_blueprint':
+      return GROQ_RESCUE_MODEL_STRONG;
+    default:
+      return GROQ_RESCUE_MODEL_FAST;
+  }
+}
 
 // Extended 6-hour bounded cache (320 entries) tuned for small 2-3 user teams re-running documents
 const aiResponseCache = new BoundedTtlCache<unknown>(320, 6 * 60 * 60 * 1000);
@@ -179,9 +198,20 @@ export async function executeRoutedAiTask<T>(params: {
   consumeOneTimeOverride?: (task: AiTaskType) => Promise<void>;
   cacheInput?: Record<string, unknown>;
   bypassCache?: boolean;
+  allowGroqRescue?: boolean;
+  groqRescueModelId?: string;
   runWithModel: (modelId: string) => Promise<T>;
 }): Promise<{ data: T; modelId: string; usedFallback: boolean; usedOverride: boolean; cached: boolean }> {
-  const { taskType, config, consumeOneTimeOverride, cacheInput, bypassCache, runWithModel } = params;
+  const {
+    taskType,
+    config,
+    consumeOneTimeOverride,
+    cacheInput,
+    bypassCache,
+    allowGroqRescue = false,
+    groqRescueModelId,
+    runWithModel,
+  } = params;
 
   let overrideConsumed = false;
   const decision = resolveModelForTask(taskType, config, () => {
@@ -282,6 +312,8 @@ export async function executeRoutedAiTask<T>(params: {
         cached: false,
       };
     } catch (primaryErr) {
+      let lastErr: unknown = primaryErr;
+
       if (canFallback) {
         try {
           const fbResult = await withExponentialBackoff(() => runWithModel(decision.fallbackModelId), 1);
@@ -309,40 +341,65 @@ export async function executeRoutedAiTask<T>(params: {
             cached: false,
           };
         } catch (fbErr) {
+          lastErr = fbErr;
+        }
+      }
+
+      // Cross-provider rescue hop: if Gemini primary + fallback both failed on a text task and GROQ_API_KEY is configured,
+      // transparently rescue via Groq Free Tier so users don't hit a dead end on Gemini 429/503!
+      const rescueModel = groqRescueModelId || defaultGroqRescueModelForTask(taskType);
+      const canGroqRescue =
+        allowGroqRescue &&
+        isGroqConfigured() &&
+        !isGroqModelId(decision.modelId) &&
+        !(canFallback && isGroqModelId(decision.fallbackModelId));
+
+      if (canGroqRescue) {
+        try {
+          const rescueResult = await withExponentialBackoff(() => runWithModel(rescueModel), 1);
+          if (cacheKey) {
+            aiResponseCache.set(cacheKey, rescueResult);
+          }
           appendExecutionLog({
             executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
             taskType,
-            modelId: decision.fallbackModelId,
+            modelId: rescueModel,
             usedFallback: true,
             usedOverride: decision.usedOverride,
             promptVersion: decision.promptVersion,
             configVersion: decision.configVersion,
-            status: 'failed',
-            error: fbErr instanceof Error ? fbErr.message.slice(0, 180) : String(fbErr).slice(0, 180),
+            status: 'success',
             durationMs: Date.now() - start,
+            cached: false,
             timestamp: new Date().toISOString(),
           });
-          throw fbErr;
+          return {
+            data: rescueResult,
+            modelId: rescueModel,
+            usedFallback: true,
+            usedOverride: decision.usedOverride,
+            cached: false,
+          };
+        } catch (rescueErr) {
+          lastErr = rescueErr;
         }
       }
 
       appendExecutionLog({
         executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
         taskType,
-        modelId: decision.modelId,
-        usedFallback: false,
+        modelId: canFallback ? decision.fallbackModelId : decision.modelId,
+        usedFallback: canFallback,
         usedOverride: decision.usedOverride,
         promptVersion: decision.promptVersion,
         configVersion: decision.configVersion,
         status: 'failed',
         error:
-          primaryErr instanceof Error
-            ? primaryErr.message.slice(0, 180)
-            : String(primaryErr).slice(0, 180),
+          lastErr instanceof Error ? lastErr.message.slice(0, 180) : String(lastErr).slice(0, 180),
         durationMs: Date.now() - start,
         timestamp: new Date().toISOString(),
       });
-      throw primaryErr;
+      throw lastErr;
     }
   };
 
@@ -374,6 +431,37 @@ export async function testModelConnectivity(modelId: string): Promise<{
 }> {
   const start = Date.now();
   try {
+    if (isGroqModelId(modelId)) {
+      if (!isGroqConfigured()) {
+        return {
+          ok: false,
+          modelId,
+          latencyMs: Date.now() - start,
+          message:
+            'Chưa thiết lập biến môi trường GROQ_API_KEY trên máy chủ (Vercel Environment Variables hoặc .env).',
+        };
+      }
+      const resp = await callWithTimeout(
+        (signal) =>
+          callGroqChatCompletion({
+            modelId,
+            prompt: 'Trả lời duy nhất 1 từ: OK',
+            maxOutputTokens: 32,
+            signal,
+          }),
+        15_000
+      );
+      const text = (resp.text || '').trim();
+      return {
+        ok: Boolean(text),
+        modelId,
+        latencyMs: Date.now() - start,
+        message: text
+          ? `Model ${modelId} (Groq Free) hoạt động bình thường (${Date.now() - start}ms).`
+          : `Model ${modelId} trả về nội dung rỗng.`,
+      };
+    }
+
     const ai = await createServerAiClient();
     const resp = await callWithTimeout((signal) =>
       ai.models.generateContent({

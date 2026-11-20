@@ -15,6 +15,11 @@ import {
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { stripUndefinedDeep } from '../core/firestoreSanitizer';
+import {
+  calculateNextReviewSchedule,
+  computeLeaderboardUpdate,
+  gradeExamSubmission,
+} from '../core/examScoring';
 import { evaluateMasteryStatus } from '../core/scoring';
 import type {
   AnalysisRecord,
@@ -722,7 +727,6 @@ export async function recordPracticeRetryWithSchedule(
   item: PracticeItem,
   isCorrect: boolean
 ): Promise<PracticeItem> {
-  const { calculateNextReviewSchedule } = await import('../core/examScoring');
   const path = `practiceItems/${item.itemId}`;
   const now = new Date().toISOString();
   const nextAttemptCount = item.attemptCount + 1;
@@ -925,7 +929,6 @@ export async function submitExamAttemptAndSyncLeaderboard(params: {
   examPoints: number;
   leaderboardEntry: import('../core/types').LeaderboardEntry;
 }> {
-  const { computeLeaderboardUpdate, gradeExamSubmission } = await import('../core/examScoring');
   const { exam, uid, displayName, grade, answers, durationSpentSeconds } = params;
   const now = new Date().toISOString();
   const graded = gradeExamSubmission(exam, answers);

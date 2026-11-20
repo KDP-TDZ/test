@@ -9,11 +9,14 @@ import {
   FileUp,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Trash2,
+  Zap,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import {
+  SUBJECT_LABELS,
   type AiJobRecord,
   type AnalysisRecord,
   type AnalysisStage,
@@ -24,6 +27,11 @@ import {
   type SubjectId,
 } from '../core/types';
 import { retrieveRelevantChunks } from '../core/retrieval';
+import {
+  getEffectiveUploadLimits,
+  splitFilesIntoByteBudgetBatches,
+  validateUploadFileSize,
+} from '../core/uploadBatching';
 import { authorizedFetch, parseApiResponse } from '../services/apiClient';
 import { compressImageFilesForUpload } from '../services/imageCompression';
 import {
@@ -84,10 +92,21 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
   const [referenceBooks, setReferenceBooks] = useState<ReferenceBook[]>([]);
   const [recentJobs, setRecentJobs] = useState<AiJobRecord[]>([]);
   const [ocrDraft, setOcrDraft] = useState<OcrDraftCache | null>(null);
+  const [selectedGrade, setSelectedGrade] = useState<GradeLevel>(profile?.grade || '10');
+  const [gradeTouched, setGradeTouched] = useState(false);
+  const [selectedSubject, setSelectedSubject] = useState<'auto' | SubjectId>('auto');
 
   const aiEnabled = systemStatus ? systemStatus.enabled : true;
   const maxFileMb = systemStatus?.rateLimitConfig?.maximumFileSizeMb || 20;
+  const uploadLimits = getEffectiveUploadLimits(maxFileMb);
   const maxPages = systemStatus?.rateLimitConfig?.maximumPagesPerAnalysis || 25;
+  const hasManualScope = selectedSubject !== 'auto';
+
+  useEffect(() => {
+    if (!gradeTouched && profile?.grade) {
+      setSelectedGrade(profile.grade);
+    }
+  }, [profile?.grade, gradeTouched]);
 
   useEffect(() => {
     listReferenceBooks(true)
@@ -229,8 +248,9 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         );
         return;
       }
-      if (f.size > maxFileMb * 1024 * 1024) {
-        setError(`File "${f.name}" vượt quá giới hạn tối đa ${maxFileMb}MB.`);
+      const sizeCheck = validateUploadFileSize(f, maxFileMb);
+      if (!sizeCheck.ok) {
+        setError(sizeCheck.error);
         return;
       }
     }
@@ -277,13 +297,18 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
 
   const runVerificationOnDraft = async (
     draft: OcrDraftCache,
-    primaryLocalFile: File | null
+    primaryLocalFile: File | null,
+    prefetchedRefPromise?: Promise<{ book: ReferenceBook | null; chunks: ReferenceChunk[] }> | null
   ) => {
     if (!user || draft.pages.length === 0) return;
 
     setActiveStage('retrieving_references');
     setProgressDetail({ current: 1, total: 3 });
-    setStatusLabel('Đang tự động tìm sách giáo khoa & chuẩn chương trình phù hợp...');
+    setStatusLabel(
+      prefetchedRefPromise
+        ? `Đang đối chiếu kho SGK Lớp ${draft.grade} · ${SUBJECT_LABELS[draft.subject]}...`
+        : 'Đang tự động tìm sách giáo khoa & chuẩn chương trình phù hợp...'
+    );
 
     const jobId = `job_an_${draft.documentId || Date.now()}`;
     const nowStart = new Date().toISOString();
@@ -301,39 +326,53 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     saveAiJobRecord(baseJob).catch(() => {});
 
     try {
-      // Automatically select the best active reference book matching detected grade & subject (zero manual dropdowns)
-      let activeBooks = referenceBooks;
-      if (activeBooks.length === 0) {
-        activeBooks = await listReferenceBooks(true).catch(() => []);
-        if (activeBooks.length > 0) setReferenceBooks(activeBooks);
+      let matchedBook: ReferenceBook | null = null;
+      let allChunks: ReferenceChunk[] = [];
+
+      if (prefetchedRefPromise) {
+        const prefetched = await prefetchedRefPromise.catch(() => ({
+          book: null as ReferenceBook | null,
+          chunks: [] as ReferenceChunk[],
+        }));
+        matchedBook = prefetched.book;
+        allChunks = prefetched.chunks;
       }
 
-      const matchedBook =
-        activeBooks.find(
-          (b) => b.status === 'active' && b.grade === draft.grade && b.subject === draft.subject
-        ) || null;
+      if (!matchedBook) {
+        let activeBooks = referenceBooks;
+        if (activeBooks.length === 0) {
+          activeBooks = await listReferenceBooks(true).catch(() => []);
+          if (activeBooks.length > 0) setReferenceBooks(activeBooks);
+        }
+
+        matchedBook =
+          activeBooks.find(
+            (b) => b.status === 'active' && b.grade === draft.grade && b.subject === draft.subject
+          ) || null;
+
+        if (matchedBook && allChunks.length === 0) {
+          allChunks = await listReferenceChunksForBook(matchedBook.referenceId).catch(() => []);
+        }
+      }
 
       let relevantChunks: ReferenceChunk[] = [];
-      if (matchedBook) {
-        const allChunks = await listReferenceChunksForBook(matchedBook.referenceId).catch(() => []);
-        if (allChunks.length > 0) {
-          const queryText = draft.pages.map((p) => p.rawText).join(' ').slice(0, 2500);
-          const retrieved = retrieveRelevantChunks(queryText, allChunks, {
-            referenceId: matchedBook.referenceId,
-            selectedChapters: draft.selectedChapters.length > 0 ? draft.selectedChapters : undefined,
-            topK: 8,
-          });
-          relevantChunks =
-            retrieved.length > 0
-              ? retrieved.map((r) => r.chunk)
-              : allChunks
-                  .filter(
-                    (c) =>
-                      draft.selectedChapters.length === 0 ||
-                      draft.selectedChapters.some((ch) => c.chapter.includes(ch))
-                  )
-                  .slice(0, 6);
-        }
+      if (matchedBook && allChunks.length > 0) {
+        const queryText = draft.pages.map((p) => p.rawText).join(' ').slice(0, 2500);
+        const retrieved = retrieveRelevantChunks(queryText, allChunks, {
+          referenceId: matchedBook.referenceId,
+          selectedChapters: draft.selectedChapters.length > 0 ? draft.selectedChapters : undefined,
+          topK: 8,
+        });
+        relevantChunks =
+          retrieved.length > 0
+            ? retrieved.map((r) => r.chunk)
+            : allChunks
+                .filter(
+                  (c) =>
+                    draft.selectedChapters.length === 0 ||
+                    draft.selectedChapters.some((ch) => c.chapter.includes(ch))
+                )
+                .slice(0, 6);
       }
 
       setActiveStage('verifying');
@@ -474,6 +513,30 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     saveAiJobRecord(baseJob).catch(() => {});
 
     try {
+      const manualSubject: SubjectId | null = selectedSubject !== 'auto' ? selectedSubject : null;
+      const manualGrade: GradeLevel = selectedGrade;
+
+      // Fast Path: when Grade + Subject are chosen upfront, prefetch SGK chunks in parallel with compression & OCR
+      const prefetchedRefPromise: Promise<{
+        book: ReferenceBook | null;
+        chunks: ReferenceChunk[];
+      }> | null = manualSubject
+        ? (async () => {
+            let activeBooks = referenceBooks;
+            if (activeBooks.length === 0) {
+              activeBooks = await listReferenceBooks(true).catch(() => []);
+              if (activeBooks.length > 0) setReferenceBooks(activeBooks);
+            }
+            const book =
+              activeBooks.find(
+                (b) => b.status === 'active' && b.grade === manualGrade && b.subject === manualSubject
+              ) || null;
+            if (!book) return { book: null, chunks: [] };
+            const chunks = await listReferenceChunksForBook(book.referenceId).catch(() => []);
+            return { book, chunks };
+          })()
+        : null;
+
       const isImageUpload = files.every((f) => f.type.startsWith('image/'));
       setProgressDetail(
         isImageUpload ? { current: 0, total: files.length } : { current: 1, total: 2 }
@@ -485,8 +548,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
           setProgressDetail({ current: curr, total });
           setStatusLabel(
             total > 1
-              ? `Đang nén ảnh trang ${curr}/${total} để xử lý nhanh hơn...`
-              : 'Đang nén ảnh để xử lý nhanh hơn...'
+              ? `Đang nén thích ứng ảnh trang ${curr}/${total} để tải lên nhanh & ổn định...`
+              : 'Đang nén thích ứng ảnh để tải lên nhanh & ổn định...'
           );
         });
       } else {
@@ -502,12 +565,21 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         const isPdf = files[0].type === 'application/pdf' || files[0].name.toLowerCase().endsWith('.pdf');
         setProgressDetail({ current: 1, total: 2 });
         setStatusLabel(
-          isPdf
+          manualSubject
+            ? isPdf
+              ? `Đang trích xuất PDF (${SUBJECT_LABELS[manualSubject]} · Lớp ${manualGrade})...`
+              : `Đang đọc tệp Word (${SUBJECT_LABELS[manualSubject]} · Lớp ${manualGrade})...`
+            : isPdf
             ? 'Đang trích xuất từng trang tệp PDF & nhận diện môn học...'
             : 'Đang đọc nội dung tệp Word (DOCX) & nhận diện môn học...'
         );
         const formData = new FormData();
         preparedFiles.forEach((f) => formData.append('files', f));
+        if (manualSubject) {
+          formData.append('skipScope', 'true');
+          formData.append('presetGrade', manualGrade);
+          formData.append('presetSubject', manualSubject);
+        }
         const res = await authorizedFetch('/api/ai/extract', {
           method: 'POST',
           body: formData,
@@ -518,26 +590,36 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         setProgressDetail({ current: 2, total: 2 });
       } else {
         const totalPages = preparedFiles.length;
-        const batchSize = totalPages <= 8 ? 1 : Math.ceil(totalPages / 8);
+        const batches = splitFilesIntoByteBudgetBatches(preparedFiles);
         let accumulatedText = '';
+        let pageCursor = 0;
 
-        for (let offset = 0; offset < totalPages; offset += batchSize) {
-          const batch = preparedFiles.slice(offset, offset + batchSize);
-          const endIdx = Math.min(offset + batch.length, totalPages);
-          const isLastBatch = endIdx >= totalPages;
+        for (let bIdx = 0; bIdx < batches.length; bIdx += 1) {
+          const batch = batches[bIdx];
+          const offset = pageCursor;
+          const endIdx = offset + batch.length;
+          const isLastBatch = bIdx === batches.length - 1;
 
           setProgressDetail({ current: offset + 1, total: totalPages });
           setStatusLabel(
             batch.length === 1
-              ? `Đang đọc OCR trang ${offset + 1}/${totalPages}...`
+              ? manualSubject
+                ? `Đang đọc OCR trang ${offset + 1}/${totalPages} (${SUBJECT_LABELS[manualSubject]} ${manualGrade})...`
+                : `Đang đọc OCR trang ${offset + 1}/${totalPages}...`
+              : manualSubject
+              ? `Đang đọc OCR trang ${offset + 1}–${endIdx}/${totalPages} (${SUBJECT_LABELS[manualSubject]} ${manualGrade})...`
               : `Đang đọc OCR trang ${offset + 1}–${endIdx}/${totalPages}...`
           );
 
           const formData = new FormData();
           batch.forEach((f) => formData.append('files', f));
           formData.append('pageOffset', String(offset));
-          formData.append('skipScope', isLastBatch ? 'false' : 'true');
-          if (isLastBatch && accumulatedText) {
+          const shouldSkipScope = Boolean(manualSubject) || !isLastBatch;
+          formData.append('skipScope', shouldSkipScope ? 'true' : 'false');
+          if (manualSubject) {
+            formData.append('presetGrade', manualGrade);
+            formData.append('presetSubject', manualSubject);
+          } else if (isLastBatch && accumulatedText) {
             formData.append('previousText', accumulatedText.slice(0, 1500));
           }
 
@@ -552,6 +634,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
           if (isLastBatch) {
             suggestion = data.scopeSuggestion || {};
           }
+          pageCursor = endIdx;
           setProgressDetail({ current: endIdx, total: totalPages });
         }
       }
@@ -562,8 +645,12 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
 
       const nextTitle =
         suggestion.suggestedTitle || files[0].name.replace(/\.[^.]+$/, '') || 'Tài liệu học tập';
-      const nextGrade: GradeLevel = suggestion.suggestedGrade || profile?.grade || '10';
-      const nextSubject: SubjectId = suggestion.suggestedSubject || 'khac';
+      const nextGrade: GradeLevel = manualSubject
+        ? manualGrade
+        : suggestion.suggestedGrade || profile?.grade || '10';
+      const nextSubject: SubjectId = manualSubject
+        ? manualSubject
+        : suggestion.suggestedSubject || 'khac';
       const nextChapters: string[] = Array.isArray(suggestion.suggestedChapters)
         ? suggestion.suggestedChapters.slice(0, 5)
         : [];
@@ -594,7 +681,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       }).catch(() => {});
 
       // Immediately continue into automatic verification & grading without any manual scope/option screen
-      await runVerificationOnDraft(readyDraft, files[0] || null);
+      await runVerificationOnDraft(readyDraft, files[0] || null, prefetchedRefPromise);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Lỗi xử lý tải lên và trích xuất.';
       setProgressDetail(null);
@@ -713,11 +800,88 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
               Tải tài liệu để kiểm định & chấm điểm ngay
             </h1>
             <p className="text-sm text-[#475B78] dark:text-[#B4C7E2] mt-1.5 leading-[1.6] prose-measure">
-              Hỗ trợ PDF, DOCX hoặc nhiều ảnh chụp trang vở (JPG, PNG, WEBP). Bấm một nút duy nhất để hệ
-              thống tự trích xuất, nhận diện môn/chủ đề và chấm điểm chuẩn xác. Giới hạn{' '}
-              <span className="font-mono font-medium">{maxFileMb}MB/file</span> · Tối đa{' '}
+              Hỗ trợ nhiều ảnh chụp trang vở (JPG, PNG, WEBP) và PDF, DOCX. Ảnh tối đa{' '}
+              <span className="font-mono font-medium">{uploadLimits.maxImageMb}MB/ảnh</span> (tự nén
+              thông minh) · PDF/DOCX tối đa{' '}
+              <span className="font-mono font-medium">{uploadLimits.maxDocumentMb}MB/file</span> · Tối đa{' '}
               <span className="font-mono font-medium">{maxPages} trang</span>.
             </p>
+          </div>
+
+          {/* Pre-Upload Grade & Subject Fast-Path Selector */}
+          <div className="glass-panel-subtle rounded-2xl p-3.5 sm:p-4 border border-sky-200/70 dark:border-slate-700/70 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                <Zap className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400 shrink-0" />
+                <span>Chọn nhanh Khối & Môn học trước khi gửi (tăng tốc tìm SGK)</span>
+              </div>
+              {hasManualScope ? (
+                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+                  Đang bật chế độ nhanh: Lớp {selectedGrade} · {SUBJECT_LABELS[selectedSubject]}
+                </span>
+              ) : (
+                <span className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">
+                  Mặc định: AI tự động nhận diện môn & khối
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2.5">
+              <div
+                className="inline-flex items-center rounded-xl bg-white/75 dark:bg-slate-900/60 border border-sky-200/70 dark:border-slate-700 p-1 shrink-0"
+                role="group"
+                aria-label="Chọn khối lớp"
+              >
+                {(['10', '11', '12'] as GradeLevel[]).map((g) => {
+                  const active = selectedGrade === g;
+                  return (
+                    <button
+                      key={g}
+                      type="button"
+                      onClick={() => {
+                        setSelectedGrade(g);
+                        setGradeTouched(true);
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-sky-600 text-white shadow-sm'
+                          : 'text-[#475B78] dark:text-[#B4C7E2] hover:text-[#16243E] dark:hover:text-white'
+                      }`}
+                    >
+                      Lớp {g}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex flex-1 items-center gap-2 min-w-0">
+                <select
+                  aria-label="Chọn môn học"
+                  value={selectedSubject}
+                  onChange={(e) => setSelectedSubject(e.target.value as 'auto' | SubjectId)}
+                  className="w-full min-h-[38px] rounded-xl border border-sky-200/80 dark:border-slate-700 bg-white/85 dark:bg-slate-900/75 px-3 py-1.5 text-xs font-medium text-[#16243E] dark:text-[#E6EFFC] focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                >
+                  <option value="auto">Tự động nhận diện môn học (AI tự phân loại)</option>
+                  {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((subj) => (
+                    <option key={subj} value={subj}>
+                      {SUBJECT_LABELS[subj]}
+                    </option>
+                  ))}
+                </select>
+
+                {hasManualScope && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSubject('auto')}
+                    className="glass-control inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] shrink-0 cursor-pointer"
+                    title="Quay lại chế độ AI tự động nhận diện"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+                    Tự động
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
 
           <div

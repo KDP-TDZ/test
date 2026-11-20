@@ -51,6 +51,7 @@ import {
   executeRoutedAiTask,
   thinkingConfigForModel,
 } from './modelRouter.js';
+import { callGroqChatCompletion, isGroqModelId } from './groqProvider.js';
 
 export interface TokenTelemetry {
   promptTokens: number;
@@ -66,12 +67,112 @@ function accumulateTokens(acc: TokenTelemetry, resp: GenerateContentResponse): v
   acc.totalTokens += meta.totalTokenCount || 0;
 }
 
+function accumulateRawTokens(
+  acc: TokenTelemetry,
+  usage: { promptTokens: number; candidateTokens: number; totalTokens: number }
+): void {
+  acc.promptTokens += usage.promptTokens || 0;
+  acc.candidateTokens += usage.candidateTokens || 0;
+  acc.totalTokens += usage.totalTokens || 0;
+}
+
+async function generateJsonWithProvider<T>(params: {
+  modelId: string;
+  prompt: string;
+  thinkingTier: 'minimal' | 'low' | 'medium';
+  maxOutputTokens: number;
+  timeoutMs?: number;
+  geminiSchema: Record<string, unknown>;
+  groqSchemaHint: string;
+  fallbackJson: string;
+  tokensOut: TokenTelemetry;
+}): Promise<T> {
+  if (isGroqModelId(params.modelId)) {
+    const resp = await callWithTimeout(
+      (signal) =>
+        callGroqChatCompletion({
+          modelId: params.modelId,
+          prompt: params.prompt,
+          jsonMode: true,
+          jsonSchemaHint: params.groqSchemaHint,
+          maxOutputTokens: params.maxOutputTokens,
+          signal,
+        }),
+      params.timeoutMs
+    );
+    accumulateRawTokens(params.tokensOut, resp);
+    return JSON.parse((resp.text || params.fallbackJson).trim()) as T;
+  }
+
+  const ai = await createServerAiClient();
+  const response = await callWithTimeout(
+    (signal) =>
+      ai.models.generateContent({
+        model: params.modelId,
+        contents: params.prompt,
+        config: {
+          thinkingConfig: thinkingConfigForModel(params.modelId, params.thinkingTier),
+          maxOutputTokens: params.maxOutputTokens,
+          abortSignal: signal,
+          responseMimeType: 'application/json',
+          responseSchema: params.geminiSchema,
+        },
+      }),
+    params.timeoutMs
+  );
+  accumulateTokens(params.tokensOut, response);
+  return JSON.parse((response.text || params.fallbackJson).trim()) as T;
+}
+
+async function generatePlainTextWithProvider(params: {
+  modelId: string;
+  prompt: string;
+  thinkingTier: 'minimal' | 'low' | 'medium';
+  maxOutputTokens: number;
+  timeoutMs?: number;
+  tokensOut: TokenTelemetry;
+}): Promise<string> {
+  if (isGroqModelId(params.modelId)) {
+    const resp = await callWithTimeout(
+      (signal) =>
+        callGroqChatCompletion({
+          modelId: params.modelId,
+          prompt: params.prompt,
+          jsonMode: false,
+          maxOutputTokens: params.maxOutputTokens,
+          signal,
+        }),
+      params.timeoutMs
+    );
+    accumulateRawTokens(params.tokensOut, resp);
+    return resp.text.trim();
+  }
+
+  const ai = await createServerAiClient();
+  const resp = await callWithTimeout(
+    (signal) =>
+      ai.models.generateContent({
+        model: params.modelId,
+        contents: params.prompt,
+        config: {
+          thinkingConfig: thinkingConfigForModel(params.modelId, params.thinkingTier),
+          maxOutputTokens: params.maxOutputTokens,
+          abortSignal: signal,
+        },
+      }),
+    params.timeoutMs
+  );
+  accumulateTokens(params.tokensOut, resp);
+  return (resp.text || '').trim();
+}
+
 async function runTaskWithRouter<T>(params: {
   taskType: AiTaskType;
   config?: SystemAiConfig;
   idToken?: string;
   cacheInput?: Record<string, unknown>;
   bypassCache?: boolean;
+  allowGroqRescue?: boolean;
   runWithModel: (modelId: string) => Promise<T>;
 }): Promise<{ data: T; modelId: string }> {
   const cfg = params.config || getAuthoritativeAiConfigSnapshot();
@@ -81,6 +182,7 @@ async function runTaskWithRouter<T>(params: {
     consumeOneTimeOverride: (task) => consumeOneTimeModelOverride(task, params.idToken),
     cacheInput: params.cacheInput,
     bypassCache: params.bypassCache,
+    allowGroqRescue: params.allowGroqRescue,
     runWithModel: params.runWithModel,
   });
   return { data: res.data, modelId: res.modelId };
@@ -115,10 +217,11 @@ export class DocumentExtractionService {
         idToken: opts?.idToken,
         cacheInput: { ocrKind: 'image', mimeType: file.mimeType, sha256: contentHash },
         runWithModel: async (modelId) => {
+          const visionModel = isGroqModelId(modelId) ? 'gemini-4-hydrogen' : modelId;
           const base64 = file.buffer.toString('base64');
           const response = await callWithTimeout((signal) =>
             ai.models.generateContent({
-              model: modelId,
+              model: visionModel,
               contents: {
                 parts: [
                   {
@@ -137,7 +240,7 @@ export class DocumentExtractionService {
                 ],
               },
               config: {
-                thinkingConfig: thinkingConfigForModel(modelId, 'minimal'),
+                thinkingConfig: thinkingConfigForModel(visionModel, 'minimal'),
                 maxOutputTokens: 2048,
                 abortSignal: signal,
                 responseMimeType: 'application/json',
@@ -261,10 +364,11 @@ export class DocumentExtractionService {
       idToken: opts?.idToken,
       cacheInput: { ocrKind: 'pdf_scan', sha256: pdfHash },
       runWithModel: async (modelId) => {
+        const visionModel = isGroqModelId(modelId) ? 'gemini-4-hydrogen' : modelId;
         const base64 = buffer.toString('base64');
         const response = await callWithTimeout((signal) =>
           ai.models.generateContent({
-            model: modelId,
+            model: visionModel,
             contents: {
               parts: [
                 {
@@ -279,7 +383,7 @@ export class DocumentExtractionService {
               ],
             },
             config: {
-              thinkingConfig: thinkingConfigForModel(modelId, 'minimal'),
+              thinkingConfig: thinkingConfigForModel(visionModel, 'minimal'),
               maxOutputTokens: 4096,
               abortSignal: signal,
               responseMimeType: 'application/json',
@@ -405,55 +509,52 @@ export class SubjectDetectionService {
     suggestedChapters: string[];
     suggestedTitle: string;
   }> {
-    const ai = await createServerAiClient();
-    const { data: parsed } = await runTaskWithRouter({
+    const scopePrompt = [
+      'Phân tích đoạn ghi chép học tập sau để xác định ĐÚNG lớp (10, 11 hoặc 12), môn học THPT, tiêu đề ngắn và tối đa 3 chương/chủ đề phù hợp.',
+      'LƯU Ý QUAN TRỌNG: Xác định chủ đề dựa trên KHÁI NIỆM/ĐỐI TƯỢNG CHÍNH mà tài liệu đang trình bày hoặc định nghĩa (ví dụ: nếu đoạn văn viết "Chuyển động thẳng đều là..." nhưng học sinh viết nhầm chi tiết bên trong thành "tốc độ thay đổi", chủ đề VẪN LÀ "Chuyển động thẳng đều", TUYỆT ĐỐI KHÔNG bị lỗi sai của học sinh đánh lừa sang chương khác như "Chuyển động biến đổi").',
+      '',
+      sampleText.slice(0, 1800),
+    ].join('\n');
+
+    const { data: parsed } = await runTaskWithRouter<{
+      suggestedGrade?: string;
+      suggestedSubject?: string;
+      suggestedChapters?: string[];
+      suggestedTitle?: string;
+    }>({
       taskType: 'subject_classification',
       config: opts?.config,
       idToken: opts?.idToken,
+      allowGroqRescue: true,
       cacheInput: { sample: sampleText.slice(0, 1500), rev: 'v3_topic_strict' },
-      runWithModel: async (modelId) => {
-        const response = await callWithTimeout((signal) =>
-          ai.models.generateContent({
-            model: modelId,
-            contents: [
-              'Phân tích đoạn ghi chép học tập sau để xác định ĐÚNG lớp (10, 11 hoặc 12), môn học THPT, tiêu đề ngắn và tối đa 3 chương/chủ đề phù hợp.',
-              'LƯU Ý QUAN TRỌNG: Xác định chủ đề dựa trên KHÁI NIỆM/ĐỐI TƯỢNG CHÍNH mà tài liệu đang trình bày hoặc định nghĩa (ví dụ: nếu đoạn văn viết "Chuyển động thẳng đều là..." nhưng học sinh viết nhầm chi tiết bên trong thành "tốc độ thay đổi", chủ đề VẪN LÀ "Chuyển động thẳng đều", TUYỆT ĐỐI KHÔNG bị lỗi sai của học sinh đánh lừa sang chương khác như "Chuyển động biến đổi").',
-              '',
-              sampleText.slice(0, 1800),
-            ].join('\n'),
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, 'low'),
-              maxOutputTokens: 384,
-              abortSignal: signal,
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  suggestedGrade: { type: Type.STRING, description: '10 | 11 | 12' },
-                  suggestedSubject: {
-                    type: Type.STRING,
-                    description:
-                      'toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac',
-                  },
-                  suggestedChapters: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                  },
-                  suggestedTitle: { type: Type.STRING },
-                },
-                required: ['suggestedGrade', 'suggestedSubject', 'suggestedChapters', 'suggestedTitle'],
+      runWithModel: async (modelId) =>
+        generateJsonWithProvider({
+          modelId,
+          prompt: scopePrompt,
+          thinkingTier: 'low',
+          maxOutputTokens: 384,
+          tokensOut,
+          fallbackJson: '{}',
+          groqSchemaHint:
+            '{"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
+          geminiSchema: {
+            type: Type.OBJECT,
+            properties: {
+              suggestedGrade: { type: Type.STRING, description: '10 | 11 | 12' },
+              suggestedSubject: {
+                type: Type.STRING,
+                description:
+                  'toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac',
               },
+              suggestedChapters: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+              suggestedTitle: { type: Type.STRING },
             },
-          })
-        );
-        accumulateTokens(tokensOut, response);
-        return JSON.parse((response.text || '{}').trim()) as {
-          suggestedGrade?: string;
-          suggestedSubject?: string;
-          suggestedChapters?: string[];
-          suggestedTitle?: string;
-        };
-      },
+            required: ['suggestedGrade', 'suggestedSubject', 'suggestedChapters', 'suggestedTitle'],
+          },
+        }),
     });
 
     const grade: GradeLevel =
@@ -520,7 +621,6 @@ export class KnowledgeAnalysisService {
       idToken,
     } = params;
 
-    const ai = await createServerAiClient();
     const subjectName = SUBJECT_LABELS[subject];
 
     const formattedStudentBlocks = pages
@@ -559,6 +659,7 @@ export class KnowledgeAnalysisService {
 
     if (enableWebGrounding === true) {
       try {
+        const ai = await createServerAiClient();
         const searchPrompt = [
           `Kiểm chứng các khái niệm nâng cao hoặc nội dung chưa có đủ trong sách giáo khoa đối với môn ${subjectName} lớp ${grade}, phạm vi: ${scope || selectedChapters.join(', ') || 'Tổng hợp'}.`,
           'Ưu tiên nguồn chính thống (Bộ GD&ĐT, NXB Giáo dục, đại học). Tóm tắt thật súc tích tối đa 6 gạch đầu dòng kiến thức chuẩn kèm trích dẫn để đối chiếu với bài ghi sau:',
@@ -571,12 +672,13 @@ export class KnowledgeAnalysisService {
           idToken,
           cacheInput: { webSearchText: fullText.slice(0, 2000), grade, subject, scope },
           runWithModel: async (modelId) => {
+            const searchModel = isGroqModelId(modelId) ? 'gemini-3.1-flash-lite' : modelId;
             const resp = await callWithTimeout((signal) =>
               ai.models.generateContent({
-                model: modelId,
+                model: searchModel,
                 contents: searchPrompt,
                 config: {
-                  thinkingConfig: thinkingConfigForModel(modelId, 'minimal'),
+                  thinkingConfig: thinkingConfigForModel(searchModel, 'minimal'),
                   maxOutputTokens: 1024,
                   abortSignal: signal,
                   tools: [{ googleSearch: {} }],
@@ -710,6 +812,7 @@ export class KnowledgeAnalysisService {
       taskType: 'knowledge_analysis',
       config,
       idToken,
+      allowGroqRescue: true,
       cacheInput: {
         promptRev: 'v3_audit4layer',
         studentText: formattedStudentBlocks.slice(0, 12000),
@@ -719,125 +822,126 @@ export class KnowledgeAnalysisService {
         scope,
         chunksDigest: retrievedHits.map((h) => h.chunk.chunkId).join(','),
       },
-      runWithModel: async (modelId) => {
-        const evalResp = await callWithTimeout(
-          (signal) =>
-            ai.models.generateContent({
-              model: modelId,
-              contents: analysisPrompt,
-              config: {
-                thinkingConfig: thinkingConfigForModel(modelId, 'medium'),
-                maxOutputTokens: 6144,
-                abortSignal: signal,
-                responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  claims: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        blockId: { type: Type.STRING },
-                        sourcePage: { type: Type.INTEGER },
-                        sourceText: { type: Type.STRING },
-                        chapter: { type: Type.STRING },
-                        concept: { type: Type.STRING },
-                        importanceWeight: { type: Type.INTEGER, description: '1 | 2 | 3' },
-                        knowledgeType: {
-                          type: Type.STRING,
-                          description: 'textbook_core | advanced_extension | insufficient_evidence',
-                        },
-                        evaluationStatus: {
-                          type: Type.STRING,
-                          description:
-                            'CORRECT | PARTIALLY_CORRECT | INCORRECT | MISSING | UNVERIFIED | AMBIGUOUS | OCR_UNCERTAIN | OUT_OF_SCOPE',
-                        },
-                        explanation: { type: Type.STRING },
-                        correctKnowledge: { type: Type.STRING },
-                        suggestedFix: { type: Type.STRING },
-                        matchedChunkId: { type: Type.STRING },
-                        matchedExcerpt: { type: Type.STRING },
-                        matchedPage: { type: Type.INTEGER },
-                      },
-                      required: [
-                        'sourcePage',
-                        'sourceText',
-                        'chapter',
-                        'concept',
-                        'importanceWeight',
-                        'evaluationStatus',
-                        'explanation',
-                        'correctKnowledge',
-                      ],
+      runWithModel: async (modelId) =>
+        generateJsonWithProvider<RawEvalResult>({
+          modelId,
+          prompt: analysisPrompt,
+          thinkingTier: 'medium',
+          maxOutputTokens: 6144,
+          timeoutMs: 45_000,
+          tokensOut,
+          fallbackJson: '{"claims":[],"coverageItems":[],"strengths":[],"weaknesses":[],"suggestions":[]}',
+          groqSchemaHint:
+            '{"claims":[{"blockId":"...","sourcePage":1,"sourceText":"...","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"..."}],"coverageItems":[{"concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}',
+          geminiSchema: {
+            type: Type.OBJECT,
+            properties: {
+              claims: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    blockId: { type: Type.STRING },
+                    sourcePage: { type: Type.INTEGER },
+                    sourceText: { type: Type.STRING },
+                    chapter: { type: Type.STRING },
+                    concept: { type: Type.STRING },
+                    importanceWeight: { type: Type.INTEGER, description: '1 | 2 | 3' },
+                    knowledgeType: {
+                      type: Type.STRING,
+                      description: 'textbook_core | advanced_extension | insufficient_evidence',
                     },
-                  },
-                  coverageItems: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        concept: { type: Type.STRING },
-                        chapter: { type: Type.STRING },
-                        importanceWeight: { type: Type.INTEGER },
-                        status: {
-                          type: Type.STRING,
-                          description: 'COVERED | PARTIALLY_COVERED | MISSING | OUT_OF_SCOPE',
-                        },
-                        suggestedAddition: { type: Type.STRING },
-                        referenceExcerpt: { type: Type.STRING },
-                        referencePage: { type: Type.INTEGER },
-                      },
-                      required: ['concept', 'chapter', 'importanceWeight', 'status', 'suggestedAddition', 'referenceExcerpt'],
+                    evaluationStatus: {
+                      type: Type.STRING,
+                      description:
+                        'CORRECT | PARTIALLY_CORRECT | INCORRECT | MISSING | UNVERIFIED | AMBIGUOUS | OCR_UNCERTAIN | OUT_OF_SCOPE',
                     },
+                    explanation: { type: Type.STRING },
+                    correctKnowledge: { type: Type.STRING },
+                    suggestedFix: { type: Type.STRING },
+                    matchedChunkId: { type: Type.STRING },
+                    matchedExcerpt: { type: Type.STRING },
+                    matchedPage: { type: Type.INTEGER },
                   },
-                  strengths: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        title: { type: Type.STRING },
-                        detail: { type: Type.STRING },
-                        sourceExcerpt: { type: Type.STRING },
-                        pageNumber: { type: Type.INTEGER },
-                      },
-                      required: ['title', 'detail', 'sourceExcerpt', 'pageNumber'],
-                    },
-                  },
-                  weaknesses: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        title: { type: Type.STRING },
-                        detail: { type: Type.STRING },
-                        pageNumber: { type: Type.INTEGER },
-                      },
-                      required: ['title', 'detail'],
-                    },
-                  },
-                  suggestions: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        priority: { type: Type.INTEGER },
-                        title: { type: Type.STRING },
-                        description: { type: Type.STRING },
-                      },
-                      required: ['priority', 'title', 'description'],
-                    },
-                  },
+                  required: [
+                    'sourcePage',
+                    'sourceText',
+                    'chapter',
+                    'concept',
+                    'importanceWeight',
+                    'evaluationStatus',
+                    'explanation',
+                    'correctKnowledge',
+                  ],
                 },
-                required: ['claims', 'coverageItems', 'strengths', 'weaknesses', 'suggestions'],
+              },
+              coverageItems: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    concept: { type: Type.STRING },
+                    chapter: { type: Type.STRING },
+                    importanceWeight: { type: Type.INTEGER },
+                    status: {
+                      type: Type.STRING,
+                      description: 'COVERED | PARTIALLY_COVERED | MISSING | OUT_OF_SCOPE',
+                    },
+                    suggestedAddition: { type: Type.STRING },
+                    referenceExcerpt: { type: Type.STRING },
+                    referencePage: { type: Type.INTEGER },
+                  },
+                  required: [
+                    'concept',
+                    'chapter',
+                    'importanceWeight',
+                    'status',
+                    'suggestedAddition',
+                    'referenceExcerpt',
+                  ],
+                },
+              },
+              strengths: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    title: { type: Type.STRING },
+                    detail: { type: Type.STRING },
+                    sourceExcerpt: { type: Type.STRING },
+                    pageNumber: { type: Type.INTEGER },
+                  },
+                  required: ['title', 'detail', 'sourceExcerpt', 'pageNumber'],
+                },
+              },
+              weaknesses: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    title: { type: Type.STRING },
+                    detail: { type: Type.STRING },
+                    pageNumber: { type: Type.INTEGER },
+                  },
+                  required: ['title', 'detail'],
+                },
+              },
+              suggestions: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    priority: { type: Type.INTEGER },
+                    title: { type: Type.STRING },
+                    description: { type: Type.STRING },
+                  },
+                  required: ['priority', 'title', 'description'],
+                },
               },
             },
-          }),
-          45_000
-        );
-        accumulateTokens(tokensOut, evalResp);
-        return JSON.parse((evalResp.text || '{}').trim()) as RawEvalResult;
-      },
+            required: ['claims', 'coverageItems', 'strengths', 'weaknesses', 'suggestions'],
+          },
+        }),
     });
 
     const blockMap = new Map<string, ExtractedTextBlock>();
@@ -1127,7 +1231,6 @@ export class QuizGenerationService {
         ? contextLines.join('\n')
         : claims.map((c) => `${c.concept}: ${c.correctKnowledge}`).join('\n');
 
-    const ai = await createServerAiClient();
     const diffLabel =
       difficulty === 'basic'
         ? 'Cơ bản (Nhận biết, Thông hiểu)'
@@ -1185,6 +1288,7 @@ export class QuizGenerationService {
       taskType: 'quiz_generation',
       config,
       idToken,
+      allowGroqRescue: true,
       cacheInput: {
         subject,
         grade,
@@ -1195,74 +1299,67 @@ export class QuizGenerationService {
         chapterFilter: chapterFilter || '',
         ctx: effectiveContext.slice(0, 8000),
       },
-      runWithModel: async (modelId) => {
-        const response = await callWithTimeout((signal) =>
-          ai.models.generateContent({
-            model: modelId,
-            contents: prompt,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, 'low'),
-              maxOutputTokens: quizMaxTokens,
-              abortSignal: signal,
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  questions: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        questionText: { type: Type.STRING },
-                        optionA: { type: Type.STRING },
-                        optionB: { type: Type.STRING },
-                        optionC: { type: Type.STRING },
-                        optionD: { type: Type.STRING },
-                        correctAnswer: { type: Type.STRING, description: 'A | B | C | D' },
-                        explanation: { type: Type.STRING },
-                        distractorA: { type: Type.STRING },
-                        distractorB: { type: Type.STRING },
-                        distractorC: { type: Type.STRING },
-                        distractorD: { type: Type.STRING },
-                        cognitiveLevel: {
-                          type: Type.STRING,
-                          description: 'nhan_biet | thong_hieu | van_dung | van_dung_cao',
-                        },
-                        knowledgeUnitType: {
-                          type: Type.STRING,
-                          description: 'concept | mechanism | condition | characteristic | formula | problem_type',
-                        },
-                        chapter: { type: Type.STRING },
-                        concept: { type: Type.STRING },
-                        sourceReference: { type: Type.STRING },
-                        isExternalAdvanced: { type: Type.BOOLEAN },
-                      },
-                      required: [
-                        'questionText',
-                        'optionA',
-                        'optionB',
-                        'optionC',
-                        'optionD',
-                        'correctAnswer',
-                        'explanation',
-                        'cognitiveLevel',
-                        'chapter',
-                        'concept',
-                        'sourceReference',
-                      ],
+      runWithModel: async (modelId) =>
+        generateJsonWithProvider<{ questions: RawQuizItem[] }>({
+          modelId,
+          prompt,
+          thinkingTier: 'low',
+          maxOutputTokens: quizMaxTokens,
+          tokensOut,
+          fallbackJson: '{"questions":[]}',
+          groqSchemaHint:
+            '{"questions":[{"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","explanation":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","chapter":"...","concept":"...","sourceReference":"..."}]}',
+          geminiSchema: {
+            type: Type.OBJECT,
+            properties: {
+              questions: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    questionText: { type: Type.STRING },
+                    optionA: { type: Type.STRING },
+                    optionB: { type: Type.STRING },
+                    optionC: { type: Type.STRING },
+                    optionD: { type: Type.STRING },
+                    correctAnswer: { type: Type.STRING, description: 'A | B | C | D' },
+                    explanation: { type: Type.STRING },
+                    distractorA: { type: Type.STRING },
+                    distractorB: { type: Type.STRING },
+                    distractorC: { type: Type.STRING },
+                    distractorD: { type: Type.STRING },
+                    cognitiveLevel: {
+                      type: Type.STRING,
+                      description: 'nhan_biet | thong_hieu | van_dung | van_dung_cao',
                     },
+                    knowledgeUnitType: {
+                      type: Type.STRING,
+                      description: 'concept | mechanism | condition | characteristic | formula | problem_type',
+                    },
+                    chapter: { type: Type.STRING },
+                    concept: { type: Type.STRING },
+                    sourceReference: { type: Type.STRING },
+                    isExternalAdvanced: { type: Type.BOOLEAN },
                   },
+                  required: [
+                    'questionText',
+                    'optionA',
+                    'optionB',
+                    'optionC',
+                    'optionD',
+                    'correctAnswer',
+                    'explanation',
+                    'cognitiveLevel',
+                    'chapter',
+                    'concept',
+                    'sourceReference',
+                  ],
                 },
-                required: ['questions'],
               },
             },
-          })
-        );
-        accumulateTokens(tokensOut, response);
-        return JSON.parse((response.text || '{"questions":[]}').trim()) as {
-          questions: RawQuizItem[];
-        };
-      },
+            required: ['questions'],
+          },
+        }),
     });
 
     const now = new Date().toISOString();
@@ -1351,7 +1448,6 @@ export class ExamPipelineService {
     config?: SystemAiConfig;
     idToken?: string;
   }): Promise<ExamBlueprint> {
-    const ai = await createServerAiClient();
     const {
       title,
       grade,
@@ -1403,6 +1499,7 @@ export class ExamPipelineService {
       taskType: 'quiz_blueprint',
       config,
       idToken,
+      allowGroqRescue: true,
       cacheInput: {
         grade,
         subject,
@@ -1414,59 +1511,54 @@ export class ExamPipelineService {
         totalScore,
         relevantDigest: relevant.slice(0, 1200),
       },
-      runWithModel: async (modelId) => {
-        const resp = await callWithTimeout((signal) =>
-          ai.models.generateContent({
-            model: modelId,
-            contents: prompt,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, 'low'),
-              maxOutputTokens: 1536,
-              abortSignal: signal,
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  rows: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        chapter: { type: Type.STRING },
-                        topic: { type: Type.STRING },
-                        cognitiveLevel: {
-                          type: Type.STRING,
-                          description: 'nhan_biet | thong_hieu | van_dung | van_dung_cao',
-                        },
-                        questionType: {
-                          type: Type.STRING,
-                          description: 'abcd | true_false | short_answer',
-                        },
-                        questionCount: { type: Type.INTEGER },
-                        scorePerQuestion: { type: Type.NUMBER },
-                        learningOutcome: { type: Type.STRING },
-                      },
-                      required: [
-                        'chapter',
-                        'topic',
-                        'cognitiveLevel',
-                        'questionType',
-                        'questionCount',
-                        'scorePerQuestion',
-                        'learningOutcome',
-                      ],
+      runWithModel: async (modelId) =>
+        generateJsonWithProvider({
+          modelId,
+          prompt,
+          thinkingTier: 'low',
+          maxOutputTokens: 1536,
+          tokensOut,
+          fallbackJson: '{"title":"","rows":[]}',
+          groqSchemaHint:
+            '{"title":"...","rows":[{"chapter":"...","topic":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","questionType":"abcd|true_false|short_answer","questionCount":2,"scorePerQuestion":0.25,"learningOutcome":"..."}]}',
+          geminiSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              rows: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    chapter: { type: Type.STRING },
+                    topic: { type: Type.STRING },
+                    cognitiveLevel: {
+                      type: Type.STRING,
+                      description: 'nhan_biet | thong_hieu | van_dung | van_dung_cao',
                     },
+                    questionType: {
+                      type: Type.STRING,
+                      description: 'abcd | true_false | short_answer',
+                    },
+                    questionCount: { type: Type.INTEGER },
+                    scorePerQuestion: { type: Type.NUMBER },
+                    learningOutcome: { type: Type.STRING },
                   },
+                  required: [
+                    'chapter',
+                    'topic',
+                    'cognitiveLevel',
+                    'questionType',
+                    'questionCount',
+                    'scorePerQuestion',
+                    'learningOutcome',
+                  ],
                 },
-                required: ['title', 'rows'],
               },
             },
-          })
-        );
-        accumulateTokens(tokensOut, resp);
-        return JSON.parse((resp.text || '{}').trim());
-      },
+            required: ['title', 'rows'],
+          },
+        }),
     });
 
     const validCogs = new Set<CognitiveLevel>(['nhan_biet', 'thong_hieu', 'van_dung', 'van_dung_cao']);
@@ -1557,7 +1649,6 @@ export class ExamPipelineService {
     config?: SystemAiConfig;
     idToken?: string;
   }): Promise<{ questions: ExamQuestion[]; validationStatus: 'passed' | 'repaired' | 'needs_review' }> {
-    const ai = await createServerAiClient();
     const { blueprint, referenceChunks, tokensOut, config, idToken } = params;
 
     const contextChunks = referenceChunks
@@ -1611,77 +1702,71 @@ export class ExamPipelineService {
       config,
       idToken,
       bypassCache: true,
-      runWithModel: async (modelId) => {
-        const resp = await callWithTimeout((signal) =>
-          ai.models.generateContent({
-            model: modelId,
-            contents: prompt,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, 'low'),
-              maxOutputTokens: 4096,
-              abortSignal: signal,
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  questions: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        chapterId: { type: Type.STRING },
-                        conceptId: { type: Type.STRING },
-                        cognitiveLevel: { type: Type.STRING },
-                        questionType: { type: Type.STRING },
-                        scoreWeight: { type: Type.NUMBER },
-                        questionText: { type: Type.STRING },
-                        optionA: { type: Type.STRING },
-                        optionB: { type: Type.STRING },
-                        optionC: { type: Type.STRING },
-                        optionD: { type: Type.STRING },
-                        correctAnswer: { type: Type.STRING },
-                        trueFalseStatements: {
-                          type: Type.ARRAY,
-                          items: {
-                            type: Type.OBJECT,
-                            properties: {
-                              label: { type: Type.STRING },
-                              text: { type: Type.STRING },
-                              isTrue: { type: Type.BOOLEAN },
-                            },
-                            required: ['label', 'text', 'isTrue'],
-                          },
+      allowGroqRescue: true,
+      runWithModel: async (modelId) =>
+        generateJsonWithProvider<{ questions: RawExamQuestion[] }>({
+          modelId,
+          prompt,
+          thinkingTier: 'low',
+          maxOutputTokens: 4096,
+          tokensOut,
+          fallbackJson: '{"questions":[]}',
+          groqSchemaHint:
+            '{"questions":[{"chapterId":"...","conceptId":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","questionType":"abcd|true_false|short_answer","scoreWeight":0.25,"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","trueFalseStatements":[{"label":"a","text":"...","isTrue":true}],"shortAnswerAccepted":["..."],"explanation":"...","sourceReference":"..."}]}',
+          geminiSchema: {
+            type: Type.OBJECT,
+            properties: {
+              questions: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    chapterId: { type: Type.STRING },
+                    conceptId: { type: Type.STRING },
+                    cognitiveLevel: { type: Type.STRING },
+                    questionType: { type: Type.STRING },
+                    scoreWeight: { type: Type.NUMBER },
+                    questionText: { type: Type.STRING },
+                    optionA: { type: Type.STRING },
+                    optionB: { type: Type.STRING },
+                    optionC: { type: Type.STRING },
+                    optionD: { type: Type.STRING },
+                    correctAnswer: { type: Type.STRING },
+                    trueFalseStatements: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          label: { type: Type.STRING },
+                          text: { type: Type.STRING },
+                          isTrue: { type: Type.BOOLEAN },
                         },
-                        shortAnswerAccepted: {
-                          type: Type.ARRAY,
-                          items: { type: Type.STRING },
-                        },
-                        explanation: { type: Type.STRING },
-                        sourceReference: { type: Type.STRING },
+                        required: ['label', 'text', 'isTrue'],
                       },
-                      required: [
-                        'chapterId',
-                        'conceptId',
-                        'cognitiveLevel',
-                        'questionType',
-                        'scoreWeight',
-                        'questionText',
-                        'explanation',
-                        'sourceReference',
-                      ],
                     },
+                    shortAnswerAccepted: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                    explanation: { type: Type.STRING },
+                    sourceReference: { type: Type.STRING },
                   },
+                  required: [
+                    'chapterId',
+                    'conceptId',
+                    'cognitiveLevel',
+                    'questionType',
+                    'scoreWeight',
+                    'questionText',
+                    'explanation',
+                    'sourceReference',
+                  ],
                 },
-                required: ['questions'],
               },
             },
-          })
-        );
-        accumulateTokens(tokensOut, resp);
-        return JSON.parse((resp.text || '{"questions":[]}').trim()) as {
-          questions: RawExamQuestion[];
-        };
-      },
+            required: ['questions'],
+          },
+        }),
     });
 
     const validCogs = new Set<CognitiveLevel>(['nhan_biet', 'thong_hieu', 'van_dung', 'van_dung_cao']);
@@ -1761,7 +1846,6 @@ export class ExamPipelineService {
     config?: SystemAiConfig;
     idToken?: string;
   }): Promise<ExamQuestion> {
-    const ai = await createServerAiClient();
     const { question, instruction, grade, subject, textbookSeries, tokensOut, config, idToken } = params;
 
     const prompt = [
@@ -1776,37 +1860,33 @@ export class ExamPipelineService {
       config,
       idToken,
       bypassCache: true,
-      runWithModel: async (modelId) => {
-        const resp = await callWithTimeout((signal) =>
-          ai.models.generateContent({
-            model: modelId,
-            contents: prompt,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, 'minimal'),
-              maxOutputTokens: 768,
-              abortSignal: signal,
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  questionText: { type: Type.STRING },
-                  optionA: { type: Type.STRING },
-                  optionB: { type: Type.STRING },
-                  optionC: { type: Type.STRING },
-                  optionD: { type: Type.STRING },
-                  correctAnswer: { type: Type.STRING },
-                  shortAnswerAccepted: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  explanation: { type: Type.STRING },
-                  sourceReference: { type: Type.STRING },
-                },
-                required: ['questionText', 'explanation'],
-              },
+      allowGroqRescue: true,
+      runWithModel: async (modelId) =>
+        generateJsonWithProvider<Partial<ExamQuestion>>({
+          modelId,
+          prompt,
+          thinkingTier: 'minimal',
+          maxOutputTokens: 768,
+          tokensOut,
+          fallbackJson: '{}',
+          groqSchemaHint:
+            '{"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","shortAnswerAccepted":["..."],"explanation":"...","sourceReference":"..."}',
+          geminiSchema: {
+            type: Type.OBJECT,
+            properties: {
+              questionText: { type: Type.STRING },
+              optionA: { type: Type.STRING },
+              optionB: { type: Type.STRING },
+              optionC: { type: Type.STRING },
+              optionD: { type: Type.STRING },
+              correctAnswer: { type: Type.STRING },
+              shortAnswerAccepted: { type: Type.ARRAY, items: { type: Type.STRING } },
+              explanation: { type: Type.STRING },
+              sourceReference: { type: Type.STRING },
             },
-          })
-        );
-        accumulateTokens(tokensOut, resp);
-        return JSON.parse((resp.text || '{}').trim()) as Partial<ExamQuestion>;
-      },
+            required: ['questionText', 'explanation'],
+          },
+        }),
     });
 
     return {
@@ -1975,16 +2055,18 @@ export class ExamPipelineService {
       idToken,
       bypassCache: true,
       runWithModel: async (modelId) => {
+        const safeModel =
+          inlineParts.length > 0 && isGroqModelId(modelId) ? 'gemini-4-hydrogen' : modelId;
         const contents =
           inlineParts.length > 0
             ? { parts: [...inlineParts, { text: promptText }] }
             : promptText;
         const resp = await callWithTimeout((signal) =>
           ai.models.generateContent({
-            model: modelId,
+            model: safeModel,
             contents,
             config: {
-              thinkingConfig: thinkingConfigForModel(modelId, 'minimal'),
+              thinkingConfig: thinkingConfigForModel(safeModel, 'minimal'),
               maxOutputTokens: 6144,
               abortSignal: signal,
               responseMimeType: 'application/json',
@@ -2216,7 +2298,6 @@ export class FlashcardGenerationService {
     config?: SystemAiConfig;
     idToken?: string;
   }): Promise<FlashcardItem[]> {
-    const ai = await createServerAiClient();
     const {
       ownerUid,
       subject,
@@ -2270,47 +2351,43 @@ export class FlashcardGenerationService {
       taskType: 'flashcard_generation',
       config,
       idToken,
+      allowGroqRescue: true,
       cacheInput: { subject, grade, safeCount, sourceDigest: sourceContext.join('|').slice(0, 3000) },
-      runWithModel: async (modelId) => {
-        const resp = await callWithTimeout((signal) =>
-          ai.models.generateContent({
-            model: modelId,
-            contents: prompt,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, 'minimal'),
-              maxOutputTokens: 1536,
-              abortSignal: signal,
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  cards: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        front: { type: Type.STRING },
-                        back: { type: Type.STRING },
-                        chapter: { type: Type.STRING },
-                        concept: { type: Type.STRING },
-                        cardType: {
-                          type: Type.STRING,
-                          description: 'concept | formula | condition | mistake_fix | example',
-                        },
-                        sourceReference: { type: Type.STRING },
-                      },
-                      required: ['front', 'back', 'chapter', 'concept', 'cardType'],
+      runWithModel: async (modelId) =>
+        generateJsonWithProvider<{ cards: RawCard[] }>({
+          modelId,
+          prompt,
+          thinkingTier: 'minimal',
+          maxOutputTokens: 1536,
+          tokensOut,
+          fallbackJson: '{"cards":[]}',
+          groqSchemaHint:
+            '{"cards":[{"front":"...","back":"...","chapter":"...","concept":"...","cardType":"concept|formula|condition|mistake_fix|example","sourceReference":"..."}]}',
+          geminiSchema: {
+            type: Type.OBJECT,
+            properties: {
+              cards: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    front: { type: Type.STRING },
+                    back: { type: Type.STRING },
+                    chapter: { type: Type.STRING },
+                    concept: { type: Type.STRING },
+                    cardType: {
+                      type: Type.STRING,
+                      description: 'concept | formula | condition | mistake_fix | example',
                     },
+                    sourceReference: { type: Type.STRING },
                   },
+                  required: ['front', 'back', 'chapter', 'concept', 'cardType'],
                 },
-                required: ['cards'],
               },
             },
-          })
-        );
-        accumulateTokens(tokensOut, resp);
-        return JSON.parse((resp.text || '{"cards":[]}').trim()) as { cards: RawCard[] };
-      },
+            required: ['cards'],
+          },
+        }),
     });
 
     const validCardTypes = new Set<FlashcardItem['cardType']>([
@@ -2352,26 +2429,21 @@ export class FeedbackAnalysisService {
     config?: SystemAiConfig;
     idToken?: string;
   }): Promise<string> {
-    const ai = await createServerAiClient();
     const { data } = await runTaskWithRouter<string>({
       taskType: 'feedback_analysis',
       config: params.config,
       idToken: params.idToken,
+      allowGroqRescue: true,
       cacheInput: { targetType: params.targetType, category: params.category, note: params.note },
       runWithModel: async (modelId) => {
-        const resp = await callWithTimeout((signal) =>
-          ai.models.generateContent({
-            model: modelId,
-            contents: `Tóm tắt ngắn gọn (1 câu tiếng Việt) nguyên nhân & hướng xử lý cho phản hồi học sinh [${params.targetType} | ${params.category}]: "${params.note}"`,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, 'minimal'),
-              maxOutputTokens: 120,
-              abortSignal: signal,
-            },
-          })
-        );
-        accumulateTokens(params.tokensOut, resp);
-        return (resp.text || 'Cần quản trị viên kiểm tra đối chiếu lại nguồn sách giáo khoa.').trim();
+        const text = await generatePlainTextWithProvider({
+          modelId,
+          prompt: `Tóm tắt ngắn gọn (1 câu tiếng Việt) nguyên nhân & hướng xử lý cho phản hồi học sinh [${params.targetType} | ${params.category}]: "${params.note}"`,
+          thinkingTier: 'minimal',
+          maxOutputTokens: 120,
+          tokensOut: params.tokensOut,
+        });
+        return text || 'Cần quản trị viên kiểm tra đối chiếu lại nguồn sách giáo khoa.';
       },
     });
     return data;

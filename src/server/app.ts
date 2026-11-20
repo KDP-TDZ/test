@@ -55,19 +55,22 @@ import {
   MODEL_CATALOG,
   testModelConnectivity,
 } from './modelRouter.js';
-import type {
-  AiTaskType,
-  ExamBlueprint,
-  ExamDocument,
-  ExamQuestion,
-  ExamType,
-  ExtractedPage,
-  GradeLevel,
-  QuizDifficulty,
-  QuizScope,
-  ReferenceChunk,
-  SubjectId,
+import { isGroqConfigured } from './groqProvider.js';
+import {
+  SUBJECT_LABELS,
+  type AiTaskType,
+  type ExamBlueprint,
+  type ExamDocument,
+  type ExamQuestion,
+  type ExamType,
+  type ExtractedPage,
+  type GradeLevel,
+  type QuizDifficulty,
+  type QuizScope,
+  type ReferenceChunk,
+  type SubjectId,
 } from '../core/types.js';
+import { validateUploadFileSize } from '../core/uploadBatching.js';
 
 declare global {
   namespace Express {
@@ -303,7 +306,7 @@ export function createApiApp(): express.Express {
         return;
       }
 
-      const maxBytes = guard.config.rateLimitConfig.maximumFileSizeMb * 1024 * 1024;
+      const adminMaxFileMb = guard.config.rateLimitConfig.maximumFileSizeMb;
       for (const f of uploadedFiles) {
         if (!ALLOWED_UPLOAD_MIMES.has(f.mimetype)) {
           res.status(400).json({
@@ -311,9 +314,14 @@ export function createApiApp(): express.Express {
           });
           return;
         }
-        if (f.size > maxBytes) {
-          res.status(400).json({
-            error: `File "${f.originalname}" vượt quá giới hạn ${guard.config.rateLimitConfig.maximumFileSizeMb}MB.`,
+        const sizeCheck = validateUploadFileSize(
+          { name: f.originalname, size: f.size, type: f.mimetype },
+          adminMaxFileMb
+        );
+        if (!sizeCheck.ok) {
+          res.status(413).json({
+            code: 'PAYLOAD_TOO_LARGE',
+            error: sizeCheck.error,
           });
           return;
         }
@@ -329,6 +337,15 @@ export function createApiApp(): express.Express {
       const pageOffset = Math.max(0, Number(bodyParams.pageOffset) || 0);
       const skipScope = bodyParams.skipScope === 'true';
       const previousText = (bodyParams.previousText || '').trim();
+      const presetGrade: GradeLevel =
+        bodyParams.presetGrade === '11' || bodyParams.presetGrade === '12'
+          ? bodyParams.presetGrade
+          : '10';
+      const rawPresetSubject = (bodyParams.presetSubject || '').trim();
+      const presetSubject: SubjectId =
+        rawPresetSubject && rawPresetSubject in SUBJECT_LABELS
+          ? (rawPresetSubject as SubjectId)
+          : 'khac';
 
       let pages: ExtractedPage[] = [];
       const first = uploadedFiles[0];
@@ -369,8 +386,8 @@ export function createApiApp(): express.Express {
               idToken: user.idToken,
             })
           : {
-              suggestedGrade: '10' as GradeLevel,
-              suggestedSubject: 'khac' as SubjectId,
+              suggestedGrade: presetGrade,
+              suggestedSubject: presetSubject,
               suggestedChapters: [],
               suggestedTitle: first.originalname.replace(/\.[^.]+$/, ''),
             };
@@ -729,6 +746,7 @@ export function createApiApp(): express.Express {
         usageStats,
         auditLogs,
         singleKeyStatus,
+        groqConfigured: isGroqConfigured(),
         executionLogs: getRecentExecutionLogs(),
         modelCatalog: MODEL_CATALOG,
       });
@@ -1313,8 +1331,45 @@ export function createApiApp(): express.Express {
   });
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    console.error('Unhandled Express API error:', err);
     if (res.headersSent) return;
+
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        res.status(413).json({
+          code: 'PAYLOAD_TOO_LARGE',
+          error:
+            'Tệp tải lên vượt quá dung lượng cho phép. Vui lòng chọn ảnh ≤ 5MB hoặc PDF/DOCX ≤ 4MB.',
+        });
+        return;
+      }
+      if (err.code === 'LIMIT_FILE_COUNT') {
+        res.status(400).json({
+          code: 'TOO_MANY_FILES',
+          error: 'Số lượng tệp gửi lên vượt quá giới hạn cho phép mỗi lượt.',
+        });
+        return;
+      }
+      res.status(400).json({
+        code: 'UPLOAD_ERROR',
+        error: `Lỗi tiếp nhận tệp tải lên (${err.code}). Vui lòng thử lại.`,
+      });
+      return;
+    }
+
+    const bodyErr = err as { type?: string; status?: number; statusCode?: number } | null;
+    if (
+      bodyErr &&
+      (bodyErr.type === 'entity.too.large' || bodyErr.status === 413 || bodyErr.statusCode === 413)
+    ) {
+      res.status(413).json({
+        code: 'PAYLOAD_TOO_LARGE',
+        error:
+          'Gói dữ liệu gửi lên vượt quá giới hạn máy chủ (413). Hãy nén tệp nhỏ hơn hoặc chia ít trang hơn.',
+      });
+      return;
+    }
+
+    console.error('Unhandled Express API error:', err);
     res.status(500).json({
       error: err instanceof Error ? err.message : 'Lỗi máy chủ nội bộ.',
     });

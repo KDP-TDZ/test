@@ -783,6 +783,7 @@ var MODEL_CATALOG = [
   {
     modelId: "gemini-4-hydrogen",
     displayName: "Gemini 4 Hydrogen",
+    provider: "gemini",
     tier: "free",
     strengths: "Suy lu\u1EADn s\xE2u, ki\u1EC3m \u0111\u1ECBnh tri th\u1EE9c \u0111a ngu\u1ED3n, OCR c\xF4ng th\u1EE9c & ch\u1EEF vi\u1EBFt tay ph\u1EE9c t\u1EA1p.",
     supportsMultimodal: true,
@@ -791,10 +792,29 @@ var MODEL_CATALOG = [
   {
     modelId: "gemini-3.1-flash-lite",
     displayName: "Gemini 3.1 Flash Lite",
+    provider: "gemini",
     tier: "free",
     strengths: "T\u1ED1c \u0111\u1ED9 r\u1EA5t nhanh, ti\u1EBFt ki\u1EC7m token cho ph\xE2n lo\u1EA1i m\xF4n, ki\u1EC3m tra c\u1EA5u tr\xFAc, flashcard & ph\u1EA3n h\u1ED3i.",
     supportsMultimodal: true,
     supportsGoogleSearch: true
+  },
+  {
+    modelId: "groq:llama-3.3-70b-versatile",
+    displayName: "Groq \xB7 Llama 3.3 70B (Free)",
+    provider: "groq",
+    tier: "free",
+    strengths: "Mi\u1EC5n ph\xED (~1.000 req/ng\xE0y, ph\u1EA3n h\u1ED3i si\xEAu nhanh) \u2014 x\u1EED l\xFD v\u0103n b\u1EA3n/JSON: ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c, t\u1EA1o \u0111\u1EC1 & d\u1EF1 ph\xF2ng khi Gemini \u0111\u1EA1t gi\u1EDBi h\u1EA1n 429.",
+    supportsMultimodal: false,
+    supportsGoogleSearch: false
+  },
+  {
+    modelId: "groq:llama-3.1-8b-instant",
+    displayName: "Groq \xB7 Llama 3.1 8B Instant (Free)",
+    provider: "groq",
+    tier: "free",
+    strengths: "T\u1ED1c \u0111\u1ED9 c\u1EF1c nhanh (<1s), mi\u1EC5n ph\xED \u2014 t\u1ED1i \u01B0u cho ph\xE2n lo\u1EA1i m\xF4n, flashcard, t\xF3m t\u1EAFt ph\u1EA3n h\u1ED3i & d\u1EF1 ph\xF2ng nh\u1EB9.",
+    supportsMultimodal: false,
+    supportsGoogleSearch: false
   }
 ];
 var DEFAULT_TASK_MODELS = {
@@ -1323,7 +1343,117 @@ async function resolveActiveGeminiApiKey() {
   throw new Error("GEMINI_API_KEY_UNCONFIGURED");
 }
 
+// src/server/groqProvider.ts
+var GROQ_API_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
+var GROQ_RESCUE_MODEL_STRONG = "groq:llama-3.3-70b-versatile";
+var GROQ_RESCUE_MODEL_FAST = "groq:llama-3.1-8b-instant";
+function isGroqModelId(modelId) {
+  return modelId.trim().toLowerCase().startsWith("groq:");
+}
+function stripGroqPrefix(modelId) {
+  const trimmed = modelId.trim();
+  return trimmed.toLowerCase().startsWith("groq:") ? trimmed.slice(5).trim() : trimmed;
+}
+function getGroqApiKey() {
+  return (process.env.GROQ_API_KEY || "").trim();
+}
+function isGroqConfigured() {
+  return getGroqApiKey().length > 0;
+}
+function extractJsonStringFromModelOutput(raw) {
+  const trimmed = (raw || "").trim();
+  if (!trimmed) return "{}";
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced && fenced[1]) {
+    return fenced[1].trim();
+  }
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return trimmed.slice(firstBrace, lastBrace + 1);
+  }
+  return trimmed;
+}
+async function callGroqChatCompletion(params) {
+  const apiKey = getGroqApiKey();
+  if (!apiKey) {
+    throw new Error(
+      "GROQ_API_KEY_UNCONFIGURED: Bi\u1EBFn m\xF4i tr\u01B0\u1EDDng GROQ_API_KEY ch\u01B0a \u0111\u01B0\u1EE3c thi\u1EBFt l\u1EADp tr\xEAn m\xE1y ch\u1EE7."
+    );
+  }
+  const groqModel = stripGroqPrefix(params.modelId);
+  const systemParts = [];
+  if (params.systemInstruction) {
+    systemParts.push(params.systemInstruction.trim());
+  }
+  if (params.jsonMode) {
+    systemParts.push(
+      "B\u1EAET BU\u1ED8C tr\u1EA3 v\u1EC1 duy nh\u1EA5t 1 JSON object h\u1EE3p l\u1EC7 (kh\xF4ng th\xEAm markdown, kh\xF4ng th\xEAm gi\u1EA3i th\xEDch ngo\xE0i JSON)."
+    );
+    if (params.jsonSchemaHint) {
+      systemParts.push(`C\u1EA5u tr\xFAc JSON b\u1EAFt bu\u1ED9c:
+${params.jsonSchemaHint}`);
+    }
+  }
+  const messages = [];
+  if (systemParts.length > 0) {
+    messages.push({ role: "system", content: systemParts.join("\n\n") });
+  }
+  messages.push({ role: "user", content: params.prompt });
+  const body = {
+    model: groqModel,
+    messages,
+    temperature: 0.15,
+    max_tokens: Math.min(8192, Math.max(128, params.maxOutputTokens || 2048))
+  };
+  if (params.jsonMode) {
+    body.response_format = { type: "json_object" };
+  }
+  const res = await fetch(GROQ_API_ENDPOINT, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body),
+    signal: params.signal
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    if (res.status === 429) {
+      throw new Error(`429 RESOURCE_EXHAUSTED (Groq): ${errText.slice(0, 180)}`);
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`PERMISSION_DENIED (Groq ${res.status}): Kh\xF3a GROQ_API_KEY kh\xF4ng h\u1EE3p l\u1EC7.`);
+    }
+    if (res.status === 503 || res.status === 502) {
+      throw new Error(`503 UNAVAILABLE (Groq): ${errText.slice(0, 180)}`);
+    }
+    throw new Error(`Groq API error (HTTP ${res.status}): ${errText.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  const rawText = data.choices?.[0]?.message?.content || "";
+  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
+  return {
+    text,
+    promptTokens: data.usage?.prompt_tokens || 0,
+    candidateTokens: data.usage?.completion_tokens || 0,
+    totalTokens: data.usage?.total_tokens || 0
+  };
+}
+
 // src/server/modelRouter.ts
+function defaultGroqRescueModelForTask(taskType) {
+  switch (taskType) {
+    case "knowledge_analysis":
+    case "completeness_analysis":
+    case "quiz_generation":
+    case "quiz_blueprint":
+      return GROQ_RESCUE_MODEL_STRONG;
+    default:
+      return GROQ_RESCUE_MODEL_FAST;
+  }
+}
 var aiResponseCache = new BoundedTtlCache(320, 6 * 60 * 60 * 1e3);
 var inFlightTasks = /* @__PURE__ */ new Map();
 var executionLogs = [];
@@ -1432,7 +1562,16 @@ function resolveModelForTask(taskType, config, consumeOverride) {
   };
 }
 async function executeRoutedAiTask(params) {
-  const { taskType, config, consumeOneTimeOverride, cacheInput, bypassCache, runWithModel } = params;
+  const {
+    taskType,
+    config,
+    consumeOneTimeOverride,
+    cacheInput,
+    bypassCache,
+    allowGroqRescue = false,
+    groqRescueModelId,
+    runWithModel
+  } = params;
   let overrideConsumed = false;
   const decision = resolveModelForTask(taskType, config, () => {
     overrideConsumed = true;
@@ -1513,6 +1652,7 @@ async function executeRoutedAiTask(params) {
         cached: false
       };
     } catch (primaryErr) {
+      let lastErr = primaryErr;
       if (canFallback) {
         try {
           const fbResult = await withExponentialBackoff(() => runWithModel(decision.fallbackModelId), 1);
@@ -1540,36 +1680,55 @@ async function executeRoutedAiTask(params) {
             cached: false
           };
         } catch (fbErr) {
+          lastErr = fbErr;
+        }
+      }
+      const rescueModel = groqRescueModelId || defaultGroqRescueModelForTask(taskType);
+      const canGroqRescue = allowGroqRescue && isGroqConfigured() && !isGroqModelId(decision.modelId) && !(canFallback && isGroqModelId(decision.fallbackModelId));
+      if (canGroqRescue) {
+        try {
+          const rescueResult = await withExponentialBackoff(() => runWithModel(rescueModel), 1);
+          if (cacheKey) {
+            aiResponseCache.set(cacheKey, rescueResult);
+          }
           appendExecutionLog({
             executionId: `exec_${Date.now()}_${crypto3.randomBytes(2).toString("hex")}`,
             taskType,
-            modelId: decision.fallbackModelId,
+            modelId: rescueModel,
             usedFallback: true,
             usedOverride: decision.usedOverride,
             promptVersion: decision.promptVersion,
             configVersion: decision.configVersion,
-            status: "failed",
-            error: fbErr instanceof Error ? fbErr.message.slice(0, 180) : String(fbErr).slice(0, 180),
+            status: "success",
             durationMs: Date.now() - start,
+            cached: false,
             timestamp: (/* @__PURE__ */ new Date()).toISOString()
           });
-          throw fbErr;
+          return {
+            data: rescueResult,
+            modelId: rescueModel,
+            usedFallback: true,
+            usedOverride: decision.usedOverride,
+            cached: false
+          };
+        } catch (rescueErr) {
+          lastErr = rescueErr;
         }
       }
       appendExecutionLog({
         executionId: `exec_${Date.now()}_${crypto3.randomBytes(2).toString("hex")}`,
         taskType,
-        modelId: decision.modelId,
-        usedFallback: false,
+        modelId: canFallback ? decision.fallbackModelId : decision.modelId,
+        usedFallback: canFallback,
         usedOverride: decision.usedOverride,
         promptVersion: decision.promptVersion,
         configVersion: decision.configVersion,
         status: "failed",
-        error: primaryErr instanceof Error ? primaryErr.message.slice(0, 180) : String(primaryErr).slice(0, 180),
+        error: lastErr instanceof Error ? lastErr.message.slice(0, 180) : String(lastErr).slice(0, 180),
         durationMs: Date.now() - start,
         timestamp: (/* @__PURE__ */ new Date()).toISOString()
       });
-      throw primaryErr;
+      throw lastErr;
     }
   };
   if (!cacheKey) {
@@ -1587,6 +1746,32 @@ async function executeRoutedAiTask(params) {
 async function testModelConnectivity(modelId) {
   const start = Date.now();
   try {
+    if (isGroqModelId(modelId)) {
+      if (!isGroqConfigured()) {
+        return {
+          ok: false,
+          modelId,
+          latencyMs: Date.now() - start,
+          message: "Ch\u01B0a thi\u1EBFt l\u1EADp bi\u1EBFn m\xF4i tr\u01B0\u1EDDng GROQ_API_KEY tr\xEAn m\xE1y ch\u1EE7 (Vercel Environment Variables ho\u1EB7c .env)."
+        };
+      }
+      const resp2 = await callWithTimeout(
+        (signal) => callGroqChatCompletion({
+          modelId,
+          prompt: "Tr\u1EA3 l\u1EDDi duy nh\u1EA5t 1 t\u1EEB: OK",
+          maxOutputTokens: 32,
+          signal
+        }),
+        15e3
+      );
+      const text2 = (resp2.text || "").trim();
+      return {
+        ok: Boolean(text2),
+        modelId,
+        latencyMs: Date.now() - start,
+        message: text2 ? `Model ${modelId} (Groq Free) ho\u1EA1t \u0111\u1ED9ng b\xECnh th\u01B0\u1EDDng (${Date.now() - start}ms).` : `Model ${modelId} tr\u1EA3 v\u1EC1 n\u1ED9i dung r\u1ED7ng.`
+      };
+    }
     const ai = await createServerAiClient();
     const resp = await callWithTimeout(
       (signal) => ai.models.generateContent({
@@ -2359,6 +2544,76 @@ function accumulateTokens(acc, resp) {
   acc.candidateTokens += meta.candidatesTokenCount || 0;
   acc.totalTokens += meta.totalTokenCount || 0;
 }
+function accumulateRawTokens(acc, usage) {
+  acc.promptTokens += usage.promptTokens || 0;
+  acc.candidateTokens += usage.candidateTokens || 0;
+  acc.totalTokens += usage.totalTokens || 0;
+}
+async function generateJsonWithProvider(params) {
+  if (isGroqModelId(params.modelId)) {
+    const resp = await callWithTimeout(
+      (signal) => callGroqChatCompletion({
+        modelId: params.modelId,
+        prompt: params.prompt,
+        jsonMode: true,
+        jsonSchemaHint: params.groqSchemaHint,
+        maxOutputTokens: params.maxOutputTokens,
+        signal
+      }),
+      params.timeoutMs
+    );
+    accumulateRawTokens(params.tokensOut, resp);
+    return JSON.parse((resp.text || params.fallbackJson).trim());
+  }
+  const ai = await createServerAiClient();
+  const response = await callWithTimeout(
+    (signal) => ai.models.generateContent({
+      model: params.modelId,
+      contents: params.prompt,
+      config: {
+        thinkingConfig: thinkingConfigForModel(params.modelId, params.thinkingTier),
+        maxOutputTokens: params.maxOutputTokens,
+        abortSignal: signal,
+        responseMimeType: "application/json",
+        responseSchema: params.geminiSchema
+      }
+    }),
+    params.timeoutMs
+  );
+  accumulateTokens(params.tokensOut, response);
+  return JSON.parse((response.text || params.fallbackJson).trim());
+}
+async function generatePlainTextWithProvider(params) {
+  if (isGroqModelId(params.modelId)) {
+    const resp2 = await callWithTimeout(
+      (signal) => callGroqChatCompletion({
+        modelId: params.modelId,
+        prompt: params.prompt,
+        jsonMode: false,
+        maxOutputTokens: params.maxOutputTokens,
+        signal
+      }),
+      params.timeoutMs
+    );
+    accumulateRawTokens(params.tokensOut, resp2);
+    return resp2.text.trim();
+  }
+  const ai = await createServerAiClient();
+  const resp = await callWithTimeout(
+    (signal) => ai.models.generateContent({
+      model: params.modelId,
+      contents: params.prompt,
+      config: {
+        thinkingConfig: thinkingConfigForModel(params.modelId, params.thinkingTier),
+        maxOutputTokens: params.maxOutputTokens,
+        abortSignal: signal
+      }
+    }),
+    params.timeoutMs
+  );
+  accumulateTokens(params.tokensOut, resp);
+  return (resp.text || "").trim();
+}
 async function runTaskWithRouter(params) {
   const cfg = params.config || getAuthoritativeAiConfigSnapshot();
   const res = await executeRoutedAiTask({
@@ -2367,6 +2622,7 @@ async function runTaskWithRouter(params) {
     consumeOneTimeOverride: (task) => consumeOneTimeModelOverride(task, params.idToken),
     cacheInput: params.cacheInput,
     bypassCache: params.bypassCache,
+    allowGroqRescue: params.allowGroqRescue,
     runWithModel: params.runWithModel
   });
   return { data: res.data, modelId: res.modelId };
@@ -2387,10 +2643,11 @@ var DocumentExtractionService = class {
         idToken: opts?.idToken,
         cacheInput: { ocrKind: "image", mimeType: file.mimeType, sha256: contentHash },
         runWithModel: async (modelId) => {
+          const visionModel = isGroqModelId(modelId) ? "gemini-4-hydrogen" : modelId;
           const base64 = file.buffer.toString("base64");
           const response = await callWithTimeout(
             (signal) => ai.models.generateContent({
-              model: modelId,
+              model: visionModel,
               contents: {
                 parts: [
                   {
@@ -2409,7 +2666,7 @@ var DocumentExtractionService = class {
                 ]
               },
               config: {
-                thinkingConfig: thinkingConfigForModel(modelId, "minimal"),
+                thinkingConfig: thinkingConfigForModel(visionModel, "minimal"),
                 maxOutputTokens: 2048,
                 abortSignal: signal,
                 responseMimeType: "application/json",
@@ -2497,10 +2754,11 @@ var DocumentExtractionService = class {
       idToken: opts?.idToken,
       cacheInput: { ocrKind: "pdf_scan", sha256: pdfHash },
       runWithModel: async (modelId) => {
+        const visionModel = isGroqModelId(modelId) ? "gemini-4-hydrogen" : modelId;
         const base64 = buffer.toString("base64");
         const response = await callWithTimeout(
           (signal) => ai.models.generateContent({
-            model: modelId,
+            model: visionModel,
             contents: {
               parts: [
                 {
@@ -2515,7 +2773,7 @@ var DocumentExtractionService = class {
               ]
             },
             config: {
-              thinkingConfig: thinkingConfigForModel(modelId, "minimal"),
+              thinkingConfig: thinkingConfigForModel(visionModel, "minimal"),
               maxOutputTokens: 4096,
               abortSignal: signal,
               responseMimeType: "application/json",
@@ -2612,49 +2870,43 @@ var DocumentExtractionService = class {
 };
 var SubjectDetectionService = class {
   static async detectScope(sampleText, tokensOut, opts) {
-    const ai = await createServerAiClient();
+    const scopePrompt = [
+      "Ph\xE2n t\xEDch \u0111o\u1EA1n ghi ch\xE9p h\u1ECDc t\u1EADp sau \u0111\u1EC3 x\xE1c \u0111\u1ECBnh \u0110\xDANG l\u1EDBp (10, 11 ho\u1EB7c 12), m\xF4n h\u1ECDc THPT, ti\xEAu \u0111\u1EC1 ng\u1EAFn v\xE0 t\u1ED1i \u0111a 3 ch\u01B0\u01A1ng/ch\u1EE7 \u0111\u1EC1 ph\xF9 h\u1EE3p.",
+      'L\u01AFU \xDD QUAN TR\u1ECCNG: X\xE1c \u0111\u1ECBnh ch\u1EE7 \u0111\u1EC1 d\u1EF1a tr\xEAn KH\xC1I NI\u1EC6M/\u0110\u1ED0I T\u01AF\u1EE2NG CH\xCDNH m\xE0 t\xE0i li\u1EC7u \u0111ang tr\xECnh b\xE0y ho\u1EB7c \u0111\u1ECBnh ngh\u0129a (v\xED d\u1EE5: n\u1EBFu \u0111o\u1EA1n v\u0103n vi\u1EBFt "Chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u l\xE0..." nh\u01B0ng h\u1ECDc sinh vi\u1EBFt nh\u1EA7m chi ti\u1EBFt b\xEAn trong th\xE0nh "t\u1ED1c \u0111\u1ED9 thay \u0111\u1ED5i", ch\u1EE7 \u0111\u1EC1 V\u1EAAN L\xC0 "Chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u", TUY\u1EC6T \u0110\u1ED0I KH\xD4NG b\u1ECB l\u1ED7i sai c\u1EE7a h\u1ECDc sinh \u0111\xE1nh l\u1EEBa sang ch\u01B0\u01A1ng kh\xE1c nh\u01B0 "Chuy\u1EC3n \u0111\u1ED9ng bi\u1EBFn \u0111\u1ED5i").',
+      "",
+      sampleText.slice(0, 1800)
+    ].join("\n");
     const { data: parsed } = await runTaskWithRouter({
       taskType: "subject_classification",
       config: opts?.config,
       idToken: opts?.idToken,
+      allowGroqRescue: true,
       cacheInput: { sample: sampleText.slice(0, 1500), rev: "v3_topic_strict" },
-      runWithModel: async (modelId) => {
-        const response = await callWithTimeout(
-          (signal) => ai.models.generateContent({
-            model: modelId,
-            contents: [
-              "Ph\xE2n t\xEDch \u0111o\u1EA1n ghi ch\xE9p h\u1ECDc t\u1EADp sau \u0111\u1EC3 x\xE1c \u0111\u1ECBnh \u0110\xDANG l\u1EDBp (10, 11 ho\u1EB7c 12), m\xF4n h\u1ECDc THPT, ti\xEAu \u0111\u1EC1 ng\u1EAFn v\xE0 t\u1ED1i \u0111a 3 ch\u01B0\u01A1ng/ch\u1EE7 \u0111\u1EC1 ph\xF9 h\u1EE3p.",
-              'L\u01AFU \xDD QUAN TR\u1ECCNG: X\xE1c \u0111\u1ECBnh ch\u1EE7 \u0111\u1EC1 d\u1EF1a tr\xEAn KH\xC1I NI\u1EC6M/\u0110\u1ED0I T\u01AF\u1EE2NG CH\xCDNH m\xE0 t\xE0i li\u1EC7u \u0111ang tr\xECnh b\xE0y ho\u1EB7c \u0111\u1ECBnh ngh\u0129a (v\xED d\u1EE5: n\u1EBFu \u0111o\u1EA1n v\u0103n vi\u1EBFt "Chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u l\xE0..." nh\u01B0ng h\u1ECDc sinh vi\u1EBFt nh\u1EA7m chi ti\u1EBFt b\xEAn trong th\xE0nh "t\u1ED1c \u0111\u1ED9 thay \u0111\u1ED5i", ch\u1EE7 \u0111\u1EC1 V\u1EAAN L\xC0 "Chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u", TUY\u1EC6T \u0110\u1ED0I KH\xD4NG b\u1ECB l\u1ED7i sai c\u1EE7a h\u1ECDc sinh \u0111\xE1nh l\u1EEBa sang ch\u01B0\u01A1ng kh\xE1c nh\u01B0 "Chuy\u1EC3n \u0111\u1ED9ng bi\u1EBFn \u0111\u1ED5i").',
-              "",
-              sampleText.slice(0, 1800)
-            ].join("\n"),
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, "low"),
-              maxOutputTokens: 384,
-              abortSignal: signal,
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  suggestedGrade: { type: Type.STRING, description: "10 | 11 | 12" },
-                  suggestedSubject: {
-                    type: Type.STRING,
-                    description: "toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac"
-                  },
-                  suggestedChapters: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING }
-                  },
-                  suggestedTitle: { type: Type.STRING }
-                },
-                required: ["suggestedGrade", "suggestedSubject", "suggestedChapters", "suggestedTitle"]
-              }
-            }
-          })
-        );
-        accumulateTokens(tokensOut, response);
-        return JSON.parse((response.text || "{}").trim());
-      }
+      runWithModel: async (modelId) => generateJsonWithProvider({
+        modelId,
+        prompt: scopePrompt,
+        thinkingTier: "low",
+        maxOutputTokens: 384,
+        tokensOut,
+        fallbackJson: "{}",
+        groqSchemaHint: '{"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
+        geminiSchema: {
+          type: Type.OBJECT,
+          properties: {
+            suggestedGrade: { type: Type.STRING, description: "10 | 11 | 12" },
+            suggestedSubject: {
+              type: Type.STRING,
+              description: "toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac"
+            },
+            suggestedChapters: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING }
+            },
+            suggestedTitle: { type: Type.STRING }
+          },
+          required: ["suggestedGrade", "suggestedSubject", "suggestedChapters", "suggestedTitle"]
+        }
+      })
     });
     const grade = parsed.suggestedGrade === "11" || parsed.suggestedGrade === "12" ? parsed.suggestedGrade : "10";
     const subject = parsed.suggestedSubject && parsed.suggestedSubject in SUBJECT_LABELS ? parsed.suggestedSubject : "khac";
@@ -2682,7 +2934,6 @@ var KnowledgeAnalysisService = class {
       config,
       idToken
     } = params;
-    const ai = await createServerAiClient();
     const subjectName = SUBJECT_LABELS[subject];
     const formattedStudentBlocks = pages.map((p) => {
       const blocksStr = p.blocks.map(
@@ -2707,6 +2958,7 @@ ${h.chunk.content}`
     let webGroundingNotice;
     if (enableWebGrounding === true) {
       try {
+        const ai = await createServerAiClient();
         const searchPrompt = [
           `Ki\u1EC3m ch\u1EE9ng c\xE1c kh\xE1i ni\u1EC7m n\xE2ng cao ho\u1EB7c n\u1ED9i dung ch\u01B0a c\xF3 \u0111\u1EE7 trong s\xE1ch gi\xE1o khoa \u0111\u1ED1i v\u1EDBi m\xF4n ${subjectName} l\u1EDBp ${grade}, ph\u1EA1m vi: ${scope || selectedChapters.join(", ") || "T\u1ED5ng h\u1EE3p"}.`,
           "\u01AFu ti\xEAn ngu\u1ED3n ch\xEDnh th\u1ED1ng (B\u1ED9 GD&\u0110T, NXB Gi\xE1o d\u1EE5c, \u0111\u1EA1i h\u1ECDc). T\xF3m t\u1EAFt th\u1EADt s\xFAc t\xEDch t\u1ED1i \u0111a 6 g\u1EA1ch \u0111\u1EA7u d\xF2ng ki\u1EBFn th\u1EE9c chu\u1EA9n k\xE8m tr\xEDch d\u1EABn \u0111\u1EC3 \u0111\u1ED1i chi\u1EBFu v\u1EDBi b\xE0i ghi sau:",
@@ -2718,12 +2970,13 @@ ${h.chunk.content}`
           idToken,
           cacheInput: { webSearchText: fullText.slice(0, 2e3), grade, subject, scope },
           runWithModel: async (modelId) => {
+            const searchModel = isGroqModelId(modelId) ? "gemini-3.1-flash-lite" : modelId;
             const resp = await callWithTimeout(
               (signal) => ai.models.generateContent({
-                model: modelId,
+                model: searchModel,
                 contents: searchPrompt,
                 config: {
-                  thinkingConfig: thinkingConfigForModel(modelId, "minimal"),
+                  thinkingConfig: thinkingConfigForModel(searchModel, "minimal"),
                   maxOutputTokens: 1024,
                   abortSignal: signal,
                   tools: [{ googleSearch: {} }]
@@ -2819,6 +3072,7 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
       taskType: "knowledge_analysis",
       config,
       idToken,
+      allowGroqRescue: true,
       cacheInput: {
         promptRev: "v3_audit4layer",
         studentText: formattedStudentBlocks.slice(0, 12e3),
@@ -2828,123 +3082,123 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
         scope,
         chunksDigest: retrievedHits.map((h) => h.chunk.chunkId).join(",")
       },
-      runWithModel: async (modelId) => {
-        const evalResp = await callWithTimeout(
-          (signal) => ai.models.generateContent({
-            model: modelId,
-            contents: analysisPrompt,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, "medium"),
-              maxOutputTokens: 6144,
-              abortSignal: signal,
-              responseMimeType: "application/json",
-              responseSchema: {
+      runWithModel: async (modelId) => generateJsonWithProvider({
+        modelId,
+        prompt: analysisPrompt,
+        thinkingTier: "medium",
+        maxOutputTokens: 6144,
+        timeoutMs: 45e3,
+        tokensOut,
+        fallbackJson: '{"claims":[],"coverageItems":[],"strengths":[],"weaknesses":[],"suggestions":[]}',
+        groqSchemaHint: '{"claims":[{"blockId":"...","sourcePage":1,"sourceText":"...","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"..."}],"coverageItems":[{"concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}',
+        geminiSchema: {
+          type: Type.OBJECT,
+          properties: {
+            claims: {
+              type: Type.ARRAY,
+              items: {
                 type: Type.OBJECT,
                 properties: {
-                  claims: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        blockId: { type: Type.STRING },
-                        sourcePage: { type: Type.INTEGER },
-                        sourceText: { type: Type.STRING },
-                        chapter: { type: Type.STRING },
-                        concept: { type: Type.STRING },
-                        importanceWeight: { type: Type.INTEGER, description: "1 | 2 | 3" },
-                        knowledgeType: {
-                          type: Type.STRING,
-                          description: "textbook_core | advanced_extension | insufficient_evidence"
-                        },
-                        evaluationStatus: {
-                          type: Type.STRING,
-                          description: "CORRECT | PARTIALLY_CORRECT | INCORRECT | MISSING | UNVERIFIED | AMBIGUOUS | OCR_UNCERTAIN | OUT_OF_SCOPE"
-                        },
-                        explanation: { type: Type.STRING },
-                        correctKnowledge: { type: Type.STRING },
-                        suggestedFix: { type: Type.STRING },
-                        matchedChunkId: { type: Type.STRING },
-                        matchedExcerpt: { type: Type.STRING },
-                        matchedPage: { type: Type.INTEGER }
-                      },
-                      required: [
-                        "sourcePage",
-                        "sourceText",
-                        "chapter",
-                        "concept",
-                        "importanceWeight",
-                        "evaluationStatus",
-                        "explanation",
-                        "correctKnowledge"
-                      ]
-                    }
+                  blockId: { type: Type.STRING },
+                  sourcePage: { type: Type.INTEGER },
+                  sourceText: { type: Type.STRING },
+                  chapter: { type: Type.STRING },
+                  concept: { type: Type.STRING },
+                  importanceWeight: { type: Type.INTEGER, description: "1 | 2 | 3" },
+                  knowledgeType: {
+                    type: Type.STRING,
+                    description: "textbook_core | advanced_extension | insufficient_evidence"
                   },
-                  coverageItems: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        concept: { type: Type.STRING },
-                        chapter: { type: Type.STRING },
-                        importanceWeight: { type: Type.INTEGER },
-                        status: {
-                          type: Type.STRING,
-                          description: "COVERED | PARTIALLY_COVERED | MISSING | OUT_OF_SCOPE"
-                        },
-                        suggestedAddition: { type: Type.STRING },
-                        referenceExcerpt: { type: Type.STRING },
-                        referencePage: { type: Type.INTEGER }
-                      },
-                      required: ["concept", "chapter", "importanceWeight", "status", "suggestedAddition", "referenceExcerpt"]
-                    }
+                  evaluationStatus: {
+                    type: Type.STRING,
+                    description: "CORRECT | PARTIALLY_CORRECT | INCORRECT | MISSING | UNVERIFIED | AMBIGUOUS | OCR_UNCERTAIN | OUT_OF_SCOPE"
                   },
-                  strengths: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        title: { type: Type.STRING },
-                        detail: { type: Type.STRING },
-                        sourceExcerpt: { type: Type.STRING },
-                        pageNumber: { type: Type.INTEGER }
-                      },
-                      required: ["title", "detail", "sourceExcerpt", "pageNumber"]
-                    }
-                  },
-                  weaknesses: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        title: { type: Type.STRING },
-                        detail: { type: Type.STRING },
-                        pageNumber: { type: Type.INTEGER }
-                      },
-                      required: ["title", "detail"]
-                    }
-                  },
-                  suggestions: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        priority: { type: Type.INTEGER },
-                        title: { type: Type.STRING },
-                        description: { type: Type.STRING }
-                      },
-                      required: ["priority", "title", "description"]
-                    }
-                  }
+                  explanation: { type: Type.STRING },
+                  correctKnowledge: { type: Type.STRING },
+                  suggestedFix: { type: Type.STRING },
+                  matchedChunkId: { type: Type.STRING },
+                  matchedExcerpt: { type: Type.STRING },
+                  matchedPage: { type: Type.INTEGER }
                 },
-                required: ["claims", "coverageItems", "strengths", "weaknesses", "suggestions"]
+                required: [
+                  "sourcePage",
+                  "sourceText",
+                  "chapter",
+                  "concept",
+                  "importanceWeight",
+                  "evaluationStatus",
+                  "explanation",
+                  "correctKnowledge"
+                ]
+              }
+            },
+            coverageItems: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  concept: { type: Type.STRING },
+                  chapter: { type: Type.STRING },
+                  importanceWeight: { type: Type.INTEGER },
+                  status: {
+                    type: Type.STRING,
+                    description: "COVERED | PARTIALLY_COVERED | MISSING | OUT_OF_SCOPE"
+                  },
+                  suggestedAddition: { type: Type.STRING },
+                  referenceExcerpt: { type: Type.STRING },
+                  referencePage: { type: Type.INTEGER }
+                },
+                required: [
+                  "concept",
+                  "chapter",
+                  "importanceWeight",
+                  "status",
+                  "suggestedAddition",
+                  "referenceExcerpt"
+                ]
+              }
+            },
+            strengths: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  detail: { type: Type.STRING },
+                  sourceExcerpt: { type: Type.STRING },
+                  pageNumber: { type: Type.INTEGER }
+                },
+                required: ["title", "detail", "sourceExcerpt", "pageNumber"]
+              }
+            },
+            weaknesses: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  detail: { type: Type.STRING },
+                  pageNumber: { type: Type.INTEGER }
+                },
+                required: ["title", "detail"]
+              }
+            },
+            suggestions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  priority: { type: Type.INTEGER },
+                  title: { type: Type.STRING },
+                  description: { type: Type.STRING }
+                },
+                required: ["priority", "title", "description"]
               }
             }
-          }),
-          45e3
-        );
-        accumulateTokens(tokensOut, evalResp);
-        return JSON.parse((evalResp.text || "{}").trim());
-      }
+          },
+          required: ["claims", "coverageItems", "strengths", "weaknesses", "suggestions"]
+        }
+      })
     });
     const blockMap = /* @__PURE__ */ new Map();
     for (const p of pages) {
@@ -3143,7 +3397,6 @@ var QuizGenerationService = class {
       )
     ];
     const effectiveContext = contextLines.length > 0 ? contextLines.join("\n") : claims.map((c) => `${c.concept}: ${c.correctKnowledge}`).join("\n");
-    const ai = await createServerAiClient();
     const diffLabel = difficulty === "basic" ? "C\u01A1 b\u1EA3n (Nh\u1EADn bi\u1EBFt, Th\xF4ng hi\u1EC3u)" : difficulty === "medium" ? "Trung b\xECnh (Th\xF4ng hi\u1EC3u, V\u1EADn d\u1EE5ng)" : difficulty === "advanced" ? "N\xE2ng cao (V\u1EADn d\u1EE5ng, V\u1EADn d\u1EE5ng cao)" : "H\u1ED7n h\u1EE3p c\xE2n b\u1EB1ng (Nh\u1EADn bi\u1EBFt 30% - Th\xF4ng hi\u1EC3u 30% - V\u1EADn d\u1EE5ng 25% - V\u1EADn d\u1EE5ng cao 15%)";
     const prompt = [
       `So\u1EA1n ${baseTargetCount} c\xE2u h\u1ECFi tr\u1EAFc nghi\u1EC7m ABCD c\u1ED1t l\xF5i cho h\u1ECDc sinh l\u1EDBp ${grade}, m\xF4n ${SUBJECT_LABELS[subject]}.`,
@@ -3165,6 +3418,7 @@ var QuizGenerationService = class {
       taskType: "quiz_generation",
       config,
       idToken,
+      allowGroqRescue: true,
       cacheInput: {
         subject,
         grade,
@@ -3175,72 +3429,65 @@ var QuizGenerationService = class {
         chapterFilter: chapterFilter || "",
         ctx: effectiveContext.slice(0, 8e3)
       },
-      runWithModel: async (modelId) => {
-        const response = await callWithTimeout(
-          (signal) => ai.models.generateContent({
-            model: modelId,
-            contents: prompt,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, "low"),
-              maxOutputTokens: quizMaxTokens,
-              abortSignal: signal,
-              responseMimeType: "application/json",
-              responseSchema: {
+      runWithModel: async (modelId) => generateJsonWithProvider({
+        modelId,
+        prompt,
+        thinkingTier: "low",
+        maxOutputTokens: quizMaxTokens,
+        tokensOut,
+        fallbackJson: '{"questions":[]}',
+        groqSchemaHint: '{"questions":[{"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","explanation":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","chapter":"...","concept":"...","sourceReference":"..."}]}',
+        geminiSchema: {
+          type: Type.OBJECT,
+          properties: {
+            questions: {
+              type: Type.ARRAY,
+              items: {
                 type: Type.OBJECT,
                 properties: {
-                  questions: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        questionText: { type: Type.STRING },
-                        optionA: { type: Type.STRING },
-                        optionB: { type: Type.STRING },
-                        optionC: { type: Type.STRING },
-                        optionD: { type: Type.STRING },
-                        correctAnswer: { type: Type.STRING, description: "A | B | C | D" },
-                        explanation: { type: Type.STRING },
-                        distractorA: { type: Type.STRING },
-                        distractorB: { type: Type.STRING },
-                        distractorC: { type: Type.STRING },
-                        distractorD: { type: Type.STRING },
-                        cognitiveLevel: {
-                          type: Type.STRING,
-                          description: "nhan_biet | thong_hieu | van_dung | van_dung_cao"
-                        },
-                        knowledgeUnitType: {
-                          type: Type.STRING,
-                          description: "concept | mechanism | condition | characteristic | formula | problem_type"
-                        },
-                        chapter: { type: Type.STRING },
-                        concept: { type: Type.STRING },
-                        sourceReference: { type: Type.STRING },
-                        isExternalAdvanced: { type: Type.BOOLEAN }
-                      },
-                      required: [
-                        "questionText",
-                        "optionA",
-                        "optionB",
-                        "optionC",
-                        "optionD",
-                        "correctAnswer",
-                        "explanation",
-                        "cognitiveLevel",
-                        "chapter",
-                        "concept",
-                        "sourceReference"
-                      ]
-                    }
-                  }
+                  questionText: { type: Type.STRING },
+                  optionA: { type: Type.STRING },
+                  optionB: { type: Type.STRING },
+                  optionC: { type: Type.STRING },
+                  optionD: { type: Type.STRING },
+                  correctAnswer: { type: Type.STRING, description: "A | B | C | D" },
+                  explanation: { type: Type.STRING },
+                  distractorA: { type: Type.STRING },
+                  distractorB: { type: Type.STRING },
+                  distractorC: { type: Type.STRING },
+                  distractorD: { type: Type.STRING },
+                  cognitiveLevel: {
+                    type: Type.STRING,
+                    description: "nhan_biet | thong_hieu | van_dung | van_dung_cao"
+                  },
+                  knowledgeUnitType: {
+                    type: Type.STRING,
+                    description: "concept | mechanism | condition | characteristic | formula | problem_type"
+                  },
+                  chapter: { type: Type.STRING },
+                  concept: { type: Type.STRING },
+                  sourceReference: { type: Type.STRING },
+                  isExternalAdvanced: { type: Type.BOOLEAN }
                 },
-                required: ["questions"]
+                required: [
+                  "questionText",
+                  "optionA",
+                  "optionB",
+                  "optionC",
+                  "optionD",
+                  "correctAnswer",
+                  "explanation",
+                  "cognitiveLevel",
+                  "chapter",
+                  "concept",
+                  "sourceReference"
+                ]
               }
             }
-          })
-        );
-        accumulateTokens(tokensOut, response);
-        return JSON.parse((response.text || '{"questions":[]}').trim());
-      }
+          },
+          required: ["questions"]
+        }
+      })
     });
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const mapped = (parsed.questions || []).slice(0, totalWanted + 2).map((q, idx) => {
@@ -3296,7 +3543,6 @@ var QuizGenerationService = class {
 };
 var ExamPipelineService = class {
   static async generateBlueprint(params) {
-    const ai = await createServerAiClient();
     const {
       title,
       grade,
@@ -3329,6 +3575,7 @@ ${relevant}` : ""
       taskType: "quiz_blueprint",
       config,
       idToken,
+      allowGroqRescue: true,
       cacheInput: {
         grade,
         subject,
@@ -3340,59 +3587,52 @@ ${relevant}` : ""
         totalScore,
         relevantDigest: relevant.slice(0, 1200)
       },
-      runWithModel: async (modelId) => {
-        const resp = await callWithTimeout(
-          (signal) => ai.models.generateContent({
-            model: modelId,
-            contents: prompt,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, "low"),
-              maxOutputTokens: 1536,
-              abortSignal: signal,
-              responseMimeType: "application/json",
-              responseSchema: {
+      runWithModel: async (modelId) => generateJsonWithProvider({
+        modelId,
+        prompt,
+        thinkingTier: "low",
+        maxOutputTokens: 1536,
+        tokensOut,
+        fallbackJson: '{"title":"","rows":[]}',
+        groqSchemaHint: '{"title":"...","rows":[{"chapter":"...","topic":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","questionType":"abcd|true_false|short_answer","questionCount":2,"scorePerQuestion":0.25,"learningOutcome":"..."}]}',
+        geminiSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            rows: {
+              type: Type.ARRAY,
+              items: {
                 type: Type.OBJECT,
                 properties: {
-                  title: { type: Type.STRING },
-                  rows: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        chapter: { type: Type.STRING },
-                        topic: { type: Type.STRING },
-                        cognitiveLevel: {
-                          type: Type.STRING,
-                          description: "nhan_biet | thong_hieu | van_dung | van_dung_cao"
-                        },
-                        questionType: {
-                          type: Type.STRING,
-                          description: "abcd | true_false | short_answer"
-                        },
-                        questionCount: { type: Type.INTEGER },
-                        scorePerQuestion: { type: Type.NUMBER },
-                        learningOutcome: { type: Type.STRING }
-                      },
-                      required: [
-                        "chapter",
-                        "topic",
-                        "cognitiveLevel",
-                        "questionType",
-                        "questionCount",
-                        "scorePerQuestion",
-                        "learningOutcome"
-                      ]
-                    }
-                  }
+                  chapter: { type: Type.STRING },
+                  topic: { type: Type.STRING },
+                  cognitiveLevel: {
+                    type: Type.STRING,
+                    description: "nhan_biet | thong_hieu | van_dung | van_dung_cao"
+                  },
+                  questionType: {
+                    type: Type.STRING,
+                    description: "abcd | true_false | short_answer"
+                  },
+                  questionCount: { type: Type.INTEGER },
+                  scorePerQuestion: { type: Type.NUMBER },
+                  learningOutcome: { type: Type.STRING }
                 },
-                required: ["title", "rows"]
+                required: [
+                  "chapter",
+                  "topic",
+                  "cognitiveLevel",
+                  "questionType",
+                  "questionCount",
+                  "scorePerQuestion",
+                  "learningOutcome"
+                ]
               }
             }
-          })
-        );
-        accumulateTokens(tokensOut, resp);
-        return JSON.parse((resp.text || "{}").trim());
-      }
+          },
+          required: ["title", "rows"]
+        }
+      })
     });
     const validCogs = /* @__PURE__ */ new Set(["nhan_biet", "thong_hieu", "van_dung", "van_dung_cao"]);
     const validTypes = /* @__PURE__ */ new Set(["abcd", "true_false", "short_answer"]);
@@ -3462,7 +3702,6 @@ ${relevant}` : ""
     };
   }
   static async generateExamFromBlueprint(params) {
-    const ai = await createServerAiClient();
     const { blueprint, referenceChunks, tokensOut, config, idToken } = params;
     const contextChunks = referenceChunks.filter((c) => c.grade === blueprint.grade && c.subject === blueprint.subject).slice(0, 12).map((c) => `[${c.chapter} | Tr.${c.pageNumber}] ${c.content.slice(0, 350)}`).join("\n");
     const rowsSpec = blueprint.rows.map(
@@ -3486,75 +3725,69 @@ ${contextChunks}` : ""
       config,
       idToken,
       bypassCache: true,
-      runWithModel: async (modelId) => {
-        const resp = await callWithTimeout(
-          (signal) => ai.models.generateContent({
-            model: modelId,
-            contents: prompt,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, "low"),
-              maxOutputTokens: 4096,
-              abortSignal: signal,
-              responseMimeType: "application/json",
-              responseSchema: {
+      allowGroqRescue: true,
+      runWithModel: async (modelId) => generateJsonWithProvider({
+        modelId,
+        prompt,
+        thinkingTier: "low",
+        maxOutputTokens: 4096,
+        tokensOut,
+        fallbackJson: '{"questions":[]}',
+        groqSchemaHint: '{"questions":[{"chapterId":"...","conceptId":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","questionType":"abcd|true_false|short_answer","scoreWeight":0.25,"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","trueFalseStatements":[{"label":"a","text":"...","isTrue":true}],"shortAnswerAccepted":["..."],"explanation":"...","sourceReference":"..."}]}',
+        geminiSchema: {
+          type: Type.OBJECT,
+          properties: {
+            questions: {
+              type: Type.ARRAY,
+              items: {
                 type: Type.OBJECT,
                 properties: {
-                  questions: {
+                  chapterId: { type: Type.STRING },
+                  conceptId: { type: Type.STRING },
+                  cognitiveLevel: { type: Type.STRING },
+                  questionType: { type: Type.STRING },
+                  scoreWeight: { type: Type.NUMBER },
+                  questionText: { type: Type.STRING },
+                  optionA: { type: Type.STRING },
+                  optionB: { type: Type.STRING },
+                  optionC: { type: Type.STRING },
+                  optionD: { type: Type.STRING },
+                  correctAnswer: { type: Type.STRING },
+                  trueFalseStatements: {
                     type: Type.ARRAY,
                     items: {
                       type: Type.OBJECT,
                       properties: {
-                        chapterId: { type: Type.STRING },
-                        conceptId: { type: Type.STRING },
-                        cognitiveLevel: { type: Type.STRING },
-                        questionType: { type: Type.STRING },
-                        scoreWeight: { type: Type.NUMBER },
-                        questionText: { type: Type.STRING },
-                        optionA: { type: Type.STRING },
-                        optionB: { type: Type.STRING },
-                        optionC: { type: Type.STRING },
-                        optionD: { type: Type.STRING },
-                        correctAnswer: { type: Type.STRING },
-                        trueFalseStatements: {
-                          type: Type.ARRAY,
-                          items: {
-                            type: Type.OBJECT,
-                            properties: {
-                              label: { type: Type.STRING },
-                              text: { type: Type.STRING },
-                              isTrue: { type: Type.BOOLEAN }
-                            },
-                            required: ["label", "text", "isTrue"]
-                          }
-                        },
-                        shortAnswerAccepted: {
-                          type: Type.ARRAY,
-                          items: { type: Type.STRING }
-                        },
-                        explanation: { type: Type.STRING },
-                        sourceReference: { type: Type.STRING }
+                        label: { type: Type.STRING },
+                        text: { type: Type.STRING },
+                        isTrue: { type: Type.BOOLEAN }
                       },
-                      required: [
-                        "chapterId",
-                        "conceptId",
-                        "cognitiveLevel",
-                        "questionType",
-                        "scoreWeight",
-                        "questionText",
-                        "explanation",
-                        "sourceReference"
-                      ]
+                      required: ["label", "text", "isTrue"]
                     }
-                  }
+                  },
+                  shortAnswerAccepted: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                  },
+                  explanation: { type: Type.STRING },
+                  sourceReference: { type: Type.STRING }
                 },
-                required: ["questions"]
+                required: [
+                  "chapterId",
+                  "conceptId",
+                  "cognitiveLevel",
+                  "questionType",
+                  "scoreWeight",
+                  "questionText",
+                  "explanation",
+                  "sourceReference"
+                ]
               }
             }
-          })
-        );
-        accumulateTokens(tokensOut, resp);
-        return JSON.parse((resp.text || '{"questions":[]}').trim());
-      }
+          },
+          required: ["questions"]
+        }
+      })
     });
     const validCogs = /* @__PURE__ */ new Set(["nhan_biet", "thong_hieu", "van_dung", "van_dung_cao"]);
     const validTypes = /* @__PURE__ */ new Set(["abcd", "true_false", "short_answer"]);
@@ -3601,7 +3834,6 @@ ${contextChunks}` : ""
     };
   }
   static async rewriteSingleQuestion(params) {
-    const ai = await createServerAiClient();
     const { question, instruction, grade, subject, textbookSeries, tokensOut, config, idToken } = params;
     const prompt = [
       `Vi\u1EBFt l\u1EA1i c\xE2u h\u1ECFi ki\u1EC3m tra m\xF4n ${SUBJECT_LABELS[subject]} l\u1EDBp ${grade} (${textbookSeries}) theo y\xEAu c\u1EA7u c\u1EE7a Admin.`,
@@ -3615,37 +3847,31 @@ ${JSON.stringify(question)}`
       config,
       idToken,
       bypassCache: true,
-      runWithModel: async (modelId) => {
-        const resp = await callWithTimeout(
-          (signal) => ai.models.generateContent({
-            model: modelId,
-            contents: prompt,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, "minimal"),
-              maxOutputTokens: 768,
-              abortSignal: signal,
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  questionText: { type: Type.STRING },
-                  optionA: { type: Type.STRING },
-                  optionB: { type: Type.STRING },
-                  optionC: { type: Type.STRING },
-                  optionD: { type: Type.STRING },
-                  correctAnswer: { type: Type.STRING },
-                  shortAnswerAccepted: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  explanation: { type: Type.STRING },
-                  sourceReference: { type: Type.STRING }
-                },
-                required: ["questionText", "explanation"]
-              }
-            }
-          })
-        );
-        accumulateTokens(tokensOut, resp);
-        return JSON.parse((resp.text || "{}").trim());
-      }
+      allowGroqRescue: true,
+      runWithModel: async (modelId) => generateJsonWithProvider({
+        modelId,
+        prompt,
+        thinkingTier: "minimal",
+        maxOutputTokens: 768,
+        tokensOut,
+        fallbackJson: "{}",
+        groqSchemaHint: '{"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","shortAnswerAccepted":["..."],"explanation":"...","sourceReference":"..."}',
+        geminiSchema: {
+          type: Type.OBJECT,
+          properties: {
+            questionText: { type: Type.STRING },
+            optionA: { type: Type.STRING },
+            optionB: { type: Type.STRING },
+            optionC: { type: Type.STRING },
+            optionD: { type: Type.STRING },
+            correctAnswer: { type: Type.STRING },
+            shortAnswerAccepted: { type: Type.ARRAY, items: { type: Type.STRING } },
+            explanation: { type: Type.STRING },
+            sourceReference: { type: Type.STRING }
+          },
+          required: ["questionText", "explanation"]
+        }
+      })
     });
     return {
       ...question,
@@ -3745,13 +3971,14 @@ ${extractedTextContent.slice(0, 48e3)}` : ""
       idToken,
       bypassCache: true,
       runWithModel: async (modelId) => {
+        const safeModel = inlineParts.length > 0 && isGroqModelId(modelId) ? "gemini-4-hydrogen" : modelId;
         const contents = inlineParts.length > 0 ? { parts: [...inlineParts, { text: promptText }] } : promptText;
         const resp = await callWithTimeout(
           (signal) => ai.models.generateContent({
-            model: modelId,
+            model: safeModel,
             contents,
             config: {
-              thinkingConfig: thinkingConfigForModel(modelId, "minimal"),
+              thinkingConfig: thinkingConfigForModel(safeModel, "minimal"),
               maxOutputTokens: 6144,
               abortSignal: signal,
               responseMimeType: "application/json",
@@ -3925,7 +4152,6 @@ ${extractedTextContent.slice(0, 48e3)}` : ""
 };
 var FlashcardGenerationService = class {
   static async generateFromAnalysis(params) {
-    const ai = await createServerAiClient();
     const {
       ownerUid,
       subject,
@@ -3963,47 +4189,41 @@ var FlashcardGenerationService = class {
       taskType: "flashcard_generation",
       config,
       idToken,
+      allowGroqRescue: true,
       cacheInput: { subject, grade, safeCount, sourceDigest: sourceContext.join("|").slice(0, 3e3) },
-      runWithModel: async (modelId) => {
-        const resp = await callWithTimeout(
-          (signal) => ai.models.generateContent({
-            model: modelId,
-            contents: prompt,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, "minimal"),
-              maxOutputTokens: 1536,
-              abortSignal: signal,
-              responseMimeType: "application/json",
-              responseSchema: {
+      runWithModel: async (modelId) => generateJsonWithProvider({
+        modelId,
+        prompt,
+        thinkingTier: "minimal",
+        maxOutputTokens: 1536,
+        tokensOut,
+        fallbackJson: '{"cards":[]}',
+        groqSchemaHint: '{"cards":[{"front":"...","back":"...","chapter":"...","concept":"...","cardType":"concept|formula|condition|mistake_fix|example","sourceReference":"..."}]}',
+        geminiSchema: {
+          type: Type.OBJECT,
+          properties: {
+            cards: {
+              type: Type.ARRAY,
+              items: {
                 type: Type.OBJECT,
                 properties: {
-                  cards: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        front: { type: Type.STRING },
-                        back: { type: Type.STRING },
-                        chapter: { type: Type.STRING },
-                        concept: { type: Type.STRING },
-                        cardType: {
-                          type: Type.STRING,
-                          description: "concept | formula | condition | mistake_fix | example"
-                        },
-                        sourceReference: { type: Type.STRING }
-                      },
-                      required: ["front", "back", "chapter", "concept", "cardType"]
-                    }
-                  }
+                  front: { type: Type.STRING },
+                  back: { type: Type.STRING },
+                  chapter: { type: Type.STRING },
+                  concept: { type: Type.STRING },
+                  cardType: {
+                    type: Type.STRING,
+                    description: "concept | formula | condition | mistake_fix | example"
+                  },
+                  sourceReference: { type: Type.STRING }
                 },
-                required: ["cards"]
+                required: ["front", "back", "chapter", "concept", "cardType"]
               }
             }
-          })
-        );
-        accumulateTokens(tokensOut, resp);
-        return JSON.parse((resp.text || '{"cards":[]}').trim());
-      }
+          },
+          required: ["cards"]
+        }
+      })
     });
     const validCardTypes = /* @__PURE__ */ new Set([
       "concept",
@@ -4034,26 +4254,21 @@ var FlashcardGenerationService = class {
 };
 var FeedbackAnalysisService = class {
   static async classifyFeedback(params) {
-    const ai = await createServerAiClient();
     const { data } = await runTaskWithRouter({
       taskType: "feedback_analysis",
       config: params.config,
       idToken: params.idToken,
+      allowGroqRescue: true,
       cacheInput: { targetType: params.targetType, category: params.category, note: params.note },
       runWithModel: async (modelId) => {
-        const resp = await callWithTimeout(
-          (signal) => ai.models.generateContent({
-            model: modelId,
-            contents: `T\xF3m t\u1EAFt ng\u1EAFn g\u1ECDn (1 c\xE2u ti\u1EBFng Vi\u1EC7t) nguy\xEAn nh\xE2n & h\u01B0\u1EDBng x\u1EED l\xFD cho ph\u1EA3n h\u1ED3i h\u1ECDc sinh [${params.targetType} | ${params.category}]: "${params.note}"`,
-            config: {
-              thinkingConfig: thinkingConfigForModel(modelId, "minimal"),
-              maxOutputTokens: 120,
-              abortSignal: signal
-            }
-          })
-        );
-        accumulateTokens(params.tokensOut, resp);
-        return (resp.text || "C\u1EA7n qu\u1EA3n tr\u1ECB vi\xEAn ki\u1EC3m tra \u0111\u1ED1i chi\u1EBFu l\u1EA1i ngu\u1ED3n s\xE1ch gi\xE1o khoa.").trim();
+        const text = await generatePlainTextWithProvider({
+          modelId,
+          prompt: `T\xF3m t\u1EAFt ng\u1EAFn g\u1ECDn (1 c\xE2u ti\u1EBFng Vi\u1EC7t) nguy\xEAn nh\xE2n & h\u01B0\u1EDBng x\u1EED l\xFD cho ph\u1EA3n h\u1ED3i h\u1ECDc sinh [${params.targetType} | ${params.category}]: "${params.note}"`,
+          thinkingTier: "minimal",
+          maxOutputTokens: 120,
+          tokensOut: params.tokensOut
+        });
+        return text || "C\u1EA7n qu\u1EA3n tr\u1ECB vi\xEAn ki\u1EC3m tra \u0111\u1ED1i chi\u1EBFu l\u1EA1i ngu\u1ED3n s\xE1ch gi\xE1o khoa.";
       }
     });
     return data;
@@ -4062,6 +4277,54 @@ var FeedbackAnalysisService = class {
 
 // src/server/app.ts
 init_referenceIngestService();
+
+// src/core/uploadBatching.ts
+var MAX_IMAGE_UPLOAD_MB = 5;
+var MAX_DOCUMENT_UPLOAD_MB = 4;
+var TARGET_COMPRESSED_IMAGE_BYTES = 900 * 1024;
+var DEFAULT_MAX_BATCH_BYTES = Math.floor(2.6 * 1024 * 1024);
+function getEffectiveUploadLimits(adminMaxFileMb) {
+  const safeAdmin = typeof adminMaxFileMb === "number" && Number.isFinite(adminMaxFileMb) && adminMaxFileMb > 0 ? adminMaxFileMb : 20;
+  const maxImageMb = Math.min(safeAdmin, MAX_IMAGE_UPLOAD_MB);
+  const maxDocumentMb = Math.min(safeAdmin, MAX_DOCUMENT_UPLOAD_MB);
+  return {
+    maxImageMb,
+    maxDocumentMb,
+    maxImageBytes: Math.round(maxImageMb * 1024 * 1024),
+    maxDocumentBytes: Math.round(maxDocumentMb * 1024 * 1024)
+  };
+}
+function isDocumentFileLike(file) {
+  const lower = (file.name || "").toLowerCase();
+  const mime = (file.type || "").toLowerCase();
+  return mime === "application/pdf" || mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || lower.endsWith(".pdf") || lower.endsWith(".docx");
+}
+function validateUploadFileSize(file, adminMaxFileMb) {
+  const limits = getEffectiveUploadLimits(adminMaxFileMb);
+  const isDoc = isDocumentFileLike(file);
+  if (isDoc) {
+    if (file.size > limits.maxDocumentBytes) {
+      const actualMb = (file.size / (1024 * 1024)).toFixed(2);
+      return {
+        ok: false,
+        isDocumentLimit: true,
+        error: `T\u1EC7p t\xE0i li\u1EC7u "${file.name}" (${actualMb}MB) v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n an to\xE0n ${limits.maxDocumentMb}MB cho PDF/DOCX tr\xEAn m\xE1y ch\u1EE7 Vercel. H\xE3y n\xE9n file nh\u1ECF h\u01A1n ${limits.maxDocumentMb}MB ho\u1EB7c ch\u1EE5p \u1EA3nh t\u1EEBng trang (h\u1ED7 tr\u1EE3 \u1EA3nh g\u1ED1c t\u1EDBi ${limits.maxImageMb}MB/\u1EA3nh).`
+      };
+    }
+    return { ok: true };
+  }
+  if (file.size > limits.maxImageBytes) {
+    const actualMb = (file.size / (1024 * 1024)).toFixed(2);
+    return {
+      ok: false,
+      isDocumentLimit: false,
+      error: `\u1EA2nh "${file.name}" (${actualMb}MB) v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n t\u1ED1i \u0111a ${limits.maxImageMb}MB/\u1EA3nh.`
+    };
+  }
+  return { ok: true };
+}
+
+// src/server/app.ts
 var ALLOWED_UPLOAD_MIMES = /* @__PURE__ */ new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -4269,7 +4532,7 @@ function createApiApp() {
         res.status(400).json({ error: "Vui l\xF2ng ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t t\xE0i li\u1EC7u h\u1EE3p l\u1EC7." });
         return;
       }
-      const maxBytes = guard.config.rateLimitConfig.maximumFileSizeMb * 1024 * 1024;
+      const adminMaxFileMb = guard.config.rateLimitConfig.maximumFileSizeMb;
       for (const f of uploadedFiles) {
         if (!ALLOWED_UPLOAD_MIMES.has(f.mimetype)) {
           res.status(400).json({
@@ -4277,9 +4540,14 @@ function createApiApp() {
           });
           return;
         }
-        if (f.size > maxBytes) {
-          res.status(400).json({
-            error: `File "${f.originalname}" v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n ${guard.config.rateLimitConfig.maximumFileSizeMb}MB.`
+        const sizeCheck = validateUploadFileSize(
+          { name: f.originalname, size: f.size, type: f.mimetype },
+          adminMaxFileMb
+        );
+        if (!sizeCheck.ok) {
+          res.status(413).json({
+            code: "PAYLOAD_TOO_LARGE",
+            error: sizeCheck.error
           });
           return;
         }
@@ -4294,6 +4562,9 @@ function createApiApp() {
       const pageOffset = Math.max(0, Number(bodyParams.pageOffset) || 0);
       const skipScope = bodyParams.skipScope === "true";
       const previousText = (bodyParams.previousText || "").trim();
+      const presetGrade = bodyParams.presetGrade === "11" || bodyParams.presetGrade === "12" ? bodyParams.presetGrade : "10";
+      const rawPresetSubject = (bodyParams.presetSubject || "").trim();
+      const presetSubject = rawPresetSubject && rawPresetSubject in SUBJECT_LABELS ? rawPresetSubject : "khac";
       let pages = [];
       const first = uploadedFiles[0];
       if (first.mimetype === "application/pdf") {
@@ -4325,8 +4596,8 @@ function createApiApp() {
         config: guard.config,
         idToken: user.idToken
       }) : {
-        suggestedGrade: "10",
-        suggestedSubject: "khac",
+        suggestedGrade: presetGrade,
+        suggestedSubject: presetSubject,
         suggestedChapters: [],
         suggestedTitle: first.originalname.replace(/\.[^.]+$/, "")
       };
@@ -4623,6 +4894,7 @@ function createApiApp() {
         usageStats,
         auditLogs,
         singleKeyStatus,
+        groqConfigured: isGroqConfigured(),
         executionLogs: getRecentExecutionLogs(),
         modelCatalog: MODEL_CATALOG
       });
@@ -5130,8 +5402,37 @@ function createApiApp() {
     }
   });
   app.use((err, _req, res, _next) => {
-    console.error("Unhandled Express API error:", err);
     if (res.headersSent) return;
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        res.status(413).json({
+          code: "PAYLOAD_TOO_LARGE",
+          error: "T\u1EC7p t\u1EA3i l\xEAn v\u01B0\u1EE3t qu\xE1 dung l\u01B0\u1EE3ng cho ph\xE9p. Vui l\xF2ng ch\u1ECDn \u1EA3nh \u2264 5MB ho\u1EB7c PDF/DOCX \u2264 4MB."
+        });
+        return;
+      }
+      if (err.code === "LIMIT_FILE_COUNT") {
+        res.status(400).json({
+          code: "TOO_MANY_FILES",
+          error: "S\u1ED1 l\u01B0\u1EE3ng t\u1EC7p g\u1EEDi l\xEAn v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n cho ph\xE9p m\u1ED7i l\u01B0\u1EE3t."
+        });
+        return;
+      }
+      res.status(400).json({
+        code: "UPLOAD_ERROR",
+        error: `L\u1ED7i ti\u1EBFp nh\u1EADn t\u1EC7p t\u1EA3i l\xEAn (${err.code}). Vui l\xF2ng th\u1EED l\u1EA1i.`
+      });
+      return;
+    }
+    const bodyErr = err;
+    if (bodyErr && (bodyErr.type === "entity.too.large" || bodyErr.status === 413 || bodyErr.statusCode === 413)) {
+      res.status(413).json({
+        code: "PAYLOAD_TOO_LARGE",
+        error: "G\xF3i d\u1EEF li\u1EC7u g\u1EEDi l\xEAn v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n m\xE1y ch\u1EE7 (413). H\xE3y n\xE9n t\u1EC7p nh\u1ECF h\u01A1n ho\u1EB7c chia \xEDt trang h\u01A1n."
+      });
+      return;
+    }
+    console.error("Unhandled Express API error:", err);
     res.status(500).json({
       error: err instanceof Error ? err.message : "L\u1ED7i m\xE1y ch\u1EE7 n\u1ED9i b\u1ED9."
     });

@@ -105,22 +105,44 @@ type AdminTab =
 interface ModelCatalogItem {
   modelId: string;
   displayName: string;
+  provider?: 'gemini' | 'groq';
   tier: string;
   strengths: string;
+  supportsMultimodal?: boolean;
 }
 
 const FALLBACK_MODEL_CATALOG: ModelCatalogItem[] = [
   {
     modelId: 'gemini-4-hydrogen',
     displayName: 'Gemini 4 Hydrogen',
+    provider: 'gemini',
     tier: 'free',
     strengths: 'Suy luận sâu, kiểm định tri thức đa nguồn, OCR công thức & chữ viết tay phức tạp.',
+    supportsMultimodal: true,
   },
   {
     modelId: 'gemini-3.1-flash-lite',
     displayName: 'Gemini 3.1 Flash Lite',
+    provider: 'gemini',
     tier: 'free',
     strengths: 'Tốc độ nhanh, tiết kiệm token cho phân loại môn, kiểm tra cấu trúc, flashcard & phản hồi.',
+    supportsMultimodal: true,
+  },
+  {
+    modelId: 'groq:llama-3.3-70b-versatile',
+    displayName: 'Groq · Llama 3.3 70B (Free)',
+    provider: 'groq',
+    tier: 'free',
+    strengths: 'Miễn phí (~1.000 req/ngày) — xử lý văn bản/JSON: kiểm định kiến thức, tạo đề & dự phòng khi Gemini 429.',
+    supportsMultimodal: false,
+  },
+  {
+    modelId: 'groq:llama-3.1-8b-instant',
+    displayName: 'Groq · Llama 3.1 8B Instant (Free)',
+    provider: 'groq',
+    tier: 'free',
+    strengths: 'Siêu nhanh (<1s), miễn phí — phân loại môn, flashcard, tóm tắt phản hồi & dự phòng nhẹ.',
+    supportsMultimodal: false,
   },
 ];
 
@@ -174,6 +196,7 @@ export const AdminControlCenter: React.FC = () => {
   const [singleKeyStatus, setSingleKeyStatus] = useState<SingleApiKeyStatus | null>(null);
   const [executionLogs, setExecutionLogs] = useState<AiExecutionLog[]>([]);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogItem[]>(FALLBACK_MODEL_CATALOG);
+  const [groqConfigured, setGroqConfigured] = useState<boolean>(false);
 
   const [books, setBooks] = useState<ReferenceBook[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -320,6 +343,7 @@ export const AdminControlCenter: React.FC = () => {
       setUsageStats(data.usageStats);
       setAuditLogs(data.auditLogs || []);
       setSingleKeyStatus(data.singleKeyStatus || null);
+      setGroqConfigured(Boolean(data.groqConfigured));
       setExecutionLogs(data.executionLogs || []);
       if (Array.isArray(data.modelCatalog) && data.modelCatalog.length > 0) {
         setModelCatalog(data.modelCatalog);
@@ -1536,6 +1560,36 @@ export const AdminControlCenter: React.FC = () => {
                       </button>
                     ))}
                   </div>
+                </div>
+
+                <div className="rounded-2xl border border-sky-200/80 dark:border-sky-800/60 bg-sky-50/70 dark:bg-sky-950/35 px-4 py-3 text-xs text-[#16243E] dark:text-[#E6EFFC] space-y-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-semibold">
+                      Đa nhà cung cấp Miễn phí (Gemini Free + Groq Free Rescue)
+                    </p>
+                    <span
+                      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
+                        groqConfigured
+                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
+                          : 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300'
+                      }`}
+                    >
+                      {groqConfigured
+                        ? 'Groq Dự phòng: Đã kích hoạt (GROQ_API_KEY)'
+                        : 'Groq Dự phòng: Chưa đặt GROQ_API_KEY trên máy chủ'}
+                    </span>
+                  </div>
+                  <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                    <strong>Gemini Free</strong> (
+                    <code className="font-mono text-[11px]">gemini-4-hydrogen</code>,{' '}
+                    <code className="font-mono text-[11px]">gemini-3.1-flash-lite</code>) đảm nhận OCR ảnh/PDF
+                    và kiểm định chính. <strong>Groq Free</strong> (
+                    <code className="font-mono text-[11px]">groq:llama-3.3-70b-versatile</code>,{' '}
+                    <code className="font-mono text-[11px]">groq:llama-3.1-8b-instant</code>) tự động gánh
+                    các tác vụ văn bản/JSON khi Gemini báo <code className="font-mono text-[11px]">429</code>{' '}
+                    hoặc có thể gán trực tiếp cho từng tác vụ bên dưới (chỉ cần thêm biến môi trường{' '}
+                    <code className="font-mono text-[11px]">GROQ_API_KEY</code> trên Vercel / <code className="font-mono text-[11px]">.env</code>).
+                  </p>
                 </div>
 
                 {modelTestResult && (

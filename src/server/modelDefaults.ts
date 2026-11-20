@@ -3,6 +3,7 @@ import type { AiTaskType, TaskModelConfig } from '../core/types.js';
 export interface ModelCatalogItem {
   modelId: string;
   displayName: string;
+  provider: 'gemini' | 'groq';
   tier: 'free';
   strengths: string;
   supportsMultimodal: boolean;
@@ -13,6 +14,7 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
   {
     modelId: 'gemini-4-hydrogen',
     displayName: 'Gemini 4 Hydrogen',
+    provider: 'gemini',
     tier: 'free',
     strengths: 'Suy luận sâu, kiểm định tri thức đa nguồn, OCR công thức & chữ viết tay phức tạp.',
     supportsMultimodal: true,
@@ -21,10 +23,29 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
   {
     modelId: 'gemini-3.1-flash-lite',
     displayName: 'Gemini 3.1 Flash Lite',
+    provider: 'gemini',
     tier: 'free',
     strengths: 'Tốc độ rất nhanh, tiết kiệm token cho phân loại môn, kiểm tra cấu trúc, flashcard & phản hồi.',
     supportsMultimodal: true,
     supportsGoogleSearch: true,
+  },
+  {
+    modelId: 'groq:llama-3.3-70b-versatile',
+    displayName: 'Groq · Llama 3.3 70B (Free)',
+    provider: 'groq',
+    tier: 'free',
+    strengths: 'Miễn phí (~1.000 req/ngày, phản hồi siêu nhanh) — xử lý văn bản/JSON: kiểm định kiến thức, tạo đề & dự phòng khi Gemini đạt giới hạn 429.',
+    supportsMultimodal: false,
+    supportsGoogleSearch: false,
+  },
+  {
+    modelId: 'groq:llama-3.1-8b-instant',
+    displayName: 'Groq · Llama 3.1 8B Instant (Free)',
+    provider: 'groq',
+    tier: 'free',
+    strengths: 'Tốc độ cực nhanh (<1s), miễn phí — tối ưu cho phân loại môn, flashcard, tóm tắt phản hồi & dự phòng nhẹ.',
+    supportsMultimodal: false,
+    supportsGoogleSearch: false,
   },
 ];
 
