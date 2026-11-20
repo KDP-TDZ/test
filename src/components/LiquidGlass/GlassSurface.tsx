@@ -14,7 +14,8 @@ interface GlassSurfaceProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 /**
- * Apple-inspired Liquid Glass container featuring:
+ * Liquid Glass container featuring:
+ * - Subtle top-edge optical specular sheen
  * - Pointer-relative specular light reflection (disabled on coarse/touch pointers)
  * - Optional concentric water-ripple reaction on click/tap
  * - Proper RAF & timer cleanup with zero pointer interception
@@ -56,7 +57,7 @@ export const GlassSurface: React.FC<GlassSurfaceProps> = ({
 
       if (lightRef.current) {
         lightRef.current.style.opacity = cur.opacity.toFixed(3);
-        lightRef.current.style.background = `radial-gradient(280px circle at ${cur.x}% ${cur.y}%, rgba(186, 230, 253, 0.34), rgba(255, 255, 255, 0.22) 38%, transparent 72%)`;
+        lightRef.current.style.background = `radial-gradient(280px circle at ${cur.x}% ${cur.y}%, rgba(186, 230, 253, 0.36), rgba(255, 255, 255, 0.24) 40%, transparent 74%)`;
       }
       rafRef.current = requestAnimationFrame(tick);
     };
@@ -103,9 +104,16 @@ export const GlassSurface: React.FC<GlassSurfaceProps> = ({
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onClick={handleClick}
-      className={`relative overflow-hidden ${subtle ? 'glass-panel-subtle' : 'glass-surface'} ${className}`}
+      className={`relative overflow-hidden transition-[border-color,box-shadow,transform] duration-200 ease-out ${
+        subtle ? 'glass-panel-subtle' : 'glass-surface'
+      } ${className}`}
       {...rest}
     >
+      {/* Subtle optical top-edge refraction highlight */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-4 top-0 h-px bg-gradient-to-r from-transparent via-white/90 dark:via-sky-200/25 to-transparent z-0"
+      />
       {enableCursorLight && (
         <div
           ref={lightRef}

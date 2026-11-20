@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  distributeExamQuestionScores,
   generateShuffledExamVariant,
   validateExamBlueprint,
   validateQuizQuestionSet,
@@ -301,3 +302,28 @@ test('spaced repetition schedule, before/after comparison, and deterministic cac
   assert.equal(delta.completenessDelta, 35);
   assert.equal(delta.incorrectDelta, -2);
 });
+
+test('distributeExamQuestionScores distributes totalScore exactly across questions', () => {
+  const sampleQs = Array.from({ length: 7 }, (_, i) => ({
+    questionId: `eq_${i + 1}`,
+    orderIndex: i + 1,
+    chapterId: 'Theo đề mẫu',
+    conceptId: 'Theo đề mẫu',
+    learningOutcome: 'Theo đề mẫu',
+    cognitiveLevel: 'thong_hieu' as const,
+    questionType: (i < 5 ? 'abcd' : 'short_answer') as 'abcd' | 'short_answer',
+    scoreWeight: 0.25,
+    questionText: `Câu ${i + 1}`,
+    explanation: 'Giải thích',
+    sourceReference: 'Đề mẫu',
+    sourceType: 'public_exam_reference' as const,
+    validationStatus: 'passed' as const,
+  }));
+
+  const distributed = distributeExamQuestionScores(sampleQs, 10);
+  const sum = Math.round(distributed.reduce((s, q) => s + q.scoreWeight, 0) * 100) / 100;
+  assert.equal(sum, 10);
+  assert.equal(distributed[0].orderIndex, 1);
+  assert.equal(distributed[6].orderIndex, 7);
+});
+

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -158,6 +159,41 @@ async function verifyTokenViaIdentityToolkit(idToken: string): Promise<{
   };
 }
 
+interface CachedVerifiedToken {
+  uid: string;
+  email: string;
+  emailVerified: boolean;
+  isSuperAdmin: boolean;
+  decoded: DecodedIdToken;
+  expiresAt: number;
+}
+
+const TOKEN_CACHE_TTL_MS = 90_000;
+const verifiedTokenCache = new Map<string, CachedVerifiedToken>();
+
+export function invalidateVerifiedTokenCacheForUid(uid?: string): void {
+  if (!uid) {
+    verifiedTokenCache.clear();
+    return;
+  }
+  for (const [k, v] of verifiedTokenCache.entries()) {
+    if (v.uid === uid) {
+      verifiedTokenCache.delete(k);
+    }
+  }
+}
+
+function getJwtExpMs(idToken: string): number | null {
+  try {
+    const parts = idToken.split('.');
+    if (parts.length < 2) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as { exp?: number };
+    return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function verifyFirebaseRequest(req: Request): Promise<AuthenticatedUser> {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -166,6 +202,23 @@ export async function verifyFirebaseRequest(req: Request): Promise<Authenticated
   const idToken = authHeader.slice('Bearer '.length).trim();
   if (!idToken) {
     throw new Error('AUTH_MISSING_TOKEN');
+  }
+
+  const tokenHash = crypto.createHash('sha256').update(idToken).digest('hex');
+  const now = Date.now();
+  const cached = verifiedTokenCache.get(tokenHash);
+  if (cached && now < cached.expiresAt) {
+    return {
+      uid: cached.uid,
+      email: cached.email,
+      emailVerified: cached.emailVerified,
+      isSuperAdmin: cached.isSuperAdmin,
+      idToken,
+      decoded: cached.decoded,
+    };
+  }
+  if (cached) {
+    verifiedTokenCache.delete(tokenHash);
   }
 
   let uid = '';
@@ -205,13 +258,34 @@ export async function verifyFirebaseRequest(req: Request): Promise<Authenticated
     }
   }
 
+  const finalDecoded = (decoded || { uid, email, email_verified: emailVerified }) as DecodedIdToken;
+  const jwtExpMs = getJwtExpMs(idToken);
+  const cacheExp = jwtExpMs
+    ? Math.min(now + TOKEN_CACHE_TTL_MS, jwtExpMs - 5_000)
+    : now + TOKEN_CACHE_TTL_MS;
+
+  if (cacheExp > now + 1000) {
+    if (verifiedTokenCache.size >= 500) {
+      const oldestKey = verifiedTokenCache.keys().next().value;
+      if (oldestKey) verifiedTokenCache.delete(oldestKey);
+    }
+    verifiedTokenCache.set(tokenHash, {
+      uid,
+      email,
+      emailVerified,
+      isSuperAdmin,
+      decoded: finalDecoded,
+      expiresAt: cacheExp,
+    });
+  }
+
   return {
     uid,
     email,
     emailVerified,
     isSuperAdmin,
     idToken,
-    decoded: (decoded || { uid, email, email_verified: emailVerified }) as DecodedIdToken,
+    decoded: finalDecoded,
   };
 }
 

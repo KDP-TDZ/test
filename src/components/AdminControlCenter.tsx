@@ -11,6 +11,8 @@ import {
   FileUp,
   Globe,
   KeyRound,
+  Layers,
+  ListChecks,
   Loader2,
   MessageSquareWarning,
   PauseCircle,
@@ -28,7 +30,17 @@ import {
   Wand2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { generateShuffledExamVariant, validateExamBlueprint } from '../core/quizValidation';
+import {
+  distributeExamQuestionScores,
+  generateShuffledExamVariant,
+  validateExamBlueprint,
+} from '../core/quizValidation';
+import {
+  generateExamBatchFromRawQuestions,
+  parseRawExamQuestions,
+  type BatchGenerationMode,
+  type ParsedRawQuestion,
+} from '../core/rawExamParser';
 import {
   AI_TASK_LABELS,
   EXAM_TYPE_LABELS,
@@ -59,6 +71,7 @@ import {
   type UserProfile,
 } from '../core/types';
 import { authorizedFetch, parseApiResponse } from '../services/apiClient';
+import { compressImageFilesForUpload } from '../services/imageCompression';
 import {
   deleteExamBlueprint,
   deleteExamDocument,
@@ -141,10 +154,10 @@ const QUESTION_TYPE_LABELS: Record<ExamQuestionType, string> = {
 };
 
 const INPUT_CLASS =
-  'w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9] focus:outline-none focus:ring-2 focus:ring-sky-500/40';
+  'w-full px-3.5 py-2 rounded-xl glass-control text-xs';
 
 export const AdminControlCenter: React.FC = () => {
-  const { isSuperAdmin, refreshSystemStatus } = useAuth();
+  const { user, isSuperAdmin, refreshSystemStatus } = useAuth();
   const [tab, setTab] = useState<AdminTab>('overview');
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
@@ -254,6 +267,25 @@ export const AdminControlCenter: React.FC = () => {
   const [savingExam, setSavingExam] = useState(false);
   const [rewriteQuestionId, setRewriteQuestionId] = useState<string | null>(null);
   const [rewriteInstruction, setRewriteInstruction] = useState('Làm rõ giả thiết và đáp án nhiễu hợp lý hơn');
+  const [examCreationMode, setExamCreationMode] = useState<'sample_import' | 'raw_text_batch' | 'blueprint'>('sample_import');
+  const [sampleExamFiles, setSampleExamFiles] = useState<File[]>([]);
+  const [includeTrueFalseInSample, setIncludeTrueFalseInSample] = useState(false);
+  const [importingSampleExam, setImportingSampleExam] = useState(false);
+  const [editingExamQuestionId, setEditingExamQuestionId] = useState<string | null>(null);
+
+  // Raw Text Batch Exam Generator State (Admin-only)
+  const [rawTextInput, setRawTextInput] = useState('');
+  const [rawTextFiles, setRawTextFiles] = useState<
+    Array<{ fileName: string; rawText: string; questions: ParsedRawQuestion[] }>
+  >([]);
+  const [rawBatchMode, setRawBatchMode] = useState<BatchGenerationMode>('split_sequential');
+  const [rawBatchExamCount, setRawBatchExamCount] = useState(3);
+  const [rawQuestionsPerExam, setRawQuestionsPerExam] = useState(10);
+  const [rawShuffleOptions, setRawShuffleOptions] = useState(true);
+  const [rawPublishImmediately, setRawPublishImmediately] = useState(false);
+  const [rawAllowRetake, setRawAllowRetake] = useState(true);
+  const [rawBatchDrafts, setRawBatchDrafts] = useState<ExamDocument[]>([]);
+  const [savingRawBatch, setSavingRawBatch] = useState(false);
 
   // Exam Print Variant Preview
   const [printPreview, setPrintPreview] = useState<{
@@ -321,11 +353,13 @@ export const AdminControlCenter: React.FC = () => {
     return validateExamBlueprint(activeBlueprint);
   }, [activeBlueprint]);
 
+  const rawParsedPreview = useMemo(() => parseRawExamQuestions(rawTextInput), [rawTextInput]);
+
   if (!isSuperAdmin) {
     return (
       <GlassSurface className="rounded-3xl p-8 text-center">
         <Shield className="w-10 h-10 text-rose-600 mx-auto mb-3" />
-        <h1 className="font-display text-xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
+        <h1 className="font-display text-xl font-bold text-[#16243E] dark:text-[#E6EFFC]">
           Không có quyền truy cập khu vực quản trị
         </h1>
         <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
@@ -781,15 +815,24 @@ export const AdminControlCenter: React.FC = () => {
 
   const handleSaveExamDocument = async () => {
     if (!activeExamDraft) return;
+    if (activeExamDraft.questions.length === 0) {
+      setError('Đề thi phải có ít nhất 1 câu hỏi trước khi lưu.');
+      return;
+    }
     setSavingExam(true);
     setError(null);
     try {
       const updated: ExamDocument = {
         ...activeExamDraft,
+        questions: activeExamDraft.questions.slice(0, 60).map((q, idx) => ({
+          ...q,
+          orderIndex: idx + 1,
+        })),
         updatedAt: new Date().toISOString(),
       };
       await saveExamDocument(updated);
       setActiveExamDraft(updated);
+      setEditingExamQuestionId(null);
       setExams((prev) => [updated, ...prev.filter((e) => e.examId !== updated.examId)]);
       setNotice(
         updated.published
@@ -800,6 +843,271 @@ export const AdminControlCenter: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Lỗi lưu đề thi.');
     } finally {
       setSavingExam(false);
+    }
+  };
+
+  const handleImportSampleExam = async () => {
+    if (sampleExamFiles.length === 0) {
+      setError('Vui lòng chọn tệp đề mẫu (PDF, DOCX hoặc ảnh chụp trang đề).');
+      return;
+    }
+    setImportingSampleExam(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const prepared = await compressImageFilesForUpload(sampleExamFiles);
+      const formData = new FormData();
+      prepared.forEach((f) => formData.append('files', f));
+      if (examTitle.trim()) formData.append('title', examTitle.trim());
+      formData.append('grade', examGrade);
+      formData.append('subject', examSubject);
+      formData.append('textbookSeries', examSeries);
+      formData.append('examType', examType);
+      formData.append('academicYear', examYear);
+      formData.append('semester', examSemester);
+      formData.append('durationMinutes', String(examDuration));
+      formData.append('totalScore', String(examTotalScore));
+      formData.append('includeTrueFalse', includeTrueFalseInSample ? 'true' : 'false');
+
+      const res = await authorizedFetch('/api/admin/exams/import-sample', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await parseApiResponse<{
+        exam: ExamDocument;
+        summary: {
+          totalExtracted: number;
+          abcdCount: number;
+          shortAnswerCount: number;
+          trueFalseCount: number;
+          inferredAnswersCount: number;
+        };
+      }>(res, 'Không thể trích xuất câu hỏi từ file đề mẫu.');
+
+      setActiveExamDraft(data.exam);
+      setEditingExamQuestionId(null);
+      const s = data.summary;
+      const inferredNote =
+        s.inferredAnswersCount > 0
+          ? ` Có ${s.inferredAnswersCount} câu file gốc không kèm đáp án nên AI đã tự giải — vui lòng kiểm tra lại.`
+          : '';
+      setNotice(
+        `Đã sao chép nguyên văn ${s.totalExtracted} câu hỏi (${s.abcdCount} trắc nghiệm ABCD, ${s.shortAnswerCount} trả lời ngắn${s.trueFalseCount > 0 ? `, ${s.trueFalseCount} Đúng/Sai` : ''}).${inferredNote} Kiểm tra lại rồi nhấn "Lưu Đề Thi".`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lỗi trích xuất đề mẫu.');
+    } finally {
+      setImportingSampleExam(false);
+    }
+  };
+
+  const handleUpdateDraftQuestion = (questionId: string, patch: Partial<ExamQuestion>) => {
+    setActiveExamDraft((prev) =>
+      prev
+        ? {
+            ...prev,
+            questions: prev.questions.map((item) =>
+              item.questionId === questionId ? { ...item, ...patch } : item
+            ),
+            updatedAt: new Date().toISOString(),
+          }
+        : prev
+    );
+  };
+
+  const handleDeleteDraftQuestion = (questionId: string) => {
+    setActiveExamDraft((prev) => {
+      if (!prev) return prev;
+      const next = prev.questions
+        .filter((q) => q.questionId !== questionId)
+        .map((q, idx) => ({ ...q, orderIndex: idx + 1 }));
+      return { ...prev, questions: next, updatedAt: new Date().toISOString() };
+    });
+    if (editingExamQuestionId === questionId) {
+      setEditingExamQuestionId(null);
+    }
+  };
+
+  const handleAddManualDraftQuestion = (questionType: 'abcd' | 'short_answer') => {
+    if (!activeExamDraft) return;
+    if (activeExamDraft.questions.length >= 60) {
+      setError('Mỗi đề thi hỗ trợ tối đa 60 câu hỏi.');
+      return;
+    }
+    const newId = `eq_manual_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const nextIdx = activeExamDraft.questions.length + 1;
+    const newQuestion: ExamQuestion = {
+      questionId: newId,
+      orderIndex: nextIdx,
+      chapterId: 'Bổ sung thủ công',
+      conceptId: 'Theo đề mẫu',
+      learningOutcome: 'Theo cấu trúc đề',
+      cognitiveLevel: 'thong_hieu',
+      questionType,
+      scoreWeight: 0.25,
+      questionText: '',
+      ...(questionType === 'abcd'
+        ? {
+            optionA: '',
+            optionB: '',
+            optionC: '',
+            optionD: '',
+            correctAnswer: 'A' as const,
+          }
+        : {
+            shortAnswerAccepted: [''],
+          }),
+      explanation: 'Admin bổ sung thủ công.',
+      sourceReference: 'Admin biên soạn',
+      sourceType: 'teacher_material',
+      validationStatus: 'passed',
+    };
+    setActiveExamDraft({
+      ...activeExamDraft,
+      questions: [...activeExamDraft.questions, newQuestion],
+      updatedAt: new Date().toISOString(),
+    });
+    setEditingExamQuestionId(newId);
+  };
+
+  const handleRedistributeDraftScores = () => {
+    if (!activeExamDraft) return;
+    setActiveExamDraft({
+      ...activeExamDraft,
+      questions: distributeExamQuestionScores(activeExamDraft.questions, activeExamDraft.totalScore),
+      updatedAt: new Date().toISOString(),
+    });
+    setNotice(`Đã chia đều tổng ${activeExamDraft.totalScore} điểm cho ${activeExamDraft.questions.length} câu hỏi.`);
+  };
+
+  const handleRawTextFilesSelected = async (files: File[]) => {
+    const validFiles = files.filter((f) => /\.(txt|md|csv|tsv|log)$/i.test(f.name) || f.type.startsWith('text/'));
+    if (validFiles.length === 0) {
+      setError('Vui lòng chọn tệp văn bản thô (.txt, .md, .csv).');
+      return;
+    }
+    setError(null);
+    const loaded = await Promise.all(
+      validFiles.map(async (f) => {
+        const text = await f.text();
+        const parsed = parseRawExamQuestions(text);
+        return {
+          fileName: f.name,
+          rawText: text,
+          questions: parsed.questions,
+        };
+      })
+    );
+    setRawTextFiles(loaded);
+    const combined = loaded.map((item) => item.rawText.trim()).filter(Boolean).join('\n\n');
+    setRawTextInput(combined);
+    if (loaded.length > 1) {
+      setRawBatchMode('per_file');
+    }
+    const totalCount = loaded.reduce((s, item) => s + item.questions.length, 0);
+    setNotice(`Đã đọc ${loaded.length} tệp văn bản thô và nhận diện ${totalCount} câu hỏi.`);
+  };
+
+  const handleInsertRawSample = () => {
+    const sample = [
+      'Q1:Ai là người giỏi nhất trong bài kiểm tra thử?:A. Nguyễn An:B. Trần Bình:C. Lê Chi:D. Phạm Dũng:Đáp án: B',
+      'Q2:Thủ đô của Việt Nam là thành phố nào?:A. TP. Hồ Chí Minh:B. Hà Nội:C. Đà Nẵng:D. Cần Thơ:B',
+      'Q3:Giá trị của biểu thức 2x + 3 tại x = 4 là bao nhiêu?:A. 9:B. 10:C. 11:D. 12:Đáp án: C',
+      'Q4:Nguyên tố hóa học nào có ký hiệu là Fe?:A. Đồng:B. Sắt:C. Nhôm:D. Kẽm:Đáp án: B',
+      'Q5:Kết quả của phép tính 15 x 4 bằng bao nhiêu?:Đáp án: 60',
+      'Q6:Nước tinh khiết sôi ở nhiệt độ bao nhiêu độ C (ở áp suất 1 atm)?',
+      'A. 80 độ C',
+      'B. 90 độ C',
+      '*C. 100 độ C',
+      'D. 120 độ C',
+    ].join('\n');
+    setRawTextFiles([]);
+    setRawTextInput(sample);
+    setRawQuestionsPerExam(3);
+    setError(null);
+    setNotice('Đã chèn dữ liệu mẫu định dạng chữ thô. Bạn có thể chỉnh sửa hoặc bấm tạo ngay nhiều bộ đề.');
+  };
+
+  const handleGenerateRawBatch = () => {
+    setError(null);
+    setNotice(null);
+    const pool = rawParsedPreview.questions;
+    if (pool.length === 0) {
+      setError('Chưa nhận diện được câu hỏi hợp lệ nào. Hãy kiểm tra lại định dạng chữ thô hoặc bấm "Chèn mẫu thử".');
+      return;
+    }
+
+    const drafts = generateExamBatchFromRawQuestions({
+      pool,
+      fileGroups:
+        rawTextFiles.length > 0
+          ? rawTextFiles.map((f) => ({ fileName: f.fileName, questions: f.questions }))
+          : undefined,
+      config: {
+        baseTitle: examTitle.trim() || `${SUBJECT_LABELS[examSubject]} Lớp ${examGrade}`,
+        grade: examGrade,
+        subject: examSubject,
+        textbookSeries: examSeries,
+        examType,
+        academicYear: examYear,
+        semester: examSemester,
+        durationMinutes: examDuration,
+        totalScore: examTotalScore,
+        allowRetake: rawAllowRetake,
+        published: rawPublishImmediately,
+        createdBy: user?.uid || 'admin',
+        mode: rawBatchMode,
+        examCount: rawBatchExamCount,
+        questionsPerExam: rawQuestionsPerExam,
+        shuffleOptionsInVariants: rawShuffleOptions,
+      },
+    });
+
+    if (drafts.length === 0) {
+      setError('Không thể tạo bộ đề từ danh sách câu hỏi hiện tại.');
+      return;
+    }
+
+    setRawBatchDrafts(drafts);
+    setNotice(
+      `Đã tạo xem trước ${drafts.length} bộ đề từ ${pool.length} câu hỏi thô. Kiểm tra rồi bấm "Lưu tất cả ${drafts.length} bộ đề".`
+    );
+  };
+
+  const handleSaveAllRawBatch = async () => {
+    if (rawBatchDrafts.length === 0) return;
+    setSavingRawBatch(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const savedList: ExamDocument[] = [];
+      for (const draft of rawBatchDrafts) {
+        const sanitized: ExamDocument = {
+          ...draft,
+          title: draft.title.trim().slice(0, 200) || 'Đề kiểm tra',
+          questions: draft.questions.slice(0, 60).map((q, idx) => ({
+            ...q,
+            orderIndex: idx + 1,
+          })),
+          updatedAt: new Date().toISOString(),
+        };
+        await saveExamDocument(sanitized);
+        savedList.push(sanitized);
+      }
+
+      setExams((prev) => {
+        const savedIds = new Set(savedList.map((s) => s.examId));
+        return [...savedList, ...prev.filter((ex) => !savedIds.has(ex.examId))];
+      });
+      setRawBatchDrafts([]);
+      const publishedCount = savedList.filter((d) => d.published).length;
+      setNotice(
+        `Đã lưu thành công ${savedList.length} bộ đề vào Firestore (${publishedCount} đề đang mở cho học sinh, ${savedList.length - publishedCount} bản nháp).`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lỗi khi lưu hàng loạt bộ đề.');
+    } finally {
+      setSavingRawBatch(false);
     }
   };
 
@@ -859,10 +1167,10 @@ export const AdminControlCenter: React.FC = () => {
                     questions: v.questions,
                   });
                 }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
                   printPreview.variantCode === code
-                    ? 'bg-sky-600 text-white border-sky-600'
-                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-[#17243A] dark:text-[#E5EDF9]'
+                    ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                    : 'glass-control'
                 }`}
               >
                 Mã đề {code}
@@ -968,13 +1276,13 @@ export const AdminControlCenter: React.FC = () => {
           <p className="text-xs font-semibold text-sky-700 dark:text-sky-400">
             Khu vực quản trị tối cao · Không cần redeploy khi thay đổi cấu hình
           </p>
-          <h1 className="font-display text-2xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
+          <h1 className="font-display text-2xl font-bold text-[#16243E] dark:text-[#E6EFFC]">
             Trung tâm điều khiển StudyCheck AI
           </h1>
         </div>
         <div className="flex items-center gap-2">
           {config && (
-            <span className="font-mono text-xs px-2.5 py-1.5 rounded-lg bg-white/80 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
+            <span className="font-mono text-xs px-3 py-1.5 rounded-xl glass-panel-subtle text-slate-700 dark:text-slate-300">
               Config v{config.configVersion || 1}
             </span>
           )}
@@ -986,7 +1294,7 @@ export const AdminControlCenter: React.FC = () => {
       </div>
 
       {/* Consolidated 7 Live Admin Tabs */}
-      <div className="flex flex-wrap gap-2">
+      <div className="glass-segment rounded-2xl p-1.5 flex flex-wrap gap-1.5">
         {(
           [
             ['overview', 'Tổng quan & Công tắc AI', Power],
@@ -1002,10 +1310,10 @@ export const AdminControlCenter: React.FC = () => {
             key={id}
             type="button"
             onClick={() => setTab(id)}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold border cursor-pointer transition-colors ${
+            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
               tab === id
-                ? 'bg-sky-600 text-white border-sky-600'
-                : 'bg-white dark:bg-slate-900 text-[#17243A] dark:text-[#E5EDF9] border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'
+                ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800/60 hover:text-[#16243E] dark:hover:text-[#E6EFFC]'
             }`}
           >
             <Icon className="w-3.5 h-3.5" />
@@ -1029,7 +1337,7 @@ export const AdminControlCenter: React.FC = () => {
       )}
 
       {loading ? (
-        <GlassSurface className="rounded-2xl p-10 text-center">
+        <GlassSurface className="rounded-3xl p-10 text-center">
           <Loader2 className="w-8 h-8 text-sky-600 animate-spin mx-auto" />
           <p className="text-xs text-slate-600 dark:text-slate-300 mt-3">Đang đồng bộ dữ liệu quản trị...</p>
         </GlassSurface>
@@ -1039,7 +1347,7 @@ export const AdminControlCenter: React.FC = () => {
           {tab === 'overview' && (
             <div className="space-y-6">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <GlassSurface className="rounded-2xl p-5">
+                <GlassSurface className="rounded-3xl p-5">
                   <p className="text-xs text-slate-500 dark:text-slate-400">Trạng thái dịch vụ AI</p>
                   <p
                     className={`font-display text-xl font-bold mt-1 ${
@@ -1053,9 +1361,9 @@ export const AdminControlCenter: React.FC = () => {
                   </p>
                 </GlassSurface>
 
-                <GlassSurface className="rounded-2xl p-5">
+                <GlassSurface className="rounded-3xl p-5">
                   <p className="text-xs text-slate-500 dark:text-slate-400">Yêu cầu AI hôm nay</p>
-                  <p className="font-mono text-2xl font-bold text-[#17243A] dark:text-[#E5EDF9] tabular-nums mt-1">
+                  <p className="font-mono text-2xl font-bold text-[#16243E] dark:text-[#E6EFFC] tabular-nums mt-1">
                     {usageStats?.today.requestCount ?? 0}
                   </p>
                   <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
@@ -1064,7 +1372,7 @@ export const AdminControlCenter: React.FC = () => {
                   </p>
                 </GlassSurface>
 
-                <GlassSurface className="rounded-2xl p-5">
+                <GlassSurface className="rounded-3xl p-5">
                   <p className="text-xs text-slate-500 dark:text-slate-400">Token Gemini thực tế</p>
                   <p className="font-mono text-2xl font-bold text-sky-700 dark:text-sky-400 tabular-nums mt-1">
                     {(usageStats?.today.actualTotalTokens ?? 0).toLocaleString('vi-VN')}
@@ -1075,9 +1383,9 @@ export const AdminControlCenter: React.FC = () => {
                   </p>
                 </GlassSurface>
 
-                <GlassSurface className="rounded-2xl p-5">
+                <GlassSurface className="rounded-3xl p-5">
                   <p className="text-xs text-slate-500 dark:text-slate-400">Hệ sinh thái học tập</p>
-                  <p className="font-mono text-2xl font-bold text-[#17243A] dark:text-[#E5EDF9] tabular-nums mt-1">
+                  <p className="font-mono text-2xl font-bold text-[#16243E] dark:text-[#E6EFFC] tabular-nums mt-1">
                     {books.length} / {exams.length} / {users.length}
                   </p>
                   <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
@@ -1088,9 +1396,9 @@ export const AdminControlCenter: React.FC = () => {
 
               {config && (
                 <GlassSurface className="rounded-3xl p-6 space-y-5">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200/80 dark:border-slate-700/80">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-sky-200/60 dark:border-slate-700/70">
                     <div>
-                      <h2 className="font-display text-lg font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                      <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
                         Công tắc dịch vụ AI & Thông báo bảo trì
                       </h2>
                       <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
@@ -1175,9 +1483,9 @@ export const AdminControlCenter: React.FC = () => {
               )}
 
               {usageStats && (
-                <GlassSurface className="rounded-2xl p-6 space-y-4">
+                <GlassSurface className="rounded-3xl p-6 space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                    <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
                       Thống kê lưu lượng & Lỗi theo ngày
                     </h2>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -1187,7 +1495,7 @@ export const AdminControlCenter: React.FC = () => {
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-xs">
-                      <thead className="border-b border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
+                      <thead className="border-b border-sky-200/60 dark:border-slate-700/70 text-slate-500 dark:text-slate-400">
                         <tr>
                           <th className="py-2 pr-4">Ngày</th>
                           <th className="py-2 pr-4">Tổng Req</th>
@@ -1196,7 +1504,7 @@ export const AdminControlCenter: React.FC = () => {
                           <th className="py-2 pr-4">Token thực tế</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono">
+                      <tbody className="divide-y divide-sky-200/40 dark:divide-slate-800 font-mono">
                         {usageStats.dailySeries.map((d) => (
                           <tr key={d.date}>
                             <td className="py-2 pr-4">{d.date}</td>
@@ -1220,7 +1528,7 @@ export const AdminControlCenter: React.FC = () => {
               <GlassSurface className="rounded-3xl p-6 space-y-5">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <h2 className="font-display text-lg font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                    <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
                       Model Router cho 11 tác vụ AI chuyên biệt
                     </h2>
                     <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
@@ -1234,7 +1542,7 @@ export const AdminControlCenter: React.FC = () => {
                         type="button"
                         disabled={testingModelId === m.modelId}
                         onClick={() => handleTestModel(m.modelId)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-[#17243A] dark:text-[#E5EDF9] hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl glass-control text-xs font-semibold cursor-pointer"
                       >
                         <Activity className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                         {testingModelId === m.modelId ? 'Đang test...' : `Test ${m.modelId}`}
@@ -1281,7 +1589,7 @@ export const AdminControlCenter: React.FC = () => {
                         return (
                           <tr key={taskKey} className="align-middle">
                             <td className="py-3 pr-3">
-                              <p className="font-semibold text-[#17243A] dark:text-[#E5EDF9]">
+                              <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
                                 {AI_TASK_LABELS[taskKey]}
                               </p>
                               <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
@@ -1361,7 +1669,7 @@ export const AdminControlCenter: React.FC = () => {
                                       [taskKey]: e.target.value,
                                     }))
                                   }
-                                  className="px-2 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-mono text-[11px] text-[#17243A] dark:text-[#E5EDF9]"
+                                  className="px-2 py-1.5 rounded-lg glass-control font-mono text-[11px]"
                                 >
                                   {modelCatalog.map((m) => (
                                     <option key={m.modelId} value={m.modelId}>
@@ -1372,7 +1680,7 @@ export const AdminControlCenter: React.FC = () => {
                                 <button
                                   type="button"
                                   onClick={() => handleSetOneTimeOverride(taskKey, overrideDraft)}
-                                  className="px-2.5 py-1.5 rounded-lg bg-sky-600 text-white text-[11px] font-semibold hover:bg-sky-700 cursor-pointer"
+                                  className="px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-sky-500 to-blue-600 text-white text-[11px] font-semibold hover:brightness-105 shadow-sm cursor-pointer"
                                 >
                                   Dùng 1 lần
                                 </button>
@@ -1408,8 +1716,8 @@ export const AdminControlCenter: React.FC = () => {
                 </WaterRippleButton>
               </GlassSurface>
 
-              <GlassSurface className="rounded-2xl p-6 space-y-4">
-                <h3 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+              <GlassSurface className="rounded-3xl p-6 space-y-4">
+                <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
                   Nhật ký thực thi Model gần nhất ({executionLogs.length})
                 </h3>
                 {executionLogs.length === 0 ? (
@@ -1419,7 +1727,7 @@ export const AdminControlCenter: React.FC = () => {
                 ) : (
                   <div className="overflow-x-auto max-h-[340px]">
                     <table className="w-full text-left text-xs">
-                      <thead className="border-b border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
+                      <thead className="border-b border-sky-200/60 dark:border-slate-700/70 text-slate-500 dark:text-slate-400">
                         <tr>
                           <th className="py-2 pr-3">Thời gian</th>
                           <th className="py-2 pr-3">Tác vụ</th>
@@ -1429,7 +1737,7 @@ export const AdminControlCenter: React.FC = () => {
                           <th className="py-2 pr-3">Trạng thái</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-mono text-[11px]">
+                      <tbody className="divide-y divide-sky-200/40 dark:divide-slate-800 font-mono text-[11px]">
                         {executionLogs.map((log) => (
                           <tr key={log.executionId}>
                             <td className="py-2 pr-3">{new Date(log.timestamp).toLocaleTimeString('vi-VN')}</td>
@@ -1467,10 +1775,10 @@ export const AdminControlCenter: React.FC = () => {
           {/* TAB 3: SINGLE API KEY & ALLOWED ORIGINS */}
           {tab === 'api_security' && (
             <div className="space-y-6">
-              <GlassSurface className="rounded-2xl p-6 space-y-4">
+              <GlassSurface className="rounded-3xl p-6 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                    <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
                       API Key Gemini dùng chung cho toàn bộ tác vụ
                     </h2>
                     <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
@@ -1498,7 +1806,7 @@ export const AdminControlCenter: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="document-paper rounded-xl p-4 text-xs grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="glass-panel-subtle rounded-2xl p-4 text-xs grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div>
                     <p className="text-slate-500 dark:text-slate-400">Trạng thái hiện tại</p>
                     <p
@@ -1539,7 +1847,7 @@ export const AdminControlCenter: React.FC = () => {
                   </div>
                 )}
 
-                <form onSubmit={handleSaveSingleKey} className="space-y-4 pt-2 border-t border-slate-200/80 dark:border-slate-700/80">
+                <form onSubmit={handleSaveSingleKey} className="space-y-4 pt-2 border-t border-sky-200/60 dark:border-slate-700/70">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
@@ -1576,7 +1884,7 @@ export const AdminControlCenter: React.FC = () => {
                       type="button"
                       disabled={testingKey || !newRawKey.trim()}
                       onClick={() => handleTestKey(newRawKey)}
-                      className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-[#17243A] dark:text-[#E5EDF9] hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-45 cursor-pointer"
+                      className="px-4 py-2 rounded-xl glass-control text-xs font-semibold disabled:opacity-45 cursor-pointer"
                     >
                       Thử nghiệm key đang nhập
                     </button>
@@ -1585,9 +1893,9 @@ export const AdminControlCenter: React.FC = () => {
               </GlassSurface>
 
               {/* LIVE ALLOWED_ORIGIN MANAGER */}
-              <GlassSurface className="rounded-2xl p-6 space-y-4">
+              <GlassSurface className="rounded-3xl p-6 space-y-4">
                 <div>
-                  <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                  <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
                     Quản lý tên miền được phép truy cập (Live ALLOWED_ORIGIN)
                   </h2>
                   <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
@@ -1623,9 +1931,9 @@ export const AdminControlCenter: React.FC = () => {
                     (config?.allowedOrigins || []).map((origin) => (
                       <div
                         key={origin}
-                        className="flex items-center justify-between gap-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-3.5 py-2 text-xs"
+                        className="flex items-center justify-between gap-3 rounded-xl glass-panel-subtle px-3.5 py-2 text-xs"
                       >
-                        <span className="font-mono text-[#17243A] dark:text-[#E5EDF9] break-all">{origin}</span>
+                        <span className="font-mono text-[#16243E] dark:text-[#E6EFFC] break-all">{origin}</span>
                         <button
                           type="button"
                           onClick={() => handleRemoveAllowedOrigin(origin)}
@@ -1645,11 +1953,11 @@ export const AdminControlCenter: React.FC = () => {
           {tab === 'references' && (
             <div className="space-y-6">
               <GlassSurface className="rounded-3xl p-6 space-y-5">
-                <h2 className="font-display text-lg font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
                   Thêm nguồn kiến thức chuẩn (PDF / DOCX / URL / Text / JSON)
                 </h2>
 
-                <div className="flex flex-wrap gap-2 text-xs">
+                <div className="glass-segment rounded-2xl p-1.5 inline-flex flex-wrap gap-1.5 text-xs">
                   {(
                     [
                       ['pdf', 'Tải PDF', FileUp],
@@ -1666,10 +1974,10 @@ export const AdminControlCenter: React.FC = () => {
                         setRefInputMode(modeId);
                         setRefFile(null);
                       }}
-                      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl font-semibold border cursor-pointer ${
+                      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl font-semibold cursor-pointer transition-all ${
                         refInputMode === modeId
-                          ? 'bg-sky-600 text-white border-sky-600'
-                          : 'bg-white dark:bg-slate-900 text-[#17243A] dark:text-[#E5EDF9] border-slate-200 dark:border-slate-700'
+                          ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                          : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800/60 hover:text-[#16243E] dark:hover:text-[#E6EFFC]'
                       }`}
                     >
                       <Icon className="w-3.5 h-3.5" />
@@ -1875,12 +2183,12 @@ export const AdminControlCenter: React.FC = () => {
               {/* INLINE CHUNK EDITOR */}
               {editingBook && (
                 <GlassSurface className="rounded-3xl p-6 space-y-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-700 pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-sky-200/60 dark:border-slate-700/70 pb-3">
                     <div>
                       <p className="text-xs font-semibold text-sky-700 dark:text-sky-400">
                         Chỉnh sửa trực tiếp các đoạn kiến thức (Chunks)
                       </p>
-                      <h3 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                      <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
                         {editingBook.title}
                       </h3>
                     </div>
@@ -1955,7 +2263,7 @@ export const AdminControlCenter: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => setEditingChunk(null)}
-                          className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold cursor-pointer"
+                          className="px-3 py-1.5 rounded-xl glass-control text-xs font-semibold cursor-pointer"
                         >
                           Hủy
                         </button>
@@ -1970,10 +2278,10 @@ export const AdminControlCenter: React.FC = () => {
                       {bookChunks.map((ch) => (
                         <div
                           key={ch.chunkId}
-                          className="document-paper rounded-xl p-3.5 text-xs flex flex-col sm:flex-row sm:items-start justify-between gap-3"
+                          className="glass-panel-subtle rounded-2xl p-3.5 text-xs flex flex-col sm:flex-row sm:items-start justify-between gap-3"
                         >
                           <div className="space-y-1">
-                            <p className="font-semibold">
+                            <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
                               {ch.chapter} · {ch.lesson} · Trang {ch.pageNumber} ({ch.sectionTitle})
                             </p>
                             <p className="text-slate-600 dark:text-slate-300 line-clamp-3">{ch.content}</p>
@@ -1981,7 +2289,7 @@ export const AdminControlCenter: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => setEditingChunk(ch)}
-                            className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-semibold shrink-0 cursor-pointer"
+                            className="px-3 py-1.5 rounded-xl glass-control font-semibold shrink-0 cursor-pointer"
                           >
                             Sửa đoạn
                           </button>
@@ -1996,10 +2304,10 @@ export const AdminControlCenter: React.FC = () => {
                 {books.map((book) => (
                   <GlassSurface
                     key={book.referenceId}
-                    className="rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                    className="rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
                   >
                     <div>
-                      <p className="text-sm font-bold text-[#17243A] dark:text-[#E5EDF9]">{book.title}</p>
+                      <p className="text-sm font-bold text-[#16243E] dark:text-[#E6EFFC]">{book.title}</p>
                       <p className="text-slate-600 dark:text-slate-300 mt-0.5">
                         {SUBJECT_LABELS[book.subject]} · Lớp {book.grade} · {book.textbookSeries} ·{' '}
                         <span className="font-mono">{book.chunkCount} đoạn</span> · {book.chapters.length} chương
@@ -2015,7 +2323,7 @@ export const AdminControlCenter: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => handleOpenChunkEditor(book)}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-[#17243A] dark:text-[#E5EDF9] font-semibold cursor-pointer"
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl glass-control font-semibold cursor-pointer"
                       >
                         <Edit3 className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                         Sửa đoạn ({book.chunkCount})
@@ -2031,7 +2339,7 @@ export const AdminControlCenter: React.FC = () => {
                             )
                           );
                         }}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-[#17243A] dark:text-[#E5EDF9] cursor-pointer"
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl glass-control cursor-pointer"
                       >
                         {book.status === 'active' ? (
                           <>
@@ -2063,14 +2371,704 @@ export const AdminControlCenter: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 5: EXAM CENTER MANAGEMENT (2-STEP BLUEPRINT -> EXAM -> REWRITE -> PUBLISH -> PRINT) */}
+          {/* TAB 5: EXAM CENTER MANAGEMENT (SAMPLE EXAM IMPORT OR BLUEPRINT GENERATOR -> INLINE EDIT -> PUBLISH -> PRINT) */}
           {tab === 'exams' && (
             <div className="space-y-6">
-              {/* STEP 1: EXAM BLUEPRINT */}
+              <div className="glass-segment rounded-2xl p-1.5 inline-flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setExamCreationMode('sample_import')}
+                  className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+                    examCreationMode === 'sample_import'
+                      ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800/60 hover:text-[#16243E] dark:hover:text-[#E6EFFC]'
+                  }`}
+                >
+                  <FileUp className="w-3.5 h-3.5" />
+                  Tải file đề mẫu (AI sao chép ABCD & Trả lời ngắn)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExamCreationMode('raw_text_batch')}
+                  className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+                    examCreationMode === 'raw_text_batch'
+                      ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800/60 hover:text-[#16243E] dark:hover:text-[#E6EFFC]'
+                  }`}
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  Tạo nhiều đề từ file chữ thô (0 tốn AI)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExamCreationMode('blueprint')}
+                  className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+                    examCreationMode === 'blueprint'
+                      ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                      : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800/60 hover:text-[#16243E] dark:hover:text-[#E6EFFC]'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Hoặc lập Ma trận & AI tự sinh đề
+                </button>
+              </div>
+
+              {examCreationMode === 'raw_text_batch' && (
+                <GlassSurface className="rounded-3xl p-6 space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold text-sky-700 dark:text-sky-400">
+                        Chỉ dành cho Admin · Xử lý trực tiếp, không tốn lượt AI
+                      </p>
+                      <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC] mt-0.5">
+                        Tạo nhiều bộ đề từ tệp / văn bản câu hỏi &amp; đáp án thô
+                      </h2>
+                      <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] mt-1 leading-[1.6]">
+                        Hỗ trợ kiểu viết liền trên 1 dòng (<code className="font-mono">Q1:Câu hỏi:A. ...:B. ...:C. ...:D. ...:Đáp án: B</code>),
+                        nhiều dòng, đánh dấu <code className="font-mono">*A.</code> hoặc bảng đáp án ở cuối tệp. Tự động chia hoặc trộn thành nhiều bộ đề cùng lúc.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleInsertRawSample}
+                      className="px-3 py-2 rounded-xl glass-control text-xs font-semibold shrink-0 cursor-pointer"
+                    >
+                      Chèn mẫu thử
+                    </button>
+                  </div>
+
+                  {/* Metadata + Batch Controls */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Tên bộ đề gốc
+                      </label>
+                      <input
+                        type="text"
+                        value={examTitle}
+                        onChange={(e) => setExamTitle(e.target.value)}
+                        placeholder="VD: Đề ôn tập Chương 1 Hóa 10"
+                        className={INPUT_CLASS}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Khối lớp
+                      </label>
+                      <select
+                        value={examGrade}
+                        onChange={(e) => setExamGrade(e.target.value as GradeLevel)}
+                        className={INPUT_CLASS}
+                      >
+                        <option value="10">Lớp 10</option>
+                        <option value="11">Lớp 11</option>
+                        <option value="12">Lớp 12</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Môn học
+                      </label>
+                      <select
+                        value={examSubject}
+                        onChange={(e) => setExamSubject(e.target.value as SubjectId)}
+                        className={INPUT_CLASS}
+                      >
+                        {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
+                          <option key={s} value={s}>
+                            {SUBJECT_LABELS[s]}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Kỳ kiểm tra
+                      </label>
+                      <select
+                        value={examType}
+                        onChange={(e) => setExamType(e.target.value as ExamType)}
+                        className={INPUT_CLASS}
+                      >
+                        {(Object.keys(EXAM_TYPE_LABELS) as ExamType[]).map((et) => (
+                          <option key={et} value={et}>
+                            {EXAM_TYPE_LABELS[et]}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Cách tạo nhiều bộ đề
+                      </label>
+                      <select
+                        value={rawBatchMode}
+                        onChange={(e) => setRawBatchMode(e.target.value as BatchGenerationMode)}
+                        className={INPUT_CLASS}
+                      >
+                        <option value="split_sequential">Chia lần lượt thành nhiều đề (không trùng câu)</option>
+                        <option value="split_random">Xáo trộn rồi chia thành nhiều đề (không trùng)</option>
+                        <option value="shuffle_variants">Tạo N bộ đề trộn câu &amp; đảo đáp án từ kho</option>
+                        <option value="per_file">Mỗi tệp tải lên thành 1 bộ đề riêng</option>
+                      </select>
+                    </div>
+                    {rawBatchMode !== 'per_file' && (
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                          Số câu mỗi đề (tối đa 60)
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={60}
+                          value={rawQuestionsPerExam}
+                          onChange={(e) =>
+                            setRawQuestionsPerExam(Math.max(1, Math.min(60, Number(e.target.value) || 10)))
+                          }
+                          className={INPUT_CLASS}
+                        />
+                      </div>
+                    )}
+                    {rawBatchMode === 'shuffle_variants' && (
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                          Số bộ đề muốn tạo (1–20)
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={20}
+                          value={rawBatchExamCount}
+                          onChange={(e) =>
+                            setRawBatchExamCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))
+                          }
+                          className={INPUT_CLASS}
+                        />
+                      </div>
+                    )}
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Thời gian (phút) / Thang điểm
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          min={5}
+                          max={180}
+                          value={examDuration}
+                          onChange={(e) => setExamDuration(Math.max(5, Number(e.target.value) || 45))}
+                          className={INPUT_CLASS}
+                        />
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={examTotalScore}
+                          onChange={(e) => setExamTotalScore(Math.max(1, Number(e.target.value) || 10))}
+                          className={INPUT_CLASS}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Upload Multiple .txt / .md / .csv Files OR Paste Raw Text */}
+                  <div
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const dropped = Array.from(e.dataTransfer.files || []);
+                      if (dropped.length > 0) void handleRawTextFilesSelected(dropped);
+                    }}
+                    className="glass-panel-subtle rounded-2xl border-2 border-dashed border-sky-300/80 dark:border-sky-700/70 p-4 sm:p-5 space-y-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                          Chọn 1 hoặc nhiều tệp chữ thô (.txt, .md, .csv) hoặc kéo thả vào đây
+                        </p>
+                        <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2] mt-0.5">
+                          Có thể tải lên nhiều tệp đề cùng lúc, hoặc dán thẳng danh sách câu hỏi vào khung bên dưới.
+                        </p>
+                      </div>
+                      <label className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 text-white text-xs font-semibold cursor-pointer shadow-sm hover:brightness-105">
+                        <FileUp className="w-3.5 h-3.5" />
+                        Chọn tệp chữ thô
+                        <input
+                          type="file"
+                          multiple
+                          accept=".txt,.md,.csv,.tsv,.log,text/plain"
+                          className="hidden"
+                          onChange={(e) => {
+                            const list = Array.from(e.target.files || []);
+                            if (list.length > 0) void handleRawTextFilesSelected(list);
+                          }}
+                        />
+                      </label>
+                    </div>
+
+                    {rawTextFiles.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        {rawTextFiles.map((f, idx) => (
+                          <span
+                            key={`${f.fileName}_${idx}`}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl glass-control"
+                          >
+                            <FileText className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+                            <span>
+                              {f.fileName} ({f.questions.length} câu)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const remaining = rawTextFiles.filter((_, fIdx) => fIdx !== idx);
+                                setRawTextFiles(remaining);
+                                setRawTextInput(
+                                  remaining.map((item) => item.rawText.trim()).filter(Boolean).join('\n\n')
+                                );
+                              }}
+                              className="text-rose-600 hover:text-rose-700 ml-1 cursor-pointer"
+                              aria-label="Gỡ tệp"
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    <textarea
+                      rows={8}
+                      value={rawTextInput}
+                      onChange={(e) => {
+                        setRawTextInput(e.target.value);
+                        if (rawTextFiles.length > 0) setRawTextFiles([]);
+                      }}
+                      placeholder={'Ví dụ:\nQ1:Ai là người giỏi?:A. An:B. Bình:C. Chi:D. Dũng:Đáp án: B\nQ2:Thủ đô Việt Nam là gì?:A. TP.HCM:B. Hà Nội:C. Đà Nẵng:D. Huế:B'}
+                      className={`${INPUT_CLASS} font-mono leading-relaxed`}
+                    />
+
+                    {/* Live Parse Stats */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-3 font-mono tabular-nums">
+                        <span className="font-semibold text-sky-700 dark:text-sky-300">
+                          Nhận diện: {rawParsedPreview.questions.length} câu
+                        </span>
+                        <span className="text-[#475B78] dark:text-[#B4C7E2]">
+                          ABCD: {rawParsedPreview.abcdCount} · Trả lời ngắn: {rawParsedPreview.shortAnswerCount} · Có đáp án:{' '}
+                          {rawParsedPreview.answeredCount}/{rawParsedPreview.questions.length}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-4 text-xs text-slate-700 dark:text-slate-300">
+                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={rawShuffleOptions}
+                            onChange={(e) => setRawShuffleOptions(e.target.checked)}
+                          />
+                          <span>Đảo thứ tự A/B/C/D</span>
+                        </label>
+                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={rawAllowRetake}
+                            onChange={(e) => setRawAllowRetake(e.target.checked)}
+                          />
+                          <span>Cho phép thi lại</span>
+                        </label>
+                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={rawPublishImmediately}
+                            onChange={(e) => setRawPublishImmediately(e.target.checked)}
+                          />
+                          <span>Xuất bản ngay cho HS</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {rawParsedPreview.warnings.length > 0 && rawTextInput.trim() && (
+                      <div className="rounded-xl border border-amber-200 dark:border-amber-800/70 bg-amber-50/80 dark:bg-amber-950/35 px-3.5 py-2.5 text-[11px] text-amber-900 dark:text-amber-200 space-y-0.5">
+                        <p className="font-semibold">Lưu ý định dạng ({rawParsedPreview.warnings.length}):</p>
+                        {rawParsedPreview.warnings.slice(0, 4).map((w, wIdx) => (
+                          <p key={wIdx}>• {w}</p>
+                        ))}
+                        {rawParsedPreview.warnings.length > 4 && (
+                          <p>...và {rawParsedPreview.warnings.length - 4} lưu ý khác.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">
+                      {rawBatchMode === 'split_sequential' || rawBatchMode === 'split_random'
+                        ? `Dự kiến chia thành ${Math.max(1, Math.min(20, Math.ceil(rawParsedPreview.questions.length / Math.max(1, rawQuestionsPerExam))))} bộ đề.`
+                        : rawBatchMode === 'per_file'
+                        ? `Sẽ tạo ${rawTextFiles.filter((f) => f.questions.length > 0).length || 0} bộ đề theo từng tệp.`
+                        : `Sẽ tạo ${rawBatchExamCount} bộ đề (tối đa ${Math.min(rawQuestionsPerExam, rawParsedPreview.questions.length)} câu/đề).`}
+                    </p>
+                    <WaterRippleButton
+                      type="button"
+                      disabled={rawParsedPreview.questions.length === 0}
+                      onClick={handleGenerateRawBatch}
+                    >
+                      <ListChecks className="w-4 h-4" />
+                      Tạo xem trước bộ đề
+                    </WaterRippleButton>
+                  </div>
+
+                  {/* Batch Drafts Preview & One-Click Save All */}
+                  {rawBatchDrafts.length > 0 && (
+                    <div className="document-paper rounded-2xl p-5 space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-700 pb-3">
+                        <div>
+                          <p className="text-xs font-semibold text-sky-700 dark:text-sky-400">
+                            Danh sách bộ đề chuẩn bị lưu ({rawBatchDrafts.length} bộ đề)
+                          </p>
+                          <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2] mt-0.5">
+                            Bạn có thể sửa tên, bật/tắt xuất bản từng đề hoặc mở vào trình biên tập chi tiết trước khi lưu hàng loạt.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setRawBatchDrafts([])}
+                            className="px-3 py-1.5 rounded-xl glass-control text-xs font-semibold cursor-pointer"
+                          >
+                            Xóa danh sách
+                          </button>
+                          <WaterRippleButton
+                            type="button"
+                            size="sm"
+                            disabled={savingRawBatch}
+                            onClick={handleSaveAllRawBatch}
+                          >
+                            <Save className="w-3.5 h-3.5" />
+                            {savingRawBatch
+                              ? 'Đang lưu tất cả...'
+                              : `Lưu tất cả ${rawBatchDrafts.length} bộ đề`}
+                          </WaterRippleButton>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
+                        {rawBatchDrafts.map((draft, dIdx) => (
+                          <div
+                            key={draft.examId}
+                            className="glass-panel-subtle rounded-2xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                          >
+                            <div className="flex-1 min-w-0 space-y-1.5">
+                              <input
+                                type="text"
+                                value={draft.title}
+                                onChange={(e) =>
+                                  setRawBatchDrafts((prev) =>
+                                    prev.map((item) =>
+                                      item.examId === draft.examId
+                                        ? { ...item, title: e.target.value }
+                                        : item
+                                    )
+                                  )
+                                }
+                                className="w-full font-display text-sm font-bold text-[#16243E] dark:text-[#E6EFFC] bg-transparent border-b border-sky-200/70 dark:border-slate-700 focus:outline-none focus:border-sky-500 pb-0.5"
+                              />
+                              <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#475B78] dark:text-[#B4C7E2] font-mono tabular-nums">
+                                <span>Đề #{dIdx + 1}</span>
+                                <span>{draft.questions.length} câu</span>
+                                <span>{draft.durationMinutes} phút</span>
+                                <span>{draft.totalScore} điểm</span>
+                                <span
+                                  className={
+                                    draft.validationStatus === 'passed'
+                                      ? 'text-emerald-700 dark:text-emerald-400 font-semibold'
+                                      : 'text-amber-700 dark:text-amber-400 font-semibold'
+                                  }
+                                >
+                                  {draft.validationStatus === 'passed' ? 'Đủ đáp án' : 'Có câu thiếu đáp án'}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2 shrink-0">
+                              <label className="inline-flex items-center gap-1.5 cursor-pointer px-2 py-1 rounded-lg glass-control">
+                                <input
+                                  type="checkbox"
+                                  checked={draft.published}
+                                  onChange={(e) =>
+                                    setRawBatchDrafts((prev) =>
+                                      prev.map((item) =>
+                                        item.examId === draft.examId
+                                          ? { ...item, published: e.target.checked }
+                                          : item
+                                      )
+                                    )
+                                  }
+                                />
+                                <span>Xuất bản</span>
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveExamDraft(draft);
+                                  setEditingExamQuestionId(null);
+                                }}
+                                className="px-2.5 py-1.5 rounded-xl glass-control font-semibold cursor-pointer"
+                              >
+                                Xem / Sửa từng câu
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setRawBatchDrafts((prev) =>
+                                    prev.filter((item) => item.examId !== draft.examId)
+                                  )
+                                }
+                                className="p-1.5 rounded-lg border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                                aria-label="Bỏ bộ đề này"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </GlassSurface>
+              )}
+
+              {examCreationMode === 'sample_import' && (
+                <GlassSurface className="rounded-3xl p-6 space-y-5">
+                  <div>
+                    <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                      Tải file đề mẫu — AI sao chép Trắc nghiệm ABCD & Trả lời ngắn
+                    </h2>
+                    <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                      Đưa file PDF, DOCX hoặc ảnh chụp các trang đề mẫu lên; AI sẽ giữ nguyên văn câu hỏi Trắc nghiệm 4 lựa chọn (ABCD) và Trả lời ngắn để bạn rà soát và xuất bản nhanh chóng.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Tiêu đề đề (tùy chọn — để trống sẽ lấy theo đề mẫu)
+                      </label>
+                      <input
+                        type="text"
+                        value={examTitle}
+                        onChange={(e) => setExamTitle(e.target.value)}
+                        placeholder="VD: Đề Giữa kỳ I Toán 10 - Đề số 1"
+                        className={INPUT_CLASS}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Khối lớp
+                      </label>
+                      <select
+                        value={examGrade}
+                        onChange={(e) => setExamGrade(e.target.value as GradeLevel)}
+                        className={INPUT_CLASS}
+                      >
+                        <option value="10">Lớp 10</option>
+                        <option value="11">Lớp 11</option>
+                        <option value="12">Lớp 12</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Môn học
+                      </label>
+                      <select
+                        value={examSubject}
+                        onChange={(e) => setExamSubject(e.target.value as SubjectId)}
+                        className={INPUT_CLASS}
+                      >
+                        {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
+                          <option key={s} value={s}>
+                            {SUBJECT_LABELS[s]}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Kỳ kiểm tra
+                      </label>
+                      <select
+                        value={examType}
+                        onChange={(e) => setExamType(e.target.value as ExamType)}
+                        className={INPUT_CLASS}
+                      >
+                        {(Object.keys(EXAM_TYPE_LABELS) as ExamType[]).map((et) => (
+                          <option key={et} value={et}>
+                            {EXAM_TYPE_LABELS[et]}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Bộ sách giáo khoa
+                      </label>
+                      <select
+                        value={examSeries}
+                        onChange={(e) => setExamSeries(e.target.value)}
+                        className={INPUT_CLASS}
+                      >
+                        {TEXTBOOK_SERIES_OPTIONS.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Năm học & Học kỳ
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={examYear}
+                          onChange={(e) => setExamYear(e.target.value)}
+                          className={INPUT_CLASS}
+                        />
+                        <select
+                          value={examSemester}
+                          onChange={(e) => setExamSemester(e.target.value as '1' | '2')}
+                          className="px-2.5 py-2 rounded-xl glass-control text-xs"
+                        >
+                          <option value="1">HK I</option>
+                          <option value="2">HK II</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Thời gian (phút) / Thang điểm
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          min={15}
+                          max={180}
+                          value={examDuration}
+                          onChange={(e) => setExamDuration(Math.max(15, Number(e.target.value) || 45))}
+                          className={INPUT_CLASS}
+                        />
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={examTotalScore}
+                          onChange={(e) => setExamTotalScore(Math.max(1, Number(e.target.value) || 10))}
+                          className={INPUT_CLASS}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-end pb-1">
+                      <label className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={includeTrueFalseInSample}
+                          onChange={(e) => setIncludeTrueFalseInSample(e.target.checked)}
+                        />
+                        <span>Kèm cả phần Đúng/Sai (4 ý) nếu có</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const dropped = Array.from(e.dataTransfer.files || []);
+                      if (dropped.length > 0) setSampleExamFiles(dropped);
+                    }}
+                    className="glass-panel-subtle rounded-2xl border-2 border-dashed border-sky-300/80 dark:border-sky-700/70 p-6 text-center space-y-3"
+                  >
+                    <FileUp className="w-8 h-8 text-sky-600 dark:text-sky-400 mx-auto" />
+                    <div className="space-y-1">
+                      <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                        Kéo thả file đề mẫu vào đây (PDF, DOCX hoặc nhiều ảnh chụp trang đề)
+                      </p>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Hỗ trợ trích xuất tối đa 60 câu hỏi mỗi đề. Không cần lập ma trận đề trước.
+                      </p>
+                    </div>
+                    <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 text-white text-xs font-semibold cursor-pointer shadow-sm hover:brightness-105 transition-all">
+                      <FileUp className="w-3.5 h-3.5" />
+                      Chọn tệp đề mẫu
+                      <input
+                        type="file"
+                        multiple
+                        accept=".pdf,.docx,image/jpeg,image/png,image/webp"
+                        className="hidden"
+                        onChange={(e) => {
+                          const list = Array.from(e.target.files || []);
+                          if (list.length > 0) setSampleExamFiles(list);
+                        }}
+                      />
+                    </label>
+
+                    {sampleExamFiles.length > 0 && (
+                      <div className="pt-2 flex flex-wrap items-center justify-center gap-2 text-xs">
+                        {sampleExamFiles.map((f, idx) => (
+                          <span
+                            key={`${f.name}_${idx}`}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl glass-panel-subtle text-[#16243E] dark:text-[#E6EFFC]"
+                          >
+                            <FileText className="w-3.5 h-3.5 text-sky-600" />
+                            {f.name}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSampleExamFiles((prev) => prev.filter((_, fIdx) => fIdx !== idx))
+                              }
+                              className="text-rose-500 hover:text-rose-700 ml-1 cursor-pointer"
+                              aria-label="Bỏ tệp"
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {includeTrueFalseInSample
+                        ? 'Chế độ: Sao chép ABCD + Trả lời ngắn + Đúng/Sai 4 ý.'
+                        : 'Chế độ mặc định: Chỉ sao chép Trắc nghiệm ABCD và Trả lời ngắn.'}
+                    </p>
+                    <WaterRippleButton
+                      type="button"
+                      disabled={importingSampleExam || sampleExamFiles.length === 0}
+                      onClick={handleImportSampleExam}
+                    >
+                      {importingSampleExam ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Đang đọc & sao chép câu hỏi...
+                        </>
+                      ) : (
+                        <>
+                          <FileUp className="w-4 h-4" />
+                          Tải lên & AI sao chép câu hỏi
+                        </>
+                      )}
+                    </WaterRippleButton>
+                  </div>
+                </GlassSurface>
+              )}
+
+              {/* STEP 1: EXAM BLUEPRINT (SECONDARY MODE) */}
+              {examCreationMode === 'blueprint' && (
               <GlassSurface className="rounded-3xl p-6 space-y-5">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h2 className="font-display text-lg font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                    <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
                       Bước 1: Lập & Duyệt Ma Trận Đề Kiểm Tra
                     </h2>
                     <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
@@ -2168,7 +3166,7 @@ export const AdminControlCenter: React.FC = () => {
                       <select
                         value={examSemester}
                         onChange={(e) => setExamSemester(e.target.value as '1' | '2')}
-                        className="px-2.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                        className="px-2.5 py-2 rounded-xl glass-control text-xs"
                       >
                         <option value="1">HK I</option>
                         <option value="2">HK II</option>
@@ -2227,7 +3225,7 @@ export const AdminControlCenter: React.FC = () => {
                         const found = blueprints.find((b) => b.blueprintId === e.target.value);
                         if (found) setActiveBlueprint(found);
                       }}
-                      className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                      className="px-3 py-2 rounded-xl glass-control text-xs"
                     >
                       <option value="">-- Mở Ma Trận đã lưu ({blueprints.length}) --</option>
                       {blueprints.map((bp) => (
@@ -2449,15 +3447,17 @@ export const AdminControlCenter: React.FC = () => {
                   </div>
                 )}
               </GlassSurface>
+              )}
 
-              {/* STEP 2: EXAM DRAFT REVIEW, SINGLE QUESTION REWRITE & PUBLISH */}
+              {/* STEP 2: EXAM DRAFT REVIEW, INLINE EDITING, SINGLE QUESTION REWRITE & PUBLISH */}
               {activeExamDraft && (
                 <GlassSurface className="rounded-3xl p-6 space-y-5">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-700 pb-4">
                     <div>
                       <p className="text-xs font-semibold text-sky-700 dark:text-sky-400">
-                        Biên tập & Kiểm duyệt Đề thi ({activeExamDraft.questions.length} câu ·{' '}
-                        {activeExamDraft.totalScore} điểm)
+                        Biên tập & Kiểm duyệt Đề thi ({activeExamDraft.questions.length} câu · Tổng{' '}
+                        {Math.round(activeExamDraft.questions.reduce((s, q) => s + (q.scoreWeight || 0), 0) * 100) / 100}
+                        /{activeExamDraft.totalScore} điểm)
                       </p>
                       <input
                         type="text"
@@ -2465,11 +3465,34 @@ export const AdminControlCenter: React.FC = () => {
                         onChange={(e) =>
                           setActiveExamDraft({ ...activeExamDraft, title: e.target.value })
                         }
-                        className="font-display text-lg font-bold bg-transparent border-b border-slate-300 dark:border-slate-700 focus:outline-none mt-1"
+                        className="font-display text-lg font-bold bg-transparent border-b border-slate-300 dark:border-slate-700 focus:outline-none mt-1 w-full sm:w-96"
                       />
                     </div>
-                    <div className="flex flex-wrap items-center gap-3 text-xs">
-                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <div className="flex flex-wrap items-center gap-2.5 text-xs">
+                      <button
+                        type="button"
+                        onClick={handleRedistributeDraftScores}
+                        className="px-2.5 py-1.5 rounded-xl glass-control font-semibold cursor-pointer"
+                      >
+                        Chia đều điểm
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAddManualDraftQuestion('abcd')}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl glass-control font-semibold cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Câu ABCD
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAddManualDraftQuestion('short_answer')}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl glass-control font-semibold cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Câu Trả lời ngắn
+                      </button>
+                      <label className="inline-flex items-center gap-1.5 cursor-pointer ml-1">
                         <input
                           type="checkbox"
                           checked={activeExamDraft.published}
@@ -2508,71 +3531,212 @@ export const AdminControlCenter: React.FC = () => {
                     />
                   </div>
 
-                  <div className="space-y-3 max-h-[560px] overflow-y-auto pr-1">
-                    {activeExamDraft.questions.map((q) => (
-                      <div key={q.questionId} className="document-paper rounded-2xl p-4 space-y-2 text-xs">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="font-semibold text-sky-700 dark:text-sky-400">
-                            Câu {q.orderIndex} · {QUESTION_TYPE_LABELS[q.questionType]} ·{' '}
-                            {COGNITIVE_LABELS[q.cognitiveLevel]} · {q.scoreWeight}đ
-                          </span>
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`font-semibold ${
-                                q.validationStatus === 'passed'
-                                  ? 'text-emerald-700 dark:text-emerald-400'
-                                  : 'text-amber-700 dark:text-amber-400'
-                              }`}
-                            >
-                              {q.validationStatus === 'passed' ? 'Đạt chuẩn' : q.validationStatus}
+                  <div className="space-y-3 max-h-[620px] overflow-y-auto pr-1">
+                    {activeExamDraft.questions.map((q) => {
+                      const isEditing = editingExamQuestionId === q.questionId;
+                      return (
+                        <div key={q.questionId} className="document-paper rounded-2xl p-4 space-y-2.5 text-xs">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-semibold text-sky-700 dark:text-sky-400">
+                              Câu {q.orderIndex} · {QUESTION_TYPE_LABELS[q.questionType]} ·{' '}
+                              {COGNITIVE_LABELS[q.cognitiveLevel]} · {q.scoreWeight}đ
                             </span>
-                            <button
-                              type="button"
-                              disabled={rewriteQuestionId === q.questionId}
-                              onClick={() => handleRewriteExamQuestion(q)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-semibold cursor-pointer"
-                            >
-                              <Wand2 className="w-3 h-3 text-sky-600 dark:text-sky-400" />
-                              {rewriteQuestionId === q.questionId ? 'Đang viết lại...' : 'AI viết lại câu này'}
-                            </button>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={`font-semibold ${
+                                  q.validationStatus === 'passed'
+                                    ? 'text-emerald-700 dark:text-emerald-400'
+                                    : 'text-amber-700 dark:text-amber-400'
+                                }`}
+                              >
+                                {q.validationStatus === 'passed'
+                                  ? 'Đạt chuẩn'
+                                  : q.validationStatus === 'needs_review'
+                                    ? 'Cần kiểm tra đáp án'
+                                    : q.validationStatus}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingExamQuestionId(isEditing ? null : q.questionId)
+                                }
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl glass-control font-semibold cursor-pointer"
+                              >
+                                <Edit3 className="w-3 h-3 text-sky-600 dark:text-sky-400" />
+                                {isEditing ? 'Xong' : 'Sửa tay'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={rewriteQuestionId === q.questionId}
+                                onClick={() => handleRewriteExamQuestion(q)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl glass-control font-semibold cursor-pointer"
+                              >
+                                <Wand2 className="w-3 h-3 text-sky-600 dark:text-sky-400" />
+                                {rewriteQuestionId === q.questionId ? 'Đang viết lại...' : 'AI viết lại câu này'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteDraftQuestion(q.questionId)}
+                                className="p-1.5 rounded-lg border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                                aria-label="Xóa câu hỏi"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
                           </div>
-                        </div>
 
-                        <p className="text-sm font-medium">{q.questionText}</p>
-                        {q.questionType === 'abcd' && (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-slate-600 dark:text-slate-300">
-                            <p>A. {q.optionA}</p>
-                            <p>B. {q.optionB}</p>
-                            <p>C. {q.optionC}</p>
-                            <p>D. {q.optionD}</p>
-                          </div>
-                        )}
-                        {q.questionType === 'true_false' && (
-                          <div className="space-y-1 text-slate-600 dark:text-slate-300">
-                            {(q.trueFalseStatements || []).map((st) => (
-                              <p key={st.label}>
-                                {st.label}) {st.text} → <strong>{st.isTrue ? 'Đúng' : 'Sai'}</strong>
+                          {isEditing ? (
+                            <div className="space-y-2.5 pt-1">
+                              <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                                <div className="sm:col-span-3">
+                                  <label className="block text-[11px] text-slate-500 mb-1">Nội dung câu hỏi</label>
+                                  <textarea
+                                    rows={2}
+                                    value={q.questionText}
+                                    onChange={(e) =>
+                                      handleUpdateDraftQuestion(q.questionId, { questionText: e.target.value })
+                                    }
+                                    className={INPUT_CLASS}
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[11px] text-slate-500 mb-1">Điểm câu này</label>
+                                  <input
+                                    type="number"
+                                    step="0.05"
+                                    min={0.05}
+                                    value={q.scoreWeight}
+                                    onChange={(e) =>
+                                      handleUpdateDraftQuestion(q.questionId, {
+                                        scoreWeight: Math.max(0.05, Number(e.target.value) || 0.25),
+                                      })
+                                    }
+                                    className={INPUT_CLASS}
+                                  />
+                                </div>
+                              </div>
+
+                              {q.questionType === 'abcd' && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  {(['A', 'B', 'C', 'D'] as const).map((letter) => {
+                                    const field = `option${letter}` as 'optionA' | 'optionB' | 'optionC' | 'optionD';
+                                    return (
+                                      <div key={letter} className="flex items-center gap-1.5">
+                                        <span className="font-bold w-5 shrink-0">{letter}.</span>
+                                        <input
+                                          type="text"
+                                          value={q[field] || ''}
+                                          onChange={(e) =>
+                                            handleUpdateDraftQuestion(q.questionId, { [field]: e.target.value })
+                                          }
+                                          className={INPUT_CLASS}
+                                        />
+                                      </div>
+                                    );
+                                  })}
+                                  <div className="sm:col-span-2 flex items-center gap-2">
+                                    <span className="text-[11px] font-semibold">Đáp án đúng:</span>
+                                    <select
+                                      value={q.correctAnswer || 'A'}
+                                      onChange={(e) =>
+                                        handleUpdateDraftQuestion(q.questionId, {
+                                          correctAnswer: e.target.value as 'A' | 'B' | 'C' | 'D',
+                                          validationStatus: 'passed',
+                                        })
+                                      }
+                                      className="px-2.5 py-1 rounded-lg glass-control font-semibold"
+                                    >
+                                      <option value="A">A</option>
+                                      <option value="B">B</option>
+                                      <option value="C">C</option>
+                                      <option value="D">D</option>
+                                    </select>
+                                  </div>
+                                </div>
+                              )}
+
+                              {q.questionType === 'short_answer' && (
+                                <div>
+                                  <label className="block text-[11px] text-slate-500 mb-1">
+                                    Các đáp án chấp nhận (cách nhau bằng dấu | , ví dụ: 0.5 | 0,5)
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={(q.shortAnswerAccepted || []).join(' | ')}
+                                    onChange={(e) =>
+                                      handleUpdateDraftQuestion(q.questionId, {
+                                        shortAnswerAccepted: e.target.value
+                                          .split('|')
+                                          .map((s) => s.trim())
+                                          .filter(Boolean),
+                                        validationStatus: 'passed',
+                                      })
+                                    }
+                                    className={INPUT_CLASS}
+                                  />
+                                </div>
+                              )}
+
+                              <div>
+                                <label className="block text-[11px] text-slate-500 mb-1">Giải thích</label>
+                                <input
+                                  type="text"
+                                  value={q.explanation}
+                                  onChange={(e) =>
+                                    handleUpdateDraftQuestion(q.questionId, { explanation: e.target.value })
+                                  }
+                                  className={INPUT_CLASS}
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <p className="text-sm font-medium">{q.questionText}</p>
+                              {q.questionType === 'abcd' && (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-slate-600 dark:text-slate-300">
+                                  <p className={q.correctAnswer === 'A' ? 'font-bold text-emerald-700 dark:text-emerald-400' : ''}>
+                                    A. {q.optionA}
+                                  </p>
+                                  <p className={q.correctAnswer === 'B' ? 'font-bold text-emerald-700 dark:text-emerald-400' : ''}>
+                                    B. {q.optionB}
+                                  </p>
+                                  <p className={q.correctAnswer === 'C' ? 'font-bold text-emerald-700 dark:text-emerald-400' : ''}>
+                                    C. {q.optionC}
+                                  </p>
+                                  <p className={q.correctAnswer === 'D' ? 'font-bold text-emerald-700 dark:text-emerald-400' : ''}>
+                                    D. {q.optionD}
+                                  </p>
+                                </div>
+                              )}
+                              {q.questionType === 'true_false' && (
+                                <div className="space-y-1 text-slate-600 dark:text-slate-300">
+                                  {(q.trueFalseStatements || []).map((st) => (
+                                    <p key={st.label}>
+                                      {st.label}) {st.text} → <strong>{st.isTrue ? 'Đúng' : 'Sai'}</strong>
+                                    </p>
+                                  ))}
+                                </div>
+                              )}
+                              {q.questionType === 'short_answer' && (
+                                <p className="font-mono text-emerald-700 dark:text-emerald-400">
+                                  Đáp án chấp nhận: {(q.shortAnswerAccepted || []).join(' | ')}
+                                </p>
+                              )}
+                              <p className="text-slate-500 dark:text-slate-400">
+                                <strong>Giải thích:</strong> {q.explanation} ({q.sourceReference})
                               </p>
-                            ))}
-                          </div>
-                        )}
-                        {q.questionType === 'short_answer' && (
-                          <p className="font-mono text-emerald-700 dark:text-emerald-400">
-                            Đáp án chấp nhận: {(q.shortAnswerAccepted || []).join(' | ')}
-                          </p>
-                        )}
-                        <p className="text-slate-500 dark:text-slate-400">
-                          <strong>Giải thích:</strong> {q.explanation} ({q.sourceReference})
-                        </p>
-                      </div>
-                    ))}
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </GlassSurface>
               )}
 
               {/* SAVED EXAMS LIST */}
-              <GlassSurface className="rounded-2xl p-6 space-y-4">
-                <h3 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+              <GlassSurface className="rounded-3xl p-6 space-y-4">
+                <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
                   Danh sách Đề kiểm tra đã tạo ({exams.length})
                 </h3>
                 {exams.length === 0 ? (
@@ -2584,10 +3748,10 @@ export const AdminControlCenter: React.FC = () => {
                     {exams.map((ex) => (
                       <div
                         key={ex.examId}
-                        className="document-paper rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                        className="glass-panel-subtle rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
                       >
                         <div>
-                          <p className="text-sm font-bold">{ex.title}</p>
+                          <p className="text-sm font-bold text-[#16243E] dark:text-[#E6EFFC]">{ex.title}</p>
                           <p className="text-slate-600 dark:text-slate-300 mt-0.5">
                             {SUBJECT_LABELS[ex.subject]} · Lớp {ex.grade} · {EXAM_TYPE_LABELS[ex.examType]} ·{' '}
                             {ex.questions.length} câu · {ex.durationMinutes} phút ·{' '}
@@ -2608,7 +3772,7 @@ export const AdminControlCenter: React.FC = () => {
                                 includeAnswers: true,
                               });
                             }}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 font-semibold cursor-pointer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl glass-control font-semibold cursor-pointer"
                           >
                             <Printer className="w-3.5 h-3.5" />
                             Xuất Mã đề 101/102/103
@@ -2616,7 +3780,7 @@ export const AdminControlCenter: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => setActiveExamDraft(ex)}
-                            className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 font-semibold cursor-pointer"
+                            className="px-2.5 py-1.5 rounded-xl glass-control font-semibold cursor-pointer"
                           >
                             Chỉnh sửa
                           </button>
@@ -2633,7 +3797,7 @@ export const AdminControlCenter: React.FC = () => {
                                 prev.map((item) => (item.examId === ex.examId ? next : item))
                               );
                             }}
-                            className="px-2.5 py-1.5 rounded-lg bg-sky-600 text-white font-semibold cursor-pointer"
+                            className="px-2.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 text-white font-semibold shadow-sm hover:brightness-105 cursor-pointer"
                           >
                             {ex.published ? 'Ẩn đề' : 'Xuất bản'}
                           </button>
@@ -2643,7 +3807,7 @@ export const AdminControlCenter: React.FC = () => {
                               await deleteExamDocument(ex.examId);
                               setExams((prev) => prev.filter((item) => item.examId !== ex.examId));
                             }}
-                            className="p-1.5 rounded-lg border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 cursor-pointer"
+                            className="p-1.5 rounded-xl border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
                             aria-label="Xóa đề thi"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -2665,14 +3829,14 @@ export const AdminControlCenter: React.FC = () => {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <MessageSquareWarning className="w-5 h-5 text-amber-600 dark:text-amber-400" />
-                    <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                    <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
                       Hộp thư phản hồi sai sót từ học sinh ({feedbackList.length})
                     </h2>
                   </div>
                   <select
                     value={feedbackFilter}
                     onChange={(e) => setFeedbackFilter(e.target.value as any)}
-                    className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                    className="px-3 py-1.5 rounded-xl glass-control text-xs"
                   >
                     <option value="all">Tất cả trạng thái</option>
                     <option value="pending">Chờ duyệt</option>
@@ -2692,10 +3856,10 @@ export const AdminControlCenter: React.FC = () => {
                       .map((fb) => (
                         <div
                           key={fb.feedbackId}
-                          className="document-paper rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                          className="glass-panel-subtle rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
                         >
                           <div className="space-y-1">
-                            <p className="font-semibold">
+                            <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
                               [{fb.targetType}] {fb.category} ·{' '}
                               <span className="font-mono text-slate-500">{fb.ownerEmail || fb.ownerUid}</span>
                             </p>
@@ -2717,7 +3881,7 @@ export const AdminControlCenter: React.FC = () => {
                                 )
                               );
                             }}
-                            className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-semibold shrink-0"
+                            className="px-3 py-1.5 rounded-xl glass-control font-semibold shrink-0"
                           >
                             <option value="pending">Chờ duyệt</option>
                             <option value="reviewed">Đang xem xét</option>
@@ -2732,7 +3896,7 @@ export const AdminControlCenter: React.FC = () => {
               {/* SUPER ADMIN ROLE MANAGER */}
               <GlassSurface className="rounded-3xl p-6 space-y-4">
                 <div>
-                  <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                  <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
                     Phân quyền Super Admin (Cấp / Thu hồi trực tiếp)
                   </h2>
                   <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
@@ -2765,10 +3929,10 @@ export const AdminControlCenter: React.FC = () => {
                   {adminRoles.map((adm) => (
                     <div
                       key={adm.uid}
-                      className="document-paper rounded-xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs"
+                      className="glass-panel-subtle rounded-2xl px-4 py-2.5 flex items-center justify-between gap-3 text-xs"
                     >
                       <div>
-                        <p className="font-mono font-semibold">{adm.uid}</p>
+                        <p className="font-mono font-semibold text-[#16243E] dark:text-[#E6EFFC]">{adm.uid}</p>
                         <p className="text-slate-500 dark:text-slate-400">
                           {adm.email ? `${adm.email} · ` : ''}Cấp lúc:{' '}
                           {new Date(adm.grantedAt).toLocaleString('vi-VN')}
@@ -2787,13 +3951,13 @@ export const AdminControlCenter: React.FC = () => {
               </GlassSurface>
 
               {/* STUDENT DIRECTORY */}
-              <GlassSurface className="rounded-2xl p-6 space-y-4">
-                <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+              <GlassSurface className="rounded-3xl p-6 space-y-4">
+                <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
                   Danh sách tài khoản học sinh ({users.length})
                 </h2>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
-                    <thead className="border-b border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
+                    <thead className="border-b border-sky-200/60 dark:border-slate-700/70 text-slate-500 dark:text-slate-400">
                       <tr>
                         <th className="py-2 pr-4">Tên hiển thị</th>
                         <th className="py-2 pr-4">Email</th>
@@ -2801,10 +3965,10 @@ export const AdminControlCenter: React.FC = () => {
                         <th className="py-2 pr-4">Đăng nhập gần nhất</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    <tbody className="divide-y divide-sky-200/40 dark:divide-slate-800">
                       {users.map((u) => (
                         <tr key={u.uid}>
-                          <td className="py-2.5 pr-4 font-semibold">{u.displayName}</td>
+                          <td className="py-2.5 pr-4 font-semibold text-[#16243E] dark:text-[#E6EFFC]">{u.displayName}</td>
                           <td className="py-2.5 pr-4 font-mono text-slate-600 dark:text-slate-300">{u.email}</td>
                           <td className="py-2.5 pr-4">Lớp {u.grade}</td>
                           <td className="py-2.5 pr-4 font-mono text-slate-500 dark:text-slate-400">
@@ -2823,7 +3987,7 @@ export const AdminControlCenter: React.FC = () => {
           {tab === 'limits_audit' && (
             <div className="space-y-6">
               <GlassSurface className="rounded-3xl p-6 sm:p-8 space-y-5">
-                <h2 className="font-display text-lg font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
                   Cấu hình giới hạn lưu lượng & Chống lạm dụng
                 </h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -2865,18 +4029,18 @@ export const AdminControlCenter: React.FC = () => {
                 </WaterRippleButton>
               </GlassSurface>
 
-              <GlassSurface className="rounded-2xl p-6 space-y-4">
-                <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+              <GlassSurface className="rounded-3xl p-6 space-y-4">
+                <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
                   Nhật ký kiểm toán quản trị ({auditLogs.length})
                 </h2>
                 <div className="space-y-2 max-h-[520px] overflow-y-auto pr-1">
                   {auditLogs.map((log) => (
                     <div
                       key={log.logId}
-                      className="document-paper rounded-xl p-3.5 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                      className="glass-panel-subtle rounded-2xl p-3.5 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2"
                     >
                       <div>
-                        <p className="font-mono font-semibold">
+                        <p className="font-mono font-semibold text-[#16243E] dark:text-[#E6EFFC]">
                           {log.action} · {log.resourceType}/{log.resourceId}
                         </p>
                         <p className="text-slate-500 dark:text-slate-400 mt-0.5">

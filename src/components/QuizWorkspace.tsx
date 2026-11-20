@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   Bookmark,
@@ -12,6 +12,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import {
   SUBJECT_LABELS,
   type AnalysisRecord,
@@ -60,6 +61,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
   sourceAnalysis,
   onOpenPracticeBank,
 }) => {
+  const quizRef = useRef<HTMLDivElement>(null);
   const { user, systemStatus } = useAuth();
   const [savedQuizSets, setSavedQuizSets] = useState<QuizSet[]>([]);
   const [activeQuiz, setActiveQuiz] = useState<QuizSet | null>(null);
@@ -77,6 +79,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
   // Active quiz runner state
   const [sessionId] = useState(() => `sess_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
   const [answers, setAnswers] = useState<Record<string, 'A' | 'B' | 'C' | 'D'>>({});
+  const [lastAnsweredId, setLastAnsweredId] = useState<string | null>(null);
   const [submittingQuestionId, setSubmittingQuestionId] = useState<string | null>(null);
   const [savedWrongCount, setSavedWrongCount] = useState(0);
   const [flaggedMap, setFlaggedMap] = useState<Record<string, boolean>>({});
@@ -93,6 +96,41 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
       .then((sets) => setSavedQuizSets(sets))
       .catch(() => setSavedQuizSets([]));
   }, [user]);
+
+  const { contextSafe } = useGSAP(
+    () => {
+      if (!activeQuiz) return;
+      const mm = gsap.matchMedia();
+      mm.add(MOTION_ALLOWED_MEDIA, () => {
+        gsap.from('.quiz-question-card', {
+          y: 14,
+          autoAlpha: 0,
+          duration: 0.34,
+          stagger: 0.05,
+          ease: 'power2.out',
+          clearProps: 'transform,opacity,visibility',
+        });
+      });
+    },
+    { scope: quizRef, dependencies: [activeQuiz?.quizSetId] }
+  );
+
+  useGSAP(
+    () => {
+      if (!lastAnsweredId) return;
+      const mm = gsap.matchMedia();
+      mm.add(MOTION_ALLOWED_MEDIA, () => {
+        gsap.from(`[data-quiz-feedback="${lastAnsweredId}"]`, {
+          y: 8,
+          autoAlpha: 0,
+          duration: 0.26,
+          ease: 'power2.out',
+          clearProps: 'transform,opacity,visibility',
+        });
+      });
+    },
+    { scope: quizRef, dependencies: [lastAnsweredId] }
+  );
 
   const handleGenerateQuiz = async () => {
     if (!user || !sourceAnalysis) return;
@@ -168,32 +206,49 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
     }
   };
 
-  const handleSelectOption = async (question: QuizQuestion, choice: 'A' | 'B' | 'C' | 'D') => {
-    if (!user || !activeQuiz || answers[question.questionId]) return;
-    setSubmittingQuestionId(question.questionId);
-    setAnswers((prev) => ({ ...prev, [question.questionId]: choice }));
-
-    const isCorrect = choice === question.correctAnswer;
-    try {
-      await recordQuizAttemptAndProgress({
-        uid: user.uid,
-        question,
-        quizSetId: activeQuiz.quizSetId,
-        selectedAnswer: choice,
-        sessionId,
-        idempotencyAttemptId: `${sessionId}_${activeQuiz.quizSetId}_${question.questionId}`,
-      });
-
-      if (!isCorrect) {
-        await saveWrongAnswerToPracticeBank(user.uid, question);
-        setSavedWrongCount((c) => c + 1);
+  const handleSelectOption = contextSafe(
+    async (
+      question: QuizQuestion,
+      choice: 'A' | 'B' | 'C' | 'D',
+      btnEl?: HTMLButtonElement | null
+    ) => {
+      if (!user || !activeQuiz || answers[question.questionId]) return;
+      if (btnEl) {
+        const mm = gsap.matchMedia();
+        mm.add(MOTION_ALLOWED_MEDIA, () => {
+          gsap.fromTo(
+            btnEl,
+            { scale: 0.97 },
+            { scale: 1, duration: 0.22, ease: 'power2.out', clearProps: 'transform' }
+          );
+        });
       }
-    } catch (err) {
-      console.error('Failed to persist quiz attempt:', err);
-    } finally {
-      setSubmittingQuestionId(null);
+      setSubmittingQuestionId(question.questionId);
+      setLastAnsweredId(question.questionId);
+      setAnswers((prev) => ({ ...prev, [question.questionId]: choice }));
+
+      const isCorrect = choice === question.correctAnswer;
+      try {
+        await recordQuizAttemptAndProgress({
+          uid: user.uid,
+          question,
+          quizSetId: activeQuiz.quizSetId,
+          selectedAnswer: choice,
+          sessionId,
+          idempotencyAttemptId: `${sessionId}_${activeQuiz.quizSetId}_${question.questionId}`,
+        });
+
+        if (!isCorrect) {
+          await saveWrongAnswerToPracticeBank(user.uid, question);
+          setSavedWrongCount((c) => c + 1);
+        }
+      } catch (err) {
+        console.error('Failed to persist quiz attempt:', err);
+      } finally {
+        setSubmittingQuestionId(null);
+      }
     }
-  };
+  );
 
   const handleToggleFlag = async (question: QuizQuestion) => {
     if (!user) return;
@@ -236,13 +291,13 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
     : 0;
 
   return (
-    <div className="space-y-6">
+    <div ref={quizRef} className="space-y-4 sm:space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
+          <h1 className="font-display text-[clamp(1.25rem,3.6vw,1.5rem)] font-bold text-[#16243E] dark:text-[#E6EFFC]">
             Trắc nghiệm củng cố kiến thức (ABCD)
           </h1>
-          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1">
+          <p className="text-xs sm:text-sm text-[#475B78] dark:text-[#B4C7E2] mt-1 leading-[1.6] prose-measure">
             Mỗi câu trả lời sai hoặc đánh dấu xem lại sẽ tự động lưu vào Ngân hàng luyện tập theo
             lịch lặp lại ngắt quãng 1 / 3 / 7 ngày.
           </p>
@@ -255,6 +310,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
             onClick={() => {
               setActiveQuiz(null);
               setAnswers({});
+              setLastAnsweredId(null);
               setReportSuccess(null);
             }}
           >
@@ -265,14 +321,14 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
       </div>
 
       {error && (
-        <div className="rounded-xl border border-rose-200 dark:border-rose-800/70 bg-rose-50 dark:bg-rose-950/50 px-4 py-3 text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2">
+        <div className="rounded-2xl border border-rose-200 dark:border-rose-800/70 bg-rose-50/90 dark:bg-rose-950/50 px-4 py-3 text-xs text-rose-800 dark:text-rose-200 flex items-start gap-2">
           <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
           <span>{error}</span>
         </div>
       )}
 
       {reportSuccess && (
-        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/70 bg-emerald-50 dark:bg-emerald-950/40 px-4 py-3 text-xs text-emerald-800 dark:text-emerald-200">
+        <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800/70 bg-emerald-50/90 dark:bg-emerald-950/40 px-4 py-3 text-xs text-emerald-800 dark:text-emerald-200">
           {reportSuccess}
         </div>
       )}
@@ -281,10 +337,10 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
       {!activeQuiz && sourceAnalysis && (
         <GlassSurface className="rounded-3xl p-6 sm:p-7 space-y-5">
           <div>
-            <p className="text-xs font-semibold text-blue-700 dark:text-blue-400">
+            <p className="text-xs font-semibold text-sky-700 dark:text-sky-400">
               Tạo đề mới từ kết quả phân tích
             </p>
-            <h2 className="font-display text-lg font-bold text-[#17243A] dark:text-[#E5EDF9] mt-0.5">
+            <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC] mt-0.5">
               {sourceAnalysis.documentTitle}
             </h2>
             <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
@@ -297,16 +353,16 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
               <label className="block text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5">
                 Số câu hỏi cơ bản
               </label>
-              <div className="grid grid-cols-4 gap-1.5">
+              <div className="glass-segment grid grid-cols-4 gap-1.5 p-1 rounded-xl">
                 {([5, 10, 15, 20] as const).map((n) => (
                   <button
                     key={n}
                     type="button"
                     onClick={() => setCount(n)}
-                    className={`py-2 rounded-xl font-mono text-xs font-semibold border cursor-pointer ${
+                    className={`py-2 rounded-lg font-mono text-xs font-semibold cursor-pointer transition-all ${
                       count === n
-                        ? 'bg-blue-600 text-white border-blue-600'
-                        : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
+                        ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                        : 'text-slate-700 dark:text-slate-200 hover:bg-white/60 dark:hover:bg-slate-800/60'
                     }`}
                   >
                     {n}
@@ -323,7 +379,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                 id="quiz-diff"
                 value={difficulty}
                 onChange={(e) => setDifficulty(e.target.value as QuizDifficulty)}
-                className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-[#17243A] dark:text-[#E5EDF9]"
+                className="glass-control w-full px-3 py-2 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
               >
                 <option value="mixed">Tổng hợp nhiều mức</option>
                 <option value="basic">Cơ bản (Nhận biết)</option>
@@ -340,7 +396,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                 id="quiz-scope"
                 value={scope}
                 onChange={(e) => setScope(e.target.value as QuizScope)}
-                className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-[#17243A] dark:text-[#E5EDF9]"
+                className="glass-control w-full px-3 py-2 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
               >
                 <option value="all">Toàn bộ nội dung đã phân tích</option>
                 <option value="incorrect">Chỉ tập trung vào chỗ làm sai</option>
@@ -362,26 +418,26 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                 value={chapterFilter}
                 onChange={(e) => setChapterFilter(e.target.value)}
                 placeholder="Ví dụ: Chương 3"
-                className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-[#17243A] dark:text-[#E5EDF9]"
+                className="glass-control w-full px-3.5 py-2 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
               />
             </div>
           )}
 
-          {/* Nâng cao Toggle + 1-6 External Questions Selector */}
-          <div className="rounded-2xl border border-indigo-200/80 dark:border-indigo-800/60 bg-indigo-50/60 dark:bg-indigo-950/30 p-4 space-y-3">
+          {/* Nâng cao Toggle + 1-6 External Questions Selector (Single Sky Accent) */}
+          <div className="rounded-2xl border border-sky-200/85 dark:border-sky-800/60 bg-sky-50/60 dark:bg-sky-950/30 p-4 space-y-3">
             <label className="flex items-start gap-3 cursor-pointer">
               <input
                 type="checkbox"
                 checked={advancedEnabled}
                 onChange={(e) => setAdvancedEnabled(e.target.checked)}
-                className="mt-1 h-4 w-4 accent-indigo-600"
+                className="mt-1 h-4 w-4 accent-sky-600"
               />
               <div className="text-xs">
-                <p className="font-semibold text-[#17243A] dark:text-[#E5EDF9] flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC] flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                   Bổ sung câu Nâng cao bên ngoài (Vận dụng / Vận dụng cao)
                 </p>
-                <p className="text-slate-600 dark:text-slate-300 mt-0.5">
+                <p className="text-[#475B78] dark:text-[#B4C7E2] mt-0.5 leading-[1.6]">
                   Tạo thêm 1 đến 6 câu trắc nghiệm nâng cao mở rộng từ chương trình chuẩn bên ngoài
                   tài liệu tải lên để rèn kỹ năng giải quyết vấn đề.
                 </p>
@@ -398,10 +454,10 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                     key={n}
                     type="button"
                     onClick={() => setAdvancedCount(n)}
-                    className={`w-8 h-8 rounded-lg font-mono text-xs font-semibold border cursor-pointer ${
+                    className={`w-9 h-9 rounded-xl font-mono text-xs font-semibold border cursor-pointer transition-colors ${
                       advancedCount === n
-                        ? 'bg-indigo-600 text-white border-indigo-600'
-                        : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
+                        ? 'bg-sky-600 text-white border-sky-600 shadow-sm'
+                        : 'glass-control text-slate-700 dark:text-slate-200'
                     }`}
                   >
                     {n}
@@ -411,8 +467,8 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
             )}
           </div>
 
-          <div className="rounded-xl bg-sky-50/70 dark:bg-sky-950/35 border border-sky-200/70 dark:border-sky-800/50 px-4 py-2.5 text-xs text-slate-700 dark:text-slate-300 flex items-start gap-2">
-            <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+          <div className="glass-panel-subtle rounded-2xl px-4 py-2.5 text-xs text-slate-700 dark:text-slate-300 flex items-start gap-2">
+            <Info className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
             <span>
               Chế độ thích ứng thông minh: Nếu tài liệu bạn tải lên tạo được ít hơn 5 câu hỏi khác
               nhau, hệ thống tự động bổ sung từ kiến thức hoàn thiện của sách giáo khoa để đủ bộ đề.
@@ -449,9 +505,9 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
             </div>
           )}
 
-          <GlassSurface className="rounded-2xl p-5 flex flex-wrap items-center justify-between gap-4">
+          <GlassSurface className="rounded-3xl p-5 flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h2 className="font-display text-lg font-bold text-[#17243A] dark:text-[#E5EDF9]">
+              <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
                 {activeQuiz.title}
               </h2>
               <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
@@ -497,15 +553,15 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
               ];
 
               return (
-                <GlassSurface key={q.questionId} className="rounded-2xl p-6 space-y-4">
+                <GlassSurface key={q.questionId} className="quiz-question-card rounded-3xl p-4 sm:p-6 space-y-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="space-y-1 flex-1 min-w-[220px]">
-                      <p className="text-xs font-mono text-blue-700 dark:text-blue-400 font-semibold">
+                      <p className="text-xs font-mono text-sky-700 dark:text-sky-400 font-semibold">
                         Câu {idx + 1} · {q.chapter} · {q.concept}
                         {q.cognitiveLevel ? ` · ${COGNITIVE_LABELS[q.cognitiveLevel]}` : ''}
-                        {q.isExternalAdvanced ? ' · [Nâng cao mở rộng]' : ''}
+                        {q.isExternalAdvanced ? ' · Nâng cao mở rộng' : ''}
                       </p>
-                      <h3 className="text-sm sm:text-base font-semibold text-[#17243A] dark:text-[#E5EDF9] leading-relaxed">
+                      <h3 className="text-sm sm:text-base font-semibold text-[#16243E] dark:text-[#E6EFFC] leading-[1.6]">
                         {q.questionText}
                       </h3>
                     </div>
@@ -515,10 +571,10 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                         type="button"
                         onClick={() => handleToggleFlag(q)}
                         aria-label={isFlagged ? 'Bỏ đánh dấu xem lại' : 'Đánh dấu xem lại'}
-                        className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-medium cursor-pointer ${
+                        className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border text-xs font-medium cursor-pointer transition-all ${
                           isFlagged
-                            ? 'bg-amber-50 dark:bg-amber-950/50 border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300'
-                            : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
+                            ? 'bg-amber-50/90 dark:bg-amber-950/50 border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-300'
+                            : 'glass-control text-slate-600 dark:text-slate-300'
                         }`}
                       >
                         <Bookmark className="w-3.5 h-3.5" />
@@ -528,7 +584,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                         type="button"
                         onClick={() => setReportingQuestionId(isReporting ? null : q.questionId)}
                         aria-label="Báo lỗi câu hỏi"
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs text-slate-600 dark:text-slate-300 hover:text-rose-600 cursor-pointer"
+                        className="glass-control inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs text-slate-600 dark:text-slate-300 hover:text-rose-600 cursor-pointer"
                       >
                         <Flag className="w-3.5 h-3.5" />
                         Báo lỗi
@@ -537,11 +593,11 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                   </div>
 
                   {isReporting && (
-                    <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/85 dark:bg-slate-900/90 p-3 flex flex-wrap gap-2 text-xs">
+                    <div className="glass-panel-subtle rounded-2xl p-3 flex flex-wrap gap-2 text-xs">
                       <select
                         value={reportCategory}
                         onChange={(e) => setReportCategory(e.target.value as FeedbackEntry['category'])}
-                        className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
+                        className="glass-control px-2.5 py-1.5 rounded-xl"
                       >
                         {QUIZ_FEEDBACK_CATEGORIES.map((cat) => (
                           <option key={cat} value={cat}>
@@ -554,13 +610,13 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                         value={reportNote}
                         onChange={(e) => setReportNote(e.target.value)}
                         placeholder="Mô tả lỗi sai của câu hỏi..."
-                        className="flex-1 min-w-[180px] px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
+                        className="glass-control flex-1 min-w-[180px] px-2.5 py-1.5 rounded-xl"
                       />
                       <button
                         type="button"
                         disabled={!reportNote.trim()}
                         onClick={() => handleReportQuestion(q.questionId)}
-                        className="px-3 py-1.5 rounded-lg bg-blue-600 text-white font-semibold disabled:opacity-50 cursor-pointer"
+                        className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 text-white font-semibold disabled:opacity-50 cursor-pointer"
                       >
                         Gửi
                       </button>
@@ -573,7 +629,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                       const isThisCorrect = q.correctAnswer === opt.key;
 
                       let btnStyle =
-                        'bg-white/85 dark:bg-slate-900/85 border-slate-200 dark:border-slate-700 hover:border-blue-400 text-[#17243A] dark:text-[#E5EDF9]';
+                        'glass-control text-[#16243E] dark:text-[#E6EFFC]';
                       if (isAnswered) {
                         if (isThisCorrect) {
                           btnStyle =
@@ -583,7 +639,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                             'bg-rose-50 dark:bg-rose-950/60 border-rose-400 dark:border-rose-700 text-rose-950 dark:text-rose-200';
                         } else {
                           btnStyle =
-                            'bg-white/50 dark:bg-slate-900/40 border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400';
+                            'bg-white/50 dark:bg-slate-900/40 border-sky-200/50 dark:border-slate-800 text-slate-500 dark:text-slate-400';
                         }
                       }
 
@@ -592,11 +648,25 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                           key={opt.key}
                           type="button"
                           disabled={isAnswered || submittingQuestionId === q.questionId}
-                          onClick={() => handleSelectOption(q, opt.key)}
-                          className={`text-left px-4 py-3 rounded-xl border text-xs sm:text-sm transition-all flex items-start gap-2.5 cursor-pointer disabled:cursor-default ${btnStyle}`}
+                          onClick={(e) => handleSelectOption(q, opt.key, e.currentTarget)}
+                          className={`min-h-[44px] text-left px-3.5 sm:px-4 py-3 rounded-xl border text-xs sm:text-sm transition-colors flex items-start justify-between gap-2.5 cursor-pointer disabled:cursor-default ${btnStyle}`}
                         >
-                          <span className="font-mono font-bold shrink-0">{opt.key}.</span>
-                          <span>{opt.text}</span>
+                          <span className="flex items-start gap-2.5">
+                            <span className="font-mono font-bold shrink-0">{opt.key}.</span>
+                            <span>{opt.text}</span>
+                          </span>
+                          {isAnswered && isThisCorrect && (
+                            <CheckCircle2
+                              aria-label="Đáp án đúng"
+                              className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5"
+                            />
+                          )}
+                          {isAnswered && isThisChosen && !isThisCorrect && (
+                            <XCircle
+                              aria-label="Lựa chọn chưa đúng"
+                              className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5"
+                            />
+                          )}
                         </button>
                       );
                     })}
@@ -604,7 +674,8 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
 
                   {isAnswered && (
                     <div
-                      className={`rounded-xl p-4 text-xs leading-relaxed border space-y-2 ${
+                      data-quiz-feedback={q.questionId}
+                      className={`rounded-2xl p-4 text-xs leading-[1.6] border space-y-2 ${
                         isCorrect
                           ? 'bg-emerald-50/85 dark:bg-emerald-950/45 border-emerald-200 dark:border-emerald-800 text-emerald-950 dark:text-emerald-200'
                           : 'bg-rose-50/85 dark:bg-rose-950/45 border-rose-200 dark:border-rose-800 text-rose-950 dark:text-rose-200'
@@ -657,8 +728,8 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
 
       {/* Saved Quiz Sets */}
       {!activeQuiz && (
-        <div className="glass-surface rounded-2xl p-6 space-y-4">
-          <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+        <div className="glass-surface rounded-3xl p-6 space-y-4">
+          <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
             Bộ câu hỏi trắc nghiệm đã lưu ({savedQuizSets.length})
           </h2>
           {savedQuizSets.length === 0 ? (
@@ -678,9 +749,9 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                     setSavedWrongCount(0);
                     setFlaggedMap({});
                   }}
-                  className="text-left document-paper rounded-2xl p-4 hover:border-blue-400 transition-colors cursor-pointer"
+                  className="text-left document-paper rounded-2xl p-4 hover:border-sky-400 transition-colors cursor-pointer"
                 >
-                  <p className="text-sm font-semibold text-[#17243A] dark:text-[#E5EDF9] truncate">
+                  <p className="text-sm font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
                     {set.title}
                   </p>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">

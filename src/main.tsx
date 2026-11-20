@@ -1,4 +1,5 @@
 import { createRoot } from 'react-dom/client';
+import './lib/gsapSetup';
 import { ThemeProvider } from './context/ThemeContext';
 import App from './App.tsx';
 import './index.css';

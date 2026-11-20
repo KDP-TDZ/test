@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bookmark,
   CalendarClock,
@@ -12,6 +12,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { gsap, MOTION_ALLOWED_MEDIA, REDUCED_MOTION_MEDIA, useGSAP } from '../lib/gsapSetup';
 import {
   SUBJECT_LABELS,
   type FlashcardItem,
@@ -42,9 +43,9 @@ interface PracticeBankViewProps {
 }
 
 const MASTERY_STYLES: Record<MasteryStatus, string> = {
-  'Đã tiếp cận': 'text-slate-700 dark:text-slate-300',
-  'Đã học qua': 'text-blue-700 dark:text-blue-400',
-  'Đang củng cố': 'text-indigo-700 dark:text-indigo-400',
+  'Đã tiếp cận': 'text-[#475B78] dark:text-[#B4C7E2]',
+  'Đã học qua': 'text-sky-700 dark:text-sky-400',
+  'Đang củng cố': 'text-sky-800 dark:text-sky-300',
   'Cần ôn tập': 'text-rose-700 dark:text-rose-400',
   'Tạm nắm vững': 'text-emerald-700 dark:text-emerald-400',
 };
@@ -63,6 +64,12 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
   onItemsChange,
   initialSubTab = 'bank',
 }) => {
+  const practiceRef = useRef<HTMLDivElement>(null);
+  const cardInnerRef = useRef<HTMLDivElement>(null);
+  const flashcardTiltRef = useRef<HTMLDivElement>(null);
+  const tabContainerRef = useRef<HTMLDivElement>(null);
+  const tabIndicatorRef = useRef<HTMLSpanElement>(null);
+  const pointerFineRef = useRef(false);
   const { user, profile } = useAuth();
   const [subTab, setSubTab] = useState<'bank' | 'sprint10' | 'flashcards'>(initialSubTab);
 
@@ -107,10 +114,130 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
       .catch(() => setFlashcards([]));
   }, [user]);
 
+  const { contextSafe } = useGSAP(
+    () => {
+      const mm = gsap.matchMedia();
+      mm.add(`${MOTION_ALLOWED_MEDIA} and (hover: hover) and (pointer: fine)`, () => {
+        pointerFineRef.current = true;
+        return () => {
+          pointerFineRef.current = false;
+        };
+      });
+      mm.add(REDUCED_MOTION_MEDIA, () => {
+        pointerFineRef.current = false;
+      });
+
+      if (subTab === 'flashcards' && cardInnerRef.current) {
+        gsap.set(cardInnerRef.current, { rotationY: 0, scale: 1 });
+        mm.add(MOTION_ALLOWED_MEDIA, () => {
+          gsap.from('.flashcard-stage', {
+            x: 16,
+            autoAlpha: 0,
+            duration: 0.28,
+            ease: 'power2.out',
+            clearProps: 'transform,opacity,visibility',
+          });
+        });
+      }
+    },
+    { scope: practiceRef, dependencies: [subTab, activeCardIndex, flashcardFilter] }
+  );
+
+  const handleFlashcardTiltMove = contextSafe((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!pointerFineRef.current || !flashcardTiltRef.current) return;
+    const rect = flashcardTiltRef.current.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const nx = (e.clientX - rect.left) / rect.width - 0.5;
+    const ny = (e.clientY - rect.top) / rect.height - 0.5;
+    gsap.to(flashcardTiltRef.current, {
+      rotationY: nx * 4,
+      rotationX: -ny * 4,
+      transformPerspective: 1000,
+      duration: 0.3,
+      ease: 'power2.out',
+      overwrite: 'auto',
+    });
+  });
+
+  const handleFlashcardTiltLeave = contextSafe(() => {
+    if (!pointerFineRef.current || !flashcardTiltRef.current) return;
+    gsap.to(flashcardTiltRef.current, {
+      rotationX: 0,
+      rotationY: 0,
+      duration: 0.35,
+      ease: 'power2.out',
+      overwrite: 'auto',
+      clearProps: 'transform',
+    });
+  });
+
+  const handleFlipCard = contextSafe(() => {
+    const nextFlipped = !cardFlipped;
+    setCardFlipped(nextFlipped);
+    if (!cardInnerRef.current) return;
+    const mm = gsap.matchMedia();
+    mm.add(MOTION_ALLOWED_MEDIA, () => {
+      const tl = gsap.timeline();
+      tl.to(cardInnerRef.current, {
+        scale: 0.97,
+        rotationY: nextFlipped ? 90 : 90,
+        duration: 0.18,
+        ease: 'power2.out',
+      }).to(cardInnerRef.current, {
+        scale: 1,
+        rotationY: nextFlipped ? 180 : 0,
+        duration: 0.24,
+        ease: 'power3.inOut',
+      });
+    });
+    mm.add(REDUCED_MOTION_MEDIA, () => {
+      gsap.set(cardInnerRef.current, {
+        rotationY: nextFlipped ? 180 : 0,
+        scale: 1,
+      });
+    });
+  });
+
   const nowIso = new Date().toISOString();
   const dueCount = useMemo(
     () => items.filter((i) => !i.nextReviewAt || i.nextReviewAt <= nowIso).length,
     [items, nowIso]
+  );
+
+  useGSAP(
+    () => {
+      if (!tabContainerRef.current || !tabIndicatorRef.current) return;
+      const activeBtn = tabContainerRef.current.querySelector<HTMLButtonElement>(
+        `[data-subtab="${subTab}"]`
+      );
+      if (!activeBtn) return;
+
+      const x = activeBtn.offsetLeft + 10;
+      const y = activeBtn.offsetTop + activeBtn.offsetHeight - 4;
+      const scaleX = Math.max(0.2, (activeBtn.offsetWidth - 20) / 100);
+
+      const mm = gsap.matchMedia();
+      mm.add(MOTION_ALLOWED_MEDIA, () => {
+        gsap.to(tabIndicatorRef.current, {
+          x,
+          y,
+          scaleX,
+          autoAlpha: 1,
+          duration: 0.28,
+          ease: 'power3.out',
+          overwrite: 'auto',
+        });
+      });
+      mm.add(REDUCED_MOTION_MEDIA, () => {
+        gsap.set(tabIndicatorRef.current, {
+          x,
+          y,
+          scaleX,
+          autoAlpha: 1,
+        });
+      });
+    },
+    { scope: practiceRef, dependencies: [subTab, items.length, dueCount, flashcards.length] }
   );
 
   const filtered = useMemo(() => {
@@ -288,38 +415,45 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div ref={practiceRef} className="space-y-4 sm:space-y-6">
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
+          <h1 className="font-display text-[clamp(1.25rem,3.6vw,1.5rem)] font-bold text-[#16243E] dark:text-[#E6EFFC]">
             Ngân hàng luyện tập & Thẻ ghi nhớ
           </h1>
-          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1">
+          <p className="text-xs sm:text-sm text-[#475B78] dark:text-[#B4C7E2] mt-1 leading-[1.6] prose-measure">
             Ôn tập câu làm sai theo lịch 1 / 3 / 7 / 14 ngày (<strong>không tự động xóa</strong> khi
             làm đúng), làm bộ 10 câu nhanh (0 tốn lượt AI), và học Flashcard.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div ref={tabContainerRef} className="relative glass-segment inline-flex flex-wrap items-center gap-1.5 rounded-2xl p-1.5">
+          <span
+            ref={tabIndicatorRef}
+            aria-hidden="true"
+            className="pointer-events-none absolute top-0 left-0 h-[3px] w-[100px] origin-left rounded-full bg-white/95 dark:bg-sky-200/90 shadow-[0_0_8px_rgba(255,255,255,0.65)] opacity-0 z-20"
+          />
           <button
             type="button"
+            data-subtab="bank"
             onClick={() => setSubTab('bank')}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold border cursor-pointer ${
+            className={`relative z-10 min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-colors ${
               subTab === 'bank'
-                ? 'bg-blue-600 text-white border-blue-600'
-                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-[#17243A] dark:text-[#E5EDF9]'
+                ? 'bg-gradient-to-r from-sky-500 to-sky-600 text-white shadow-sm'
+                : 'text-[#475B78] dark:text-[#B4C7E2] hover:bg-white/60 dark:hover:bg-slate-800/60'
             }`}
           >
             Câu hỏi lưu ({items.length}) · Đến hạn ({dueCount})
           </button>
           <button
             type="button"
+            data-subtab="sprint10"
             disabled={items.length === 0}
             onClick={startSprint10}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold border cursor-pointer disabled:opacity-50 ${
+            className={`relative z-10 min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer disabled:opacity-50 transition-colors ${
               subTab === 'sprint10'
-                ? 'bg-blue-600 text-white border-blue-600'
-                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-[#17243A] dark:text-[#E5EDF9]'
+                ? 'bg-gradient-to-r from-sky-500 to-sky-600 text-white shadow-sm'
+                : 'text-[#475B78] dark:text-[#B4C7E2] hover:bg-white/60 dark:hover:bg-slate-800/60'
             }`}
           >
             <Play className="w-3.5 h-3.5" />
@@ -327,11 +461,12 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
           </button>
           <button
             type="button"
+            data-subtab="flashcards"
             onClick={() => setSubTab('flashcards')}
-            className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold border cursor-pointer ${
+            className={`relative z-10 min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-colors ${
               subTab === 'flashcards'
-                ? 'bg-blue-600 text-white border-blue-600'
-                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-[#17243A] dark:text-[#E5EDF9]'
+                ? 'bg-gradient-to-r from-sky-500 to-sky-600 text-white shadow-sm'
+                : 'text-[#475B78] dark:text-[#B4C7E2] hover:bg-white/60 dark:hover:bg-slate-800/60'
             }`}
           >
             <Layers className="w-3.5 h-3.5" />
@@ -343,23 +478,23 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
       {/* SUBTAB 1: Question Bank + Spaced Repetition */}
       {subTab === 'bank' && (
         <>
-          <GlassSurface className="rounded-2xl p-4 space-y-3">
+          <GlassSurface className="rounded-3xl p-4 sm:p-5 space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
               <div className="relative lg:col-span-2">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 z-10 pointer-events-none" />
                 <input
                   type="text"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Tìm câu hỏi, khái niệm, chương..."
-                  className="w-full pl-9 pr-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
+                  className="glass-control w-full pl-9 pr-3 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
                 />
               </div>
 
               <select
                 value={subjectFilter}
                 onChange={(e) => setSubjectFilter(e.target.value)}
-                className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
+                className="glass-control px-3 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
               >
                 <option value="all">Tất cả môn học</option>
                 {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
@@ -372,7 +507,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
+                className="glass-control px-3 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
               >
                 <option value="all">Tất cả trạng thái</option>
                 <option value="Cần ôn tập">Cần ôn tập</option>
@@ -383,7 +518,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
               <select
                 value={unitFilter}
                 onChange={(e) => setUnitFilter(e.target.value)}
-                className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
+                className="glass-control px-3 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
               >
                 <option value="all">Tất cả đơn vị kiến thức</option>
                 {(Object.keys(UNIT_LABELS) as KnowledgeUnitType[]).map((k) => (
@@ -401,9 +536,9 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                     type="checkbox"
                     checked={onlyDueToday}
                     onChange={(e) => setOnlyDueToday(e.target.checked)}
-                    className="h-4 w-4 accent-blue-600"
+                    className="h-4 w-4 accent-sky-600"
                   />
-                  <CalendarClock className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                  <CalendarClock className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                   Chỉ hiện câu đến hạn ôn hôm nay ({dueCount})
                 </label>
                 <label className="inline-flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-200">
@@ -421,7 +556,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as 'recent' | 'mistakes' | 'oldest')}
-                className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
+                className="glass-control px-3 py-1.5 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
               >
                 <option value="mistakes">Sai nhiều nhất trước</option>
                 <option value="recent">Luyện gần đây nhất</option>
@@ -432,14 +567,14 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
 
           {/* Active Retry Panel */}
           {practicingItem && (
-            <GlassSurface className="rounded-3xl p-6 border-2 border-blue-400/70 space-y-4">
+            <GlassSurface className="rounded-3xl p-6 border-2 border-sky-400/70 space-y-4">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-xs font-mono text-blue-700 dark:text-blue-400 font-semibold">
+                  <p className="text-xs font-mono text-sky-700 dark:text-sky-400 font-semibold">
                     Đang luyện lại · {SUBJECT_LABELS[practicingItem.subject]} ·{' '}
                     {practicingItem.chapter}
                   </p>
-                  <h2 className="text-base font-bold text-[#17243A] dark:text-[#E5EDF9] mt-1">
+                  <h2 className="text-base font-bold text-[#16243E] dark:text-[#E6EFFC] mt-1">
                     {practicingItem.questionText}
                   </h2>
                 </div>
@@ -449,7 +584,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                     setPracticingItem(null);
                     setSelectedChoice(null);
                   }}
-                  className="text-xs text-slate-500 dark:text-slate-400 hover:text-[#17243A] dark:hover:text-[#E5EDF9] cursor-pointer shrink-0"
+                  className="glass-control px-3 py-1 rounded-xl text-xs text-slate-600 dark:text-slate-300 cursor-pointer shrink-0"
                 >
                   Đóng
                 </button>
@@ -461,7 +596,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                   const isChosen = selectedChoice === key;
                   const isRight = practicingItem.correctAnswer === key;
                   let cls =
-                    'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 hover:border-blue-400 text-[#17243A] dark:text-[#E5EDF9]';
+                    'glass-control text-[#16243E] dark:text-[#E6EFFC]';
                   if (selectedChoice) {
                     if (isRight)
                       cls =
@@ -476,10 +611,18 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                       type="button"
                       disabled={Boolean(selectedChoice)}
                       onClick={() => handleRetryAnswer(practicingItem, key)}
-                      className={`text-left px-4 py-3 rounded-xl border text-xs sm:text-sm flex items-start gap-2 cursor-pointer disabled:cursor-default ${cls}`}
+                      className={`min-h-[44px] text-left px-3.5 sm:px-4 py-3 rounded-xl border text-xs sm:text-sm flex items-start justify-between gap-2 cursor-pointer disabled:cursor-default ${cls}`}
                     >
-                      <span className="font-mono font-bold">{key}.</span>
-                      <span>{text}</span>
+                      <span className="flex items-start gap-2">
+                        <span className="font-mono font-bold">{key}.</span>
+                        <span>{text}</span>
+                      </span>
+                      {selectedChoice && isRight && (
+                        <CheckCircle2 aria-label="Đáp án đúng" className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                      )}
+                      {selectedChoice && isChosen && !isRight && (
+                        <XCircle aria-label="Chưa đúng" className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                      )}
                     </button>
                   );
                 })}
@@ -520,7 +663,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
 
           {/* List */}
           {filtered.length === 0 ? (
-            <GlassSurface className="rounded-2xl p-8 text-center text-sm text-slate-600 dark:text-slate-300">
+            <GlassSurface className="rounded-3xl p-8 text-center text-sm text-slate-600 dark:text-slate-300">
               {items.length === 0
                 ? 'Ngân hàng luyện tập hiện chưa có câu sai nào. Khi bạn làm sai hoặc đánh dấu xem lại trong phần trắc nghiệm, câu hỏi sẽ xuất hiện tại đây.'
                 : 'Không tìm thấy câu hỏi nào khớp bộ lọc hiện tại.'}
@@ -530,11 +673,11 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
               {filtered.map((item) => (
                 <GlassSurface
                   key={item.itemId}
-                  className="rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                  className="rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
                 >
                   <div className="min-w-0 space-y-1">
                     <div className="flex flex-wrap items-center gap-2 text-xs">
-                      <span className="font-semibold text-blue-700 dark:text-blue-400">
+                      <span className="font-semibold text-sky-700 dark:text-sky-400">
                         {SUBJECT_LABELS[item.subject]}
                       </span>
                       <span aria-hidden="true">·</span>
@@ -552,7 +695,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                         </>
                       )}
                     </div>
-                    <p className="text-sm font-semibold text-[#17243A] dark:text-[#E5EDF9] line-clamp-2">
+                    <p className="text-sm font-semibold text-[#16243E] dark:text-[#E6EFFC] line-clamp-2">
                       {item.questionText}
                     </p>
                     <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
@@ -566,10 +709,10 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                       type="button"
                       onClick={() => handleToggleFlag(item)}
                       aria-label={item.flaggedForReview ? 'Bỏ đánh dấu xem lại' : 'Đánh dấu xem lại'}
-                      className={`p-2 rounded-lg border cursor-pointer ${
+                      className={`p-2 rounded-xl border cursor-pointer transition-all ${
                         item.flaggedForReview
-                          ? 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400'
-                          : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400'
+                          ? 'border-amber-300 dark:border-amber-700 bg-amber-50/85 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400'
+                          : 'glass-control text-slate-500 dark:text-slate-400'
                       }`}
                     >
                       <Bookmark className="w-4 h-4" />
@@ -587,7 +730,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                       type="button"
                       onClick={() => setConfirmDeleteId(item.itemId)}
                       aria-label="Xóa khỏi ngân hàng luyện tập"
-                      className="p-2 rounded-lg border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
+                      className="p-2 rounded-xl border border-rose-200/80 dark:border-rose-800/70 bg-rose-50/70 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100/80 dark:hover:bg-rose-950/70 cursor-pointer"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -602,9 +745,9 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
       {/* SUBTAB 2: 10-Question Mistake Sprint (0 AI calls) */}
       {subTab === 'sprint10' && (
         <div className="space-y-4">
-          <GlassSurface className="rounded-2xl p-5 flex flex-wrap items-center justify-between gap-4">
+          <GlassSurface className="rounded-3xl p-5 flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h2 className="font-display text-lg font-bold text-[#17243A] dark:text-[#E5EDF9]">
+              <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
                 Bộ {sprintQueue.length} câu ôn tập nhanh từ câu sai (Không tốn lượt AI)
               </h2>
               <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5 tabular-nums">
@@ -622,18 +765,18 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
             const isAnswered = Boolean(chosen);
             const isRight = chosen === item.correctAnswer;
             return (
-              <GlassSurface key={item.itemId} className="rounded-2xl p-5 space-y-3">
-                <p className="text-xs font-mono text-blue-700 dark:text-blue-400 font-semibold">
+              <GlassSurface key={item.itemId} className="rounded-3xl p-5 sm:p-6 space-y-3">
+                <p className="text-xs font-mono text-sky-700 dark:text-sky-400 font-semibold">
                   Câu {idx + 1}/{sprintQueue.length} · {SUBJECT_LABELS[item.subject]} ·{' '}
                   {item.concept}
                 </p>
-                <p className="text-sm font-semibold text-[#17243A] dark:text-[#E5EDF9]">
+                <p className="text-sm font-semibold text-[#16243E] dark:text-[#E6EFFC]">
                   {item.questionText}
                 </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {(['A', 'B', 'C', 'D'] as const).map((k) => {
                     let cls =
-                      'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-[#17243A] dark:text-[#E5EDF9]';
+                      'glass-control text-[#16243E] dark:text-[#E6EFFC]';
                     if (isAnswered) {
                       if (k === item.correctAnswer)
                         cls =
@@ -648,16 +791,24 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                         type="button"
                         disabled={isAnswered}
                         onClick={() => handleSprintSelect(item, k)}
-                        className={`text-left px-3.5 py-2.5 rounded-xl border text-xs flex items-start gap-2 cursor-pointer disabled:cursor-default ${cls}`}
+                        className={`min-h-[44px] text-left px-3.5 py-2.5 rounded-xl border text-xs flex items-start justify-between gap-2 cursor-pointer disabled:cursor-default ${cls}`}
                       >
-                        <span className="font-mono font-bold">{k}.</span>
-                        <span>{item[`option${k}`]}</span>
+                        <span className="flex items-start gap-2">
+                          <span className="font-mono font-bold">{k}.</span>
+                          <span>{item[`option${k}`]}</span>
+                        </span>
+                        {isAnswered && k === item.correctAnswer && (
+                          <CheckCircle2 aria-label="Đáp án đúng" className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                        )}
+                        {isAnswered && k === chosen && k !== item.correctAnswer && (
+                          <XCircle aria-label="Chưa đúng" className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                        )}
                       </button>
                     );
                   })}
                 </div>
                 {isAnswered && (
-                  <p className="text-xs text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-900/70 rounded-xl p-3">
+                  <p className="glass-panel-subtle text-xs text-slate-700 dark:text-slate-300 rounded-xl p-3 leading-[1.6]">
                     <strong>{isRight ? 'Chính xác!' : `Đáp án đúng: ${item.correctAnswer}.`}</strong>{' '}
                     {item.explanation}
                   </p>
@@ -671,8 +822,8 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
       {/* SUBTAB 3: Flashcards Study Deck */}
       {subTab === 'flashcards' && (
         <div className="space-y-5">
-          <GlassSurface className="rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
+          <GlassSurface className="rounded-3xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="glass-segment inline-flex flex-wrap items-center gap-1.5 rounded-xl p-1">
               {(['all', 'Mới tạo', 'Đang ôn', 'Đã nhớ'] as const).map((f) => (
                 <button
                   key={f}
@@ -682,10 +833,10 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                     setActiveCardIndex(0);
                     setCardFlipped(false);
                   }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-all ${
                     flashcardFilter === f
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'
+                      ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                      : 'text-slate-700 dark:text-slate-200 hover:bg-white/60 dark:hover:bg-slate-800/60'
                   }`}
                 >
                   {f === 'all' ? 'Tất cả thẻ' : f}
@@ -703,16 +854,16 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
           </GlassSurface>
 
           {showNewCardForm && (
-            <GlassSurface className="rounded-2xl p-5">
+            <GlassSurface className="rounded-3xl p-5 sm:p-6">
               <form onSubmit={handleCreateManualCard} className="space-y-3 text-xs">
-                <h3 className="font-display text-sm font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                <h3 className="font-display text-sm font-bold text-[#16243E] dark:text-[#E6EFFC]">
                   Thêm thẻ ghi nhớ mới
                 </h3>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <select
                     value={newSubject}
                     onChange={(e) => setNewSubject(e.target.value as SubjectId)}
-                    className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700"
+                    className="glass-control px-3 py-2 rounded-xl text-[#16243E] dark:text-[#E6EFFC]"
                   >
                     {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
                       <option key={s} value={s}>
@@ -723,7 +874,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                   <select
                     value={newGrade}
                     onChange={(e) => setNewGrade(e.target.value as GradeLevel)}
-                    className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700"
+                    className="glass-control px-3 py-2 rounded-xl text-[#16243E] dark:text-[#E6EFFC]"
                   >
                     <option value="10">Lớp 10</option>
                     <option value="11">Lớp 11</option>
@@ -734,7 +885,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                     value={newChapter}
                     onChange={(e) => setNewChapter(e.target.value)}
                     placeholder="Tên chương / chủ đề"
-                    className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700"
+                    className="glass-control px-3 py-2 rounded-xl text-[#16243E] dark:text-[#E6EFFC]"
                   />
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -744,7 +895,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                     value={newFront}
                     onChange={(e) => setNewFront(e.target.value)}
                     placeholder="Mặt trước (Câu hỏi / Khái niệm / Công thức)..."
-                    className="w-full p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700"
+                    className="glass-control w-full p-3 rounded-xl text-[#16243E] dark:text-[#E6EFFC]"
                   />
                   <textarea
                     rows={3}
@@ -752,14 +903,14 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                     value={newBack}
                     onChange={(e) => setNewBack(e.target.value)}
                     placeholder="Mặt sau (Đáp án chuẩn / Điều kiện áp dụng / Ví dụ)..."
-                    className="w-full p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700"
+                    className="glass-control w-full p-3 rounded-xl text-[#16243E] dark:text-[#E6EFFC]"
                   />
                 </div>
                 <div className="flex justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setShowNewCardForm(false)}
-                    className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer"
+                    className="glass-control px-3.5 py-2 rounded-xl font-medium cursor-pointer"
                   >
                     Hủy
                   </button>
@@ -772,8 +923,8 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
           )}
 
           {currentCard ? (
-            <GlassSurface className="rounded-3xl p-6 sm:p-8 space-y-5">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-300">
+            <GlassSurface className="flashcard-stage rounded-3xl p-4 sm:p-8 space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#475B78] dark:text-[#B4C7E2]">
                 <span className="font-mono font-semibold">
                   Thẻ {activeCardIndex + 1} / {filteredCards.length} ·{' '}
                   {SUBJECT_LABELS[currentCard.subject]} · {currentCard.masteryStatus}
@@ -781,56 +932,84 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                 <button
                   type="button"
                   onClick={() => handleDeleteCard(currentCard.flashcardId)}
-                  className="inline-flex items-center gap-1 text-rose-600 dark:text-rose-400 hover:underline cursor-pointer"
+                  className="inline-flex items-center gap-1 text-rose-600 dark:text-rose-400 hover:underline cursor-pointer min-h-[36px]"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   Xóa thẻ này
                 </button>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setCardFlipped((f) => !f)}
-                className="w-full min-h-[210px] document-paper rounded-2xl p-6 sm:p-8 text-center flex flex-col items-center justify-center gap-3 hover:border-blue-400 transition-colors cursor-pointer"
+              <div
+                ref={flashcardTiltRef}
+                onMouseMove={handleFlashcardTiltMove}
+                onMouseLeave={handleFlashcardTiltLeave}
+                className="flashcard-scene"
               >
-                <span className="text-[11px] font-mono uppercase tracking-wider text-blue-600 dark:text-blue-400">
-                  {cardFlipped ? 'Mặt sau · Giải thích chuẩn' : 'Mặt trước · Chạm để lật thẻ'}
-                </span>
-                <p className="text-base sm:text-lg font-semibold text-[#17243A] dark:text-[#E5EDF9] max-w-2xl leading-relaxed whitespace-pre-wrap">
-                  {cardFlipped ? currentCard.back : currentCard.front}
-                </p>
-                <span className="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  <RotateCw className="w-3.5 h-3.5" />
-                  {currentCard.sourceReference}
-                </span>
-              </button>
+                <button
+                  type="button"
+                  onClick={handleFlipCard}
+                  aria-pressed={cardFlipped}
+                  aria-label={cardFlipped ? 'Đang xem mặt sau thẻ ghi nhớ, chạm để lật lại mặt trước' : 'Đang xem mặt trước thẻ ghi nhớ, chạm để lật xem đáp án'}
+                  className="w-full text-left cursor-pointer focus:outline-none group"
+                >
+                  <div ref={cardInnerRef} className="flashcard-inner grid grid-cols-1">
+                    {/* Front Face */}
+                    <div className="flashcard-face col-start-1 row-start-1 min-h-[210px] sm:min-h-[240px] document-paper rounded-2xl p-5 sm:p-8 text-center flex flex-col items-center justify-center gap-3 group-hover:border-sky-400 transition-colors">
+                      <span className="text-[11px] font-mono font-semibold text-sky-700 dark:text-sky-400">
+                        Mặt trước · Chạm để lật thẻ
+                      </span>
+                      <p className="text-base sm:text-lg font-semibold text-[#16243E] dark:text-[#E6EFFC] max-w-2xl leading-[1.6] whitespace-pre-wrap">
+                        {currentCard.front}
+                      </p>
+                      <span className="inline-flex items-center gap-1 text-xs text-[#475B78] dark:text-[#B4C7E2] mt-1">
+                        <RotateCw className="w-3.5 h-3.5" />
+                        {currentCard.sourceReference}
+                      </span>
+                    </div>
+
+                    {/* Back Face */}
+                    <div className="flashcard-face flashcard-back col-start-1 row-start-1 min-h-[210px] sm:min-h-[240px] document-paper rounded-2xl p-5 sm:p-8 text-center flex flex-col items-center justify-center gap-3 border-sky-300/90 dark:border-sky-700/80">
+                      <span className="text-[11px] font-mono font-semibold text-emerald-700 dark:text-emerald-400">
+                        Mặt sau · Giải thích chuẩn
+                      </span>
+                      <p className="text-sm sm:text-base font-medium text-[#16243E] dark:text-[#E6EFFC] max-w-2xl leading-[1.6] whitespace-pre-wrap">
+                        {currentCard.back}
+                      </p>
+                      <span className="inline-flex items-center gap-1 text-xs text-[#475B78] dark:text-[#B4C7E2] mt-1">
+                        <RotateCw className="w-3.5 h-3.5" />
+                        Chạm để lật lại mặt trước
+                      </span>
+                    </div>
+                  </div>
+                </button>
+              </div>
 
               <div className="flex flex-wrap items-center justify-center gap-2.5">
                 <button
                   type="button"
                   onClick={() => handleRateCard(currentCard, 'Mới tạo', 0)}
-                  className="px-4 py-2 rounded-xl border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-xs font-semibold text-rose-800 dark:text-rose-300 cursor-pointer"
+                  className="min-h-[44px] px-4 py-2 rounded-xl border border-rose-200 dark:border-rose-800 bg-rose-50/85 dark:bg-rose-950/40 text-xs font-semibold text-rose-800 dark:text-rose-300 cursor-pointer"
                 >
                   Chưa nhớ (Ôn lại sau 1 ngày)
                 </button>
                 <button
                   type="button"
                   onClick={() => handleRateCard(currentCard, 'Đang ôn', 1)}
-                  className="px-4 py-2 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-xs font-semibold text-amber-800 dark:text-amber-300 cursor-pointer"
+                  className="min-h-[44px] px-4 py-2 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/85 dark:bg-amber-950/40 text-xs font-semibold text-amber-800 dark:text-amber-300 cursor-pointer"
                 >
                   Đang nhớ dần (Sau 3 ngày)
                 </button>
                 <button
                   type="button"
                   onClick={() => handleRateCard(currentCard, 'Đã nhớ', 2)}
-                  className="px-4 py-2 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-xs font-semibold text-emerald-800 dark:text-emerald-300 cursor-pointer"
+                  className="min-h-[44px] px-4 py-2 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50/85 dark:bg-emerald-950/40 text-xs font-semibold text-emerald-800 dark:text-emerald-300 cursor-pointer"
                 >
                   Đã nắm chắc (Sau 7 ngày)
                 </button>
               </div>
             </GlassSurface>
           ) : (
-            <GlassSurface className="rounded-2xl p-8 text-center text-sm text-slate-600 dark:text-slate-300">
+            <GlassSurface className="rounded-3xl p-8 text-center text-sm text-slate-600 dark:text-slate-300">
               Chưa có thẻ Flashcard nào. Bạn có thể tạo tự động từ nút “Tạo Flashcard từ điểm yếu”
               trong Báo cáo phân tích hoặc bấm “Tạo thẻ thủ công” ở trên.
             </GlassSurface>
@@ -845,8 +1024,8 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
           role="dialog"
           aria-modal="true"
         >
-          <GlassSurface className="w-full max-w-sm rounded-2xl p-6 space-y-4">
-            <h3 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+          <GlassSurface className="w-full max-w-sm rounded-3xl p-6 space-y-4">
+            <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
               Xác nhận xóa câu hỏi luyện tập?
             </h3>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
@@ -857,7 +1036,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
               <button
                 type="button"
                 onClick={() => setConfirmDeleteId(null)}
-                className="px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+                className="glass-control px-3.5 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 Hủy
               </button>

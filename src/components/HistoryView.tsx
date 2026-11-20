@@ -98,7 +98,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-display text-2xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
+        <h1 className="font-display text-2xl font-bold text-[#16243E] dark:text-[#E6EFFC]">
           Lịch sử kiểm định & ưu nhược điểm
         </h1>
         <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1">
@@ -108,22 +108,22 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       </div>
 
       {/* Filters */}
-      <GlassSurface className="rounded-2xl p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <GlassSurface className="rounded-3xl p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="relative">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 z-10 pointer-events-none" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Tìm tên tài liệu, phạm vi..."
-            className="w-full pl-9 pr-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
+            className="glass-control w-full pl-9 pr-3 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
           />
         </div>
 
         <select
           value={subjectFilter}
           onChange={(e) => setSubjectFilter(e.target.value)}
-          className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
+          className="glass-control px-3 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
         >
           <option value="all">Tất cả môn học</option>
           {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
@@ -136,7 +136,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         <select
           value={gradeFilter}
           onChange={(e) => setGradeFilter(e.target.value)}
-          className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
+          className="glass-control px-3 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
         >
           <option value="all">Tất cả khối lớp</option>
           <option value="10">Lớp 10</option>
@@ -147,7 +147,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value as 'newest' | 'accuracy_asc' | 'accuracy_desc')}
-          className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-[#17243A] dark:text-[#E5EDF9]"
+          className="glass-control px-3 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
         >
           <option value="newest">Mới nhất trước</option>
           <option value="accuracy_desc">Chính xác cao nhất</option>
@@ -156,7 +156,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       </GlassSurface>
 
       {filtered.length === 0 ? (
-        <GlassSurface className="rounded-2xl p-8 text-center text-sm text-slate-600 dark:text-slate-300">
+        <GlassSurface className="rounded-3xl p-8 text-center text-sm text-slate-600 dark:text-slate-300">
           Chưa có tài liệu nào phù hợp bộ lọc.
         </GlassSurface>
       ) : (
@@ -164,12 +164,12 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           {filtered.map((item) => (
             <GlassSurface
               key={item.analysisId}
-              className="rounded-2xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+              className="rounded-3xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
             >
               <div className="min-w-0 space-y-1">
                 <div className="flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
-                  <h2 className="text-base font-bold text-[#17243A] dark:text-[#E5EDF9] truncate">
+                  <FileText className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0" />
+                  <h2 className="text-base font-bold text-[#16243E] dark:text-[#E6EFFC] truncate">
                     {item.documentTitle}
                   </h2>
                 </div>
@@ -179,10 +179,10 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   {new Date(item.createdAt).toLocaleString('vi-VN')}
                 </p>
                 <div className="flex flex-wrap items-center gap-4 text-xs pt-1">
-                  <span className="font-mono text-blue-700 dark:text-blue-400">
+                  <span className="font-mono text-sky-700 dark:text-sky-400">
                     Chính xác: {item.accuracyScore !== null ? `${item.accuracyScore}%` : '—'}
                   </span>
-                  <span className="font-mono text-indigo-700 dark:text-indigo-400">
+                  <span className="font-mono text-sky-800 dark:text-sky-300">
                     Đầy đủ: {item.completenessScore !== null ? `${item.completenessScore}%` : '—'}
                   </span>
                   <span className="text-emerald-700 dark:text-emerald-400">
@@ -202,7 +202,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   type="button"
                   onClick={() => setConfirmDelete(item)}
                   aria-label="Xóa bản phân tích"
-                  className="p-2 rounded-lg border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
+                  className="p-2 rounded-xl border border-rose-200/80 dark:border-rose-800/70 bg-rose-50/70 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100/80 dark:hover:bg-rose-950/70 cursor-pointer"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -226,9 +226,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           role="dialog"
           aria-modal="true"
         >
-          <GlassSurface className="w-full max-w-sm rounded-2xl p-6 space-y-4">
-            <h3 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
-              Xóa kết quả phân tích?
+          <GlassSurface className="w-full max-w-sm rounded-3xl p-6 space-y-4">
+            <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
+              Xác nhận xóa kết quả phân tích?
             </h3>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
               Thao tác này sẽ xóa báo cáo “{confirmDelete.documentTitle}” khỏi lịch sử học tập trên
@@ -238,7 +238,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               <button
                 type="button"
                 onClick={() => setConfirmDelete(null)}
-                className="px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium cursor-pointer"
+                className="glass-control px-3.5 py-2 rounded-xl text-xs font-medium cursor-pointer"
               >
                 Hủy
               </button>

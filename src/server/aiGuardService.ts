@@ -104,14 +104,22 @@ function mergeTaskModels(
   return merged;
 }
 
+let lastRemoteConfigSyncAt = 0;
+const CONFIG_SYNC_TTL_MS = 15_000;
+
 export function getAuthoritativeAiConfigSnapshot(): SystemAiConfig {
   return authoritativeAiConfig;
 }
 
-export async function loadAuthoritativeAiConfig(idToken?: string): Promise<SystemAiConfig> {
-  if (idToken) {
+export async function loadAuthoritativeAiConfig(
+  idToken?: string,
+  forceRefresh = false
+): Promise<SystemAiConfig> {
+  const now = Date.now();
+  if (idToken && (forceRefresh || now - lastRemoteConfigSyncAt >= CONFIG_SYNC_TTL_MS)) {
     try {
       const remote = await firestoreRestGet<SystemAiConfig>('systemConfig/aiService', idToken);
+      lastRemoteConfigSyncAt = now;
       if (remote && typeof remote.enabled === 'boolean') {
         authoritativeAiConfig = {
           ...authoritativeAiConfig,
@@ -153,6 +161,7 @@ export async function consumeOneTimeModelOverride(
     },
     updatedAt: new Date().toISOString(),
   };
+  lastRemoteConfigSyncAt = Date.now();
   if (idToken) {
     try {
       await firestoreRestSet(
@@ -188,6 +197,7 @@ export async function setOneTimeTaskOverride(params: {
     updatedBy: actorUid,
   };
   authoritativeAiConfig = next;
+  lastRemoteConfigSyncAt = Date.now();
   try {
     await firestoreRestSet('systemConfig/aiService', next as unknown as Record<string, unknown>, idToken);
   } catch (err) {
@@ -242,6 +252,7 @@ export async function updateAuthoritativeAiConfig(
     updatedBy: actorUid,
   };
   authoritativeAiConfig = next;
+  lastRemoteConfigSyncAt = Date.now();
 
   try {
     await firestoreRestSet('systemConfig/aiService', next as unknown as Record<string, unknown>, idToken);

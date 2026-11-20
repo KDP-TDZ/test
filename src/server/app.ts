@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
 import {
@@ -6,6 +7,7 @@ import {
   firestoreRestGet,
   firestoreRestList,
   firestoreRestSet,
+  invalidateVerifiedTokenCacheForUid,
   PROTECTED_SUPER_ADMIN_EMAILS,
   verifyFirebaseRequest,
   type AuthenticatedUser,
@@ -56,6 +58,7 @@ import {
 import type {
   AiTaskType,
   ExamBlueprint,
+  ExamDocument,
   ExamQuestion,
   ExamType,
   ExtractedPage,
@@ -153,6 +156,13 @@ async function requireSuperAdmin(req: Request, res: Response, next: NextFunction
 
 function mapGeminiErrorResponse(err: unknown): { status: number; code: string; error: string } {
   const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes('vượt quá thời gian chờ') || msg.includes('AbortError') || msg.includes('timed out')) {
+    return {
+      status: 504,
+      code: 'AI_TIMEOUT',
+      error: 'AI phản hồi quá 30 giây nên hệ thống đã tự động ngắt. Vui lòng thử lại.',
+    };
+  }
   if (msg.includes('GEMINI_API_KEY_UNCONFIGURED')) {
     return {
       status: 503,
@@ -307,6 +317,11 @@ export function createApiApp(): express.Express {
         }
       }
 
+      const bodyParams = (req.body || {}) as Record<string, string | undefined>;
+      const pageOffset = Math.max(0, Number(bodyParams.pageOffset) || 0);
+      const skipScope = bodyParams.skipScope === 'true';
+      const previousText = (bodyParams.previousText || '').trim();
+
       let pages: ExtractedPage[] = [];
       const first = uploadedFiles[0];
 
@@ -327,29 +342,30 @@ export function createApiApp(): express.Express {
             originalName: f.originalname,
           })),
           tokens,
-          { config: guard.config, idToken: user.idToken }
+          { config: guard.config, idToken: user.idToken, pageOffset }
         );
       }
 
-      if (pages.length > guard.config.rateLimitConfig.maximumPagesPerAnalysis) {
+      if (pages.length + pageOffset > guard.config.rateLimitConfig.maximumPagesPerAnalysis) {
         res.status(400).json({
-          error: `Tài liệu có ${pages.length} trang, vượt quá giới hạn ${guard.config.rateLimitConfig.maximumPagesPerAnalysis} trang cho mỗi lần phân tích.`,
+          error: `Tài liệu có ${pages.length + pageOffset} trang, vượt quá giới hạn ${guard.config.rateLimitConfig.maximumPagesPerAnalysis} trang cho mỗi lần phân tích.`,
         });
         return;
       }
 
-      const fullSample = pages.map((p) => p.rawText).join('\n');
-      const scopeSuggestion = fullSample.trim().length > 15
-        ? await SubjectDetectionService.detectScope(fullSample, tokens, {
-            config: guard.config,
-            idToken: user.idToken,
-          })
-        : {
-            suggestedGrade: '10' as GradeLevel,
-            suggestedSubject: 'khac' as SubjectId,
-            suggestedChapters: [],
-            suggestedTitle: first.originalname.replace(/\.[^.]+$/, ''),
-          };
+      const combinedForScope = [previousText, ...pages.map((p) => p.rawText)].filter(Boolean).join('\n');
+      const scopeSuggestion =
+        !skipScope && combinedForScope.trim().length > 15
+          ? await SubjectDetectionService.detectScope(combinedForScope, tokens, {
+              config: guard.config,
+              idToken: user.idToken,
+            })
+          : {
+              suggestedGrade: '10' as GradeLevel,
+              suggestedSubject: 'khac' as SubjectId,
+              suggestedChapters: [],
+              suggestedTitle: first.originalname.replace(/\.[^.]+$/, ''),
+            };
 
       recordUsageEvent({
         uid: user.uid,
@@ -360,7 +376,7 @@ export function createApiApp(): express.Express {
         candidateTokens: tokens.candidateTokens,
         totalTokens: tokens.totalTokens,
       });
-      await persistUsageSnapshot(user.idToken, user.isSuperAdmin);
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin);
 
       res.json({ pages, scopeSuggestion, tokenUsage: tokens });
     } catch (err) {
@@ -449,7 +465,7 @@ export function createApiApp(): express.Express {
         selectedChapters: selectedChapters || [],
         scope: scope || '',
         referenceChunks: referenceChunks || [],
-        enableWebGrounding: Boolean(enableWebGrounding),
+        enableWebGrounding: enableWebGrounding === true,
         tokensOut: tokens,
         config: guard.config,
         idToken: user.idToken,
@@ -470,7 +486,7 @@ export function createApiApp(): express.Express {
         candidateTokens: tokens.candidateTokens,
         totalTokens: tokens.totalTokens,
       });
-      await persistUsageSnapshot(user.idToken, user.isSuperAdmin);
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin);
 
       res.json(payload);
     } catch (err) {
@@ -579,7 +595,7 @@ export function createApiApp(): express.Express {
         candidateTokens: tokens.candidateTokens,
         totalTokens: tokens.totalTokens,
       });
-      await persistUsageSnapshot(user.idToken, user.isSuperAdmin);
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin);
 
       res.json(payload);
     } catch (err) {
@@ -843,6 +859,7 @@ export function createApiApp(): express.Express {
         grantedAt: now,
       };
       await firestoreRestSet(`admins/${targetUid}`, record, user.idToken);
+      invalidateVerifiedTokenCacheForUid(targetUid);
       await recordAuditLog(
         {
           actorUid: user.uid,
@@ -890,6 +907,7 @@ export function createApiApp(): express.Express {
       }
 
       await firestoreRestDelete(`admins/${targetUid}`, user.idToken);
+      invalidateVerifiedTokenCacheForUid(targetUid);
       await recordAuditLog(
         {
           actorUid: user.uid,
@@ -1160,7 +1178,92 @@ export function createApiApp(): express.Express {
         config: cfg,
         idToken: user.idToken,
       });
-      res.json({ ...generated, tokenUsage: tokens });
+      const now = new Date().toISOString();
+      const exam: ExamDocument = {
+        examId: `exam_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+        blueprintId: blueprint.blueprintId,
+        title: blueprint.title,
+        description: `Đề kiểm tra được sinh từ ma trận "${blueprint.title}".`,
+        grade: blueprint.grade,
+        subject: blueprint.subject,
+        textbookSeries: blueprint.textbookSeries,
+        examType: blueprint.examType,
+        academicYear: blueprint.academicYear,
+        semester: blueprint.semester,
+        chapters: blueprint.chapters || [],
+        durationMinutes: blueprint.durationMinutes,
+        totalScore: blueprint.totalScore,
+        allowRetake: true,
+        published: false,
+        validationStatus: generated.validationStatus,
+        questions: generated.questions.slice(0, 60),
+        createdBy: user.uid,
+        createdAt: now,
+        updatedAt: now,
+      };
+      res.json({ exam, ...generated, tokenUsage: tokens });
+    } catch (err) {
+      const mapped = mapGeminiErrorResponse(err);
+      res.status(mapped.status).json(mapped);
+    }
+  });
+
+  app.post('/api/admin/exams/import-sample', requireSuperAdmin, upload.array('files', 25), async (req, res) => {
+    const user = req.authUser!;
+    const uploadedFiles = (req.files as Express.Multer.File[]) || [];
+    if (uploadedFiles.length === 0) {
+      res.status(400).json({ error: 'Vui lòng chọn file đề mẫu (PDF, DOCX hoặc ảnh).' });
+      return;
+    }
+
+    const cfg = await loadAuthoritativeAiConfig(user.idToken);
+    const maxBytes = (cfg.rateLimitConfig?.maximumFileSizeMb || 20) * 1024 * 1024;
+    for (const f of uploadedFiles) {
+      if (!ALLOWED_UPLOAD_MIMES.has(f.mimetype)) {
+        res.status(400).json({
+          error: `Định dạng file "${f.originalname}" không được hỗ trợ. Chỉ chấp nhận PDF, DOCX, JPG, PNG, WEBP.`,
+        });
+        return;
+      }
+      if (f.size > maxBytes) {
+        res.status(400).json({
+          error: `File "${f.originalname}" vượt quá giới hạn ${cfg.rateLimitConfig?.maximumFileSizeMb || 20}MB.`,
+        });
+        return;
+      }
+      if (!hasValidMagicSignature(f.buffer, f.mimetype)) {
+        res.status(400).json({
+          error: `File "${f.originalname}" có chữ ký nhị phân không khớp định dạng hoặc bị hỏng.`,
+        });
+        return;
+      }
+    }
+
+    const body = (req.body || {}) as Record<string, string | undefined>;
+    const tokens: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
+    try {
+      const result = await ExamPipelineService.extractQuestionsFromSampleExam({
+        files: uploadedFiles.map((f) => ({
+          buffer: f.buffer,
+          mimeType: f.mimetype,
+          originalName: f.originalname,
+        })),
+        title: body.title,
+        grade: body.grade === '11' || body.grade === '12' ? body.grade : '10',
+        subject: (body.subject as SubjectId) || 'toan',
+        textbookSeries: body.textbookSeries || 'Kết nối tri thức với cuộc sống',
+        examType: (body.examType as ExamType) || 'giua_ky_1',
+        academicYear: body.academicYear || '2026-2027',
+        semester: body.semester === '2' ? '2' : '1',
+        durationMinutes: Math.max(15, Math.min(180, Number(body.durationMinutes) || 45)),
+        totalScore: Math.max(1, Math.min(100, Number(body.totalScore) || 10)),
+        includeTrueFalse: body.includeTrueFalse === 'true',
+        actorUid: user.uid,
+        tokensOut: tokens,
+        config: cfg,
+        idToken: user.idToken,
+      });
+      res.json({ ...result, tokenUsage: tokens });
     } catch (err) {
       const mapped = mapGeminiErrorResponse(err);
       res.status(mapped.status).json(mapped);

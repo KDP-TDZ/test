@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BookCheck,
@@ -20,6 +20,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { compareAnalysesBeforeAfter } from '../core/examScoring';
 import { SUBJECT_LABELS, type AnalysisRecord, type FeedbackEntry } from '../core/types';
+import { gsap, MOTION_ALLOWED_MEDIA, ScrollTrigger, useGSAP } from '../lib/gsapSetup';
 import { authorizedFetch, parseApiResponse } from '../services/apiClient';
 import { saveFlashcard, submitFeedback } from '../services/firestoreService';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
@@ -52,6 +53,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
   onOpenFlashcards,
   onBack,
 }) => {
+  const reportRef = useRef<HTMLDivElement>(null);
   const { user, systemStatus } = useAuth();
   const [showFormula, setShowFormula] = useState(false);
 
@@ -71,6 +73,56 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
   const acc = analysis.accuracyBreakdown;
   const comp = analysis.completenessBreakdown;
   const aiEnabled = systemStatus ? systemStatus.enabled : true;
+
+  useGSAP(
+    () => {
+      const mm = gsap.matchMedia();
+      mm.add(MOTION_ALLOWED_MEDIA, () => {
+        const tl = gsap.timeline({ defaults: { ease: 'power2.out' } });
+        tl.from('.report-hero-block', {
+          y: 12,
+          autoAlpha: 0,
+          duration: 0.34,
+          clearProps: 'transform,opacity,visibility',
+        }).from(
+          '.report-metric-card',
+          {
+            y: 14,
+            autoAlpha: 0,
+            duration: 0.34,
+            stagger: 0.06,
+            clearProps: 'transform,opacity,visibility',
+          },
+          '-=0.18'
+        );
+
+        const sections = gsap.utils.toArray<HTMLElement>('.report-scroll-section', reportRef.current);
+        sections.forEach((section) => {
+          gsap.from(section, {
+            y: 16,
+            autoAlpha: 0,
+            duration: 0.38,
+            ease: 'power2.out',
+            clearProps: 'transform,opacity,visibility',
+            scrollTrigger: {
+              trigger: section,
+              start: 'top 92%',
+              once: true,
+            },
+          });
+        });
+      });
+    },
+    { scope: reportRef, dependencies: [analysis.analysisId] }
+  );
+
+  // Refresh ScrollTrigger positions whenever collapsible panels change document height
+  useEffect(() => {
+    const rafId = window.requestAnimationFrame(() => {
+      ScrollTrigger.refresh();
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [showFormula, reportingClaimId, flashcardNotice, feedbackResult]);
 
   // Before/After Comparison against an older analysis in the same subject
   const previousComparable = useMemo(() => {
@@ -188,30 +240,30 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
   };
 
   return (
-    <div className="space-y-8">
+    <div ref={reportRef} className="space-y-6 sm:space-y-8">
       {/* Header & Actions */}
-      <GlassSurface className="rounded-3xl p-6 sm:p-7 no-print">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+      <GlassSurface className="report-hero-block rounded-3xl p-4 sm:p-7 no-print">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 sm:gap-5">
           <div>
             {onBack && (
               <button
                 type="button"
                 onClick={onBack}
-                className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline mb-2 cursor-pointer"
+                className="text-xs font-medium text-sky-700 dark:text-sky-400 hover:underline mb-2 cursor-pointer min-h-[32px] inline-flex items-center"
               >
                 ← Quay lại danh sách
               </button>
             )}
-            <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
+            <h1 className="font-display text-[clamp(1.3rem,4vw,1.875rem)] font-bold text-[#16243E] dark:text-[#E6EFFC] leading-[1.25]">
               {analysis.documentTitle}
             </h1>
-            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1.5">
+            <p className="text-xs sm:text-sm text-[#475B78] dark:text-[#B4C7E2] mt-1.5 leading-[1.6]">
               {SUBJECT_LABELS[analysis.subject]} · Lớp {analysis.grade} ·{' '}
               {analysis.textbookTitle || 'Đối chiếu chương trình phổ thông'} ·{' '}
               {new Date(analysis.createdAt).toLocaleString('vi-VN')}
             </p>
             {analysis.scope && (
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] mt-1">
                 Phạm vi kiểm định: {analysis.scope}
               </p>
             )}
@@ -221,9 +273,9 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
             <button
               type="button"
               onClick={() => window.print()}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-[#17243A] dark:text-[#E5EDF9] hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+              className="glass-control min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
             >
-              <Printer className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <Printer className="w-4 h-4 text-sky-600 dark:text-sky-400" />
               Xuất Phiếu sửa lỗi (In / PDF)
             </button>
 
@@ -231,12 +283,12 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
               type="button"
               disabled={generatingCards || !aiEnabled}
               onClick={handleCreateFlashcards}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-[#17243A] dark:text-[#E5EDF9] hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+              className="glass-control min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] disabled:opacity-50 cursor-pointer"
             >
               {generatingCards ? (
-                <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                <Loader2 className="w-4 h-4 animate-spin text-sky-600" />
               ) : (
-                <Layers className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <Layers className="w-4 h-4 text-sky-600 dark:text-sky-400" />
               )}
               Tạo Flashcard từ điểm yếu
             </button>
@@ -321,8 +373,8 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       </div>
 
       {/* Four Independent Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5 no-print">
-        <GlassSurface className="rounded-2xl p-5">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-5 no-print">
+        <GlassSurface className="report-metric-card rounded-3xl p-4 sm:p-5">
           <ScoreRing
             label="Độ chính xác (Accuracy)"
             value={analysis.accuracyScore}
@@ -335,7 +387,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
           />
         </GlassSurface>
 
-        <GlassSurface className="rounded-2xl p-5">
+        <GlassSurface className="report-metric-card rounded-3xl p-4 sm:p-5">
           <ScoreRing
             label="Độ đầy đủ (Completeness)"
             value={analysis.completenessScore}
@@ -344,11 +396,11 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 ? `Đủ ${comp.coveredCount} · Thiếu một phần ${comp.partialCount} · Thiếu ${comp.missingCount}`
                 : 'Chưa chọn phạm vi chương/sách tham chiếu'
             }
-            color="indigo"
+            color="sky"
           />
         </GlassSurface>
 
-        <GlassSurface className="rounded-2xl p-5">
+        <GlassSurface className="report-metric-card rounded-3xl p-4 sm:p-5">
           <ScoreRing
             label="Tỷ lệ có dẫn chứng"
             value={analysis.evidenceCoverage}
@@ -357,16 +409,16 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
           />
         </GlassSurface>
 
-        <GlassSurface className="rounded-2xl p-5 flex flex-col justify-between">
+        <GlassSurface className="report-metric-card rounded-3xl p-4 sm:p-5 flex flex-col justify-between">
           <div>
-            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+            <p className="text-xs font-medium text-[#475B78] dark:text-[#B4C7E2]">
               Mức độ tin cậy đánh giá
             </p>
-            <p className="font-display text-xl font-bold text-[#17243A] dark:text-[#E5EDF9] mt-1">
+            <p className="font-display text-xl font-bold text-[#16243E] dark:text-[#E6EFFC] mt-1">
               {analysis.confidenceLevel}
             </p>
           </div>
-          <p className="text-xs text-slate-600 dark:text-slate-300 mt-2 leading-relaxed">
+          <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] mt-2 leading-[1.6]">
             {analysis.confidenceReason}
           </p>
         </GlassSurface>
@@ -374,12 +426,12 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
 
       {/* Before/After Comparison Card (when older analysis in same subject exists) */}
       {previousComparable && beforeAfter && (
-        <GlassSurface className="rounded-2xl p-5 border border-blue-200/70 dark:border-blue-800/50 no-print">
+        <GlassSurface className="report-scroll-section rounded-3xl p-4 sm:p-5 border border-sky-200/70 dark:border-sky-800/50 no-print">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-start gap-3">
-              <TrendingUp className="w-5 h-5 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+              <TrendingUp className="w-5 h-5 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
               <div className="text-xs">
-                <p className="font-bold text-[#17243A] dark:text-[#E5EDF9] text-sm">
+                <p className="font-bold text-[#16243E] dark:text-[#E6EFFC] text-sm">
                   So sánh tiến bộ trước & sau (so với “{previousComparable.documentTitle}”)
                 </p>
                 <p className="text-slate-600 dark:text-slate-300 mt-0.5">{beforeAfter.summary}</p>
@@ -402,7 +454,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 <span
                   className={
                     beforeAfter.completenessDelta >= 0
-                      ? 'text-blue-700 dark:text-blue-400 font-bold'
+                      ? 'text-sky-700 dark:text-sky-400 font-bold'
                       : 'text-amber-700 dark:text-amber-400 font-bold'
                   }
                 >
@@ -416,24 +468,24 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       )}
 
       {/* Formula Transparency Drawer */}
-      <div className="glass-panel-subtle rounded-2xl overflow-hidden no-print">
+      <div className="report-scroll-section glass-panel-subtle rounded-3xl overflow-hidden no-print">
         <button
           type="button"
           onClick={() => setShowFormula((v) => !v)}
-          className="w-full px-5 py-3.5 flex items-center justify-between text-xs font-semibold text-[#17243A] dark:text-[#E5EDF9] cursor-pointer"
+          className="w-full min-h-[44px] px-4 sm:px-5 py-3.5 flex items-center justify-between text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
         >
           <span className="inline-flex items-center gap-2">
-            <Calculator className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+            <Calculator className="w-4 h-4 text-sky-600 dark:text-sky-400" />
             Xem công thức tách biệt Độ chính xác và Độ đầy đủ
           </span>
           <ChevronDown
-            className={`w-4 h-4 text-slate-500 dark:text-slate-400 transition-transform ${showFormula ? 'rotate-180' : ''}`}
+            className={`w-4 h-4 text-[#475B78] dark:text-[#B4C7E2] transition-transform ${showFormula ? 'rotate-180' : ''}`}
           />
         </button>
         {showFormula && (
-          <div className="px-5 pb-4 pt-2 border-t border-slate-200/70 dark:border-slate-700/70 grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+          <div className="px-4 sm:px-5 pb-4 pt-2 border-t border-sky-200/60 dark:border-slate-700/70 grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-slate-700 dark:text-slate-300 leading-[1.6]">
             <div>
-              <p className="font-semibold text-blue-800 dark:text-blue-300 mb-1">
+              <p className="font-semibold text-sky-800 dark:text-sky-300 mb-1">
                 Độ chính xác = Trọng số đúng đạt được / Tổng trọng số đã xác minh
               </p>
               <p>
@@ -441,14 +493,14 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 chữ OCR mờ (OCR_UNCERTAIN) hoặc kiến thức ngoài phạm vi không bị phạt vào mẫu số.
               </p>
               {acc && (
-                <p className="font-mono mt-1.5 text-[#17243A] dark:text-[#E5EDF9]">
+                <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC]">
                   Thực tế: {acc.earnedWeight} / {acc.verifiedWeight} ={' '}
                   {acc.accuracyScore !== null ? `${acc.accuracyScore}%` : 'Chưa đủ dữ liệu'}
                 </p>
               )}
             </div>
             <div>
-              <p className="font-semibold text-indigo-800 dark:text-indigo-300 mb-1">
+              <p className="font-semibold text-sky-800 dark:text-sky-300 mb-1">
                 Độ đầy đủ = Trọng số ý đã bao phủ / Tổng trọng số khung kiến thức chương
               </p>
               <p>
@@ -456,7 +508,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 hưởng Độ đầy đủ, tuyệt đối không làm giảm Độ chính xác.
               </p>
               {comp && (
-                <p className="font-mono mt-1.5 text-[#17243A] dark:text-[#E5EDF9]">
+                <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC]">
                   Thực tế: {comp.coveredWeight} / {comp.totalRequiredWeight} ={' '}
                   {comp.completenessScore !== null ? `${comp.completenessScore}%` : 'Không áp dụng'}
                 </p>
@@ -467,12 +519,12 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       </div>
 
       {/* Explicit Quiz Offer Banner */}
-      <GlassSurface enableRipple className="rounded-2xl p-6 border border-sky-200/80 dark:border-sky-800/60 no-print">
+      <GlassSurface enableRipple className="report-scroll-section rounded-3xl p-4 sm:p-6 border border-sky-200/80 dark:border-sky-800/60 no-print">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-start gap-3">
-            <Sparkles className="w-6 h-6 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+            <Sparkles className="w-6 h-6 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
             <div>
-              <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+              <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
                 Luyện tập trắc nghiệm thích ứng & Nâng cao từ bài vừa phân tích
               </h2>
               <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
@@ -488,8 +540,8 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       </GlassSurface>
 
       {/* Split Document & Evidence Workspace */}
-      <section className="space-y-3 no-print">
-        <h2 className="font-display text-xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
+      <section className="report-scroll-section space-y-3 no-print">
+        <h2 className="font-display text-lg sm:text-xl font-bold text-[#16243E] dark:text-[#E6EFFC] mt-2 mb-2.5">
           Đối chiếu tài liệu & dẫn chứng nguồn chuẩn
         </h2>
         <SplitDocumentViewer analysis={analysis} localFile={localFile} />
@@ -497,9 +549,9 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
 
       {/* Claim Suggested Fixes & User Feedback Controls */}
       {analysis.claims.length > 0 && (
-        <GlassSurface className="rounded-2xl p-6 space-y-4 no-print">
+        <GlassSurface className="report-scroll-section rounded-3xl p-4 sm:p-6 space-y-4 no-print">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9]">
+            <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
               Gợi ý sửa nhanh & Phản hồi kết quả kiểm định ({analysis.claims.length} mệnh đề)
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -512,10 +564,10 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
               return (
                 <div
                   key={c.claimId}
-                  className="document-paper rounded-xl p-4 text-xs space-y-2"
+                  className="document-paper rounded-2xl p-4 text-xs space-y-2"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-semibold text-[#17243A] dark:text-[#E5EDF9]">
+                    <span className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
                       {c.concept} · {c.chapter} (Tr. {c.sourcePage})
                     </span>
                     <div className="flex items-center gap-3">
@@ -545,7 +597,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                       <button
                         type="button"
                         onClick={() => setReportingClaimId(isReporting ? null : c.claimId)}
-                        className="inline-flex items-center gap-1 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer"
+                        className="inline-flex items-center gap-1 text-slate-500 dark:text-slate-400 hover:text-sky-600 dark:hover:text-sky-400 cursor-pointer"
                       >
                         <Flag className="w-3.5 h-3.5" />
                         Báo sai / Phản hồi
@@ -554,18 +606,18 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                   </div>
                   <p className="text-slate-700 dark:text-slate-300 italic">“{c.sourceText}”</p>
                   {c.suggestedFix && (
-                    <p className="rounded-lg bg-blue-50/80 dark:bg-blue-950/40 px-3 py-2 text-blue-950 dark:text-blue-200">
+                    <p className="rounded-xl bg-sky-50/85 dark:bg-sky-950/40 px-3 py-2 text-sky-950 dark:text-sky-200">
                       <strong>Gợi ý sửa:</strong> {c.suggestedFix}
                     </p>
                   )}
 
                   {isReporting && (
-                    <div className="pt-2 border-t border-slate-200 dark:border-slate-700 space-y-2">
+                    <div className="pt-2 border-t border-sky-200/60 dark:border-slate-700 space-y-2">
                       <div className="flex flex-wrap gap-2">
                         <select
                           value={feedbackCategory}
                           onChange={(e) => setFeedbackCategory(e.target.value as FeedbackEntry['category'])}
-                          className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                          className="glass-control px-2.5 py-1.5 rounded-xl text-xs"
                         >
                           {FEEDBACK_CATEGORIES.map((cat) => (
                             <option key={cat} value={cat}>
@@ -578,13 +630,13 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                           value={feedbackNote}
                           onChange={(e) => setFeedbackNote(e.target.value)}
                           placeholder="Ghi rõ lý do hoặc dẫn chứng sách giáo khoa..."
-                          className="flex-1 min-w-[200px] px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                          className="glass-control flex-1 min-w-[200px] px-2.5 py-1.5 rounded-xl text-xs"
                         />
                         <button
                           type="button"
                           disabled={sendingFeedback || !feedbackNote.trim()}
                           onClick={() => handleSubmitClaimFeedback(c.claimId)}
-                          className="px-3 py-1.5 rounded-lg bg-blue-600 text-white font-semibold disabled:opacity-50 cursor-pointer"
+                          className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 text-white font-semibold disabled:opacity-50 cursor-pointer"
                         >
                           {sendingFeedback ? 'Đang gửi...' : 'Gửi phản hồi'}
                         </button>
@@ -599,8 +651,8 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       )}
 
       {/* Strengths, Weaknesses, Suggestions */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 no-print">
-        <GlassSurface className="rounded-2xl p-6 space-y-4">
+      <div className="report-scroll-section grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 no-print">
+        <GlassSurface className="rounded-3xl p-4 sm:p-6 space-y-4">
           <h3 className="font-display text-base font-bold text-emerald-900 dark:text-emerald-300 flex items-center gap-2">
             <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
             Điểm mạnh đã thể hiện ({analysis.strengths.length})
@@ -612,7 +664,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
               {analysis.strengths.map((s, idx) => (
                 <div
                   key={idx}
-                  className="rounded-xl bg-emerald-50/70 dark:bg-emerald-950/35 border border-emerald-200/80 dark:border-emerald-800/60 p-3.5 text-xs space-y-1"
+                  className="rounded-2xl bg-emerald-50/75 dark:bg-emerald-950/35 border border-emerald-200/80 dark:border-emerald-800/60 p-3.5 text-xs space-y-1"
                 >
                   <p className="font-semibold text-emerald-950 dark:text-emerald-200">{s.title}</p>
                   <p className="text-slate-700 dark:text-slate-300 leading-relaxed">{s.detail}</p>
@@ -627,7 +679,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
           )}
         </GlassSurface>
 
-        <GlassSurface className="rounded-2xl p-6 space-y-4">
+        <GlassSurface className="rounded-3xl p-6 space-y-4">
           <h3 className="font-display text-base font-bold text-rose-900 dark:text-rose-300 flex items-center gap-2">
             <XCircle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
             Điểm cần khắc phục ({analysis.weaknesses.length})
@@ -639,7 +691,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
               {analysis.weaknesses.map((w, idx) => (
                 <div
                   key={idx}
-                  className="rounded-xl bg-rose-50/70 dark:bg-rose-950/35 border border-rose-200/80 dark:border-rose-800/60 p-3.5 text-xs space-y-1"
+                  className="rounded-2xl bg-rose-50/75 dark:bg-rose-950/35 border border-rose-200/80 dark:border-rose-800/60 p-3.5 text-xs space-y-1"
                 >
                   <div className="flex items-center justify-between gap-2">
                     <p className="font-semibold text-rose-950 dark:text-rose-200">{w.title}</p>
@@ -652,9 +704,9 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
           )}
         </GlassSurface>
 
-        <GlassSurface className="rounded-2xl p-6 space-y-4">
-          <h3 className="font-display text-base font-bold text-blue-900 dark:text-blue-300 flex items-center gap-2">
-            <Lightbulb className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+        <GlassSurface className="rounded-3xl p-6 space-y-4">
+          <h3 className="font-display text-base font-bold text-sky-900 dark:text-sky-300 flex items-center gap-2">
+            <Lightbulb className="w-5 h-5 text-sky-600 dark:text-sky-400" />
             Gợi ý cải thiện theo thứ tự ưu tiên
           </h3>
           {analysis.suggestions.length === 0 ? (
@@ -664,7 +716,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
               {analysis.suggestions.map((sg, idx) => (
                 <div
                   key={idx}
-                  className="rounded-xl bg-sky-50/70 dark:bg-sky-950/35 border border-sky-200/80 dark:border-sky-800/60 p-3.5 text-xs space-y-1"
+                  className="rounded-2xl bg-sky-50/75 dark:bg-sky-950/35 border border-sky-200/80 dark:border-sky-800/60 p-3.5 text-xs space-y-1"
                 >
                   <p className="font-semibold text-sky-950 dark:text-sky-200">
                     #{sg.priority || idx + 1} · {sg.title}
@@ -678,10 +730,10 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       </div>
 
       {/* Coverage Checklist & Grounded Web Sources */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 no-print">
-        <div className="lg:col-span-7 glass-surface rounded-2xl p-6">
-          <h3 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9] mb-4 flex items-center gap-2">
-            <BookCheck className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+      <div className="report-scroll-section grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6 no-print">
+        <div className="lg:col-span-7 glass-surface rounded-3xl p-4 sm:p-6">
+          <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC] mb-4 flex items-center gap-2">
+            <BookCheck className="w-5 h-5 text-sky-600 dark:text-sky-400" />
             Bảng kiểm mức độ bao phủ kiến thức chương ({analysis.coverageItems.length})
           </h3>
           {analysis.coverageItems.length === 0 ? (
@@ -693,10 +745,10 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
               {analysis.coverageItems.map((cov) => (
                 <div
                   key={cov.itemId}
-                  className="document-paper rounded-xl p-3.5 text-xs"
+                  className="document-paper rounded-2xl p-3.5 text-xs"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-[#17243A] dark:text-[#E5EDF9]">{cov.concept}</span>
+                    <span className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">{cov.concept}</span>
                     <span
                       className={`font-semibold shrink-0 ${
                         cov.status === 'COVERED'
@@ -718,7 +770,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                     {cov.referencePage ? ` · SGK Tr. ${cov.referencePage}` : ''}
                   </p>
                   {cov.status !== 'COVERED' && cov.suggestedAddition && (
-                    <p className="text-slate-700 dark:text-slate-200 mt-1.5 bg-amber-50/70 dark:bg-amber-950/35 rounded-lg px-2.5 py-1.5">
+                    <p className="text-slate-700 dark:text-slate-200 mt-1.5 bg-amber-50/75 dark:bg-amber-950/35 rounded-xl px-2.5 py-1.5">
                       Cần bổ sung: {cov.suggestedAddition}
                     </p>
                   )}
@@ -728,13 +780,13 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
           )}
         </div>
 
-        <div className="lg:col-span-5 glass-surface rounded-2xl p-6">
-          <h3 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9] mb-4 flex items-center gap-2">
-            <Globe className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+        <div className="lg:col-span-5 glass-surface rounded-3xl p-6">
+          <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC] mb-4 flex items-center gap-2">
+            <Globe className="w-5 h-5 text-sky-600 dark:text-sky-400" />
             Nguồn tham khảo ngoài sách (Web Grounding)
           </h3>
           {analysis.webGroundingNotice && (
-            <div className="mb-3 rounded-xl border border-amber-200 dark:border-amber-800/70 bg-amber-50/80 dark:bg-amber-950/40 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
+            <div className="mb-3 rounded-2xl border border-amber-200 dark:border-amber-800/70 bg-amber-50/80 dark:bg-amber-950/40 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
               <span>{analysis.webGroundingNotice}</span>
             </div>
@@ -753,9 +805,9 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                   href={src.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="block document-paper rounded-xl p-3.5 text-xs hover:border-blue-400 transition-colors"
+                  className="block document-paper rounded-2xl p-3.5 text-xs hover:border-sky-400 transition-colors"
                 >
-                  <div className="flex items-center justify-between gap-2 font-semibold text-blue-700 dark:text-blue-400">
+                  <div className="flex items-center justify-between gap-2 font-semibold text-sky-700 dark:text-sky-400">
                     <span className="truncate">{src.title}</span>
                     <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                   </div>

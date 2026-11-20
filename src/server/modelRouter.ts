@@ -46,11 +46,11 @@ export const DEFAULT_TASK_MODELS: Record<AiTaskType, TaskModelConfig> = {
     promptVersion: 'v2.1',
   },
   curriculum_extraction: {
-    defaultModel: 'gemini-4-hydrogen',
-    fallbackModel: 'gemini-3.1-flash-lite',
+    defaultModel: 'gemini-3.1-flash-lite',
+    fallbackModel: 'gemini-4-hydrogen',
     enableFallback: false,
     oneTimeOverrideModel: null,
-    promptVersion: 'v2.1',
+    promptVersion: 'v2.2',
   },
   knowledge_analysis: {
     defaultModel: 'gemini-4-hydrogen',
@@ -135,16 +135,39 @@ function appendExecutionLog(log: AiExecutionLog): void {
   }
 }
 
+export const GEMINI_TIMEOUT_MS = 30_000;
+
+export async function callWithTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = GEMINI_TIMEOUT_MS
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation(controller.signal),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`Yêu cầu AI vượt quá thời gian chờ (${Math.round(timeoutMs / 1000)} giây).`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export function isTransientProviderError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes('vượt quá thời gian chờ')) {
+    return false;
+  }
   return (
     msg.includes('429') ||
-    msg.includes('500') ||
-    msg.includes('502') ||
     msg.includes('503') ||
     msg.includes('RESOURCE_EXHAUSTED') ||
-    msg.includes('DEADLINE_EXCEEDED') ||
-    msg.includes('ETIMEDOUT') ||
+    msg.includes('UNAVAILABLE') ||
     msg.includes('ECONNRESET')
   );
 }
@@ -154,6 +177,7 @@ export async function withExponentialBackoff<T>(
   maxRetries = 2
 ): Promise<T> {
   let attempt = 0;
+  let lastDelayMs = 0;
   while (true) {
     try {
       return await fn();
@@ -162,16 +186,38 @@ export async function withExponentialBackoff<T>(
       if (attempt > maxRetries || !isTransientProviderError(err)) {
         throw err;
       }
-      const jitter = Math.floor(Math.random() * 250);
-      const delayMs = 600 * Math.pow(2, attempt - 1) + jitter;
+      const baseDelay = attempt === 1 ? 1000 : 2500;
+      const jitter = Math.floor(Math.random() * 200);
+      const delayMs = Math.max(lastDelayMs + 500, baseDelay + jitter);
+      lastDelayMs = delayMs;
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
 }
 
+export function thinkingConfigForModel(
+  modelId: string,
+  tier: 'minimal' | 'low' | 'medium'
+): { thinkingLevel: ThinkingLevel } {
+  const isLite = modelId.toLowerCase().includes('flash-lite');
+  if (tier === 'minimal') {
+    // Gemini 3.1 Flash Lite supports MINIMAL; Gemini 4 models require at least LOW (MINIMAL returns 400).
+    return { thinkingLevel: isLite ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW };
+  }
+  if (tier === 'low') {
+    return { thinkingLevel: ThinkingLevel.LOW };
+  }
+  return { thinkingLevel: ThinkingLevel.MEDIUM };
+}
+
+let cachedAiClient: { apiKey: string; client: GoogleGenAI } | null = null;
+
 export async function createServerAiClient(): Promise<GoogleGenAI> {
   const apiKey = await resolveActiveGeminiApiKey();
-  return new GoogleGenAI({
+  if (cachedAiClient && cachedAiClient.apiKey === apiKey) {
+    return cachedAiClient.client;
+  }
+  const client = new GoogleGenAI({
     apiKey,
     httpOptions: {
       headers: {
@@ -179,6 +225,8 @@ export async function createServerAiClient(): Promise<GoogleGenAI> {
       },
     },
   });
+  cachedAiClient = { apiKey, client };
+  return client;
 }
 
 export interface ResolvedModelDecision {
@@ -380,14 +428,17 @@ export async function testModelConnectivity(modelId: string): Promise<{
   const start = Date.now();
   try {
     const ai = await createServerAiClient();
-    const resp = await ai.models.generateContent({
-      model: modelId,
-      contents: 'Trả lời 1 từ: OK',
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        maxOutputTokens: 16,
-      },
-    });
+    const resp = await callWithTimeout((signal) =>
+      ai.models.generateContent({
+        model: modelId,
+        contents: 'Trả lời 1 từ: OK',
+        config: {
+          thinkingConfig: thinkingConfigForModel(modelId, 'minimal'),
+          maxOutputTokens: 128,
+          abortSignal: signal,
+        },
+      })
+    );
     const text = (resp.text || '').trim();
     return {
       ok: Boolean(text),

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Award,
   BookOpen,
@@ -24,12 +24,14 @@ import {
   type GradeLevel,
   type SubjectId,
 } from '../core/types';
+import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import {
   listExams,
   listUserExamAttempts,
   submitExamAttemptAndSyncLeaderboard,
 } from '../services/firestoreService';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
+import { LiquidCard } from './LiquidGlass/LiquidCard';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
 interface ExamCenterViewProps {
@@ -77,6 +79,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
   const [printExam, setPrintExam] = useState<ExamDocument | null>(null);
   const [printVariantSeed, setPrintVariantSeed] = useState<number>(0); // 0 = gốc, 101, 102, 103
   const [printIncludeKey, setPrintIncludeKey] = useState(false);
+  const examRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,6 +100,27 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
       cancelled = true;
     };
   }, [user]);
+
+  useGSAP(
+    () => {
+      if (activeExam || printExam || loading) return;
+      const mm = gsap.matchMedia();
+      mm.add(MOTION_ALLOWED_MEDIA, () => {
+        gsap.from('.exam-card', {
+          y: 12,
+          autoAlpha: 0,
+          duration: 0.34,
+          stagger: 0.04,
+          ease: 'power2.out',
+          clearProps: 'transform,opacity,visibility',
+        });
+      });
+    },
+    {
+      scope: examRef,
+      dependencies: [activeTab, loading, gradeFilter, subjectFilter, Boolean(activeExam), Boolean(printExam)],
+    }
+  );
 
   useEffect(() => {
     if (!activeExam || latestResult) return;
@@ -190,16 +214,16 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
 
     return (
       <div className="space-y-6">
-        <GlassSurface className="rounded-2xl p-5 flex flex-wrap items-center justify-between gap-3 no-print">
+        <GlassSurface className="rounded-3xl p-5 flex flex-wrap items-center justify-between gap-3 no-print">
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <button
               type="button"
               onClick={() => setPrintExam(null)}
-              className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 cursor-pointer"
+              className="glass-control px-3 py-1.5 rounded-xl font-medium cursor-pointer"
             >
               ← Quay lại Trung tâm đề thi
             </button>
-            <span className="font-semibold text-[#17243A] dark:text-[#E5EDF9] ml-2">Chọn mã đề:</span>
+            <span className="font-semibold text-[#16243E] dark:text-[#E6EFFC] ml-2">Chọn mã đề:</span>
             {[
               { seed: 0, label: 'Đề gốc' },
               { seed: 101, label: 'Mã đề 101' },
@@ -210,10 +234,10 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                 key={v.seed}
                 type="button"
                 onClick={() => setPrintVariantSeed(v.seed)}
-                className={`px-3 py-1.5 rounded-lg border cursor-pointer ${
+                className={`px-3 py-1.5 rounded-xl font-medium cursor-pointer transition-all ${
                   printVariantSeed === v.seed
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700'
+                    ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                    : 'glass-control'
                 }`}
               >
                 {v.label}
@@ -224,7 +248,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                 type="checkbox"
                 checked={printIncludeKey}
                 onChange={(e) => setPrintIncludeKey(e.target.checked)}
-                className="h-4 w-4 accent-blue-600"
+                className="h-4 w-4 accent-sky-600"
               />
               In kèm Đáp án & Hướng dẫn chấm
             </label>
@@ -314,13 +338,13 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
 
     return (
       <div className="space-y-6">
-        <GlassSurface className="rounded-2xl p-5 flex flex-wrap items-center justify-between gap-4 sticky top-20 z-20">
+        <GlassSurface className="rounded-3xl p-5 flex flex-wrap items-center justify-between gap-4 sticky top-20 z-20">
           <div>
-            <p className="text-xs font-semibold text-blue-700 dark:text-blue-400">
+            <p className="text-xs font-semibold text-sky-700 dark:text-sky-400">
               {EXAM_TYPE_LABELS[activeExam.examType]} · {SUBJECT_LABELS[activeExam.subject]} Lớp{' '}
               {activeExam.grade}
             </p>
-            <h1 className="font-display text-lg font-bold text-[#17243A] dark:text-[#E5EDF9]">
+            <h1 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
               {activeExam.title}
             </h1>
           </div>
@@ -330,8 +354,8 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
               <div
                 className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border font-mono text-xs font-bold tabular-nums ${
                   secondsLeft <= 120
-                    ? 'bg-rose-50 dark:bg-rose-950/50 border-rose-300 dark:border-rose-700 text-rose-700 dark:text-rose-300'
-                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-[#17243A] dark:text-[#E5EDF9]'
+                    ? 'bg-rose-50/85 dark:bg-rose-950/50 border-rose-300 dark:border-rose-700 text-rose-700 dark:text-rose-300'
+                    : 'glass-control text-[#16243E] dark:text-[#E6EFFC]'
                 }`}
               >
                 <Clock className="w-4 h-4" />
@@ -345,7 +369,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                 setActiveExam(null);
                 setLatestResult(null);
               }}
-              className="px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold cursor-pointer"
+              className="glass-control px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer"
             >
               Thoát phòng thi
             </button>
@@ -367,9 +391,9 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div className="space-y-1">
                 <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
-                  ĐÃ CHẤM ĐIỂM & CẬP NHẬT BẢNG XẾP HẠNG ĐUA TOP
+                  Đã chấm điểm & cập nhật bảng xếp hạng Đua Top
                 </p>
-                <h2 className="font-display text-2xl sm:text-3xl font-bold text-[#17243A] dark:text-[#E5EDF9] tabular-nums">
+                <h2 className="font-display text-2xl sm:text-3xl font-bold text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
                   {latestResult.attempt.earnedScore} / {latestResult.attempt.maxScore} điểm (
                   {latestResult.attempt.percentScore}%)
                 </h2>
@@ -408,7 +432,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
         )}
 
         {/* Navigator Grid */}
-        <GlassSurface className="rounded-2xl p-4">
+        <GlassSurface className="rounded-3xl p-4 sm:p-5">
           <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 mb-2">
             Sơ đồ câu hỏi ({answeredTotal}/{activeExam.questions.length} đã trả lời)
           </p>
@@ -417,7 +441,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
               const answered = isQuestionAnswered(q);
               const bk = latestResult?.attempt.breakdown.find((b) => b.questionId === q.questionId);
               let cls =
-                'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300';
+                'glass-control text-slate-700 dark:text-slate-300';
               if (bk) {
                 cls = bk.isFullCorrect
                   ? 'bg-emerald-600 border-emerald-600 text-white'
@@ -425,13 +449,13 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                   ? 'bg-amber-500 border-amber-500 text-white'
                   : 'bg-rose-600 border-rose-600 text-white';
               } else if (answered) {
-                cls = 'bg-blue-600 border-blue-600 text-white';
+                cls = 'bg-gradient-to-r from-sky-500 to-blue-600 border-sky-500 text-white';
               }
               return (
                 <a
                   key={q.questionId}
                   href={`#exam-q-${q.questionId}`}
-                  className={`w-8 h-8 rounded-lg border font-mono text-xs font-bold flex items-center justify-center ${cls}`}
+                  className={`w-8 h-8 rounded-xl border font-mono text-xs font-bold flex items-center justify-center ${cls}`}
                 >
                   {idx + 1}
                 </a>
@@ -597,8 +621,8 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                 )}
 
                 {latestResult && (
-                  <div className="rounded-xl bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-700 p-3.5 text-xs space-y-1">
-                    <p className="font-semibold text-[#17243A] dark:text-[#E5EDF9]">
+                  <div className="rounded-xl glass-panel-subtle p-3.5 text-xs space-y-1">
+                    <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
                       Đáp án chuẩn: {bk?.correctDisplay} · Bài làm của bạn: {bk?.studentDisplay}
                     </p>
                     <p className="text-slate-700 dark:text-slate-300">{q.explanation}</p>
@@ -613,10 +637,10 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
   }
 
   return (
-    <div className="space-y-6">
+    <div ref={examRef} className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
+          <h1 className="font-display text-2xl font-bold text-[#16243E] dark:text-[#E6EFFC]">
             Trung tâm Đề Kiểm Tra Giữa kỳ & Cuối kỳ
           </h1>
           <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1">
@@ -634,7 +658,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
       </div>
 
       {/* Category Tabs */}
-      <div className="flex flex-wrap gap-2">
+      <div className="glass-segment inline-flex flex-wrap gap-1.5 rounded-2xl p-1.5">
         {(
           [
             ['all', 'Tất cả kỳ thi'],
@@ -650,10 +674,10 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
             key={id}
             type="button"
             onClick={() => setActiveTab(id)}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold border cursor-pointer ${
+            className={`px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
               activeTab === id
-                ? 'bg-blue-600 text-white border-blue-600'
-                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'
+                ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800/60'
             }`}
           >
             {label}
@@ -662,11 +686,11 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
       </div>
 
       {activeTab !== 'history' && (
-        <GlassSurface className="rounded-2xl p-4 flex flex-wrap gap-3">
+        <GlassSurface className="rounded-3xl p-4 flex flex-wrap gap-3">
           <select
             value={gradeFilter}
             onChange={(e) => setGradeFilter(e.target.value as 'all' | GradeLevel)}
-            className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+            className="glass-control px-3.5 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
           >
             <option value="all">Tất cả khối (10 / 11 / 12)</option>
             <option value="10">Khối 10</option>
@@ -677,7 +701,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
           <select
             value={subjectFilter}
             onChange={(e) => setSubjectFilter(e.target.value as 'all' | SubjectId)}
-            className="px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+            className="glass-control px-3.5 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
           >
             <option value="all">Tất cả môn học</option>
             {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
@@ -692,47 +716,48 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[1, 2].map((i) => (
-            <div key={i} className="glass-surface rounded-2xl p-6 h-40 animate-pulse" />
+            <div key={i} className="glass-surface rounded-3xl p-6 h-40 animate-pulse" />
           ))}
         </div>
       ) : activeTab === 'history' ? (
         attempts.length === 0 ? (
-          <GlassSurface className="rounded-2xl p-8 text-center text-sm text-slate-600 dark:text-slate-300">
+          <GlassSurface className="rounded-3xl p-8 text-center text-sm text-slate-600 dark:text-slate-300">
             Bạn chưa nộp bài kiểm tra nào. Chọn một đề ở các tab bên cạnh để bắt đầu thi thử và
             tích điểm Đua Top.
           </GlassSurface>
         ) : (
           <div className="space-y-3">
             {attempts.map((a) => (
-              <GlassSurface
+              <LiquidCard
                 key={a.attemptId}
-                className="rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                enableTilt={false}
+                className="exam-card rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
               >
                 <div className="space-y-1">
-                  <p className="text-sm font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                  <p className="text-sm font-bold text-[#16243E] dark:text-[#E6EFFC]">
                     {a.examTitle}
                   </p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                  <p className="text-xs text-[#475B78] dark:text-[#B4C7E2]">
                     {SUBJECT_LABELS[a.subject]} · Lớp {a.grade} · {EXAM_TYPE_LABELS[a.examType]} ·{' '}
                     {new Date(a.submittedAt).toLocaleString('vi-VN')}
                   </p>
                 </div>
                 <div className="text-right font-mono text-xs tabular-nums">
-                  <p className="text-base font-bold text-blue-700 dark:text-blue-400">
+                  <p className="text-base font-bold text-sky-700 dark:text-sky-400">
                     {a.earnedScore}/{a.maxScore} ({a.percentScore}%)
                   </p>
                   <p className="text-emerald-700 dark:text-emerald-400">
                     +{a.leaderboardPointsAwarded} điểm Đua Top
                   </p>
                 </div>
-              </GlassSurface>
+              </LiquidCard>
             ))}
           </div>
         )
       ) : filteredExams.length === 0 ? (
-        <GlassSurface className="rounded-2xl p-8 text-center space-y-2 text-sm text-slate-600 dark:text-slate-300">
-          <BookOpen className="w-8 h-8 text-blue-600 dark:text-blue-400 mx-auto" />
-          <p className="font-semibold text-[#17243A] dark:text-[#E5EDF9]">
+        <GlassSurface className="rounded-3xl p-8 text-center space-y-2 text-sm text-slate-600 dark:text-slate-300">
+          <BookOpen className="w-8 h-8 text-sky-600 dark:text-sky-400 mx-auto" />
+          <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
             Chưa có đề kiểm tra được xuất bản cho bộ lọc này
           </p>
           <p className="text-xs">
@@ -745,29 +770,29 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
           {filteredExams.map((exam) => {
             const bestPct = bestScoreByExam.get(exam.examId);
             return (
-              <GlassSurface key={exam.examId} className="rounded-2xl p-6 flex flex-col justify-between gap-4">
+              <LiquidCard key={exam.examId} className="exam-card rounded-3xl p-6 flex flex-col justify-between gap-4">
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2 text-xs">
-                    <span className="font-semibold text-blue-700 dark:text-blue-400">
+                    <span className="font-semibold text-sky-700 dark:text-sky-400">
                       {EXAM_TYPE_LABELS[exam.examType]}
                     </span>
-                    <span className="font-mono text-slate-500 dark:text-slate-400">
+                    <span className="font-mono text-[#475B78] dark:text-[#B4C7E2]">
                       Khối {exam.grade} · {SUBJECT_LABELS[exam.subject]}
                     </span>
                   </div>
-                  <h2 className="font-display text-lg font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                  <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
                     {exam.title}
                   </h2>
-                  <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] leading-[1.6]">
                     {exam.description || `Bộ sách ${exam.textbookSeries} · Năm học ${exam.academicYear}`}
                   </p>
-                  <div className="flex flex-wrap items-center gap-4 pt-1 text-xs font-mono text-slate-600 dark:text-slate-300 tabular-nums">
+                  <div className="flex flex-wrap items-center gap-4 pt-1 text-xs font-mono text-[#475B78] dark:text-[#B4C7E2] tabular-nums">
                     <span className="inline-flex items-center gap-1">
-                      <Clock className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                      <Clock className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                       {exam.durationMinutes} phút
                     </span>
                     <span className="inline-flex items-center gap-1">
-                      <FileCheck2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                      <FileCheck2 className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                       {exam.questions.length} câu ({exam.totalScore} điểm)
                     </span>
                     {bestPct !== undefined && (
@@ -779,7 +804,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200/70 dark:border-slate-700/70">
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-sky-200/60 dark:border-slate-700/70">
                   <button
                     type="button"
                     onClick={() => {
@@ -787,7 +812,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                       setPrintVariantSeed(0);
                       setPrintIncludeKey(false);
                     }}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium cursor-pointer"
+                    className="glass-control inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium cursor-pointer"
                   >
                     <Printer className="w-3.5 h-3.5" />
                     In / Đảo mã đề
@@ -798,7 +823,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                     {bestPct !== undefined && exam.allowRetake ? 'Làm lại bài thi' : 'Vào phòng thi'}
                   </WaterRippleButton>
                 </div>
-              </GlassSurface>
+              </LiquidCard>
             );
           })}
         </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowDown,
@@ -14,6 +14,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import {
   SUBJECT_LABELS,
   type AiJobRecord,
@@ -27,6 +28,7 @@ import {
 } from '../core/types';
 import { retrieveRelevantChunks } from '../core/retrieval';
 import { authorizedFetch, parseApiResponse } from '../services/apiClient';
+import { compressImageFilesForUpload } from '../services/imageCompression';
 import {
   listReferenceBooks,
   listReferenceChunksForBook,
@@ -68,6 +70,8 @@ const PIPELINE_STAGES: Array<{ id: AnalysisStage; label: string }> = [
 const ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.jpg', '.jpeg', '.png', '.webp'];
 
 export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisCompleted }) => {
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const progressFillRef = useRef<HTMLDivElement>(null);
   const { user, profile, systemStatus } = useAuth();
   const [step, setStep] = useState<WizardStep>('select');
   const [files, setFiles] = useState<File[]>([]);
@@ -75,6 +79,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
   const [warning, setWarning] = useState<string | null>(null);
   const [activeStage, setActiveStage] = useState<AnalysisStage>('uploading');
   const [statusLabel, setStatusLabel] = useState<string>('');
+  const [progressDetail, setProgressDetail] = useState<{ current: number; total: number } | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [lastFailedAction, setLastFailedAction] = useState<'extract' | 'analyze' | null>(null);
 
@@ -136,6 +141,62 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     }, 1000);
     return () => window.clearInterval(timer);
   }, [step]);
+
+  useGSAP(
+    () => {
+      const mm = gsap.matchMedia();
+      mm.add(MOTION_ALLOWED_MEDIA, () => {
+        gsap.from('.upload-step-panel', {
+          y: 12,
+          autoAlpha: 0,
+          duration: 0.32,
+          ease: 'power2.out',
+          clearProps: 'transform,opacity,visibility',
+        });
+      });
+    },
+    { scope: workspaceRef, dependencies: [step] }
+  );
+
+  useGSAP(
+    () => {
+      if (step !== 'extracting' && step !== 'analyzing') return;
+      const mm = gsap.matchMedia();
+      mm.add(MOTION_ALLOWED_MEDIA, () => {
+        gsap.fromTo(
+          '.upload-status-label',
+          { y: 5, autoAlpha: 0.35 },
+          {
+            y: 0,
+            autoAlpha: 1,
+            duration: 0.24,
+            ease: 'power2.out',
+            clearProps: 'transform,opacity,visibility',
+          }
+        );
+      });
+    },
+    { scope: workspaceRef, dependencies: [statusLabel, activeStage, step] }
+  );
+
+  useGSAP(
+    () => {
+      if (!progressFillRef.current || !progressDetail || progressDetail.total <= 0) return;
+      const ratio = Math.min(1, Math.max(0.08, progressDetail.current / progressDetail.total));
+      const mm = gsap.matchMedia();
+      mm.add(MOTION_ALLOWED_MEDIA, () => {
+        gsap.to(progressFillRef.current, {
+          scaleX: ratio,
+          duration: 0.35,
+          ease: 'power2.out',
+        });
+      });
+      mm.add('(prefers-reduced-motion: reduce)', () => {
+        gsap.set(progressFillRef.current, { scaleX: ratio });
+      });
+    },
+    { scope: workspaceRef, dependencies: [progressDetail?.current, progressDetail?.total, step] }
+  );
 
   const filteredBooks = referenceBooks.filter(
     (b) => b.grade === grade && b.subject === subject && b.status === 'active'
@@ -257,23 +318,89 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     saveAiJobRecord(baseJob).catch(() => {});
 
     try {
-      setStatusLabel('Đang gửi tài liệu & chuẩn hóa tệp đầu vào...');
-      const formData = new FormData();
-      files.forEach((f) => formData.append('files', f));
+      const isImageUpload = files.every((f) => f.type.startsWith('image/'));
+      setProgressDetail(
+        isImageUpload ? { current: 0, total: files.length } : { current: 1, total: 2 }
+      );
+
+      let preparedFiles = files;
+      if (isImageUpload) {
+        preparedFiles = await compressImageFilesForUpload(files, (curr, total) => {
+          setProgressDetail({ current: curr, total });
+          setStatusLabel(
+            total > 1
+              ? `Đang nén ảnh trang ${curr}/${total} để tải lên nhanh hơn...`
+              : 'Đang nén ảnh để tải lên nhanh hơn...'
+          );
+        });
+      } else {
+        setStatusLabel(`Đang chuẩn bị tệp ${files[0].name}...`);
+      }
 
       setActiveStage('extracting');
-      setStatusLabel('Đang trích xuất văn bản, công thức và nhận diện chữ viết tay (OCR)...');
 
-      const res = await authorizedFetch('/api/ai/extract', {
-        method: 'POST',
-        body: formData,
-      });
+      let pages: ExtractedPage[] = [];
+      let suggestion: Record<string, any> = {};
 
-      const data = await parseApiResponse<any>(res, 'Không thể trích xuất nội dung tài liệu.');
-      const pages: ExtractedPage[] = data.pages || [];
+      if (!isImageUpload) {
+        const isPdf = files[0].type === 'application/pdf' || files[0].name.toLowerCase().endsWith('.pdf');
+        setProgressDetail({ current: 1, total: 2 });
+        setStatusLabel(
+          isPdf
+            ? 'Đang đọc & trích xuất từng trang tệp PDF...'
+            : 'Đang đọc nội dung tệp Word (DOCX)...'
+        );
+        const formData = new FormData();
+        preparedFiles.forEach((f) => formData.append('files', f));
+        const res = await authorizedFetch('/api/ai/extract', {
+          method: 'POST',
+          body: formData,
+        });
+        const data = await parseApiResponse<any>(res, 'Không thể trích xuất nội dung tài liệu.');
+        pages = data.pages || [];
+        suggestion = data.scopeSuggestion || {};
+        setProgressDetail({ current: 2, total: 2 });
+      } else {
+        const totalPages = preparedFiles.length;
+        const batchSize = totalPages <= 8 ? 1 : Math.ceil(totalPages / 8);
+        let accumulatedText = '';
+
+        for (let offset = 0; offset < totalPages; offset += batchSize) {
+          const batch = preparedFiles.slice(offset, offset + batchSize);
+          const endIdx = Math.min(offset + batch.length, totalPages);
+          const isLastBatch = endIdx >= totalPages;
+
+          setProgressDetail({ current: offset + 1, total: totalPages });
+          setStatusLabel(
+            batch.length === 1
+              ? `Đang đọc trang ${offset + 1}/${totalPages}...`
+              : `Đang đọc trang ${offset + 1}–${endIdx}/${totalPages}...`
+          );
+
+          const formData = new FormData();
+          batch.forEach((f) => formData.append('files', f));
+          formData.append('pageOffset', String(offset));
+          formData.append('skipScope', isLastBatch ? 'false' : 'true');
+          if (isLastBatch && accumulatedText) {
+            formData.append('previousText', accumulatedText.slice(0, 1500));
+          }
+
+          const res = await authorizedFetch('/api/ai/extract', {
+            method: 'POST',
+            body: formData,
+          });
+          const data = await parseApiResponse<any>(res, 'Không thể trích xuất nội dung tài liệu.');
+          const batchPages: ExtractedPage[] = data.pages || [];
+          pages = [...pages, ...batchPages];
+          accumulatedText = pages.map((p) => p.rawText).join('\n');
+          if (isLastBatch) {
+            suggestion = data.scopeSuggestion || {};
+          }
+          setProgressDetail({ current: endIdx, total: totalPages });
+        }
+      }
+
       setExtractedPages(pages);
-
-      const suggestion = data.scopeSuggestion || {};
       const nextTitle =
         suggestion.suggestedTitle || files[0].name.replace(/\.[^.]+$/, '') || 'Tài liệu học tập';
       const nextGrade: GradeLevel = suggestion.suggestedGrade || profile?.grade || '10';
@@ -307,10 +434,12 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         updatedAt: new Date().toISOString(),
       }).catch(() => {});
 
+      setProgressDetail(null);
       setActiveStage('awaiting_ocr_confirmation');
       setStep('ocr_review');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Lỗi xử lý tải lên và trích xuất.';
+      setProgressDetail(null);
       setError(msg);
       setLastFailedAction('extract');
       setStep('select');
@@ -335,7 +464,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     setLastFailedAction(null);
     setStep('analyzing');
     setActiveStage('retrieving_references');
-    setStatusLabel('Đang truy xuất đoạn kiến thức sách giáo khoa phù hợp...');
+    setProgressDetail({ current: 1, total: 3 });
+    setStatusLabel('Bước 1/3: Đang tìm kiến thức sách giáo khoa phù hợp...');
 
     const jobId = `job_an_${documentId || Date.now()}`;
     const nowStart = new Date().toISOString();
@@ -375,10 +505,11 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       }
 
       setActiveStage('verifying');
+      setProgressDetail({ current: 2, total: 3 });
       setStatusLabel(
         enableWebGrounding
-          ? 'Đang kiểm định mệnh đề, đối chiếu sách giáo khoa & Google Search Grounding...'
-          : 'Đang kiểm định từng mệnh đề & đối chiếu sách giáo khoa chuẩn...'
+          ? `Bước 2/3: Đang đối chiếu ${extractedPages.length} trang với SGK & tìm kiếm bổ sung...`
+          : `Bước 2/3: Đang kiểm định & đối chiếu ${extractedPages.length} trang với kiến thức chuẩn...`
       );
 
       const idempotencyKey = `${documentId}_${grade}_${subject}_${Date.now()}`;
@@ -402,7 +533,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       const data = await parseApiResponse<any>(res, 'Quá trình phân tích kiến thức thất bại.');
 
       setActiveStage('calculating');
-      setStatusLabel('Đang chấm điểm Độ chính xác, Độ đầy đủ & lưu báo cáo vào Firebase...');
+      setProgressDetail({ current: 3, total: 3 });
+      setStatusLabel('Bước 3/3: Đang chấm điểm & lưu báo cáo kết quả...');
 
       const now = new Date().toISOString();
       const record: AnalysisRecord = {
@@ -448,6 +580,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       await saveAnalysisRecord(record);
       await syncEncounteredConceptsFromAnalysis(user.uid, record);
       persistOcrDraft(null);
+      setProgressDetail(null);
 
       saveAiJobRecord({
         ...baseJob,
@@ -461,6 +594,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       onAnalysisCompleted(record, files[0] || null);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Không thể hoàn tất phân tích.';
+      setProgressDetail(null);
       setError(msg);
       setLastFailedAction('analyze');
       setStep('scope_confirm');
@@ -493,9 +627,9 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
   const activeStageIdx = PIPELINE_STAGES.findIndex((s) => s.id === activeStage);
 
   return (
-    <div className="space-y-6">
+    <div ref={workspaceRef} className="space-y-4 sm:space-y-6">
       {/* Progress Stepper */}
-      <div className="glass-surface rounded-2xl px-5 py-3.5 flex flex-wrap items-center gap-3 text-xs font-medium">
+      <div className="glass-segment rounded-2xl px-3.5 sm:px-4 py-2.5 flex flex-wrap items-center gap-1.5 sm:gap-2 text-xs font-medium">
         {[
           { id: 'select', label: '1. Tải tài liệu' },
           { id: 'ocr_review', label: '2. Kiểm tra OCR' },
@@ -506,12 +640,12 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
             step === s.id || (step === 'extracting' && s.id === 'select');
           return (
             <React.Fragment key={s.id}>
-              {idx > 0 && <span className="text-slate-300 dark:text-slate-600">/</span>}
+              {idx > 0 && <span className="text-sky-300 dark:text-slate-600">/</span>}
               <span
                 className={
                   active
-                    ? 'text-blue-700 dark:text-blue-400 font-bold'
-                    : 'text-slate-500 dark:text-slate-400'
+                    ? 'px-3 py-1 rounded-xl bg-gradient-to-r from-sky-500 to-sky-600 text-white font-semibold shadow-sm'
+                    : 'px-2 py-1 text-[#475B78] dark:text-[#B4C7E2]'
                 }
               >
                 {s.label}
@@ -523,9 +657,9 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
 
       {/* Resumable OCR Draft Banner */}
       {step === 'select' && ocrDraft && (
-        <GlassSurface className="rounded-2xl p-4 border border-blue-200/80 dark:border-blue-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <GlassSurface className="rounded-3xl p-4 sm:p-5 border border-sky-200/80 dark:border-sky-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="text-xs space-y-0.5">
-            <p className="font-semibold text-[#17243A] dark:text-[#E5EDF9]">
+            <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
               Bản nháp OCR chưa phân tích xong: {ocrDraft.documentTitle}
             </p>
             <p className="text-slate-600 dark:text-slate-300">
@@ -537,7 +671,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
             <button
               type="button"
               onClick={() => persistOcrDraft(null)}
-              className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+              className="glass-control px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-600 dark:text-slate-200 cursor-pointer"
             >
               Bỏ nháp
             </button>
@@ -578,12 +712,12 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
 
       {/* STEP 1: Select File / Camera */}
       {step === 'select' && (
-        <GlassSurface className="rounded-3xl p-6 sm:p-8 space-y-6">
+        <GlassSurface className="upload-step-panel rounded-3xl p-4 sm:p-8 space-y-5 sm:space-y-6">
           <div>
-            <h1 className="font-display text-2xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
+            <h1 className="font-display text-[clamp(1.25rem,3.8vw,1.5rem)] font-bold text-[#16243E] dark:text-[#E6EFFC] leading-[1.25]">
               Tải tài liệu để kiểm định kiến thức
             </h1>
-            <p className="text-sm text-slate-600 dark:text-slate-300 mt-1">
+            <p className="text-sm text-[#475B78] dark:text-[#B4C7E2] mt-1.5 leading-[1.6] prose-measure">
               Hỗ trợ PDF, DOCX hoặc nhiều ảnh chụp trang vở viết tay (JPG, PNG, WEBP). Giới hạn{' '}
               <span className="font-mono font-medium">{maxFileMb}MB/file</span> · Tối đa{' '}
               <span className="font-mono font-medium">{maxPages} trang</span>.
@@ -596,18 +730,20 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
               e.preventDefault();
               validateAndSetFiles(e.dataTransfer.files);
             }}
-            className="rounded-2xl border-2 border-dashed border-sky-300/80 dark:border-sky-700/70 bg-white/75 dark:bg-slate-900/60 p-8 text-center transition-colors hover:border-blue-500"
+            className="glass-panel-subtle rounded-2xl border-2 border-dashed border-sky-300/80 dark:border-sky-700/70 p-5 sm:p-8 text-center transition-colors hover:border-sky-500"
           >
-            <FileUp className="w-10 h-10 text-blue-600 dark:text-blue-400 mx-auto mb-3" />
-            <p className="text-sm font-semibold text-[#17243A] dark:text-[#E5EDF9]">
+            <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-sky-100/80 dark:bg-sky-900/50 border border-sky-200/80 dark:border-sky-700/60 flex items-center justify-center mx-auto mb-3">
+              <FileUp className="w-6 h-6 sm:w-7 sm:h-7 text-sky-600 dark:text-sky-400" />
+            </div>
+            <p className="text-sm font-semibold text-[#16243E] dark:text-[#E6EFFC]">
               Kéo thả tệp vào đây hoặc chọn từ thiết bị
             </p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] mt-1 leading-[1.6]">
               Có thể chọn nhiều ảnh cùng lúc để ghép thành tài liệu nhiều trang theo đúng thứ tự.
             </p>
 
             <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
-              <label className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-semibold cursor-pointer hover:bg-blue-700">
+              <label className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-sky-500 to-sky-600 text-white text-xs font-semibold cursor-pointer hover:from-sky-400 hover:to-sky-500 shadow-[0_6px_18px_-4px_rgba(2,132,199,0.45)] transition-all">
                 <FileUp className="w-4 h-4" />
                 Chọn tệp (PDF / DOCX / Ảnh)
                 <input
@@ -621,8 +757,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                 />
               </label>
 
-              <label className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 text-xs font-semibold cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700">
-                <Camera className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <label className="glass-control inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-[#16243E] dark:text-[#E6EFFC] text-xs font-semibold cursor-pointer">
+                <Camera className="w-4 h-4 text-sky-600 dark:text-sky-400" />
                 Chụp trang vở bằng Camera
                 <input
                   type="file"
@@ -646,10 +782,10 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                 {files.map((file, idx) => (
                   <div
                     key={`${file.name}_${idx}`}
-                    className="rounded-xl bg-white/90 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700 px-4 py-2.5 flex items-center justify-between gap-3 text-xs"
+                    className="glass-panel-subtle rounded-2xl px-4 py-3 flex items-center justify-between gap-3 text-xs"
                   >
                     <div className="min-w-0">
-                      <p className="font-semibold text-[#17243A] dark:text-[#E5EDF9] truncate">
+                      <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
                         Trang {idx + 1}: {file.name}
                       </p>
                       <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
@@ -663,7 +799,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                             type="button"
                             disabled={idx === 0}
                             onClick={() => moveFile(idx, -1)}
-                            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 disabled:opacity-35 cursor-pointer"
+                            className="glass-control p-1.5 rounded-lg text-slate-700 dark:text-slate-200 disabled:opacity-35 cursor-pointer"
                             aria-label="Đưa lên trước"
                           >
                             <ArrowUp className="w-3.5 h-3.5" />
@@ -672,7 +808,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                             type="button"
                             disabled={idx === files.length - 1}
                             onClick={() => moveFile(idx, 1)}
-                            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 disabled:opacity-35 cursor-pointer"
+                            className="glass-control p-1.5 rounded-lg text-slate-700 dark:text-slate-200 disabled:opacity-35 cursor-pointer"
                             aria-label="Đưa xuống sau"
                           >
                             <ArrowDown className="w-3.5 h-3.5" />
@@ -682,7 +818,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                       <button
                         type="button"
                         onClick={() => removeFile(idx)}
-                        className="p-1.5 rounded-lg border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
+                        className="p-1.5 rounded-lg border border-rose-200/80 dark:border-rose-800/70 bg-rose-50/70 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100/80 dark:hover:bg-rose-950/70 cursor-pointer"
                         aria-label="Xóa tệp"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -705,7 +841,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
           )}
 
           {recentJobs.length > 0 && (
-            <div className="pt-4 border-t border-slate-200/70 dark:border-slate-700/70">
+            <div className="pt-4 border-t border-sky-200/60 dark:border-slate-700/70">
               <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 mb-2">
                 Tiến trình xử lý gần đây
               </p>
@@ -713,9 +849,9 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                 {recentJobs.map((job) => (
                   <div
                     key={job.jobId}
-                    className="rounded-xl bg-white/75 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-700 p-3 text-[11px]"
+                    className="glass-panel-subtle rounded-2xl p-3 text-[11px]"
                   >
-                    <p className="font-semibold text-[#17243A] dark:text-[#E5EDF9] truncate">
+                    <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
                       {job.jobType === 'ocr_extract' ? 'Trích xuất OCR' : 'Kiểm định kiến thức'} ·{' '}
                       {job.status === 'completed'
                         ? 'Hoàn tất'
@@ -734,16 +870,35 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         </GlassSurface>
       )}
 
-      {/* STEP 1.5 / 4: 7-Stage Real Processing State (No fake percentages) */}
+      {/* STEP 1.5 / 4: Step-by-Step Progress State */}
       {(step === 'extracting' || step === 'analyzing') && (
-        <GlassSurface className="rounded-3xl p-8 sm:p-10 space-y-6">
+        <GlassSurface className="upload-step-panel rounded-3xl p-5 sm:p-10 space-y-5 sm:space-y-6">
           <div className="text-center space-y-3">
-            <Loader2 className="w-10 h-10 text-blue-600 dark:text-blue-400 animate-spin mx-auto" />
-            <h2 className="font-display text-xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
-              {statusLabel}
+            <div className="glass-segment inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-sky-700 dark:text-sky-300">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>
+                Giai đoạn {Math.max(1, activeStageIdx + 1)}/{PIPELINE_STAGES.length}
+                {progressDetail && progressDetail.total > 0
+                  ? ` · Tiến độ ${progressDetail.current}/${progressDetail.total}`
+                  : ''}
+              </span>
+            </div>
+            <h2 className="upload-status-label font-display text-[clamp(1.1rem,3.4vw,1.35rem)] font-bold text-[#16243E] dark:text-[#E6EFFC]">
+              {statusLabel || PIPELINE_STAGES[Math.max(0, activeStageIdx)]?.label}
             </h2>
-            <p className="inline-flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-300 tabular-nums">
-              <Clock className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+            {progressDetail && progressDetail.total > 0 && (
+              <div className="max-w-md mx-auto space-y-1.5">
+                <div className="h-2.5 w-full rounded-full bg-sky-100/90 dark:bg-slate-800 overflow-hidden">
+                  <div
+                    ref={progressFillRef}
+                    className="h-full w-full origin-left rounded-full bg-gradient-to-r from-sky-500 to-sky-600"
+                    style={{ transform: 'scaleX(0.08)' }}
+                  />
+                </div>
+              </div>
+            )}
+            <p className="inline-flex items-center gap-1.5 font-mono text-xs text-[#475B78] dark:text-[#B4C7E2] tabular-nums">
+              <Clock className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
               Thời gian đã trôi qua: {elapsedSeconds}s
             </p>
           </div>
@@ -755,24 +910,31 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
               return (
                 <div
                   key={st.id}
-                  className={`flex items-center gap-3 rounded-xl px-4 py-2.5 text-xs border transition-colors ${
+                  className={`flex items-center justify-between gap-3 rounded-2xl px-3.5 sm:px-4 py-2.5 text-xs border transition-colors ${
                     isCurrent
-                      ? 'bg-blue-50/90 dark:bg-blue-950/50 border-blue-300 dark:border-blue-700 text-blue-900 dark:text-blue-200 font-semibold'
+                      ? 'bg-sky-50/90 dark:bg-sky-950/50 border-sky-300/90 dark:border-sky-700 text-sky-900 dark:text-sky-100 font-semibold shadow-sm'
                       : isDone
-                      ? 'bg-emerald-50/70 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/60 text-emerald-800 dark:text-emerald-300'
-                      : 'bg-white/60 dark:bg-slate-900/50 border-slate-200/70 dark:border-slate-800 text-slate-500 dark:text-slate-400'
+                      ? 'bg-emerald-50/75 dark:bg-emerald-950/35 border-emerald-200/80 dark:border-emerald-800/60 text-emerald-800 dark:text-emerald-300'
+                      : 'bg-white/50 dark:bg-slate-900/45 border-sky-200/50 dark:border-slate-800 text-[#475B78] dark:text-[#B4C7E2]'
                   }`}
                 >
-                  <span className="font-mono w-5 text-center shrink-0">
-                    {isDone ? '✓' : isCurrent ? '●' : `${idx + 1}`}
-                  </span>
-                  <span>{st.label}</span>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="font-mono w-5 text-center shrink-0">
+                      {isDone ? '✓' : isCurrent ? '→' : `${idx + 1}`}
+                    </span>
+                    <span className="truncate">{st.label}</span>
+                  </div>
+                  {isCurrent && progressDetail && progressDetail.total > 1 && (
+                    <span className="font-mono text-[11px] shrink-0 text-sky-700 dark:text-sky-300 tabular-nums">
+                      {progressDetail.current}/{progressDetail.total}
+                    </span>
+                  )}
                 </div>
               );
             })}
           </div>
 
-          <p className="text-xs text-center text-slate-600 dark:text-slate-300 max-w-md mx-auto">
+          <p className="text-xs text-center text-[#475B78] dark:text-[#B4C7E2] max-w-md mx-auto leading-[1.6]">
             Vui lòng giữ tab trình duyệt mở để hoàn tất quá trình xác minh và lưu kết quả vào tài
             khoản Firebase của bạn.
           </p>
@@ -781,6 +943,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
 
       {/* STEP 2: Mandatory OCR Review */}
       {step === 'ocr_review' && (
+        <div className="upload-step-panel">
         <OcrReviewPanel
           pages={extractedPages}
           previewFiles={files}
@@ -794,15 +957,16 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
           onConfirmOcr={() => setStep('scope_confirm')}
           onBack={() => setStep('select')}
         />
+        </div>
       )}
 
       {/* STEP 3: Mandatory Scope & Reference Book Confirmation */}
       {step === 'scope_confirm' && (
-        <GlassSurface className="rounded-3xl p-6 sm:p-8">
-          <h2 className="font-display text-xl font-bold text-[#17243A] dark:text-[#E5EDF9]">
+        <GlassSurface className="upload-step-panel rounded-3xl p-4 sm:p-8">
+          <h2 className="font-display text-lg sm:text-xl font-bold text-[#16243E] dark:text-[#E6EFFC]">
             Xác nhận phạm vi kiến thức & Sách giáo khoa tham chiếu
           </h2>
-          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-1 mb-6">
+          <p className="text-xs sm:text-sm text-[#475B78] dark:text-[#B4C7E2] mt-1 mb-5 sm:mb-6 leading-[1.6] prose-measure">
             AI đã gợi ý môn học và khối lớp từ nội dung bạn tải lên. Hãy kiểm tra và xác nhận lại để
             chấm Độ chính xác và Độ đầy đủ đúng chương trình.
           </p>
@@ -818,7 +982,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                 required
                 value={documentTitle}
                 onChange={(e) => setDocumentTitle(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-[#17243A] dark:text-[#E5EDF9]"
+                className="glass-control w-full px-3.5 py-2.5 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
               />
             </div>
 
@@ -835,7 +999,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                     setSelectedBookId('');
                     setSelectedChapters([]);
                   }}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-[#17243A] dark:text-[#E5EDF9]"
+                  className="glass-control w-full px-3.5 py-2.5 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
                 >
                   <option value="10">Lớp 10</option>
                   <option value="11">Lớp 11</option>
@@ -855,7 +1019,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                     setSelectedBookId('');
                     setSelectedChapters([]);
                   }}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-[#17243A] dark:text-[#E5EDF9]"
+                  className="glass-control w-full px-3.5 py-2.5 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
                 >
                   {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
                     <option key={s} value={s}>
@@ -877,7 +1041,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                   setSelectedBookId(e.target.value);
                   setSelectedChapters([]);
                 }}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-[#17243A] dark:text-[#E5EDF9]"
+                className="glass-control w-full px-3.5 py-2.5 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
               >
                 <option value="">
                   {filteredBooks.length > 0
@@ -895,7 +1059,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
             {selectedBook && selectedBook.chapters.length > 0 && (
               <div>
                 <p className="text-xs font-medium text-slate-700 dark:text-slate-200 mb-2 flex items-center gap-1.5">
-                  <BookOpen className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                  <BookOpen className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                   Chọn chương / chủ đề cần đánh giá độ đầy đủ (tùy chọn)
                 </p>
                 <div className="flex flex-wrap gap-2">
@@ -910,10 +1074,10 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                             prev.includes(ch) ? prev.filter((c) => c !== ch) : [...prev, ch]
                           )
                         }
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer ${
+                        className={`px-3 py-1.5 rounded-xl text-xs font-medium cursor-pointer transition-all ${
                           active
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+                            ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                            : 'glass-control text-slate-700 dark:text-slate-200'
                         }`}
                       >
                         {ch}
@@ -934,20 +1098,20 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                 value={scopeNote}
                 onChange={(e) => setScopeNote(e.target.value)}
                 placeholder="Ví dụ: Chương 3 - Liên kết hóa học, Bài Liên kết hydrogen"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-[#17243A] dark:text-[#E5EDF9]"
+                className="glass-control w-full px-3.5 py-2.5 rounded-xl text-sm text-[#16243E] dark:text-[#E6EFFC]"
               />
             </div>
 
-            <label className="flex items-start gap-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/75 p-3.5 cursor-pointer">
+            <label className="glass-panel-subtle flex items-start gap-3 rounded-2xl p-4 cursor-pointer">
               <input
                 type="checkbox"
                 checked={enableWebGrounding}
                 onChange={(e) => setEnableWebGrounding(e.target.checked)}
-                className="mt-1 h-4 w-4 accent-blue-600"
+                className="mt-1 h-4 w-4 accent-sky-600"
               />
               <div className="text-xs">
-                <p className="font-semibold text-[#17243A] dark:text-[#E5EDF9] flex items-center gap-1.5">
-                  <Globe className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC] flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                   Tùy chọn: Bật tìm kiếm bổ sung ngoài sách qua Google Search Grounding
                 </p>
                 <p className="text-slate-600 dark:text-slate-300 mt-0.5">
@@ -961,7 +1125,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
               <button
                 type="button"
                 onClick={() => setStep('ocr_review')}
-                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                className="glass-control px-4 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 ← Quay lại sửa OCR
               </button>

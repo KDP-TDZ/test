@@ -394,7 +394,8 @@ export async function testSingleGeminiKey(params: {
       contents: 'Trả lời 1 từ: OK',
       config: {
         thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        maxOutputTokens: 16,
+        maxOutputTokens: 128,
+        abortSignal: AbortSignal.timeout(30_000),
       },
     });
     if (!resp.text) {

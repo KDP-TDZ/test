@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Award, Info, Medal, Trophy } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import type { GradeLevel, LeaderboardEntry } from '../core/types';
+import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import { listLeaderboard } from '../services/firestoreService';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
+import { LiquidCard } from './LiquidGlass/LiquidCard';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
 interface LeaderboardViewProps {
@@ -12,6 +14,7 @@ interface LeaderboardViewProps {
 
 export const LeaderboardView: React.FC<LeaderboardViewProps> = ({ onOpenExams }) => {
   const { user } = useAuth();
+  const leaderboardRef = useRef<HTMLDivElement>(null);
   const [gradeFilter, setGradeFilter] = useState<'all' | GradeLevel>('all');
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -43,11 +46,40 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({ onOpenExams })
 
   const topThree = entries.slice(0, 3);
 
+  useGSAP(
+    () => {
+      if (loading || entries.length === 0) return;
+      const mm = gsap.matchMedia();
+      mm.add(MOTION_ALLOWED_MEDIA, () => {
+        const tl = gsap.timeline({ defaults: { ease: 'power2.out' } });
+        tl.from('.podium-card', {
+          y: 18,
+          scale: 0.97,
+          autoAlpha: 0,
+          duration: 0.36,
+          stagger: 0.06,
+          clearProps: 'transform,opacity,visibility',
+        }).from(
+          '.leaderboard-row',
+          {
+            y: 10,
+            autoAlpha: 0,
+            duration: 0.24,
+            stagger: 0.025,
+            clearProps: 'transform,opacity,visibility',
+          },
+          '-=0.18'
+        );
+      });
+    },
+    { scope: leaderboardRef, dependencies: [loading, gradeFilter, entries.length] }
+  );
+
   return (
-    <div className="space-y-6">
+    <div ref={leaderboardRef} className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-bold text-[#17243A] dark:text-[#E5EDF9] flex items-center gap-2.5">
+          <h1 className="font-display text-2xl font-bold text-[#16243E] dark:text-[#E6EFFC] flex items-center gap-2.5">
             <Trophy className="w-7 h-7 text-amber-500" />
             Bảng Xếp Hạng Đua Top
           </h1>
@@ -63,7 +95,7 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({ onOpenExams })
       </div>
 
       {/* Scope Tabs */}
-      <div className="flex flex-wrap gap-2">
+      <div className="glass-segment inline-flex flex-wrap gap-1.5 rounded-2xl p-1.5">
         {(
           [
             ['all', 'Toàn trường'],
@@ -76,10 +108,10 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({ onOpenExams })
             key={id}
             type="button"
             onClick={() => setGradeFilter(id)}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold border cursor-pointer ${
+            className={`px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
               gradeFilter === id
-                ? 'bg-blue-600 text-white border-blue-600'
-                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'
+                ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800/60'
             }`}
           >
             {label}
@@ -88,8 +120,8 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({ onOpenExams })
       </div>
 
       {/* Anti-Farming Fair Rules Banner */}
-      <div className="rounded-2xl border border-sky-200 dark:border-sky-800/70 bg-sky-50/80 dark:bg-sky-950/35 px-4 py-3 text-xs text-sky-950 dark:text-sky-200 flex items-start gap-2.5">
-        <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+      <div className="glass-panel-subtle rounded-2xl px-4 py-3 text-xs text-sky-950 dark:text-sky-100 flex items-start gap-2.5">
+        <Info className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
         <span>
           <strong>Quy tắc tính điểm công bằng:</strong> Mỗi đề kiểm tra được quy đổi tối đa 100 điểm
           dựa trên kết quả cao nhất của bạn ở đề đó. Khi thi lại cùng một đề, hệ thống chỉ cộng
@@ -98,37 +130,37 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({ onOpenExams })
       </div>
 
       {/* Current User Rank Card */}
-      <GlassSurface className="rounded-2xl p-5 border border-blue-200/80 dark:border-blue-800/60">
+      <LiquidCard enableTilt={false} className="rounded-3xl p-5 sm:p-6 border border-sky-200/80 dark:border-sky-800/60">
         {myRankInfo ? (
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className="w-11 h-11 rounded-2xl bg-blue-600 text-white font-mono font-bold text-lg flex items-center justify-center">
+              <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-sky-500 to-blue-600 text-white font-mono font-bold text-lg flex items-center justify-center shadow-sm">
                 #{myRankInfo.rank}
               </div>
               <div>
-                <p className="text-sm font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                <p className="text-sm font-bold text-[#16243E] dark:text-[#E6EFFC]">
                   Thứ hạng của bạn ({gradeFilter === 'all' ? 'Toàn trường' : `Khối ${gradeFilter}`})
                 </p>
-                <p className="text-xs text-slate-600 dark:text-slate-300">
+                <p className="text-xs text-[#475B78] dark:text-[#B4C7E2]">
                   {myRankInfo.entry.displayName} · Khối {myRankInfo.entry.grade}
                 </p>
               </div>
             </div>
             <div className="flex flex-wrap gap-6 font-mono text-xs tabular-nums">
               <div>
-                <p className="text-slate-500 dark:text-slate-400">Tổng điểm</p>
-                <p className="text-lg font-bold text-blue-700 dark:text-blue-400">
+                <p className="text-[#475B78] dark:text-[#B4C7E2]">Tổng điểm</p>
+                <p className="text-lg font-bold text-sky-700 dark:text-sky-400">
                   {myRankInfo.entry.totalScore}
                 </p>
               </div>
               <div>
-                <p className="text-slate-500 dark:text-slate-400">Số đề đã thi</p>
-                <p className="text-lg font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                <p className="text-[#475B78] dark:text-[#B4C7E2]">Số đề đã thi</p>
+                <p className="text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
                   {myRankInfo.entry.examCount}
                 </p>
               </div>
               <div>
-                <p className="text-slate-500 dark:text-slate-400">Điểm TB / đề</p>
+                <p className="text-[#475B78] dark:text-[#B4C7E2]">Điểm TB / đề</p>
                 <p className="text-lg font-bold text-emerald-700 dark:text-emerald-400">
                   {myRankInfo.entry.averagePercent}%
                 </p>
@@ -137,7 +169,7 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({ onOpenExams })
           </div>
         ) : (
           <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
-            <p className="text-slate-600 dark:text-slate-300">
+            <p className="text-[#475B78] dark:text-[#B4C7E2]">
               Bạn chưa có điểm trong bảng xếp hạng{' '}
               {gradeFilter === 'all' ? 'Toàn trường' : `Khối ${gradeFilter}`}. Hãy hoàn thành ít
               nhất 1 đề kiểm tra để ghi danh.
@@ -146,27 +178,27 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({ onOpenExams })
               <button
                 type="button"
                 onClick={onOpenExams}
-                className="font-semibold text-blue-700 dark:text-blue-400 hover:underline cursor-pointer"
+                className="font-semibold text-sky-700 dark:text-sky-400 hover:underline cursor-pointer"
               >
                 Vào Trung tâm Đề kiểm tra →
               </button>
             )}
           </div>
         )}
-      </GlassSurface>
+      </LiquidCard>
 
       {/* Top 3 Podium */}
       {!loading && topThree.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {topThree.map((item, idx) => (
-            <GlassSurface
+            <LiquidCard
               key={item.uid}
-              className={`rounded-2xl p-5 space-y-2 border ${
+              className={`podium-card rounded-3xl p-5 space-y-2 border ${
                 idx === 0
-                  ? 'border-amber-300 dark:border-amber-700/70'
+                  ? 'border-amber-300/90 dark:border-amber-700/70'
                   : idx === 1
-                  ? 'border-slate-300 dark:border-slate-600'
-                  : 'border-orange-300 dark:border-orange-800/70'
+                  ? 'border-sky-300/80 dark:border-slate-600'
+                  : 'border-orange-300/80 dark:border-orange-800/70'
               }`}
             >
               <div className="flex items-center justify-between">
@@ -174,39 +206,39 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({ onOpenExams })
                   <Medal className="w-4 h-4" />
                   Hạng #{idx + 1}
                 </span>
-                <span className="text-xs font-mono text-slate-500 dark:text-slate-400">
+                <span className="text-xs font-mono text-[#475B78] dark:text-[#B4C7E2]">
                   Khối {item.grade}
                 </span>
               </div>
-              <p className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9] truncate">
+              <p className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC] truncate">
                 {item.displayName}
               </p>
               <div className="flex items-baseline justify-between font-mono text-xs tabular-nums pt-1">
-                <span className="text-xl font-bold text-blue-700 dark:text-blue-400">
+                <span className="text-xl font-bold text-sky-700 dark:text-sky-400">
                   {item.totalScore} điểm
                 </span>
-                <span className="text-slate-500 dark:text-slate-400">
+                <span className="text-[#475B78] dark:text-[#B4C7E2]">
                   {item.examCount} đề · TB {item.averagePercent}%
                 </span>
               </div>
-            </GlassSurface>
+            </LiquidCard>
           ))}
         </div>
       )}
 
       {/* Full Leaderboard Table */}
-      <GlassSurface className="rounded-2xl overflow-hidden">
+      <GlassSurface className="rounded-3xl overflow-hidden">
         {loading ? (
           <div className="p-8 text-center text-xs text-slate-500">Đang tải bảng xếp hạng...</div>
         ) : entries.length === 0 ? (
           <div className="p-8 text-center space-y-2 text-sm text-slate-600 dark:text-slate-300">
-            <Award className="w-8 h-8 text-blue-600 dark:text-blue-400 mx-auto" />
+            <Award className="w-8 h-8 text-sky-600 dark:text-sky-400 mx-auto" />
             <p>Chưa có học sinh nào ghi điểm trong bảng xếp hạng này.</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="border-b border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
+              <thead className="border-b border-sky-200/70 dark:border-slate-700 text-slate-500 dark:text-slate-400">
                 <tr>
                   <th className="py-3.5 px-4 font-semibold">Hạng</th>
                   <th className="py-3.5 px-4 font-semibold">Học sinh</th>
@@ -217,20 +249,20 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({ onOpenExams })
                   <th className="py-3.5 px-4 font-semibold text-right">Tổng điểm Đua Top</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800">
+              <tbody className="divide-y divide-sky-200/50 dark:divide-slate-800">
                 {entries.map((entry, idx) => {
                   const isMe = user?.uid === entry.uid;
                   return (
                     <tr
                       key={entry.uid}
-                      className={
+                      className={`leaderboard-row ${
                         isMe
-                          ? 'bg-blue-50/75 dark:bg-blue-950/40 font-semibold'
+                          ? 'bg-sky-100/60 dark:bg-sky-950/45 font-semibold'
                           : 'hover:bg-white/60 dark:hover:bg-slate-800/40'
-                      }
+                      }`}
                     >
                       <td className="py-3 px-4 font-mono tabular-nums">#{idx + 1}</td>
-                      <td className="py-3 px-4 text-[#17243A] dark:text-[#E5EDF9]">
+                      <td className="py-3 px-4 text-[#16243E] dark:text-[#E6EFFC]">
                         {entry.displayName} {isMe && '(Bạn)'}
                       </td>
                       <td className="py-3 px-4 font-mono">Lớp {entry.grade}</td>
@@ -243,7 +275,7 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({ onOpenExams })
                       <td className="py-3 px-4 font-mono text-right tabular-nums">
                         {entry.averagePercent}%
                       </td>
-                      <td className="py-3 px-4 font-mono font-bold text-right tabular-nums text-blue-700 dark:text-blue-400">
+                      <td className="py-3 px-4 font-mono font-bold text-right tabular-nums text-sky-700 dark:text-sky-400">
                         {entry.totalScore}
                       </td>
                     </tr>

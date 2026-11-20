@@ -136,13 +136,13 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
       } space-y-4`}
     >
       {/* Toolbar */}
-      <div className="glass-surface rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+      <div className="glass-surface rounded-3xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             disabled={pageIndex === 0}
             onClick={() => setPageIndex((i) => Math.max(0, i - 1))}
-            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 disabled:opacity-40 cursor-pointer"
+            className="glass-control p-1.5 rounded-lg disabled:opacity-40 cursor-pointer"
             aria-label="Trang trước"
           >
             <ChevronLeft className="w-4 h-4" />
@@ -154,18 +154,18 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
             type="button"
             disabled={pageIndex >= pages.length - 1}
             onClick={() => setPageIndex((i) => Math.min(pages.length - 1, i + 1))}
-            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 disabled:opacity-40 cursor-pointer"
+            className="glass-control p-1.5 rounded-lg disabled:opacity-40 cursor-pointer"
             aria-label="Trang sau"
           >
             <ChevronRight className="w-4 h-4" />
           </button>
 
-          <div className="h-4 w-px bg-slate-200 dark:bg-slate-700 mx-1 hidden sm:block" />
+          <div className="h-4 w-px bg-sky-200/70 dark:bg-slate-700 mx-1 hidden sm:block" />
 
           <button
             type="button"
             onClick={() => setZoom((z) => Math.max(0.75, Number((z - 0.1).toFixed(2))))}
-            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+            className="glass-control p-1.5 rounded-lg cursor-pointer"
             aria-label="Thu nhỏ"
           >
             <ZoomOut className="w-3.5 h-3.5" />
@@ -176,7 +176,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
           <button
             type="button"
             onClick={() => setZoom((z) => Math.min(1.5, Number((z + 0.1).toFixed(2))))}
-            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+            className="glass-control p-1.5 rounded-lg cursor-pointer"
             aria-label="Phóng to"
           >
             <ZoomIn className="w-3.5 h-3.5" />
@@ -187,13 +187,13 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
           <button
             type="button"
             onClick={() => setShowAnnotations((v) => !v)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+            className="glass-control inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
           >
-            {showAnnotations ? <Eye className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" /> : <EyeOff className="w-3.5 h-3.5" />}
+            {showAnnotations ? <Eye className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" /> : <EyeOff className="w-3.5 h-3.5" />}
             {showAnnotations ? 'Ẩn đánh dấu' : 'Hiện đánh dấu'}
           </button>
 
-          <div className="hidden lg:inline-flex rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-0.5 text-xs">
+          <div className="glass-segment hidden lg:inline-flex rounded-xl p-0.5 text-xs">
             {(
               [
                 ['split', 'Hai cột'],
@@ -205,10 +205,10 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                 key={m}
                 type="button"
                 onClick={() => setViewMode(m)}
-                className={`px-2.5 py-1 rounded-md font-medium cursor-pointer ${
+                className={`px-2.5 py-1 rounded-lg font-medium cursor-pointer transition-all ${
                   viewMode === m
-                    ? 'bg-blue-600 text-white'
-                    : 'text-slate-600 dark:text-slate-300 hover:text-[#17243A] dark:hover:text-[#E5EDF9]'
+                    ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800/60'
                 }`}
               >
                 {label}
@@ -219,7 +219,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+            className="glass-control p-1.5 rounded-xl text-slate-700 dark:text-slate-200 cursor-pointer"
             aria-label={expanded ? 'Thu gọn trình đối chiếu' : 'Mở rộng toàn màn hình'}
           >
             {expanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
@@ -228,7 +228,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
       </div>
 
       {/* Tablet/Mobile Tabs */}
-      <div className="flex lg:hidden rounded-xl border border-slate-200 dark:border-slate-700 bg-white/85 dark:bg-slate-900/85 p-1 text-xs font-medium">
+      <div className="glass-segment flex lg:hidden rounded-2xl p-1 text-xs font-medium">
         {(
           [
             ['student', 'Tài liệu học sinh'],
@@ -240,8 +240,10 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
             key={tab}
             type="button"
             onClick={() => setMobileTab(tab)}
-            className={`flex-1 py-2 rounded-lg text-center cursor-pointer ${
-              mobileTab === tab ? 'bg-blue-600 text-white' : 'text-slate-600 dark:text-slate-300'
+            className={`flex-1 py-2 rounded-xl text-center cursor-pointer transition-all ${
+              mobileTab === tab
+                ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-slate-300'
             }`}
           >
             {label}
@@ -250,12 +252,15 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
       </div>
 
       {/* Color Legend */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-600 dark:text-slate-300 px-1">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-slate-600 dark:text-slate-300 px-1">
         <span className="font-medium text-slate-700 dark:text-slate-200">Chú giải vùng đánh dấu:</span>
-        <span className="text-rose-700 dark:text-rose-400 font-medium">● Đỏ: Sai kiến thức</span>
-        <span className="text-amber-700 dark:text-amber-400 font-medium">● Cam: Thiếu điều kiện</span>
-        <span className="text-yellow-700 dark:text-yellow-400 font-medium">● Vàng: Chưa xác định / OCR chưa rõ</span>
-        <span className="text-emerald-700 dark:text-emerald-400 font-medium">● Xanh lá: Đúng có dẫn chứng</span>
+        <span className="text-rose-700 dark:text-rose-400 font-medium">Đỏ: Sai kiến thức</span>
+        <span className="text-sky-300 dark:text-slate-600" aria-hidden="true">·</span>
+        <span className="text-amber-700 dark:text-amber-400 font-medium">Cam: Thiếu điều kiện</span>
+        <span className="text-sky-300 dark:text-slate-600" aria-hidden="true">·</span>
+        <span className="text-yellow-700 dark:text-yellow-400 font-medium">Vàng: Chưa xác định / OCR chưa rõ</span>
+        <span className="text-sky-300 dark:text-slate-600" aria-hidden="true">·</span>
+        <span className="text-emerald-700 dark:text-emerald-400 font-medium">Xanh lá: Đúng có dẫn chứng</span>
       </div>
 
       {/* Split Columns */}
@@ -264,10 +269,10 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
           <div
             className={`${
               viewMode === 'original' ? 'lg:col-span-12' : 'lg:col-span-6'
-            } ${mobileTab === 'student' ? 'block' : 'hidden lg:block'} document-paper rounded-2xl p-5 sm:p-6`}
+            } ${mobileTab === 'student' ? 'block' : 'hidden lg:block'} document-paper rounded-3xl p-5 sm:p-6`}
           >
-            <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">
-              <span className="font-semibold text-[#17243A] dark:text-[#E5EDF9] truncate">
+            <div className="flex items-center justify-between pb-3 mb-4 border-b border-sky-200/60 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">
+              <span className="font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
                 {analysis.documentTitle}
               </span>
               <span className="font-mono shrink-0">
@@ -354,7 +359,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                         ? `${style.bg} ${style.border} cursor-pointer ${
                             isSelected ? `ring-2 ${style.ring}` : ''
                           }`
-                        : 'bg-slate-50/70 dark:bg-slate-900/70 border-slate-200/70 dark:border-slate-700/70 text-[#17243A] dark:text-[#E5EDF9]'
+                        : 'bg-slate-50/70 dark:bg-slate-900/70 border-slate-200/70 dark:border-slate-700/70 text-[#16243E] dark:text-[#E6EFFC]'
                     }`}
                   >
                     {ann && style && (
@@ -365,11 +370,11 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                         </span>
                       </div>
                     )}
-                    <p className="text-[#17243A] dark:text-[#E5EDF9] whitespace-pre-wrap">
+                    <p className="text-[#16243E] dark:text-[#E6EFFC] whitespace-pre-wrap">
                       {block.extractedText}
                     </p>
                     {block.formulaText && (
-                      <p className="mt-1.5 font-mono text-xs text-indigo-800 dark:text-indigo-300 bg-white/80 dark:bg-slate-950/80 px-2.5 py-1 rounded border border-indigo-200 dark:border-indigo-800">
+                      <p className="mt-1.5 font-mono text-xs text-sky-800 dark:text-sky-300 bg-sky-50/80 dark:bg-sky-950/60 px-2.5 py-1 rounded border border-sky-200 dark:border-sky-800">
                         {block.formulaText}
                       </p>
                     )}
@@ -391,7 +396,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                           className={`w-full text-left rounded-xl p-3.5 border ${style.bg} ${style.border} cursor-pointer`}
                         >
                           <p className={`text-xs font-semibold ${style.text}`}>{style.label}</p>
-                          <p className="text-sm text-[#17243A] dark:text-[#E5EDF9] mt-1">
+                          <p className="text-sm text-[#16243E] dark:text-[#E6EFFC] mt-1">
                             {ann.textExcerpt}
                           </p>
                         </button>
@@ -413,18 +418,18 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
             } space-y-5 max-h-[760px] overflow-y-auto pr-1`}
           >
             <div
-              className={`glass-surface rounded-2xl p-5 sm:p-6 ${
+              className={`glass-surface rounded-3xl p-5 sm:p-6 ${
                 mobileTab === 'reference' ? 'hidden lg:block' : 'block'
               }`}
             >
-              <h3 className="font-display text-base font-bold text-[#17243A] dark:text-[#E5EDF9] mb-3">
+              <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC] mb-3">
                 Giải thích đối chiếu chi tiết
               </h3>
 
               {selectedClaim ? (
                 <div className="space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="font-semibold text-blue-700 dark:text-blue-400">
+                    <span className="font-semibold text-sky-700 dark:text-sky-400">
                       {selectedClaim.concept} · {selectedClaim.chapter}
                     </span>
                     <span className="font-mono text-slate-500 dark:text-slate-400">
@@ -432,16 +437,16 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                     </span>
                   </div>
 
-                  <div className="document-paper rounded-xl p-3.5">
+                  <div className="document-paper rounded-2xl p-3.5">
                     <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
                       Nội dung trong tài liệu học sinh
                     </p>
-                    <p className="text-sm text-[#17243A] dark:text-[#E5EDF9] leading-relaxed">
+                    <p className="text-sm text-[#16243E] dark:text-[#E6EFFC] leading-relaxed">
                       {selectedClaim.sourceText}
                     </p>
                   </div>
 
-                  <div className="rounded-xl bg-emerald-50/85 dark:bg-emerald-950/45 border border-emerald-200 dark:border-emerald-800 p-3.5">
+                  <div className="rounded-2xl bg-emerald-50/85 dark:bg-emerald-950/45 border border-emerald-200 dark:border-emerald-800 p-3.5">
                     <p className="text-[11px] font-semibold text-emerald-800 dark:text-emerald-300 mb-1">
                       Kiến thức chuẩn xác cần nắm
                     </p>
@@ -451,11 +456,11 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                   </div>
 
                   {selectedClaim.suggestedFix && (
-                    <div className="rounded-xl bg-blue-50/85 dark:bg-blue-950/45 border border-blue-200 dark:border-blue-800 p-3.5">
-                      <p className="text-[11px] font-semibold text-blue-800 dark:text-blue-300 mb-1">
+                    <div className="rounded-2xl bg-sky-50/85 dark:bg-sky-950/45 border border-sky-200 dark:border-sky-800 p-3.5">
+                      <p className="text-[11px] font-semibold text-sky-800 dark:text-sky-300 mb-1">
                         Gợi ý sửa nhanh
                       </p>
-                      <p className="text-sm text-blue-950 dark:text-blue-200 leading-relaxed">
+                      <p className="text-sm text-sky-950 dark:text-sky-200 leading-relaxed">
                         {selectedClaim.suggestedFix}
                       </p>
                     </div>
@@ -471,19 +476,19 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                   </div>
 
                   {selectedClaim.evidences && selectedClaim.evidences.length > 0 && (
-                    <div className="space-y-2 pt-2 border-t border-slate-200/80 dark:border-slate-700/80">
-                      <p className="text-xs font-semibold text-[#17243A] dark:text-[#E5EDF9]">
+                    <div className="space-y-2 pt-2 border-t border-sky-200/70 dark:border-slate-700/80">
+                      <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
                         Dẫn chứng đối chiếu
                       </p>
                       {selectedClaim.evidences.map((ev) => (
                         <div
                           key={ev.evidenceId}
-                          className="rounded-xl bg-emerald-50/60 dark:bg-emerald-950/35 border border-emerald-200/80 dark:border-emerald-800/60 p-3 text-xs space-y-1"
+                          className="rounded-2xl bg-emerald-50/60 dark:bg-emerald-950/35 border border-emerald-200/80 dark:border-emerald-800/60 p-3 text-xs space-y-1"
                         >
                           <div className="flex items-center justify-between gap-2 font-semibold text-emerald-900 dark:text-emerald-300">
                             <span className="inline-flex items-center gap-1.5">
                               {ev.sourceType === 'web' ? (
-                                <Globe className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                                <Globe className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                               ) : (
                                 <BookOpen className="w-3.5 h-3.5 text-emerald-700 dark:text-emerald-400" />
                               )}
@@ -501,7 +506,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                               href={ev.url}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-blue-700 dark:text-blue-400 hover:underline font-medium"
+                              className="inline-flex items-center gap-1 text-sky-700 dark:text-sky-400 hover:underline font-medium"
                             >
                               {ev.domain || ev.url}
                               <ExternalLink className="w-3 h-3" />
@@ -517,14 +522,14 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                   <p className="text-xs font-semibold text-amber-800 dark:text-amber-300">
                     Phần kiến thức cần bổ sung · {selectedCoverage.chapter}
                   </p>
-                  <p className="text-sm font-bold text-[#17243A] dark:text-[#E5EDF9]">
+                  <p className="text-sm font-bold text-[#16243E] dark:text-[#E6EFFC]">
                     {selectedCoverage.concept}
                   </p>
-                  <div className="rounded-xl bg-amber-50/85 dark:bg-amber-950/45 border border-amber-200 dark:border-amber-800 p-3.5 text-sm text-amber-950 dark:text-amber-200">
+                  <div className="rounded-2xl bg-amber-50/85 dark:bg-amber-950/45 border border-amber-200 dark:border-amber-800 p-3.5 text-sm text-amber-950 dark:text-amber-200">
                     {selectedCoverage.suggestedAddition}
                   </div>
                   {selectedCoverage.referenceExcerpt && (
-                    <div className="rounded-xl bg-emerald-50/75 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 p-3.5 text-xs text-slate-800 dark:text-slate-200">
+                    <div className="rounded-2xl bg-emerald-50/75 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 p-3.5 text-xs text-slate-800 dark:text-slate-200">
                       <p className="font-semibold text-emerald-900 dark:text-emerald-300 mb-1">
                         Trích đoạn sách giáo khoa{' '}
                         {selectedCoverage.referencePage ? `(Trang ${selectedCoverage.referencePage})` : ''}
@@ -541,12 +546,12 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
             </div>
 
             <div
-              className={`glass-surface rounded-2xl p-5 space-y-4 ${
+              className={`glass-surface rounded-3xl p-5 space-y-4 ${
                 mobileTab === 'explanation' ? 'hidden lg:block' : 'block'
               }`}
             >
               <div>
-                <h4 className="font-display text-sm font-bold text-[#17243A] dark:text-[#E5EDF9] mb-2.5">
+                <h4 className="font-display text-sm font-bold text-[#16243E] dark:text-[#E6EFFC] mb-2.5">
                   Danh sách mệnh đề đã phân tích ({analysis.claims.length})
                 </h4>
                 <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
@@ -560,10 +565,10 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                         key={claim.claimId}
                         type="button"
                         onClick={() => selectClaim(claim.claimId)}
-                        className={`w-full text-left rounded-xl p-3 border text-xs transition-all cursor-pointer ${
+                        className={`w-full text-left rounded-2xl p-3 border text-xs transition-all cursor-pointer ${
                           active
-                            ? 'border-blue-500 bg-blue-50/80 dark:bg-blue-950/50 ring-2 ring-blue-200 dark:ring-blue-800'
-                            : 'border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/80 hover:bg-white dark:hover:bg-slate-900'
+                            ? 'border-sky-400 bg-sky-50/85 dark:bg-sky-950/50 ring-2 ring-sky-200 dark:ring-sky-800'
+                            : 'glass-control'
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
@@ -592,7 +597,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                             Tr. {claim.sourcePage}
                           </span>
                         </div>
-                        <p className="text-[#17243A] dark:text-[#E5EDF9] font-medium mt-1 line-clamp-2">
+                        <p className="text-[#16243E] dark:text-[#E6EFFC] font-medium mt-1 line-clamp-2">
                           {claim.concept}
                         </p>
                       </button>
@@ -602,8 +607,8 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
               </div>
 
               {analysis.coverageItems.filter((c) => c.status !== 'COVERED').length > 0 && (
-                <div className="pt-3 border-t border-slate-200/80 dark:border-slate-700/80">
-                  <h4 className="font-display text-sm font-bold text-[#17243A] dark:text-[#E5EDF9] mb-2.5 flex items-center gap-1.5">
+                <div className="pt-3 border-t border-sky-200/60 dark:border-slate-700/80">
+                  <h4 className="font-display text-sm font-bold text-[#16243E] dark:text-[#E6EFFC] mb-2.5 flex items-center gap-1.5">
                     <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400" />
                     Kiến thức còn thiếu / chưa trọn vẹn
                   </h4>
@@ -615,7 +620,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                           key={cov.itemId}
                           type="button"
                           onClick={() => selectCoverage(cov.itemId)}
-                          className={`w-full text-left rounded-xl p-3 border text-xs cursor-pointer ${
+                          className={`w-full text-left rounded-2xl p-3 border text-xs cursor-pointer ${
                             selectedCoverageId === cov.itemId
                               ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/60 ring-2 ring-amber-200 dark:ring-amber-800'
                               : 'border-amber-200/80 dark:border-amber-800/60 bg-amber-50/50 dark:bg-amber-950/30 hover:bg-amber-50 dark:hover:bg-amber-950/50'
@@ -629,7 +634,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                               {cov.chapter}
                             </span>
                           </div>
-                          <p className="text-[#17243A] dark:text-[#E5EDF9] font-medium mt-1">
+                          <p className="text-[#16243E] dark:text-[#E6EFFC] font-medium mt-1">
                             {cov.concept}
                           </p>
                         </button>

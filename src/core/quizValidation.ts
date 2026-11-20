@@ -264,3 +264,33 @@ export function generateShuffledExamVariant(
     questions: shuffledQuestions,
   };
 }
+
+/**
+ * Evenly distributes totalScore across exam questions (rounded to 2 decimals, exact sum on final question).
+ */
+export function distributeExamQuestionScores(
+  questions: ExamQuestion[],
+  totalScore: number
+): ExamQuestion[] {
+  if (questions.length === 0) return [];
+  const safeTotal = Math.max(1, Number(totalScore) || 10);
+  const perQuestion = Math.max(0.05, Math.round((safeTotal / questions.length) * 100) / 100);
+
+  let running = 0;
+  return questions.map((q, idx) => {
+    let weight = perQuestion;
+    if (idx === questions.length - 1) {
+      const remainder = Math.round((safeTotal - running) * 100) / 100;
+      if (remainder >= 0.05) {
+        weight = remainder;
+      }
+    }
+    running = Math.round((running + weight) * 100) / 100;
+    return {
+      ...q,
+      orderIndex: idx + 1,
+      scoreWeight: weight,
+    };
+  });
+}
+
