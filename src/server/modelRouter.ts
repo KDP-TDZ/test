@@ -16,6 +16,13 @@ import {
   isGroqModelId,
 } from './groqProvider.js';
 import {
+  callCloudflareChatCompletion,
+  CF_RESCUE_MODEL_FAST,
+  CF_RESCUE_MODEL_STRONG,
+  isCloudflareConfigured,
+  isCloudflareModelId,
+} from './cloudflareProvider.js';
+import {
   DEFAULT_TASK_MODELS,
   MODEL_CATALOG,
   type ModelCatalogItem,
@@ -32,6 +39,18 @@ function defaultGroqRescueModelForTask(taskType: AiTaskType): string {
       return GROQ_RESCUE_MODEL_STRONG;
     default:
       return GROQ_RESCUE_MODEL_FAST;
+  }
+}
+
+function defaultCloudflareRescueModelForTask(taskType: AiTaskType): string {
+  switch (taskType) {
+    case 'knowledge_analysis':
+    case 'completeness_analysis':
+    case 'quiz_generation':
+    case 'quiz_blueprint':
+      return CF_RESCUE_MODEL_STRONG;
+    default:
+      return CF_RESCUE_MODEL_FAST;
   }
 }
 
@@ -345,8 +364,7 @@ export async function executeRoutedAiTask<T>(params: {
         }
       }
 
-      // Cross-provider rescue hop: if Gemini primary + fallback both failed on a text task and GROQ_API_KEY is configured,
-      // transparently rescue via Groq Free Tier so users don't hit a dead end on Gemini 429/503!
+      // Cross-provider rescue hop 1 (Groq Cloud Free): if primary + fallback failed on a text task and GROQ_API_KEY is configured
       const rescueModel = groqRescueModelId || defaultGroqRescueModelForTask(taskType);
       const canGroqRescue =
         allowGroqRescue &&
@@ -382,6 +400,45 @@ export async function executeRoutedAiTask<T>(params: {
           };
         } catch (rescueErr) {
           lastErr = rescueErr;
+        }
+      }
+
+      // Cross-provider rescue hop 2 (Cloudflare Workers AI Free): if primary + fallback (+ Groq) failed and Cloudflare is configured
+      const cfRescueModel = defaultCloudflareRescueModelForTask(taskType);
+      const canCloudflareRescue =
+        allowGroqRescue &&
+        isCloudflareConfigured() &&
+        !isCloudflareModelId(decision.modelId) &&
+        !(canFallback && isCloudflareModelId(decision.fallbackModelId));
+
+      if (canCloudflareRescue) {
+        try {
+          const cfResult = await withExponentialBackoff(() => runWithModel(cfRescueModel), 1);
+          if (cacheKey) {
+            aiResponseCache.set(cacheKey, cfResult);
+          }
+          appendExecutionLog({
+            executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+            taskType,
+            modelId: cfRescueModel,
+            usedFallback: true,
+            usedOverride: decision.usedOverride,
+            promptVersion: decision.promptVersion,
+            configVersion: decision.configVersion,
+            status: 'success',
+            durationMs: Date.now() - start,
+            cached: false,
+            timestamp: new Date().toISOString(),
+          });
+          return {
+            data: cfResult,
+            modelId: cfRescueModel,
+            usedFallback: true,
+            usedOverride: decision.usedOverride,
+            cached: false,
+          };
+        } catch (cfErr) {
+          lastErr = cfErr;
         }
       }
 
@@ -457,7 +514,38 @@ export async function testModelConnectivity(modelId: string): Promise<{
         modelId,
         latencyMs: Date.now() - start,
         message: text
-          ? `Model ${modelId} (Groq Free) hoạt động bình thường (${Date.now() - start}ms).`
+          ? `Model ${modelId} (Groq Cloud Free) hoạt động bình thường (${Date.now() - start}ms).`
+          : `Model ${modelId} trả về nội dung rỗng.`,
+      };
+    }
+
+    if (isCloudflareModelId(modelId)) {
+      if (!isCloudflareConfigured()) {
+        return {
+          ok: false,
+          modelId,
+          latencyMs: Date.now() - start,
+          message:
+            'Chưa thiết lập CLOUDFLARE_ACCOUNT_ID và CLOUDFLARE_API_TOKEN trên máy chủ (Vercel Environment Variables hoặc .env).',
+        };
+      }
+      const resp = await callWithTimeout(
+        (signal) =>
+          callCloudflareChatCompletion({
+            modelId,
+            prompt: 'Trả lời duy nhất 1 từ: OK',
+            maxOutputTokens: 32,
+            signal,
+          }),
+        15_000
+      );
+      const text = (resp.text || '').trim();
+      return {
+        ok: Boolean(text),
+        modelId,
+        latencyMs: Date.now() - start,
+        message: text
+          ? `Model ${modelId} (Cloudflare Workers AI Free) hoạt động bình thường (${Date.now() - start}ms).`
           : `Model ${modelId} trả về nội dung rỗng.`,
       };
     }

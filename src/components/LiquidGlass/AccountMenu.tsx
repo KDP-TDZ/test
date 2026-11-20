@@ -10,6 +10,8 @@ import {
   Moon,
   Sparkles,
   Sun,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { usePrivacyBlur } from '../../context/PrivacyBlurContext';
@@ -18,6 +20,11 @@ import { useUiMode } from '../../context/UiModeContext';
 import type { GradeLevel } from '../../core/types';
 import { useIsMobileViewport } from '../../hooks/useIsMobileViewport';
 import { updateUserPreferences } from '../../services/firestoreService';
+import {
+  isWaterDropSoundEnabled,
+  playWaterDropSound,
+  setWaterDropSoundEnabled,
+} from './AmbientCanvas';
 
 const GRADES: GradeLevel[] = ['10', '11', '12'];
 
@@ -40,6 +47,7 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
 
   const [open, setOpen] = useState(false);
   const [savingGrade, setSavingGrade] = useState<GradeLevel | null>(null);
+  const [waterSoundOn, setWaterSoundOn] = useState<boolean>(() => isWaterDropSoundEnabled());
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -281,6 +289,30 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
               </span>
               <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
                 {theme === 'light' ? 'Sáng' : 'Tối'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                const next = !waterSoundOn;
+                setWaterSoundOn(next);
+                setWaterDropSoundEnabled(next);
+                if (next) playWaterDropSound();
+              }}
+              className="w-full min-h-[40px] px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition-colors"
+            >
+              <span className="inline-flex items-center gap-2.5">
+                {waterSoundOn ? (
+                  <Volume2 className="size-4 text-indigo-600 dark:text-indigo-400" />
+                ) : (
+                  <VolumeX className="size-4 text-slate-400" />
+                )}
+                <span>Âm thanh click giọt nước</span>
+              </span>
+              <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                {waterSoundOn ? 'Bật' : 'Tắt'}
               </span>
             </button>
 

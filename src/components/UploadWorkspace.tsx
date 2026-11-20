@@ -9,7 +9,7 @@ import {
   FileUp,
   Loader2,
   RefreshCw,
-  RotateCcw,
+  Sparkles,
   Trash2,
   Zap,
 } from 'lucide-react';
@@ -28,7 +28,10 @@ import {
 } from '../core/types';
 import { retrieveRelevantChunks } from '../core/retrieval';
 import {
+  buildFileNameSuggestionCacheKey,
   getEffectiveUploadLimits,
+  inferGradeAndSubjectFromFileNames,
+  isGenericCameraFileNames,
   splitFilesIntoByteBudgetBatches,
   validateUploadFileSize,
 } from '../core/uploadBatching';
@@ -95,6 +98,19 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
   const [selectedGrade, setSelectedGrade] = useState<GradeLevel>(profile?.grade || '10');
   const [gradeTouched, setGradeTouched] = useState(false);
   const [selectedSubject, setSelectedSubject] = useState<'auto' | SubjectId>('auto');
+  const [suggestingFromFileName, setSuggestingFromFileName] = useState(false);
+  const [suggestProgressPct, setSuggestProgressPct] = useState(0);
+  const [autoSuggestNote, setAutoSuggestNote] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [sgkPrefetchStatus, setSgkPrefetchStatus] = useState<'idle' | 'loading' | 'ready'>('idle');
+
+  const suggestAbortRef = useRef<AbortController | null>(null);
+  const filenameSuggestionCacheRef = useRef<
+    Map<string, { grade: GradeLevel; subject: 'auto' | SubjectId; note: string }>
+  >(new Map());
+  const sgkPrefetchCacheRef = useRef<
+    Map<string, Promise<{ book: ReferenceBook | null; chunks: ReferenceChunk[] }>>
+  >(new Map());
 
   const aiEnabled = systemStatus ? systemStatus.enabled : true;
   const maxFileMb = systemStatus?.rateLimitConfig?.maximumFileSizeMb || 20;
@@ -112,7 +128,57 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     listReferenceBooks(true)
       .then((books) => setReferenceBooks(books))
       .catch(() => setReferenceBooks([]));
+    return () => {
+      suggestAbortRef.current?.abort();
+    };
   }, []);
+
+  const getOrPrefetchSgkReference = (
+    grade: GradeLevel,
+    subject: SubjectId
+  ): Promise<{ book: ReferenceBook | null; chunks: ReferenceChunk[] }> => {
+    const key = `${grade}_${subject}`;
+    const existing = sgkPrefetchCacheRef.current.get(key);
+    if (existing) return existing;
+
+    const promise = (async () => {
+      let activeBooks = referenceBooks;
+      if (activeBooks.length === 0) {
+        activeBooks = await listReferenceBooks(true).catch(() => []);
+        if (activeBooks.length > 0) setReferenceBooks(activeBooks);
+      }
+      const book =
+        activeBooks.find(
+          (b) => b.status === 'active' && b.grade === grade && b.subject === subject
+        ) || null;
+      if (!book) return { book: null, chunks: [] };
+      const chunks = await listReferenceChunksForBook(book.referenceId).catch(() => []);
+      return { book, chunks };
+    })();
+
+    sgkPrefetchCacheRef.current.set(key, promise);
+    return promise;
+  };
+
+  // Proactively warm SGK ReferenceChunks in background whenever Grade + specific Subject are selected
+  useEffect(() => {
+    if (selectedSubject === 'auto') {
+      setSgkPrefetchStatus('idle');
+      return;
+    }
+    let cancelled = false;
+    setSgkPrefetchStatus('loading');
+    getOrPrefetchSgkReference(selectedGrade, selectedSubject)
+      .then(() => {
+        if (!cancelled) setSgkPrefetchStatus('ready');
+      })
+      .catch(() => {
+        if (!cancelled) setSgkPrefetchStatus('idle');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedGrade, selectedSubject, referenceBooks.length]);
 
   useEffect(() => {
     if (!user) return;
@@ -260,8 +326,10 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       list[0].name.toLowerCase().endsWith('.pdf') ||
       list[0].name.toLowerCase().endsWith('.docx');
 
+    let acceptedFiles: File[] = [];
     if (firstIsDoc && list.length > 1) {
-      setFiles([list[0]]);
+      acceptedFiles = [list[0]];
+      setFiles(acceptedFiles);
       setWarning('Chỉ xử lý 1 file PDF hoặc DOCX cho mỗi lần kiểm định; các ảnh nhiều trang có thể chọn cùng lúc.');
     } else if (!firstIsDoc) {
       const imagesOnly = list.filter(
@@ -273,11 +341,187 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       }
       setFiles((prev) => {
         const merged = prev.some((p) => p.type.startsWith('image/')) ? [...prev, ...imagesOnly] : imagesOnly;
-        return merged.slice(0, maxPages);
+        acceptedFiles = merged.slice(0, maxPages);
+        return acceptedFiles;
       });
     } else {
-      setFiles([list[0]]);
+      acceptedFiles = [list[0]];
+      setFiles(acceptedFiles);
     }
+
+    // Automatically suggest Grade & Subject from filename when in Auto mode
+    const namesForInference = (acceptedFiles.length > 0 ? acceptedFiles : list).map((f) => f.name);
+    if (selectedSubject === 'auto' && namesForInference.length > 0) {
+      void runSmartFilenameSuggestion(namesForInference, { triggeredByButton: false });
+    }
+  };
+
+  const runSmartFilenameSuggestion = async (
+    fileNames: string[],
+    opts: { triggeredByButton: boolean }
+  ) => {
+    if (fileNames.length === 0) return;
+
+    suggestAbortRef.current?.abort();
+    const fallbackGrade: GradeLevel = profile?.grade || selectedGrade || '10';
+    const cacheKey = buildFileNameSuggestionCacheKey(fileNames, fallbackGrade);
+
+    // 1. Check in-memory cache first (0ms, 0 API calls)
+    const cached = filenameSuggestionCacheRef.current.get(cacheKey);
+    if (cached) {
+      setSelectedGrade(cached.grade);
+      setGradeTouched(true);
+      setSelectedSubject(cached.subject);
+      setAutoSuggestNote(cached.note);
+      return;
+    }
+
+    // 2. Run instant client-side Vietnamese keyword & grade heuristic
+    const localInference = inferGradeAndSubjectFromFileNames(fileNames);
+    if (localInference.confidence === 'high' && localInference.grade && localInference.subject) {
+      const note = `AI gợi ý từ tên tệp "${fileNames[0]}": Lớp ${localInference.grade} · ${SUBJECT_LABELS[localInference.subject]}`;
+      filenameSuggestionCacheRef.current.set(cacheKey, {
+        grade: localInference.grade,
+        subject: localInference.subject,
+        note,
+      });
+      setSelectedGrade(localInference.grade);
+      setGradeTouched(true);
+      setSelectedSubject(localInference.subject);
+      setAutoSuggestNote(note);
+      return;
+    }
+
+    if (localInference.subject) {
+      const effectiveGrade = localInference.grade || selectedGrade;
+      const note = `AI gợi ý từ tên tệp "${fileNames[0]}": Lớp ${effectiveGrade} · ${SUBJECT_LABELS[localInference.subject]}`;
+      filenameSuggestionCacheRef.current.set(cacheKey, {
+        grade: effectiveGrade,
+        subject: localInference.subject,
+        note,
+      });
+      if (localInference.grade) {
+        setSelectedGrade(localInference.grade);
+        setGradeTouched(true);
+      }
+      setSelectedSubject(localInference.subject);
+      setAutoSuggestNote(note);
+      return;
+    }
+
+    // 3. Skip network request completely if filenames are generic camera/scanner numbers (IMG_001.jpg, etc.)
+    if (isGenericCameraFileNames(fileNames)) {
+      const effectiveGrade = localInference.grade || fallbackGrade;
+      if (localInference.grade) {
+        setSelectedGrade(localInference.grade);
+        setGradeTouched(true);
+      }
+      setSelectedSubject('auto');
+      if (opts.triggeredByButton) {
+        setAutoSuggestNote(
+          `Tên tệp "${fileNames[0]}" là ảnh chụp không chứa tên môn — đã đặt Lớp ${effectiveGrade} & để AI tự nhận diện từ nội dung trang vở.`
+        );
+      }
+      return;
+    }
+
+    // 4. Meaningful filename without obvious subject keyword -> call lightweight AI route with smooth progress bar
+    const controller = new AbortController();
+    suggestAbortRef.current = controller;
+    setSuggestingFromFileName(true);
+    setSuggestProgressPct(22);
+    setAutoSuggestNote(`Đang phân tích tên tệp "${fileNames[0]}" để gợi ý Khối lớp & Môn học...`);
+
+    const stepTimer1 = window.setTimeout(() => setSuggestProgressPct(58), 220);
+    const stepTimer2 = window.setTimeout(() => setSuggestProgressPct(84), 650);
+    const timeoutId = window.setTimeout(() => controller.abort(), 7000);
+
+    try {
+      const res = await authorizedFetch('/api/ai/suggest-from-filename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileNames,
+          defaultGrade: fallbackGrade,
+        }),
+        signal: controller.signal,
+        retryTransient: false,
+      });
+      const data = await parseApiResponse<{
+        suggestedGrade?: GradeLevel;
+        suggestedSubject?: 'auto' | SubjectId;
+      }>(res, 'Không thể gợi ý môn học từ tên tệp.');
+
+      if (controller.signal.aborted) return;
+
+      const nextGrade: GradeLevel =
+        data.suggestedGrade === '10' || data.suggestedGrade === '11' || data.suggestedGrade === '12'
+          ? data.suggestedGrade
+          : localInference.grade || fallbackGrade;
+      const nextSubj: 'auto' | SubjectId =
+        data.suggestedSubject &&
+        data.suggestedSubject !== 'auto' &&
+        data.suggestedSubject in SUBJECT_LABELS
+          ? (data.suggestedSubject as SubjectId)
+          : 'auto';
+
+      setSuggestProgressPct(100);
+      setSelectedGrade(nextGrade);
+      setGradeTouched(true);
+      setSelectedSubject(nextSubj);
+
+      const note =
+        nextSubj !== 'auto'
+          ? `AI gợi ý từ tên tệp "${fileNames[0]}": Lớp ${nextGrade} · ${SUBJECT_LABELS[nextSubj]}`
+          : `Tên tệp "${fileNames[0]}" chưa nêu rõ môn học — đã đặt Lớp ${nextGrade} & để AI tự nhận diện môn từ nội dung trang vở.`;
+
+      filenameSuggestionCacheRef.current.set(cacheKey, {
+        grade: nextGrade,
+        subject: nextSubj,
+        note,
+      });
+      setAutoSuggestNote(note);
+    } catch {
+      if (controller.signal.aborted) return;
+      if (localInference.grade) {
+        setSelectedGrade(localInference.grade);
+        setGradeTouched(true);
+      }
+      setSelectedSubject('auto');
+      setAutoSuggestNote(
+        'Đã đặt chế độ AI tự động nhận diện Khối lớp & Môn học từ nội dung tài liệu.'
+      );
+    } finally {
+      window.clearTimeout(stepTimer1);
+      window.clearTimeout(stepTimer2);
+      window.clearTimeout(timeoutId);
+      if (suggestAbortRef.current === controller) {
+        setSuggestingFromFileName(false);
+        setSuggestProgressPct(0);
+      }
+    }
+  };
+
+  const handleAutoSuggestFromFileName = async () => {
+    setError(null);
+    if (files.length === 0) {
+      suggestAbortRef.current?.abort();
+      setSuggestingFromFileName(false);
+      setSuggestProgressPct(0);
+      const defaultG: GradeLevel = profile?.grade || '10';
+      setSelectedGrade(defaultG);
+      setGradeTouched(false);
+      setSelectedSubject('auto');
+      setAutoSuggestNote(
+        'Chế độ Tự động: Hệ thống sẽ tự gợi ý Khối lớp & Môn học ngay khi bạn kéo thả hoặc chọn tệp.'
+      );
+      return;
+    }
+
+    await runSmartFilenameSuggestion(
+      files.map((f) => f.name),
+      { triggeredByButton: true }
+    );
   };
 
   const moveFile = (idx: number, dir: -1 | 1) => {
@@ -513,29 +757,18 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     saveAiJobRecord(baseJob).catch(() => {});
 
     try {
+      // Cancel any in-flight filename suggestion so it never conflicts with active grading
+      suggestAbortRef.current?.abort();
+      setSuggestingFromFileName(false);
+
       const manualSubject: SubjectId | null = selectedSubject !== 'auto' ? selectedSubject : null;
       const manualGrade: GradeLevel = selectedGrade;
 
-      // Fast Path: when Grade + Subject are chosen upfront, prefetch SGK chunks in parallel with compression & OCR
+      // Fast Path: reuse proactively prefetched SGK chunks (or start prefetching in parallel with compression & OCR)
       const prefetchedRefPromise: Promise<{
         book: ReferenceBook | null;
         chunks: ReferenceChunk[];
-      }> | null = manualSubject
-        ? (async () => {
-            let activeBooks = referenceBooks;
-            if (activeBooks.length === 0) {
-              activeBooks = await listReferenceBooks(true).catch(() => []);
-              if (activeBooks.length > 0) setReferenceBooks(activeBooks);
-            }
-            const book =
-              activeBooks.find(
-                (b) => b.status === 'active' && b.grade === manualGrade && b.subject === manualSubject
-              ) || null;
-            if (!book) return { book: null, chunks: [] };
-            const chunks = await listReferenceChunksForBook(book.referenceId).catch(() => []);
-            return { book, chunks };
-          })()
-        : null;
+      }> | null = manualSubject ? getOrPrefetchSgkReference(manualGrade, manualSubject) : null;
 
       const isImageUpload = files.every((f) => f.type.startsWith('image/'));
       setProgressDetail(
@@ -808,90 +1041,198 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
             </p>
           </div>
 
-          {/* Pre-Upload Grade & Subject Fast-Path Selector */}
-          <div className="glass-panel-subtle rounded-2xl p-3.5 sm:p-4 border border-sky-200/70 dark:border-slate-700/70 space-y-3">
+          {/* Pre-Upload Grade & Subject Dropdowns + AI Filename 'Tự động' Button (Right Above Dropzone) */}
+          <div className="glass-panel-subtle relative overflow-hidden rounded-2xl p-3.5 sm:p-4 border border-sky-200/70 dark:border-slate-700/70 space-y-3">
+            {/* Smooth Top Progress Bar when AI is suggesting Grade & Subject */}
+            {suggestingFromFileName && (
+              <div
+                aria-hidden="true"
+                className="absolute inset-x-0 top-0 h-1 bg-sky-100/80 dark:bg-slate-800 overflow-hidden"
+              >
+                <div
+                  className="h-full bg-gradient-to-r from-sky-400 via-indigo-500 to-sky-500 transition-all duration-300 ease-out"
+                  style={{ width: `${Math.max(15, suggestProgressPct)}%` }}
+                />
+              </div>
+            )}
+
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
                 <Zap className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400 shrink-0" />
-                <span>Chọn nhanh Khối & Môn học trước khi gửi (tăng tốc tìm SGK)</span>
+                <span>Chọn nhanh Khối lớp & Môn học trước khi gửi (tăng tốc tìm SGK)</span>
               </div>
-              {hasManualScope ? (
-                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
-                  Đang bật chế độ nhanh: Lớp {selectedGrade} · {SUBJECT_LABELS[selectedSubject]}
+              {suggestingFromFileName ? (
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-sky-700 dark:text-sky-300 animate-pulse">
+                  <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                  <span>AI đang gợi ý từ tên tệp ({suggestProgressPct}%)...</span>
+                </span>
+              ) : hasManualScope ? (
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    Chế độ nhanh: Lớp {selectedGrade} · {SUBJECT_LABELS[selectedSubject]}
+                    {sgkPrefetchStatus === 'ready' ? ' (Đã nạp sẵn SGK)' : ''}
+                  </span>
                 </span>
               ) : (
                 <span className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">
-                  Mặc định: AI tự động nhận diện môn & khối
+                  Lớp {selectedGrade} · AI tự nhận diện môn học
                 </span>
               )}
             </div>
 
-            <div className="flex flex-col sm:flex-row sm:items-center gap-2.5">
-              <div
-                className="inline-flex items-center rounded-xl bg-white/75 dark:bg-slate-900/60 border border-sky-200/70 dark:border-slate-700 p-1 shrink-0"
-                role="group"
-                aria-label="Chọn khối lớp"
-              >
-                {(['10', '11', '12'] as GradeLevel[]).map((g) => {
-                  const active = selectedGrade === g;
-                  return (
-                    <button
-                      key={g}
-                      type="button"
-                      onClick={() => {
-                        setSelectedGrade(g);
-                        setGradeTouched(true);
-                      }}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                        active
-                          ? 'bg-sky-600 text-white shadow-sm'
-                          : 'text-[#475B78] dark:text-[#B4C7E2] hover:text-[#16243E] dark:hover:text-white'
-                      }`}
-                    >
-                      Lớp {g}
-                    </button>
-                  );
-                })}
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end">
+              {/* Grade Dropdown with Skeleton state */}
+              <div className="sm:col-span-4 space-y-1">
+                <label
+                  htmlFor="upload-grade-select"
+                  className="block text-[11px] font-semibold text-[#475B78] dark:text-[#B4C7E2]"
+                >
+                  Khối lớp
+                </label>
+                <div className="relative">
+                  <select
+                    id="upload-grade-select"
+                    aria-label="Chọn khối lớp"
+                    disabled={suggestingFromFileName}
+                    value={selectedGrade}
+                    onChange={(e) => {
+                      suggestAbortRef.current?.abort();
+                      setSuggestingFromFileName(false);
+                      setSelectedGrade(e.target.value as GradeLevel);
+                      setGradeTouched(true);
+                      setAutoSuggestNote(null);
+                    }}
+                    className={`w-full min-h-[40px] rounded-xl border border-sky-200/80 dark:border-slate-700 bg-white/90 dark:bg-slate-900/80 px-3 py-2 text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] focus:outline-none focus:ring-2 focus:ring-sky-500/40 cursor-pointer transition-opacity ${
+                      suggestingFromFileName ? 'opacity-45 animate-pulse' : ''
+                    }`}
+                  >
+                    <option value="10">Khối Lớp 10 (GDPT 2018)</option>
+                    <option value="11">Khối Lớp 11 (GDPT 2018)</option>
+                    <option value="12">Khối Lớp 12 (GDPT 2018)</option>
+                  </select>
+                </div>
               </div>
 
-              <div className="flex flex-1 items-center gap-2 min-w-0">
-                <select
-                  aria-label="Chọn môn học"
-                  value={selectedSubject}
-                  onChange={(e) => setSelectedSubject(e.target.value as 'auto' | SubjectId)}
-                  className="w-full min-h-[38px] rounded-xl border border-sky-200/80 dark:border-slate-700 bg-white/85 dark:bg-slate-900/75 px-3 py-1.5 text-xs font-medium text-[#16243E] dark:text-[#E6EFFC] focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+              {/* Subject Dropdown with Skeleton state */}
+              <div className="sm:col-span-5 space-y-1">
+                <label
+                  htmlFor="upload-subject-select"
+                  className="block text-[11px] font-semibold text-[#475B78] dark:text-[#B4C7E2]"
                 >
-                  <option value="auto">Tự động nhận diện môn học (AI tự phân loại)</option>
-                  {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((subj) => (
-                    <option key={subj} value={subj}>
-                      {SUBJECT_LABELS[subj]}
-                    </option>
-                  ))}
-                </select>
-
-                {hasManualScope && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedSubject('auto')}
-                    className="glass-control inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] shrink-0 cursor-pointer"
-                    title="Quay lại chế độ AI tự động nhận diện"
+                  Môn học
+                </label>
+                <div className="relative">
+                  <select
+                    id="upload-subject-select"
+                    aria-label="Chọn môn học"
+                    disabled={suggestingFromFileName}
+                    value={selectedSubject}
+                    onChange={(e) => {
+                      suggestAbortRef.current?.abort();
+                      setSuggestingFromFileName(false);
+                      setSelectedSubject(e.target.value as 'auto' | SubjectId);
+                      setAutoSuggestNote(null);
+                    }}
+                    className={`w-full min-h-[40px] rounded-xl border border-sky-200/80 dark:border-slate-700 bg-white/90 dark:bg-slate-900/80 px-3 py-2 text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] focus:outline-none focus:ring-2 focus:ring-sky-500/40 cursor-pointer transition-opacity ${
+                      suggestingFromFileName ? 'opacity-45 animate-pulse' : ''
+                    }`}
                   >
-                    <RotateCcw className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
-                    Tự động
-                  </button>
-                )}
+                    <option value="auto">Tự động nhận diện môn học (AI)</option>
+                    {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((subj) => (
+                      <option key={subj} value={subj}>
+                        {SUBJECT_LABELS[subj]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* 'Tự động' AI Filename Suggestion Button */}
+              <div className="sm:col-span-3">
+                <button
+                  type="button"
+                  disabled={suggestingFromFileName}
+                  onClick={handleAutoSuggestFromFileName}
+                  title="Để AI tự động gợi ý Khối lớp & Môn học dựa trên tên tệp"
+                  className="w-full min-h-[40px] glass-control inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] hover:border-sky-400 dark:hover:border-sky-500 transition-colors cursor-pointer disabled:opacity-60"
+                >
+                  {suggestingFromFileName ? (
+                    <Loader2 className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400 animate-spin shrink-0" />
+                  ) : (
+                    <Sparkles className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400 shrink-0" />
+                  )}
+                  <span>{suggestingFromFileName ? 'Đang gợi ý...' : 'Tự động'}</span>
+                </button>
               </div>
             </div>
+
+            {autoSuggestNote && (
+              <p className="text-[11px] font-medium text-sky-700 dark:text-sky-300 flex items-center gap-1.5 pt-0.5">
+                <Sparkles className="w-3 h-3 shrink-0" />
+                <span>{autoSuggestNote}</span>
+              </p>
+            )}
           </div>
 
+          {/* Drag-and-Drop Zone with Smooth AI Suggestion Skeleton Loading & Progress Bar */}
           <div
-            onDragOver={(e) => e.preventDefault()}
+            onDragOver={(e) => {
+              e.preventDefault();
+              if (!isDragOver) setIsDragOver(true);
+            }}
+            onDragLeave={() => setIsDragOver(false)}
             onDrop={(e) => {
               e.preventDefault();
+              setIsDragOver(false);
               validateAndSetFiles(e.dataTransfer.files);
             }}
-            className="glass-panel-subtle rounded-2xl border-2 border-dashed border-sky-300/80 dark:border-sky-700/70 p-5 sm:p-8 text-center transition-colors hover:border-sky-500"
+            aria-busy={suggestingFromFileName}
+            className={`glass-panel-subtle relative overflow-hidden rounded-2xl border-2 border-dashed p-5 sm:p-8 text-center transition-all duration-200 ${
+              suggestingFromFileName
+                ? 'border-sky-400 dark:border-sky-500 ring-2 ring-sky-400/20'
+                : isDragOver
+                ? 'border-sky-500 bg-sky-50/60 dark:bg-sky-950/30 scale-[0.998]'
+                : 'border-sky-300/80 dark:border-sky-700/70 hover:border-sky-500'
+            }`}
           >
+            {/* Smooth Animated Progress Bar & Skeleton Overlay inside Dropzone while AI suggests Grade/Subject */}
+            {suggestingFromFileName && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="mb-5 mx-auto max-w-md rounded-2xl border border-sky-200/90 dark:border-sky-800/70 bg-white/90 dark:bg-slate-900/90 p-3.5 shadow-sm space-y-2.5 text-left"
+              >
+                <div className="flex items-center justify-between gap-2 text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400 animate-pulse shrink-0" />
+                    <span>AI đang phân tích tên tệp & gợi ý phạm vi SGK...</span>
+                  </span>
+                  <span className="font-mono text-[11px] text-sky-600 dark:text-sky-400 tabular-nums">
+                    {suggestProgressPct}%
+                  </span>
+                </div>
+
+                {/* Smooth Progress Bar */}
+                <div className="h-1.5 w-full rounded-full bg-sky-100 dark:bg-slate-800 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-sky-500 via-indigo-500 to-sky-400 transition-all duration-300 ease-out"
+                    style={{ width: `${Math.max(18, suggestProgressPct)}%` }}
+                  />
+                </div>
+
+                {/* Skeleton Shimmer Pills for Grade & Subject */}
+                <div className="grid grid-cols-2 gap-2 pt-0.5">
+                  <div className="h-7 rounded-xl bg-slate-200/75 dark:bg-slate-800/90 animate-pulse flex items-center px-2.5">
+                    <span className="h-2.5 w-20 rounded bg-slate-300/90 dark:bg-slate-700" />
+                  </div>
+                  <div className="h-7 rounded-xl bg-slate-200/75 dark:bg-slate-800/90 animate-pulse flex items-center px-2.5">
+                    <span className="h-2.5 w-28 rounded bg-slate-300/90 dark:bg-slate-700" />
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-sky-100/80 dark:bg-sky-900/50 border border-sky-200/80 dark:border-sky-700/60 flex items-center justify-center mx-auto mb-3">
               <FileUp className="w-6 h-6 sm:w-7 sm:h-7 text-sky-600 dark:text-sky-400" />
             </div>

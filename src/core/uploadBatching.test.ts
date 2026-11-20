@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  buildFileNameSuggestionCacheKey,
   DEFAULT_MAX_BATCH_BYTES,
   getEffectiveUploadLimits,
+  inferGradeAndSubjectFromFileNames,
+  isGenericCameraFileNames,
   splitFilesIntoByteBudgetBatches,
   validateUploadFileSize,
 } from './uploadBatching.js';
@@ -90,3 +93,36 @@ test('splitFilesIntoByteBudgetBatches isolates an oversized single file without 
     [['a'], ['huge'], ['b']]
   );
 });
+
+test('inferGradeAndSubjectFromFileNames detects grade and subject from accented and unaccented Vietnamese filenames', () => {
+  const physics = inferGradeAndSubjectFromFileNames(['De_cuong_Vat_ly_12_Dao_dong_co.pdf']);
+  assert.equal(physics.grade, '12');
+  assert.equal(physics.subject, 'vat_ly');
+  assert.equal(physics.confidence, 'high');
+
+  const chem = inferGradeAndSubjectFromFileNames(['hoa-11-este-lipit.docx']);
+  assert.equal(chem.grade, '11');
+  assert.equal(chem.subject, 'hoa_hoc');
+  assert.equal(chem.confidence, 'high');
+
+  const math = inferGradeAndSubjectFromFileNames(['Toan10_Ham_so_bac_hai.jpg']);
+  assert.equal(math.grade, '10');
+  assert.equal(math.subject, 'toan');
+
+  const unknown = inferGradeAndSubjectFromFileNames(['IMG_20250318_001.jpg']);
+  assert.equal(unknown.grade, null);
+  assert.equal(unknown.subject, null);
+  assert.equal(unknown.confidence, 'low');
+});
+
+test('isGenericCameraFileNames and buildFileNameSuggestionCacheKey optimize API calls by filtering camera numbers and normalizing keys', () => {
+  assert.equal(isGenericCameraFileNames(['IMG_20250318_001.jpg', 'DSC_0042.png']), true);
+  assert.equal(isGenericCameraFileNames(['Screenshot 2026-11-20 142000.png']), true);
+  assert.equal(isGenericCameraFileNames(['chuong_1_dao_dong_dieu_hoa.pdf']), false);
+
+  const key1 = buildFileNameSuggestionCacheKey(['Đề-cương_Vật_Lý_12.pdf'], '12');
+  const key2 = buildFileNameSuggestionCacheKey(['de cuong vat ly 12.docx'], '12');
+  assert.equal(key1, key2);
+});
+
+

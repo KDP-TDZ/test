@@ -4323,8 +4323,125 @@ function validateUploadFileSize(file, adminMaxFileMb) {
   }
   return { ok: true };
 }
+function normalizeVietnameseTokenText(raw) {
+  return (raw || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/\.[^.]+$/, "").replace(/[_\-.,()[\]]+/g, " ").replace(/\s+/g, " ").trim();
+}
+var SUBJECT_KEYWORD_RULES = [
+  {
+    subject: "vat_ly",
+    patterns: [
+      /\b(vat\s*ly|vat\s*li|vly|mon\s*ly|de\s*ly|dao\s*dong|song\s*co|song\s*dien\s*tu|dien\s*xoay\s*chieu|mach\s*rlc|hat\s*nhan|luong\s*tu|quang\s*hoc|nhiet\s*hoc|dong\s*luc\s*hoc|dong\s*hoc|chuyen\s*dong|con\s*lac|tu\s*truong|dien\s*truong|cam\s*ung\s*dien\s*tu|dinh\s*luat\s*ohm|newton|coulomb)\b/,
+      /\b(ly|li)\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "hoa_hoc",
+    patterns: [
+      /\b(hoa\s*hoc|mon\s*hoa|de\s*hoa|este|lipit|cacbohidrat|glucozo|fructozo|saccarozo|tinh\s*bot|xenlulozo|amin|amino\s*axit|peptit|protein|polime|kim\s*loai|kiem\s*tho|nhom|sat|crom|hidrocacbon|ankan|anken|ankin|ankadien|aren|benzen|ancol|phenol|andehit|axit\s*cacboxylic|nguyen\s*tu|bang\s*tuan\s*hoan|phan\s*ung\s*oxi\s*hoa|dien\s*li|dien\s*phan|toc\s*do\s*phan\s*ung|can\s*bang\s*hoa\s*hoc)\b/,
+      /\bhoa\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "toan",
+    patterns: [
+      /\b(toan\s*hoc|mon\s*toan|de\s*toan|dai\s*so|hinh\s*hoc|giai\s*tich|ham\s*so|dao\s*ham|tich\s*phan|nguyen\s*ham|logarit|mu\s*logarit|luong\s*giac|to\s*hop|xac\s*suat|cap\s*so\s*cong|cap\s*so\s*nhan|vecto|toa\s*do\s*oxy|oxyz|so\s*phuc|bat\s*phuong\s*trinh|he\s*phuong\s*trinh|khoi\s*da\s*dien|mat\s*cau|mat\s*non|mat\s*tru|thong\s*ke)\b/,
+      /\btoan\s*(10|11|12)?\b/
+    ]
+  },
+  {
+    subject: "sinh_hoc",
+    patterns: [
+      /\b(sinh\s*hoc|mon\s*sinh|de\s*sinh|di\s*truyen|bien\s*di|dot\s*bien|adn|arn|gen|ma\s*di\s*truyen|phien\s*ma|dich\s*ma|nhiem\s*sac\s*the|te\s*bao|quang\s*hop|ho\s*hap|tien\s*hoa|sinh\s*thai|quan\s*the|quan\s*xa|he\s*sinh\s*thai|chuyen\s*hoa\s*vat\s*chat)\b/,
+      /\bsinh\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "ngu_van",
+    patterns: [
+      /\b(ngu\s*van|mon\s*van|van\s*hoc|nghi\s*luan|doc\s*hieu|lam\s*van|phan\s*tich\s*tho|truyen\s*ngan|tay\s*tien|viet\s*bac|dat\s*nuoc|vo\s*nhat|vo\s*chong\s*a\s*phu|chi\s*pheo|hai\s*dua\s*tre|chu\s*nguoi\s*tu\s*tu)\b/,
+      /\bvan\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "tieng_anh",
+    patterns: [
+      /\b(tieng\s*anh|mon\s*anh|english|grammar|vocabulary|reading|listening|ielts|toeic|phonetics|tenses|relative\s*clause|passive\s*voice|conditional|reported\s*speech)\b/,
+      /\banh\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "lich_su",
+    patterns: [
+      /\b(lich\s*su|mon\s*su|de\s*su|cach\s*mang|chien\s*tranh|the\s*gioi|viet\s*nam|khang\s*chien|phong\s*trao|dien\s*bien\s*phu|asean|lien\s*hop\s*quoc|chien\s*tranh\s*lanh)\b/,
+      /\bsu\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "dia_ly",
+    patterns: [
+      /\b(dia\s*ly|dia\s*li|mon\s*dia|de\s*dia|khi\s*hau|dia\s*hinh|dan\s*cu|vung\s*kinh\s*te|atlat|tu\s*nhien|dong\s*bang\s*song\s*hong|dong\s*bang\s*song\s*cuu\s*long|tay\s*nguyen)\b/,
+      /\bdia\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "gdkt_pl",
+    patterns: [
+      /\b(gdkt\s*pl|gdktpl|gdcd|giao\s*duc\s*kinh\s*te|phap\s*luat|cong\s*dan|hien\s*phap|thi\s*truong|ngan\s*sach|thue|tin\s*dung|lam\s*phat|that\s*nghiep|quyen\s*binh\s*dang)\b/
+    ]
+  },
+  {
+    subject: "tin_hoc",
+    patterns: [
+      /\b(tin\s*hoc|mon\s*tin|lap\s*trinh|python|c\+\+|pascal|thuat\s*toan|co\s*so\s*du\s*lieu|sql|html|css|mang\s*may\s*tinh|tri\s*tue\s*nhan\s*tao)\b/,
+      /\btin\s*(10|11|12)\b/
+    ]
+  }
+];
+function isGenericCameraFileNames(fileNames) {
+  const clean = fileNames.map((n) => (n || "").trim()).filter(Boolean);
+  if (clean.length === 0) return true;
+  return clean.every(
+    (name) => /^(img|dsc|screenshot|image|photo|page|trang|scan|cam|whatsapp|viber|zalo|pxl|mvimg|z\d+)[\s_\-\d().a-f]*(\.[a-z0-9]+)?$/i.test(
+      name
+    ) || /^[\d_\-\s().]+(\.[a-z0-9]+)?$/i.test(name)
+  );
+}
+function buildFileNameSuggestionCacheKey(fileNames, defaultGrade = "10") {
+  const normalized = fileNames.map(normalizeVietnameseTokenText).filter(Boolean).slice(0, 15).join("|");
+  return `${defaultGrade}::${normalized}`;
+}
+function inferGradeAndSubjectFromFileNames(fileNames) {
+  const combined = fileNames.map(normalizeVietnameseTokenText).filter(Boolean).join(" ");
+  if (!combined) {
+    return { grade: null, subject: null, confidence: "low" };
+  }
+  let detectedGrade = null;
+  const explicitGradeMatch = combined.match(/\b(?:lop|khoi|k|grade)\s*(10|11|12)\b/) || combined.match(/\b(?:toan|ly|li|hoa|sinh|van|anh|su|dia|tin|gdcd|gdktpl)(10|11|12)\b/) || combined.match(/\b(?:toan|ly|li|hoa|sinh|van|anh|su|dia|tin|gdcd|gdktpl)\s+(10|11|12)\b/);
+  if (explicitGradeMatch) {
+    detectedGrade = explicitGradeMatch[1];
+  } else {
+    const standaloneGradeMatch = combined.match(/(?:^|\s)(10|11|12)(?:\s|$)/);
+    if (standaloneGradeMatch) {
+      detectedGrade = standaloneGradeMatch[1];
+    }
+  }
+  let detectedSubject = null;
+  for (const rule of SUBJECT_KEYWORD_RULES) {
+    if (rule.patterns.some((re) => re.test(combined))) {
+      detectedSubject = rule.subject;
+      break;
+    }
+  }
+  const confidence = detectedSubject && detectedGrade ? "high" : detectedSubject || detectedGrade ? "medium" : "low";
+  return {
+    grade: detectedGrade,
+    subject: detectedSubject,
+    confidence
+  };
+}
 
 // src/server/app.ts
+var filenameScopeServerCache = /* @__PURE__ */ new Map();
 var ALLOWED_UPLOAD_MIMES = /* @__PURE__ */ new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -4511,6 +4628,86 @@ function createApiApp() {
       });
     } catch {
       res.status(401).json({ error: "Invalid Firebase ID token" });
+    }
+  });
+  app.post("/api/ai/suggest-from-filename", requireAuth, async (req, res) => {
+    const user = req.authUser;
+    const tokens = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
+    try {
+      const rawNames = Array.isArray(req.body?.fileNames) ? req.body.fileNames : [];
+      const fileNames = rawNames.map((n) => typeof n === "string" ? n.trim() : "").filter((n) => n.length > 0).slice(0, 25);
+      const fallbackGrade = req.body?.defaultGrade === "11" || req.body?.defaultGrade === "12" ? req.body.defaultGrade : "10";
+      if (fileNames.length === 0) {
+        res.json({
+          suggestedGrade: fallbackGrade,
+          suggestedSubject: "auto",
+          source: "empty"
+        });
+        return;
+      }
+      const cacheKey = buildFileNameSuggestionCacheKey(fileNames, fallbackGrade);
+      const cached = filenameScopeServerCache.get(cacheKey);
+      if (cached) {
+        res.json({ ...cached, source: "cache" });
+        return;
+      }
+      const heuristic = inferGradeAndSubjectFromFileNames(fileNames);
+      if (heuristic.confidence === "high" && heuristic.grade && heuristic.subject) {
+        const result = {
+          suggestedGrade: heuristic.grade,
+          suggestedSubject: heuristic.subject,
+          source: "heuristic"
+        };
+        filenameScopeServerCache.set(cacheKey, result);
+        res.json(result);
+        return;
+      }
+      if (isGenericCameraFileNames(fileNames)) {
+        const result = {
+          suggestedGrade: heuristic.grade || fallbackGrade,
+          suggestedSubject: heuristic.subject || "auto",
+          source: "generic_filename"
+        };
+        filenameScopeServerCache.set(cacheKey, result);
+        res.json(result);
+        return;
+      }
+      const meaningfulText = fileNames.map((name) => name.replace(/\.[^.]+$/, "").replace(/[_\-.]+/g, " ").trim()).join(", ");
+      const cfg = await loadAuthoritativeAiConfig(user.idToken);
+      if (!cfg.enabled) {
+        res.json({
+          suggestedGrade: heuristic.grade || fallbackGrade,
+          suggestedSubject: heuristic.subject || "auto",
+          source: "heuristic"
+        });
+        return;
+      }
+      const aiScope = await SubjectDetectionService.detectScope(
+        `T\xEAn t\u1EC7p t\xE0i li\u1EC7u h\u1ECDc t\u1EADp THPT: ${meaningfulText}`,
+        tokens,
+        { config: cfg, idToken: user.idToken }
+      );
+      const finalResult = {
+        suggestedGrade: heuristic.grade || aiScope.suggestedGrade || fallbackGrade,
+        suggestedSubject: heuristic.subject || (aiScope.suggestedSubject && aiScope.suggestedSubject !== "khac" ? aiScope.suggestedSubject : "auto"),
+        source: "ai"
+      };
+      if (filenameScopeServerCache.size >= 200) {
+        const firstKey = filenameScopeServerCache.keys().next().value;
+        if (firstKey) filenameScopeServerCache.delete(firstKey);
+      }
+      filenameScopeServerCache.set(cacheKey, finalResult);
+      res.json(finalResult);
+    } catch {
+      const rawNames = Array.isArray(req.body?.fileNames) ? req.body.fileNames : [];
+      const heuristic = inferGradeAndSubjectFromFileNames(
+        rawNames.filter((n) => typeof n === "string")
+      );
+      res.json({
+        suggestedGrade: heuristic.grade || "10",
+        suggestedSubject: heuristic.subject || "auto",
+        source: "heuristic_fallback"
+      });
     }
   });
   app.post("/api/ai/extract", requireAuth, upload.array("files", 25), async (req, res) => {

@@ -3,7 +3,7 @@ import type { AiTaskType, TaskModelConfig } from '../core/types.js';
 export interface ModelCatalogItem {
   modelId: string;
   displayName: string;
-  provider: 'gemini' | 'groq';
+  provider: 'gemini' | 'groq' | 'cloudflare';
   tier: 'free';
   strengths: string;
   supportsMultimodal: boolean;
@@ -13,37 +13,55 @@ export interface ModelCatalogItem {
 export const MODEL_CATALOG: ModelCatalogItem[] = [
   {
     modelId: 'gemini-4-hydrogen',
-    displayName: 'Gemini 4 Hydrogen',
+    displayName: 'Gemini 4 Hydrogen (Google Free)',
     provider: 'gemini',
     tier: 'free',
-    strengths: 'Suy luận sâu, kiểm định tri thức đa nguồn, OCR công thức & chữ viết tay phức tạp.',
+    strengths: 'Ưu tiên số 1 cho OCR ảnh/PDF công thức viết tay phức tạp & kiểm định kiến thức chuẩn SGK.',
     supportsMultimodal: true,
     supportsGoogleSearch: true,
   },
   {
     modelId: 'gemini-3.1-flash-lite',
-    displayName: 'Gemini 3.1 Flash Lite',
+    displayName: 'Gemini 3.1 Flash Lite (Google Free)',
     provider: 'gemini',
     tier: 'free',
-    strengths: 'Tốc độ rất nhanh, tiết kiệm token cho phân loại môn, kiểm tra cấu trúc, flashcard & phản hồi.',
+    strengths: 'Tốc độ rất nhanh, hạn mức RPM cao cho phân loại môn, kiểm tra cấu trúc, flashcard & phản hồi.',
     supportsMultimodal: true,
     supportsGoogleSearch: true,
   },
   {
     modelId: 'groq:llama-3.3-70b-versatile',
-    displayName: 'Groq · Llama 3.3 70B (Free)',
+    displayName: 'Groq · Llama 3.3 70B (Groq Cloud Free)',
     provider: 'groq',
     tier: 'free',
-    strengths: 'Miễn phí (~1.000 req/ngày, phản hồi siêu nhanh) — xử lý văn bản/JSON: kiểm định kiến thức, tạo đề & dự phòng khi Gemini đạt giới hạn 429.',
+    strengths: 'Miễn phí (~1.000 req/ngày, ~300–500 tok/s) — cực nhanh cho nhóm 2–3 người dùng song song khi xử lý văn bản/JSON & dự phòng Gemini 429.',
     supportsMultimodal: false,
     supportsGoogleSearch: false,
   },
   {
     modelId: 'groq:llama-3.1-8b-instant',
-    displayName: 'Groq · Llama 3.1 8B Instant (Free)',
+    displayName: 'Groq · Llama 3.1 8B Instant (Groq Cloud Free)',
     provider: 'groq',
     tier: 'free',
-    strengths: 'Tốc độ cực nhanh (<1s), miễn phí — tối ưu cho phân loại môn, flashcard, tóm tắt phản hồi & dự phòng nhẹ.',
+    strengths: 'Tốc độ tức thì (<0.6s), miễn phí (~14.400 req/ngày) — tối ưu cho phân loại môn, gợi ý tên tệp, flashcard & dự phòng nhẹ.',
+    supportsMultimodal: false,
+    supportsGoogleSearch: false,
+  },
+  {
+    modelId: 'cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+    displayName: 'Cloudflare · Llama 3.3 70B FP8 Fast (Workers AI Free)',
+    provider: 'cloudflare',
+    tier: 'free',
+    strengths: 'Miễn phí (10.000 Neurons/ngày trên hạ tầng Edge Cloudflare) — tầng dự phòng & chia tải thứ 3 cho chấm kiến thức, tạo đề trắc nghiệm.',
+    supportsMultimodal: false,
+    supportsGoogleSearch: false,
+  },
+  {
+    modelId: 'cf:@cf/meta/llama-3.1-8b-instruct-fast',
+    displayName: 'Cloudflare · Llama 3.1 8B Fast (Workers AI Free)',
+    provider: 'cloudflare',
+    tier: 'free',
+    strengths: 'Miễn phí, tiêu tốn cực ít Neuron trên Cloudflare Edge — phù hợp cho phân loại môn, thẩm định nhanh & flashcard.',
     supportsMultimodal: false,
     supportsGoogleSearch: false,
   },

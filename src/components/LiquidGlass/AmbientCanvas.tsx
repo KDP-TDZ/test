@@ -1,10 +1,104 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useUiMode } from '../../context/UiModeContext';
 import { useIsMobileViewport } from '../../hooks/useIsMobileViewport';
+
+export const WATER_SOUND_STORAGE_KEY = 'studycheck_water_drop_sound';
+
+export function isWaterDropSoundEnabled(): boolean {
+  try {
+    return localStorage.getItem(WATER_SOUND_STORAGE_KEY) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
+export function setWaterDropSoundEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(WATER_SOUND_STORAGE_KEY, enabled ? 'on' : 'off');
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+let sharedAudioCtx: AudioContext | null = null;
+
+export function playWaterDropSound(): void {
+  if (typeof window === 'undefined' || !isWaterDropSoundEnabled()) return;
+  try {
+    const AudioCtx =
+      window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    if (!sharedAudioCtx) {
+      sharedAudioCtx = new AudioCtx();
+    }
+    if (sharedAudioCtx.state === 'suspended') {
+      void sharedAudioCtx.resume();
+    }
+
+    const now = sharedAudioCtx.currentTime;
+    const osc = sharedAudioCtx.createOscillator();
+    const gain = sharedAudioCtx.createGain();
+
+    // Gentle acoustic water-droplet pitch sweep (520Hz -> 1240Hz over 68ms)
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(520, now);
+    osc.frequency.exponentialRampToValueAtTime(1240, now + 0.068);
+
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.042, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.075);
+
+    osc.connect(gain);
+    gain.connect(sharedAudioCtx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.078);
+  } catch {
+    // Ignore Web Audio autoplay restrictions
+  }
+}
+
+interface WaterDropRippleItem {
+  id: number;
+  x: number;
+  y: number;
+}
 
 export const AmbientCanvas: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isEthereal } = useUiMode();
   const isMobile = useIsMobileViewport();
+  const [drops, setDrops] = useState<WaterDropRippleItem[]>([]);
+  const dropIdRef = useRef(0);
+
+  useEffect(() => {
+    if (!isEthereal || isMobile) {
+      setDrops([]);
+      return;
+    }
+
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+    const handlePointerDown = (e: PointerEvent) => {
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      playWaterDropSound();
+      if (prefersReduced) return;
+
+      const id = ++dropIdRef.current;
+      const x = e.clientX;
+      const y = e.clientY;
+      setDrops((prev) => [...prev.slice(-4), { id, x, y }]);
+      window.setTimeout(() => {
+        setDrops((prev) => prev.filter((item) => item.id !== id));
+      }, 820);
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [isEthereal, isMobile]);
 
   // Classic mode OR Mobile (< 768px): dedicated ultra-lightweight solid native canvas (0% GPU blur orbs / 3D layers)
   if (!isEthereal || isMobile) {
@@ -55,7 +149,30 @@ export const AmbientCanvas: React.FC<{ children: React.ReactNode }> = ({ childre
         <div className="hidden xl:block ethereal-orbit-reverse absolute bottom-8 right-16 w-12 h-12 rounded-xl bg-gradient-to-tr from-fuchsia-600/75 via-purple-500/70 to-pink-300/80 dark:from-fuchsia-500/45 dark:via-purple-500/40 dark:to-pink-400/45 shadow-[0_12px_28px_-6px_rgba(192,38,211,0.45)] rotate-45 opacity-80" />
       </div>
 
+      {/* Global Water-Drop Click Ripple Overlay (Active in Modern Mode) */}
+      {drops.length > 0 && (
+        <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-[95] overflow-hidden">
+          {drops.map((drop) => (
+            <React.Fragment key={drop.id}>
+              <span
+                className="water-drop-core absolute"
+                style={{ left: drop.x, top: drop.y }}
+              />
+              <span
+                className="water-drop-ring-primary absolute"
+                style={{ left: drop.x, top: drop.y }}
+              />
+              <span
+                className="water-drop-ring-secondary absolute"
+                style={{ left: drop.x, top: drop.y }}
+              />
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+
       <div className="relative z-10 min-h-dvh flex flex-col">{children}</div>
     </div>
   );
 };
+

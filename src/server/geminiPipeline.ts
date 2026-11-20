@@ -52,6 +52,10 @@ import {
   thinkingConfigForModel,
 } from './modelRouter.js';
 import { callGroqChatCompletion, isGroqModelId } from './groqProvider.js';
+import {
+  callCloudflareChatCompletion,
+  isCloudflareModelId,
+} from './cloudflareProvider.js';
 
 export interface TokenTelemetry {
   promptTokens: number;
@@ -104,6 +108,23 @@ async function generateJsonWithProvider<T>(params: {
     return JSON.parse((resp.text || params.fallbackJson).trim()) as T;
   }
 
+  if (isCloudflareModelId(params.modelId)) {
+    const resp = await callWithTimeout(
+      (signal) =>
+        callCloudflareChatCompletion({
+          modelId: params.modelId,
+          prompt: params.prompt,
+          jsonMode: true,
+          jsonSchemaHint: params.groqSchemaHint,
+          maxOutputTokens: params.maxOutputTokens,
+          signal,
+        }),
+      params.timeoutMs
+    );
+    accumulateRawTokens(params.tokensOut, resp);
+    return JSON.parse((resp.text || params.fallbackJson).trim()) as T;
+  }
+
   const ai = await createServerAiClient();
   const response = await callWithTimeout(
     (signal) =>
@@ -136,6 +157,22 @@ async function generatePlainTextWithProvider(params: {
     const resp = await callWithTimeout(
       (signal) =>
         callGroqChatCompletion({
+          modelId: params.modelId,
+          prompt: params.prompt,
+          jsonMode: false,
+          maxOutputTokens: params.maxOutputTokens,
+          signal,
+        }),
+      params.timeoutMs
+    );
+    accumulateRawTokens(params.tokensOut, resp);
+    return resp.text.trim();
+  }
+
+  if (isCloudflareModelId(params.modelId)) {
+    const resp = await callWithTimeout(
+      (signal) =>
+        callCloudflareChatCompletion({
           modelId: params.modelId,
           prompt: params.prompt,
           jsonMode: false,

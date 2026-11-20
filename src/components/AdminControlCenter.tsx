@@ -105,7 +105,7 @@ type AdminTab =
 interface ModelCatalogItem {
   modelId: string;
   displayName: string;
-  provider?: 'gemini' | 'groq';
+  provider?: 'gemini' | 'groq' | 'cloudflare';
   tier: string;
   strengths: string;
   supportsMultimodal?: boolean;
@@ -114,15 +114,15 @@ interface ModelCatalogItem {
 const FALLBACK_MODEL_CATALOG: ModelCatalogItem[] = [
   {
     modelId: 'gemini-4-hydrogen',
-    displayName: 'Gemini 4 Hydrogen',
+    displayName: 'Gemini 4 Hydrogen (Google Free)',
     provider: 'gemini',
     tier: 'free',
-    strengths: 'Suy luận sâu, kiểm định tri thức đa nguồn, OCR công thức & chữ viết tay phức tạp.',
+    strengths: 'Ưu tiên số 1 cho OCR ảnh/PDF công thức viết tay phức tạp & kiểm định kiến thức chuẩn SGK.',
     supportsMultimodal: true,
   },
   {
     modelId: 'gemini-3.1-flash-lite',
-    displayName: 'Gemini 3.1 Flash Lite',
+    displayName: 'Gemini 3.1 Flash Lite (Google Free)',
     provider: 'gemini',
     tier: 'free',
     strengths: 'Tốc độ nhanh, tiết kiệm token cho phân loại môn, kiểm tra cấu trúc, flashcard & phản hồi.',
@@ -130,18 +130,34 @@ const FALLBACK_MODEL_CATALOG: ModelCatalogItem[] = [
   },
   {
     modelId: 'groq:llama-3.3-70b-versatile',
-    displayName: 'Groq · Llama 3.3 70B (Free)',
+    displayName: 'Groq · Llama 3.3 70B (Groq Cloud Free)',
     provider: 'groq',
     tier: 'free',
-    strengths: 'Miễn phí (~1.000 req/ngày) — xử lý văn bản/JSON: kiểm định kiến thức, tạo đề & dự phòng khi Gemini 429.',
+    strengths: 'Miễn phí (~1.000 req/ngày, ~300–500 tok/s) — xử lý văn bản/JSON: kiểm định kiến thức, tạo đề & dự phòng khi Gemini 429.',
     supportsMultimodal: false,
   },
   {
     modelId: 'groq:llama-3.1-8b-instant',
-    displayName: 'Groq · Llama 3.1 8B Instant (Free)',
+    displayName: 'Groq · Llama 3.1 8B Instant (Groq Cloud Free)',
     provider: 'groq',
     tier: 'free',
-    strengths: 'Siêu nhanh (<1s), miễn phí — phân loại môn, flashcard, tóm tắt phản hồi & dự phòng nhẹ.',
+    strengths: 'Siêu nhanh (<0.6s), miễn phí — phân loại môn, gợi ý tên tệp, flashcard & dự phòng nhẹ.',
+    supportsMultimodal: false,
+  },
+  {
+    modelId: 'cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+    displayName: 'Cloudflare · Llama 3.3 70B FP8 Fast (Workers AI Free)',
+    provider: 'cloudflare',
+    tier: 'free',
+    strengths: 'Miễn phí (10.000 Neurons/ngày trên Cloudflare Edge) — tầng dự phòng & chia tải thứ 3 cho chấm kiến thức, tạo đề.',
+    supportsMultimodal: false,
+  },
+  {
+    modelId: 'cf:@cf/meta/llama-3.1-8b-instruct-fast',
+    displayName: 'Cloudflare · Llama 3.1 8B Fast (Workers AI Free)',
+    provider: 'cloudflare',
+    tier: 'free',
+    strengths: 'Miễn phí, tiêu tốn cực ít Neuron trên Cloudflare Edge — phân loại môn, thẩm định nhanh & flashcard.',
     supportsMultimodal: false,
   },
 ];
@@ -197,6 +213,7 @@ export const AdminControlCenter: React.FC = () => {
   const [executionLogs, setExecutionLogs] = useState<AiExecutionLog[]>([]);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogItem[]>(FALLBACK_MODEL_CATALOG);
   const [groqConfigured, setGroqConfigured] = useState<boolean>(false);
+  const [cloudflareConfigured, setCloudflareConfigured] = useState<boolean>(false);
 
   const [books, setBooks] = useState<ReferenceBook[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -344,6 +361,7 @@ export const AdminControlCenter: React.FC = () => {
       setAuditLogs(data.auditLogs || []);
       setSingleKeyStatus(data.singleKeyStatus || null);
       setGroqConfigured(Boolean(data.groqConfigured));
+      setCloudflareConfigured(Boolean(data.cloudflareConfigured));
       setExecutionLogs(data.executionLogs || []);
       if (Array.isArray(data.modelCatalog) && data.modelCatalog.length > 0) {
         setModelCatalog(data.modelCatalog);
@@ -1562,33 +1580,49 @@ export const AdminControlCenter: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-sky-200/80 dark:border-sky-800/60 bg-sky-50/70 dark:bg-sky-950/35 px-4 py-3 text-xs text-[#16243E] dark:text-[#E6EFFC] space-y-1.5">
+                <div className="rounded-2xl border border-sky-200/80 dark:border-sky-800/60 bg-sky-50/70 dark:bg-sky-950/35 px-4 py-3.5 text-xs text-[#16243E] dark:text-[#E6EFFC] space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="font-semibold">
-                      Đa nhà cung cấp Miễn phí (Gemini Free + Groq Free Rescue)
+                      Định tuyến 3 Nhà cung cấp AI Miễn phí (Tối ưu cho nhóm 2–3 người dùng cùng lúc)
                     </p>
-                    <span
-                      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
-                        groqConfigured
-                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
-                          : 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300'
-                      }`}
-                    >
-                      {groqConfigured
-                        ? 'Groq Dự phòng: Đã kích hoạt (GROQ_API_KEY)'
-                        : 'Groq Dự phòng: Chưa đặt GROQ_API_KEY trên máy chủ'}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-lg text-[11px] font-semibold ${
+                          groqConfigured
+                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
+                            : 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300'
+                        }`}
+                      >
+                        {groqConfigured
+                          ? 'Groq Cloud: Đã bật (GROQ_API_KEY)'
+                          : 'Groq Cloud: Chưa đặt GROQ_API_KEY'}
+                      </span>
+                      <span
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-lg text-[11px] font-semibold ${
+                          cloudflareConfigured
+                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
+                            : 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300'
+                        }`}
+                      >
+                        {cloudflareConfigured
+                          ? 'Cloudflare AI: Đã bật (CLOUDFLARE_API_TOKEN)'
+                          : 'Cloudflare AI: Chưa đặt CLOUDFLARE_ACCOUNT_ID / TOKEN'}
+                      </span>
+                    </div>
                   </div>
                   <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
-                    <strong>Gemini Free</strong> (
-                    <code className="font-mono text-[11px]">gemini-4-hydrogen</code>,{' '}
-                    <code className="font-mono text-[11px]">gemini-3.1-flash-lite</code>) đảm nhận OCR ảnh/PDF
-                    và kiểm định chính. <strong>Groq Free</strong> (
+                    <strong>Thứ tự ưu tiên khuyến nghị cho 2–3 người dùng song song:</strong>{' '}
+                    <strong>(1) Gemini 4 Hydrogen / 3.1 Flash Lite</strong> bắt buộc giữ vị trí số 1 cho{' '}
+                    <strong>OCR Ảnh/PDF</strong> và kiểm định chính vì hỗ trợ đa phương thức (vision) và suy luận
+                    công thức chuẩn nhất; <strong>(2) Groq Cloud Free</strong> (
                     <code className="font-mono text-[11px]">groq:llama-3.3-70b-versatile</code>,{' '}
-                    <code className="font-mono text-[11px]">groq:llama-3.1-8b-instant</code>) tự động gánh
-                    các tác vụ văn bản/JSON khi Gemini báo <code className="font-mono text-[11px]">429</code>{' '}
-                    hoặc có thể gán trực tiếp cho từng tác vụ bên dưới (chỉ cần thêm biến môi trường{' '}
-                    <code className="font-mono text-[11px]">GROQ_API_KEY</code> trên Vercel / <code className="font-mono text-[11px]">.env</code>).
+                    <code className="font-mono text-[11px]">groq:llama-3.1-8b-instant</code>) ưu tiên số 2 cho
+                    tác vụ văn bản/JSON vì tốc độ ~400 token/s giúp 2–3 người bấm cùng lúc không bị nghẽn hàng đợi;{' '}
+                    <strong>(3) Cloudflare Workers AI Free</strong> (
+                    <code className="font-mono text-[11px]">cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast</code>)
+                    làm tầng cứu hộ thứ 3 (10.000 Neurons/ngày). Khi cả 3 cùng được khai báo biến môi trường,
+                    Router tự động chuyển tiếp <code className="font-mono text-[11px]">Gemini → Groq → Cloudflare</code>{' '}
+                    nếu có bất kỳ bên nào báo <code className="font-mono text-[11px]">429</code>.
                   </p>
                 </div>
 

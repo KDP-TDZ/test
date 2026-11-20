@@ -56,6 +56,7 @@ import {
   testModelConnectivity,
 } from './modelRouter.js';
 import { isGroqConfigured } from './groqProvider.js';
+import { isCloudflareConfigured } from './cloudflareProvider.js';
 import {
   SUBJECT_LABELS,
   type AiTaskType,
@@ -70,7 +71,17 @@ import {
   type ReferenceChunk,
   type SubjectId,
 } from '../core/types.js';
-import { validateUploadFileSize } from '../core/uploadBatching.js';
+import {
+  buildFileNameSuggestionCacheKey,
+  inferGradeAndSubjectFromFileNames,
+  isGenericCameraFileNames,
+  validateUploadFileSize,
+} from '../core/uploadBatching.js';
+
+const filenameScopeServerCache = new Map<
+  string,
+  { suggestedGrade: GradeLevel; suggestedSubject: 'auto' | SubjectId; source: string }
+>();
 
 declare global {
   namespace Express {
@@ -282,6 +293,113 @@ export function createApiApp(): express.Express {
       });
     } catch {
       res.status(401).json({ error: 'Invalid Firebase ID token' });
+    }
+  });
+
+  app.post('/api/ai/suggest-from-filename', requireAuth, async (req, res) => {
+    const user = req.authUser!;
+    const tokens: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
+    try {
+      const rawNames = Array.isArray(req.body?.fileNames) ? req.body.fileNames : [];
+      const fileNames: string[] = rawNames
+        .map((n: unknown) => (typeof n === 'string' ? n.trim() : ''))
+        .filter((n: string) => n.length > 0)
+        .slice(0, 25);
+      const fallbackGrade: GradeLevel =
+        req.body?.defaultGrade === '11' || req.body?.defaultGrade === '12'
+          ? req.body.defaultGrade
+          : '10';
+
+      if (fileNames.length === 0) {
+        res.json({
+          suggestedGrade: fallbackGrade,
+          suggestedSubject: 'auto',
+          source: 'empty',
+        });
+        return;
+      }
+
+      const cacheKey = buildFileNameSuggestionCacheKey(fileNames, fallbackGrade);
+      const cached = filenameScopeServerCache.get(cacheKey);
+      if (cached) {
+        res.json({ ...cached, source: 'cache' });
+        return;
+      }
+
+      const heuristic = inferGradeAndSubjectFromFileNames(fileNames);
+      if (heuristic.confidence === 'high' && heuristic.grade && heuristic.subject) {
+        const result = {
+          suggestedGrade: heuristic.grade,
+          suggestedSubject: heuristic.subject,
+          source: 'heuristic',
+        };
+        filenameScopeServerCache.set(cacheKey, result);
+        res.json(result);
+        return;
+      }
+
+      if (isGenericCameraFileNames(fileNames)) {
+        const result = {
+          suggestedGrade: heuristic.grade || fallbackGrade,
+          suggestedSubject: (heuristic.subject || 'auto') as 'auto' | SubjectId,
+          source: 'generic_filename',
+        };
+        filenameScopeServerCache.set(cacheKey, result);
+        res.json(result);
+        return;
+      }
+
+      const meaningfulText = fileNames
+        .map((name) => name.replace(/\.[^.]+$/, '').replace(/[_\-.]+/g, ' ').trim())
+        .join(', ');
+
+      const cfg = await loadAuthoritativeAiConfig(user.idToken);
+      if (!cfg.enabled) {
+        res.json({
+          suggestedGrade: heuristic.grade || fallbackGrade,
+          suggestedSubject: heuristic.subject || 'auto',
+          source: 'heuristic',
+        });
+        return;
+      }
+
+      const aiScope = await SubjectDetectionService.detectScope(
+        `Tên tệp tài liệu học tập THPT: ${meaningfulText}`,
+        tokens,
+        { config: cfg, idToken: user.idToken }
+      );
+
+      const finalResult: {
+        suggestedGrade: GradeLevel;
+        suggestedSubject: 'auto' | SubjectId;
+        source: string;
+      } = {
+        suggestedGrade: heuristic.grade || aiScope.suggestedGrade || fallbackGrade,
+        suggestedSubject:
+          heuristic.subject ||
+          (aiScope.suggestedSubject && aiScope.suggestedSubject !== 'khac'
+            ? aiScope.suggestedSubject
+            : 'auto'),
+        source: 'ai',
+      };
+
+      if (filenameScopeServerCache.size >= 200) {
+        const firstKey = filenameScopeServerCache.keys().next().value;
+        if (firstKey) filenameScopeServerCache.delete(firstKey);
+      }
+      filenameScopeServerCache.set(cacheKey, finalResult);
+
+      res.json(finalResult);
+    } catch {
+      const rawNames = Array.isArray(req.body?.fileNames) ? req.body.fileNames : [];
+      const heuristic = inferGradeAndSubjectFromFileNames(
+        rawNames.filter((n: unknown): n is string => typeof n === 'string')
+      );
+      res.json({
+        suggestedGrade: heuristic.grade || '10',
+        suggestedSubject: heuristic.subject || 'auto',
+        source: 'heuristic_fallback',
+      });
     }
   });
 
@@ -747,6 +865,7 @@ export function createApiApp(): express.Express {
         auditLogs,
         singleKeyStatus,
         groqConfigured: isGroqConfigured(),
+        cloudflareConfigured: isCloudflareConfigured(),
         executionLogs: getRecentExecutionLogs(),
         modelCatalog: MODEL_CATALOG,
       });
