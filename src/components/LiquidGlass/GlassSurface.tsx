@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useUiMode } from '../../context/UiModeContext';
 
 interface RippleInstance {
   id: number;
@@ -15,12 +16,9 @@ interface GlassSurfaceProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 /**
- * Liquid Glass container featuring:
- * - Subtle top-edge optical specular sheen
- * - Pointer-relative specular light reflection (disabled on coarse/touch pointers)
- * - Optional concentric water-ripple reaction on click/tap
- * - Refined 2.5px hover lift & border illumination on interactive cards
- * - Proper RAF & timer cleanup with zero pointer interception
+ * Dual-mode surface container:
+ * - Modern (`isEthereal`): Liquid Glass with optical top-edge highlight, cursor light, hover lift, and optional ripple.
+ * - Classic (`!isEthereal`): Clean flat card with 1px hairline border, zero blur, zero cursor light, and zero ripple.
  */
 export const GlassSurface: React.FC<GlassSurfaceProps> = ({
   children,
@@ -32,7 +30,11 @@ export const GlassSurface: React.FC<GlassSurfaceProps> = ({
   onClick,
   ...rest
 }) => {
-  const shouldLift = hoverLift ?? Boolean(enableRipple || onClick);
+  const { isEthereal } = useUiMode();
+  const activeCursorLight = isEthereal && enableCursorLight;
+  const activeRipple = isEthereal && enableRipple;
+  const shouldLift = isEthereal && (hoverLift ?? Boolean(enableRipple || onClick));
+
   const containerRef = useRef<HTMLDivElement>(null);
   const lightRef = useRef<HTMLDivElement>(null);
   const targetPos = useRef({ x: 50, y: 50, active: false });
@@ -42,7 +44,7 @@ export const GlassSurface: React.FC<GlassSurfaceProps> = ({
   const nextRippleId = useRef(0);
 
   useEffect(() => {
-    if (!enableCursorLight) return;
+    if (!activeCursorLight) return;
     const isTouch =
       typeof window !== 'undefined' &&
       (window.matchMedia('(pointer: coarse)').matches ||
@@ -71,10 +73,10 @@ export const GlassSurface: React.FC<GlassSurfaceProps> = ({
       running = false;
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [enableCursorLight]);
+  }, [activeCursorLight]);
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!enableCursorLight || !containerRef.current) return;
+    if (!activeCursorLight || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
     targetPos.current = {
@@ -89,7 +91,7 @@ export const GlassSurface: React.FC<GlassSurfaceProps> = ({
   };
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (enableRipple && containerRef.current) {
+    if (activeRipple && containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
       const id = ++nextRippleId.current;
       const x = e.clientX - rect.left;
@@ -105,27 +107,30 @@ export const GlassSurface: React.FC<GlassSurfaceProps> = ({
   return (
     <div
       ref={containerRef}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
+      onMouseMove={activeCursorLight ? handleMouseMove : undefined}
+      onMouseLeave={activeCursorLight ? handleMouseLeave : undefined}
       onClick={handleClick}
-      className={`relative overflow-hidden transition-[border-color,box-shadow,transform] duration-200 ease-out ${
-        subtle ? 'glass-panel-subtle' : 'glass-surface'
-      } ${shouldLift ? 'glass-card-hover' : ''} ${className}`}
+      className={`relative overflow-hidden ${
+        isEthereal
+          ? 'transition-[border-color,box-shadow,transform] duration-200 ease-out'
+          : 'transition-colors duration-150'
+      } ${subtle ? 'glass-panel-subtle' : 'glass-surface'} ${shouldLift ? 'glass-card-hover' : ''} ${className}`}
       {...rest}
     >
-      {/* Subtle optical top-edge refraction highlight */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-4 top-0 h-px bg-gradient-to-r from-transparent via-white/90 dark:via-sky-200/25 to-transparent z-0"
-      />
-      {enableCursorLight && (
+      {isEthereal && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-4 top-0 h-px bg-gradient-to-r from-transparent via-white/90 dark:via-sky-200/25 to-transparent z-0"
+        />
+      )}
+      {activeCursorLight && (
         <div
           ref={lightRef}
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 z-0 opacity-0 transition-opacity duration-200"
         />
       )}
-      {enableRipple &&
+      {activeRipple &&
         ripples.map((r) => (
           <span
             key={r.id}

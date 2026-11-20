@@ -11,6 +11,12 @@ import {
   Trophy,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useUiMode } from '../context/UiModeContext';
+import {
+  computeNextQuestionIndex,
+  isEditableKeyboardTarget,
+  mapKeyToAbcdChoice,
+} from '../core/answerKeyboard';
 import { generateShuffledExamVariant } from '../core/quizValidation';
 import {
   EXAM_TYPE_LABELS,
@@ -30,6 +36,7 @@ import {
   listUserExamAttempts,
   submitExamAttemptAndSyncLeaderboard,
 } from '../services/firestoreService';
+import { AbcdOptionGrid, TrueFalseOptionList } from './AnswerOptionCards';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { LiquidCard } from './LiquidGlass/LiquidCard';
 import { SlidingTabs } from './LiquidGlass/SlidingTabs';
@@ -55,6 +62,7 @@ function formatClock(totalSeconds: number): string {
 
 export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboard }) => {
   const { user, profile } = useAuth();
+  const { isEthereal } = useUiMode();
   const [exams, setExams] = useState<ExamDocument[]>([]);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
   const [loading, setLoading] = useState(true);
@@ -66,6 +74,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
   // Active exam runner state
   const [activeExam, setActiveExam] = useState<ExamDocument | null>(null);
   const [answersMap, setAnswersMap] = useState<Record<string, ExamQuestionAnswer>>({});
+  const [focusedQuestionIdx, setFocusedQuestionIdx] = useState<number>(0);
   const [secondsLeft, setSecondsLeft] = useState<number>(0);
   const [startedAtMs, setStartedAtMs] = useState<number>(0);
   const [submitting, setSubmitting] = useState(false);
@@ -158,10 +167,55 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
   const startExam = (exam: ExamDocument) => {
     setActiveExam(exam);
     setAnswersMap({});
+    setFocusedQuestionIdx(0);
     setLatestResult(null);
     setSecondsLeft(exam.durationMinutes * 60);
     setStartedAtMs(Date.now());
   };
+
+  // Desktop keyboard shortcuts (1-4 / A-D for focused ABCD question, ArrowUp/ArrowDown to switch question)
+  useEffect(() => {
+    if (!activeExam || latestResult || !isEthereal) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (isEditableKeyboardTarget(document.activeElement as HTMLElement | null)) return;
+
+      const nextIdx = computeNextQuestionIndex(
+        focusedQuestionIdx,
+        e.key,
+        activeExam.questions.length
+      );
+      if (nextIdx !== null) {
+        e.preventDefault();
+        setFocusedQuestionIdx(nextIdx);
+        const targetQ = activeExam.questions[nextIdx];
+        if (targetQ) {
+          document.getElementById(`exam-q-${targetQ.questionId}`)?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center',
+          });
+        }
+        return;
+      }
+
+      const choice = mapKeyToAbcdChoice(e.key);
+      if (!choice) return;
+      const currentQ = activeExam.questions[focusedQuestionIdx];
+      if (!currentQ || currentQ.questionType !== 'abcd') return;
+
+      e.preventDefault();
+      setAnswersMap((prev) => ({
+        ...prev,
+        [currentQ.questionId]: {
+          ...(prev[currentQ.questionId] || { questionId: currentQ.questionId }),
+          selectedOption: choice,
+        },
+      }));
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeExam, latestResult, isEthereal, focusedQuestionIdx]);
 
   const updateAnswer = (qId: string, updater: (prev: ExamQuestionAnswer) => ExamQuestionAnswer) => {
     setAnswersMap((prev) => {
@@ -434,9 +488,16 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
 
         {/* Navigator Grid */}
         <GlassSurface className="rounded-3xl p-4 sm:p-5">
-          <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 mb-2">
-            Sơ đồ câu hỏi ({answeredTotal}/{activeExam.questions.length} đã trả lời)
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 tabular-nums">
+              Sơ đồ câu hỏi ({answeredTotal}/{activeExam.questions.length} đã trả lời)
+            </p>
+            {isEthereal && !latestResult && (
+              <p className="hidden sm:block font-mono text-[11px] text-[#6B7499] dark:text-[#A5B1D8]">
+                Phím tắt: 1–4 / A–D chọn đáp án · ↑/↓ chuyển câu
+              </p>
+            )}
+          </div>
           <div className="flex flex-wrap gap-1.5">
             {activeExam.questions.map((q, idx) => {
               const answered = isQuestionAnswered(q);
@@ -450,13 +511,20 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                   ? 'bg-amber-500 border-amber-500 text-white'
                   : 'bg-rose-600 border-rose-600 text-white';
               } else if (answered) {
-                cls = 'bg-gradient-to-r from-sky-500 to-blue-600 border-sky-500 text-white';
+                cls = isEthereal
+                  ? 'bg-gradient-to-r from-[#4338CA] to-[#6366F1] border-indigo-500 text-white'
+                  : 'bg-sky-700 border-sky-700 text-white';
               }
               return (
                 <a
                   key={q.questionId}
                   href={`#exam-q-${q.questionId}`}
-                  className={`w-8 h-8 rounded-xl border font-mono text-xs font-bold flex items-center justify-center ${cls}`}
+                  onClick={() => setFocusedQuestionIdx(idx)}
+                  className={`size-8 rounded-xl border font-mono text-xs font-bold flex items-center justify-center ${cls} ${
+                    isEthereal && focusedQuestionIdx === idx && !latestResult
+                      ? 'ring-2 ring-indigo-500 ring-offset-1 dark:ring-offset-slate-900'
+                      : ''
+                  }`}
                 >
                   {idx + 1}
                 </a>
@@ -470,15 +538,21 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
           {activeExam.questions.map((q, idx) => {
             const ans = answersMap[q.questionId];
             const bk = latestResult?.attempt.breakdown.find((b) => b.questionId === q.questionId);
+            const isFocused = isEthereal && !latestResult && focusedQuestionIdx === idx;
 
             return (
               <div
                 key={q.questionId}
                 id={`exam-q-${q.questionId}`}
-                className="document-paper rounded-2xl p-5 sm:p-6 space-y-4"
+                onClick={() => setFocusedQuestionIdx(idx)}
+                className={`document-paper rounded-2xl p-5 sm:p-6 space-y-4 transition-[border-color,box-shadow] duration-150 ${
+                  isFocused
+                    ? 'ring-2 ring-indigo-500/35 dark:ring-indigo-400/35 border-indigo-300 dark:border-indigo-500/60'
+                    : ''
+                }`}
               >
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className="font-mono font-semibold text-blue-700 dark:text-blue-400">
+                  <span className="font-mono font-semibold text-blue-700 dark:text-blue-400 tabular-nums">
                     Câu {idx + 1} · {q.scoreWeight} điểm · {COGNITIVE_LABELS[q.cognitiveLevel]} ·{' '}
                     {q.questionType === 'abcd'
                       ? 'Trắc nghiệm 4 lựa chọn'
@@ -488,7 +562,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                   </span>
                   {bk && (
                     <span
-                      className={`font-mono font-bold ${
+                      className={`font-mono font-bold tabular-nums ${
                         bk.isFullCorrect
                           ? 'text-emerald-700 dark:text-emerald-400'
                           : bk.earnedScore > 0
@@ -501,106 +575,46 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                   )}
                 </div>
 
-                <p className="text-sm sm:text-base font-semibold leading-relaxed">
+                <p className="text-sm sm:text-base font-semibold leading-relaxed text-pretty">
                   {q.questionText}
                 </p>
 
                 {q.questionType === 'abcd' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    {(['A', 'B', 'C', 'D'] as const).map((opt) => {
-                      const optText = q[`option${opt}`] || '';
-                      const selected = ans?.selectedOption === opt;
-                      const isRight = q.correctAnswer === opt;
-                      let cls =
-                        'bg-slate-50/70 dark:bg-slate-900/70 border-slate-200 dark:border-slate-700 hover:border-blue-400';
-                      if (latestResult) {
-                        if (isRight)
-                          cls =
-                            'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-500 text-emerald-950 dark:text-emerald-200 font-semibold';
-                        else if (selected)
-                          cls =
-                            'bg-rose-50 dark:bg-rose-950/60 border-rose-500 text-rose-950 dark:text-rose-200';
-                      } else if (selected) {
-                        cls =
-                          'bg-blue-50 dark:bg-blue-950/60 border-blue-500 text-blue-950 dark:text-blue-200 font-semibold';
-                      }
-
-                      return (
-                        <button
-                          key={opt}
-                          type="button"
-                          disabled={Boolean(latestResult)}
-                          onClick={() =>
-                            updateAnswer(q.questionId, (prev) => ({
-                              ...prev,
-                              selectedOption: opt,
-                            }))
-                          }
-                          className={`text-left px-4 py-3 rounded-xl border text-xs sm:text-sm flex items-start gap-2 cursor-pointer disabled:cursor-default ${cls}`}
-                        >
-                          <span className="font-mono font-bold">{opt}.</span>
-                          <span>{optText}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <AbcdOptionGrid
+                    options={(['A', 'B', 'C', 'D'] as const).map((opt) => ({
+                      key: opt,
+                      text: q[`option${opt}`] || '',
+                    }))}
+                    selectedOption={ans?.selectedOption}
+                    correctOption={q.correctAnswer}
+                    isGraded={Boolean(latestResult)}
+                    showShortcutHints={isFocused}
+                    onSelect={(choice) => {
+                      setFocusedQuestionIdx(idx);
+                      updateAnswer(q.questionId, (prev) => ({
+                        ...prev,
+                        selectedOption: choice,
+                      }));
+                    }}
+                  />
                 )}
 
                 {q.questionType === 'true_false' && q.trueFalseStatements && (
-                  <div className="space-y-2.5">
-                    {q.trueFalseStatements.map((stmt) => {
-                      const chosen = ans?.trueFalseChoices?.[stmt.label];
-                      return (
-                        <div
-                          key={stmt.label}
-                          className="rounded-xl border border-slate-200 dark:border-slate-700 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs sm:text-sm"
-                        >
-                          <p>
-                            <strong className="font-mono">{stmt.label})</strong> {stmt.text}
-                          </p>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {[
-                              { val: true, label: 'Đúng' },
-                              { val: false, label: 'Sai' },
-                            ].map((btn) => (
-                              <button
-                                key={btn.label}
-                                type="button"
-                                disabled={Boolean(latestResult)}
-                                onClick={() =>
-                                  updateAnswer(q.questionId, (prev) => ({
-                                    ...prev,
-                                    trueFalseChoices: {
-                                      ...(prev.trueFalseChoices || {}),
-                                      [stmt.label]: btn.val,
-                                    },
-                                  }))
-                                }
-                                className={`px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer ${
-                                  chosen === btn.val
-                                    ? 'bg-blue-600 text-white border-blue-600'
-                                    : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700'
-                                }`}
-                              >
-                                {btn.label}
-                              </button>
-                            ))}
-                            {latestResult && (
-                              <span
-                                className={`font-mono text-xs font-bold ${
-                                  chosen === stmt.isTrue
-                                    ? 'text-emerald-600 dark:text-emerald-400'
-                                    : 'text-rose-600 dark:text-rose-400'
-                                }`}
-                              >
-                                ({stmt.isTrue ? 'Đúng' : 'Sai'})
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <TrueFalseOptionList
+                    statements={q.trueFalseStatements}
+                    choices={ans?.trueFalseChoices}
+                    isGraded={Boolean(latestResult)}
+                    onChoose={(stmtLabel, val) => {
+                      setFocusedQuestionIdx(idx);
+                      updateAnswer(q.questionId, (prev) => ({
+                        ...prev,
+                        trueFalseChoices: {
+                          ...(prev.trueFalseChoices || {}),
+                          [stmtLabel]: val,
+                        },
+                      }));
+                    }}
+                  />
                 )}
 
                 {q.questionType === 'short_answer' && (

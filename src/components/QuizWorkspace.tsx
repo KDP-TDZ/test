@@ -12,6 +12,12 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useUiMode } from '../context/UiModeContext';
+import {
+  computeNextQuestionIndex,
+  isEditableKeyboardTarget,
+  mapKeyToAbcdChoice,
+} from '../core/answerKeyboard';
 import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import {
   SUBJECT_LABELS,
@@ -34,6 +40,7 @@ import {
   saveWrongAnswerToPracticeBank,
   submitFeedback,
 } from '../services/firestoreService';
+import { AbcdOptionGrid } from './AnswerOptionCards';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
@@ -63,6 +70,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
 }) => {
   const quizRef = useRef<HTMLDivElement>(null);
   const { user, systemStatus } = useAuth();
+  const { isEthereal } = useUiMode();
   const [savedQuizSets, setSavedQuizSets] = useState<QuizSet[]>([]);
   const [activeQuiz, setActiveQuiz] = useState<QuizSet | null>(null);
 
@@ -79,6 +87,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
   // Active quiz runner state
   const [sessionId] = useState(() => `sess_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
   const [answers, setAnswers] = useState<Record<string, 'A' | 'B' | 'C' | 'D'>>({});
+  const [focusedQuestionIdx, setFocusedQuestionIdx] = useState<number>(0);
   const [lastAnsweredId, setLastAnsweredId] = useState<string | null>(null);
   const [submittingQuestionId, setSubmittingQuestionId] = useState<string | null>(null);
   const [savedWrongCount, setSavedWrongCount] = useState(0);
@@ -249,6 +258,45 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
       }
     }
   );
+
+  // Desktop keyboard shortcuts in Modern mode (1-4 / A-D to answer focused question, ↑/↓ to switch question)
+  useEffect(() => {
+    if (!activeQuiz || !isEthereal) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (isEditableKeyboardTarget(document.activeElement as HTMLElement | null)) return;
+
+      const nextIdx = computeNextQuestionIndex(
+        focusedQuestionIdx,
+        e.key,
+        activeQuiz.questions.length
+      );
+      if (nextIdx !== null) {
+        e.preventDefault();
+        setFocusedQuestionIdx(nextIdx);
+        const targetQ = activeQuiz.questions[nextIdx];
+        if (targetQ) {
+          document.getElementById(`quiz-q-${targetQ.questionId}`)?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center',
+          });
+        }
+        return;
+      }
+
+      const choice = mapKeyToAbcdChoice(e.key);
+      if (!choice) return;
+      const currentQ = activeQuiz.questions[focusedQuestionIdx];
+      if (!currentQ || answers[currentQ.questionId] || submittingQuestionId === currentQ.questionId) {
+        return;
+      }
+      e.preventDefault();
+      void handleSelectOption(currentQ, choice);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeQuiz, isEthereal, focusedQuestionIdx, answers, submittingQuestionId, handleSelectOption]);
 
   const handleToggleFlag = async (question: QuizQuestion) => {
     if (!user) return;
@@ -536,6 +584,11 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                 Mở Ngân hàng luyện tập
               </WaterRippleButton>
             )}
+            {isEthereal && (
+              <p className="hidden sm:block w-full font-mono text-[11px] text-[#6B7499] dark:text-[#A5B1D8] pt-1">
+                Phím tắt: 1–4 / A–D chọn đáp án cho câu đang chọn · ↑/↓ chuyển câu
+              </p>
+            )}
           </GlassSurface>
 
           <div className="space-y-4">
@@ -545,6 +598,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
               const isCorrect = chosen === q.correctAnswer;
               const isFlagged = Boolean(flaggedMap[q.questionId]);
               const isReporting = reportingQuestionId === q.questionId;
+              const isFocused = isEthereal && focusedQuestionIdx === idx;
               const options: Array<{ key: 'A' | 'B' | 'C' | 'D'; text: string }> = [
                 { key: 'A', text: q.optionA },
                 { key: 'B', text: q.optionB },
@@ -553,15 +607,24 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
               ];
 
               return (
-                <GlassSurface key={q.questionId} className="quiz-question-card rounded-3xl p-4 sm:p-6 space-y-4">
+                <GlassSurface
+                  key={q.questionId}
+                  id={`quiz-q-${q.questionId}`}
+                  onClick={() => setFocusedQuestionIdx(idx)}
+                  className={`quiz-question-card rounded-3xl p-4 sm:p-6 space-y-4 ${
+                    isFocused
+                      ? 'ring-2 ring-indigo-500/35 dark:ring-indigo-400/35'
+                      : ''
+                  }`}
+                >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="space-y-1 flex-1 min-w-[220px]">
-                      <p className="text-xs font-mono text-sky-700 dark:text-sky-400 font-semibold">
+                      <p className="text-xs font-mono text-sky-700 dark:text-sky-400 font-semibold tabular-nums">
                         Câu {idx + 1} · {q.chapter} · {q.concept}
                         {q.cognitiveLevel ? ` · ${COGNITIVE_LABELS[q.cognitiveLevel]}` : ''}
                         {q.isExternalAdvanced ? ' · Nâng cao mở rộng' : ''}
                       </p>
-                      <h3 className="text-sm sm:text-base font-semibold text-[#16243E] dark:text-[#E6EFFC] leading-[1.6]">
+                      <h3 className="text-sm sm:text-base font-semibold text-[#16243E] dark:text-[#E6EFFC] leading-[1.6] text-pretty">
                         {q.questionText}
                       </h3>
                     </div>
@@ -623,54 +686,18 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                     </div>
                   )}
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    {options.map((opt) => {
-                      const isThisChosen = chosen === opt.key;
-                      const isThisCorrect = q.correctAnswer === opt.key;
-
-                      let btnStyle =
-                        'glass-control text-[#16243E] dark:text-[#E6EFFC]';
-                      if (isAnswered) {
-                        if (isThisCorrect) {
-                          btnStyle =
-                            'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-400 dark:border-emerald-700 text-emerald-950 dark:text-emerald-200 font-semibold';
-                        } else if (isThisChosen && !isThisCorrect) {
-                          btnStyle =
-                            'bg-rose-50 dark:bg-rose-950/60 border-rose-400 dark:border-rose-700 text-rose-950 dark:text-rose-200';
-                        } else {
-                          btnStyle =
-                            'bg-white/50 dark:bg-slate-900/40 border-sky-200/50 dark:border-slate-800 text-slate-500 dark:text-slate-400';
-                        }
-                      }
-
-                      return (
-                        <button
-                          key={opt.key}
-                          type="button"
-                          disabled={isAnswered || submittingQuestionId === q.questionId}
-                          onClick={(e) => handleSelectOption(q, opt.key, e.currentTarget)}
-                          className={`min-h-[44px] text-left px-3.5 sm:px-4 py-3 rounded-xl border text-xs sm:text-sm transition-colors flex items-start justify-between gap-2.5 cursor-pointer disabled:cursor-default ${btnStyle}`}
-                        >
-                          <span className="flex items-start gap-2.5">
-                            <span className="font-mono font-bold shrink-0">{opt.key}.</span>
-                            <span>{opt.text}</span>
-                          </span>
-                          {isAnswered && isThisCorrect && (
-                            <CheckCircle2
-                              aria-label="Đáp án đúng"
-                              className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5"
-                            />
-                          )}
-                          {isAnswered && isThisChosen && !isThisCorrect && (
-                            <XCircle
-                              aria-label="Lựa chọn chưa đúng"
-                              className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5"
-                            />
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <AbcdOptionGrid
+                    options={options}
+                    selectedOption={chosen}
+                    correctOption={q.correctAnswer}
+                    isGraded={isAnswered}
+                    disabled={submittingQuestionId === q.questionId}
+                    showShortcutHints={isFocused && !isAnswered}
+                    onSelect={(choice, btnEl) => {
+                      setFocusedQuestionIdx(idx);
+                      void handleSelectOption(q, choice, btnEl);
+                    }}
+                  />
 
                   {isAnswered && (
                     <div

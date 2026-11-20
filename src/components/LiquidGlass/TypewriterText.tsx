@@ -88,9 +88,10 @@ export const TypewriterText: React.FC<TypewriterTextProps> = ({
       aria-label={text}
       className={`relative inline-block max-w-full align-top ${className}`}
     >
-      {/* Invisible shadow text guarantees zero layout shift (CLS = 0) */}
+      {/* Invisible shadow text + caret spacer guarantees zero layout shift and prevents caret line-wrap */}
       <span aria-hidden="true" className="invisible select-none">
         {text}
+        <span className="inline-block ml-0.5 w-[2px] h-[1.05em] align-[-0.12em]" />
       </span>
 
       {/* Live typed overlay */}

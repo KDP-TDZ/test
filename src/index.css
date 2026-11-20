@@ -722,6 +722,133 @@ html.dark .ethereal-dock {
   animation: ethereal-orbit-rev 10.5s ease-in-out infinite;
 }
 
+/* === Classic Academic Minimal Mode (UI Mode 1 — Flat Paper-Clean) === */
+html[data-ui-mode="classic"] {
+  background-color: #F8FAFC;
+  color: #0F172A;
+}
+
+html.dark[data-ui-mode="classic"] {
+  background-color: #0F172A;
+  color: #F1F5F9;
+}
+
+html[data-ui-mode="classic"] .glass-surface,
+html[data-ui-mode="classic"] .liquid-card-glass {
+  background: #FFFFFF;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid #E2E8F0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+html.dark[data-ui-mode="classic"] .glass-surface,
+html.dark[data-ui-mode="classic"] .liquid-card-glass {
+  background: #111C2E;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid #1E293B;
+  box-shadow: none;
+}
+
+html[data-ui-mode="classic"] .glass-panel-subtle,
+html[data-ui-mode="classic"] .document-paper {
+  background: #F8FAFC;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid #E2E8F0;
+  box-shadow: none;
+}
+
+html.dark[data-ui-mode="classic"] .glass-panel-subtle,
+html.dark[data-ui-mode="classic"] .document-paper {
+  background: #0F172A;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid #1E293B;
+  box-shadow: none;
+}
+
+html[data-ui-mode="classic"] .glass-nav {
+  background: #FFFFFF;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: 1px solid #E2E8F0;
+  box-shadow: none;
+}
+
+html.dark[data-ui-mode="classic"] .glass-nav {
+  background: #0F172A;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-bottom: 1px solid #1E293B;
+  box-shadow: none;
+}
+
+html[data-ui-mode="classic"] .glass-control,
+html[data-ui-mode="classic"] .glass-segment {
+  background: #FFFFFF;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid #CBD5E1;
+  box-shadow: none;
+  color: #0F172A;
+}
+
+html.dark[data-ui-mode="classic"] .glass-control,
+html.dark[data-ui-mode="classic"] .glass-segment {
+  background: #1E293B;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid #334155;
+  box-shadow: none;
+  color: #F1F5F9;
+}
+
+html[data-ui-mode="classic"] button.glass-control:hover:not(:disabled),
+html[data-ui-mode="classic"] label.glass-control:hover {
+  transform: none;
+  background: #F1F5F9;
+  border-color: #94A3B8;
+  box-shadow: none;
+}
+
+html.dark[data-ui-mode="classic"] button.glass-control:hover:not(:disabled),
+html.dark[data-ui-mode="classic"] label.glass-control:hover {
+  transform: none;
+  background: #334155;
+  border-color: #475569;
+  box-shadow: none;
+}
+
+html[data-ui-mode="classic"] .glass-card-hover:hover {
+  transform: none;
+  border-color: #94A3B8;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+}
+
+html.dark[data-ui-mode="classic"] .glass-card-hover:hover {
+  transform: none;
+  border-color: #475569;
+  box-shadow: none;
+}
+
+html[data-ui-mode="classic"] .ui-switcher-track {
+  background: #F1F5F9;
+  border: 1px solid #CBD5E1;
+  box-shadow: none;
+}
+
+html.dark[data-ui-mode="classic"] .ui-switcher-track {
+  background: #1E293B;
+  border: 1px solid #334155;
+  box-shadow: none;
+}
+
+html[data-ui-mode="classic"] .hero-float-slow {
+  animation: none;
+}
+
 @media (prefers-reduced-transparency: reduce) {
   .glass-surface,
   .liquid-card-glass,

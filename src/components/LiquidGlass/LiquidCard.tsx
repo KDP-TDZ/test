@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { useUiMode } from '../../context/UiModeContext';
 import { gsap, MOTION_ALLOWED_MEDIA, REDUCED_MOTION_MEDIA, useGSAP } from '../../lib/gsapSetup';
 
 interface RippleInstance {
@@ -15,8 +16,9 @@ export interface LiquidCardProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 /**
- * LiquidCard: Custom Liquid Glass wrapper combining multi-layer glassmorphism CSS
- * with GSAP pointer-responsive specular sheen, gentle 3D liquid tilt, and lift.
+ * Dual-mode card wrapper:
+ * - Modern (`isEthereal`): multi-layer glassmorphism with GSAP pointer specular sheen, gentle 3D tilt, and lift.
+ * - Classic (`!isEthereal`): clean flat bordered card with zero tilt, zero specular orb, and zero ripple.
  */
 export const LiquidCard: React.FC<LiquidCardProps> = ({
   children,
@@ -30,6 +32,7 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
   onMouseLeave,
   ...rest
 }) => {
+  const { isEthereal } = useUiMode();
   const cardRef = useRef<HTMLDivElement>(null);
   const sheenRef = useRef<HTMLDivElement>(null);
   const pointerMotionEnabledRef = useRef(false);
@@ -38,6 +41,10 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
 
   const { contextSafe } = useGSAP(
     () => {
+      if (!isEthereal) {
+        pointerMotionEnabledRef.current = false;
+        return;
+      }
       const mm = gsap.matchMedia();
       mm.add(`${MOTION_ALLOWED_MEDIA} and (hover: hover) and (pointer: fine)`, () => {
         pointerMotionEnabledRef.current = true;
@@ -49,12 +56,12 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
         pointerMotionEnabledRef.current = false;
       });
     },
-    { scope: cardRef }
+    { scope: cardRef, dependencies: [isEthereal] }
   );
 
   const handleMouseEnter = contextSafe((e: React.MouseEvent<HTMLDivElement>) => {
     onMouseEnter?.(e);
-    if (!pointerMotionEnabledRef.current || !cardRef.current) return;
+    if (!isEthereal || !pointerMotionEnabledRef.current || !cardRef.current) return;
 
     const rect = cardRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -84,7 +91,7 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
 
   const handleMouseMove = contextSafe((e: React.MouseEvent<HTMLDivElement>) => {
     onMouseMove?.(e);
-    if (!pointerMotionEnabledRef.current || !cardRef.current) return;
+    if (!isEthereal || !pointerMotionEnabledRef.current || !cardRef.current) return;
 
     const rect = cardRef.current.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
@@ -119,7 +126,7 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
 
   const handleMouseLeave = contextSafe((e: React.MouseEvent<HTMLDivElement>) => {
     onMouseLeave?.(e);
-    if (!pointerMotionEnabledRef.current || !cardRef.current) return;
+    if (!isEthereal || !pointerMotionEnabledRef.current || !cardRef.current) return;
 
     gsap.to(cardRef.current, {
       y: 0,
@@ -144,7 +151,7 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
   });
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (enableRipple && cardRef.current) {
+    if (isEthereal && enableRipple && cardRef.current) {
       const rect = cardRef.current.getBoundingClientRect();
       const id = ++nextRippleId.current;
       const x = e.clientX ? e.clientX - rect.left : rect.width / 2;
@@ -160,27 +167,29 @@ export const LiquidCard: React.FC<LiquidCardProps> = ({
   return (
     <div
       ref={cardRef}
-      onMouseEnter={handleMouseEnter}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
+      onMouseEnter={isEthereal ? handleMouseEnter : onMouseEnter}
+      onMouseMove={isEthereal ? handleMouseMove : onMouseMove}
+      onMouseLeave={isEthereal ? handleMouseLeave : onMouseLeave}
       onClick={handleClick}
       className={`liquid-card-glass relative overflow-hidden ${className}`}
       {...rest}
     >
-      {/* Top optical refraction edge highlight */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-5 top-0 h-px bg-gradient-to-r from-transparent via-white/95 dark:via-sky-200/35 to-transparent z-0"
-      />
+      {isEthereal && (
+        <>
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-5 top-0 h-px bg-gradient-to-r from-transparent via-white/95 dark:via-sky-200/35 to-transparent z-0"
+          />
+          <div
+            ref={sheenRef}
+            aria-hidden="true"
+            className="liquid-card-specular pointer-events-none absolute -top-24 -left-24 h-48 w-48 rounded-full opacity-0 z-0"
+          />
+        </>
+      )}
 
-      {/* Pointer-following liquid specular orb (compositor x/y/scale/autoAlpha only) */}
-      <div
-        ref={sheenRef}
-        aria-hidden="true"
-        className="liquid-card-specular pointer-events-none absolute -top-24 -left-24 h-48 w-48 rounded-full opacity-0 z-0"
-      />
-
-      {enableRipple &&
+      {isEthereal &&
+        enableRipple &&
         ripples.map((r) => (
           <span
             key={r.id}

@@ -6,39 +6,14 @@ export const AmbientCanvas: React.FC<{ children: React.ReactNode }> = ({ childre
 
   if (!isEthereal) {
     return (
-      <div className="relative min-h-screen overflow-x-clip bg-gradient-to-br from-[#EEF5FF] via-[#F5F9FF] to-[#E6F1FE] dark:from-[#09111E] dark:via-[#0B1526] dark:to-[#0E1A2F] text-[#16243E] dark:text-[#E6EFFC] transition-colors duration-300">
-        {/* Serene depth-of-field pastel light-blue ambient backdrop (Classic UI) */}
-        <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
-          <div
-            className="absolute -top-36 -left-28 h-[340px] w-[340px] sm:h-[540px] sm:w-[540px] rounded-full opacity-60 dark:opacity-25 blur-2xl sm:blur-3xl"
-            style={{
-              background:
-                'radial-gradient(circle, rgba(125,211,252,0.48) 0%, rgba(147,197,253,0.20) 52%, transparent 76%)',
-            }}
-          />
-          <div
-            className="absolute top-1/5 -right-24 h-[300px] w-[300px] sm:h-[500px] sm:w-[500px] rounded-full opacity-50 dark:opacity-20 blur-2xl sm:blur-3xl"
-            style={{
-              background:
-                'radial-gradient(circle, rgba(147,197,253,0.44) 0%, rgba(186,230,253,0.18) 55%, transparent 78%)',
-            }}
-          />
-          <div
-            className="hidden sm:block absolute -bottom-44 left-1/3 h-[480px] w-[480px] rounded-full opacity-45 dark:opacity-20 blur-3xl"
-            style={{
-              background:
-                'radial-gradient(circle, rgba(186,230,253,0.48) 0%, rgba(224,242,254,0.20) 58%, transparent 80%)',
-            }}
-          />
-        </div>
-
-        <div className="relative z-10 min-h-screen flex flex-col">{children}</div>
+      <div className="relative min-h-dvh overflow-x-clip bg-[#F8FAFC] dark:bg-[#0F172A] text-[#0F172A] dark:text-[#F1F5F9]">
+        <div className="relative z-10 min-h-dvh flex flex-col">{children}</div>
       </div>
     );
   }
 
   return (
-    <div className="relative min-h-screen overflow-x-clip bg-gradient-to-br from-[#DFE4FF] via-[#ECEFFF] to-[#F2E6FF] dark:from-[#080B1A] dark:via-[#0F132B] dark:to-[#161336] text-[#171B3A] dark:text-[#EEF1FF] transition-colors duration-300">
+    <div className="relative min-h-dvh overflow-x-clip bg-gradient-to-br from-[#DFE4FF] via-[#ECEFFF] to-[#F2E6FF] dark:from-[#080B1A] dark:via-[#0F132B] dark:to-[#161336] text-[#171B3A] dark:text-[#EEF1FF] transition-colors duration-300">
       {/* Dreamy Ethereal Liquid Glass & Floating 3D-inspired Geometric Ornaments */}
       <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
         {/* Soft aurora depth spheres */}
@@ -77,7 +52,7 @@ export const AmbientCanvas: React.FC<{ children: React.ReactNode }> = ({ childre
         <div className="hidden xl:block ethereal-orbit-reverse absolute bottom-8 right-16 w-12 h-12 rounded-xl bg-gradient-to-tr from-fuchsia-600/75 via-purple-500/70 to-pink-300/80 dark:from-fuchsia-500/45 dark:via-purple-500/40 dark:to-pink-400/45 shadow-[0_12px_28px_-6px_rgba(192,38,211,0.45)] rotate-45 opacity-80" />
       </div>
 
-      <div className="relative z-10 min-h-screen flex flex-col">{children}</div>
+      <div className="relative z-10 min-h-dvh flex flex-col">{children}</div>
     </div>
   );
 };

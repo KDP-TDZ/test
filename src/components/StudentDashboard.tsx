@@ -12,6 +12,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useUiMode } from '../context/UiModeContext';
 import { SUBJECT_LABELS, type AnalysisRecord, type GradeLevel, type PracticeItem, type SubjectId } from '../core/types';
 import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
 import { updateUserPreferences } from '../services/firestoreService';
@@ -37,6 +38,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   onNavigate,
 }) => {
   const { user, profile, refreshProfile } = useAuth();
+  const { isEthereal } = useUiMode();
   const dashboardRef = useRef<HTMLDivElement>(null);
   const [editingProfile, setEditingProfile] = useState(false);
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
@@ -85,7 +87,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
   useGSAP(
     () => {
-      if (loading) return;
+      if (loading || !isEthereal) return;
       const mm = gsap.matchMedia();
       mm.add(MOTION_ALLOWED_MEDIA, () => {
         gsap.from('.dashboard-card', {
@@ -98,12 +100,12 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         });
       });
     },
-    { scope: dashboardRef, dependencies: [loading, analyses.length === 0 && practiceItems.length === 0] }
+    { scope: dashboardRef, dependencies: [loading, isEthereal, analyses.length === 0 && practiceItems.length === 0] }
   );
 
   useGSAP(
     () => {
-      if (!editingProfile) return;
+      if (!editingProfile || !isEthereal) return;
       const mm = gsap.matchMedia();
       mm.add(MOTION_ALLOWED_MEDIA, () => {
         gsap.from('.profile-editor-panel', {
@@ -115,7 +117,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         });
       });
     },
-    { scope: dashboardRef, dependencies: [editingProfile] }
+    { scope: dashboardRef, dependencies: [editingProfile, isEthereal] }
   );
 
   return (
@@ -204,9 +206,11 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                       key={sub}
                       type="button"
                       onClick={() => togglePreferredSubject(sub)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all cursor-pointer ${
+                      className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-colors cursor-pointer ${
                         active
-                          ? 'bg-gradient-to-b from-sky-500 to-blue-600 text-white shadow-xs'
+                          ? isEthereal
+                            ? 'bg-gradient-to-b from-sky-500 to-blue-600 text-white shadow-xs'
+                            : 'bg-sky-700 text-white border border-sky-700'
                           : 'glass-control'
                       }`}
                     >

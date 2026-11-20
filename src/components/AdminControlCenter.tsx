@@ -1011,22 +1011,19 @@ export const AdminControlCenter: React.FC = () => {
 
   const handleInsertRawSample = () => {
     const sample = [
-      'Q1:Ai là người giỏi nhất trong bài kiểm tra thử?:A. Nguyễn An:B. Trần Bình:C. Lê Chi:D. Phạm Dũng:Đáp án: B',
-      'Q2:Thủ đô của Việt Nam là thành phố nào?:A. TP. Hồ Chí Minh:B. Hà Nội:C. Đà Nẵng:D. Cần Thơ:B',
-      'Q3:Giá trị của biểu thức 2x + 3 tại x = 4 là bao nhiêu?:A. 9:B. 10:C. 11:D. 12:Đáp án: C',
-      'Q4:Nguyên tố hóa học nào có ký hiệu là Fe?:A. Đồng:B. Sắt:C. Nhôm:D. Kẽm:Đáp án: B',
-      'Q5:Kết quả của phép tính 15 x 4 bằng bao nhiêu?:Đáp án: 60',
-      'Q6:Nước tinh khiết sôi ở nhiệt độ bao nhiêu độ C (ở áp suất 1 atm)?',
-      'A. 80 độ C',
-      'B. 90 độ C',
-      '*C. 100 độ C',
-      'D. 120 độ C',
+      'Câu 1:Liên kết hydrogen chỉ hình thành mạnh nhất giữa nguyên tử H với các nguyên tử có độ âm điện lớn nào sau đây?:F, O, N:C, Si, P:Na, K, Ca:He, Ne, Ar:A:Hợp chất chứa F, O, N phân cực liên kết với H đủ mạnh để tạo liên kết hydrogen.',
+      'Câu 2:Thủ đô của nước Việt Nam là thành phố nào?:Thành phố Hồ Chí Minh:*Hà Nội:Đà Nẵng:Hải Phòng:Đáp án là Hà Nội.',
+      'Giá trị của biểu thức 2x + 5 tại x = 3 bằng bao nhiêu?:9:10:11:12:C',
+      '[ĐS] Xét các nhận định sau về cấu tạo nguyên tử và bảng tuần hoàn:|a) Hạt nhân nguyên tử chứa proton và neutron (trừ H-1).|b) Nguyên tử trung hòa điện có số proton bằng số electron.|c) Các nguyên tố cùng chu kỳ có cùng số electron lớp ngoài cùng.|d) Độ âm điện nhóm A thường tăng từ trái sang phải trong cùng chu kỳ.:Đ-Đ-S-Đ:Ý c sai vì cùng chu kỳ có cùng số lớp electron.',
+      '[ĐS] Cho hàm số y = x^2 - 4x + 3.|*a) Đồ thị là parabol có bề lõm hướng lên trên.|*b) Trục đối xứng là đường thẳng x = 2.|c) Giá trị nhỏ nhất của hàm số bằng 1.|*d) Phương trình x^2 - 4x + 3 = 0 có hai nghiệm x = 1 và x = 3.',
+      '[TLN] Kết quả của phép tính 25 x 4 + 12 bằng bao nhiêu?:112',
+      '[TLN] Hình chữ nhật dài 8,5 cm, rộng 4 cm có diện tích bao nhiêu cm²?:34 | 34,0 | 34 cm2',
     ].join('\n');
     setRawTextFiles([]);
     setRawTextInput(sample);
-    setRawQuestionsPerExam(3);
+    setRawQuestionsPerExam(4);
     setError(null);
-    setNotice('Đã chèn dữ liệu mẫu định dạng chữ thô. Bạn có thể chỉnh sửa hoặc bấm tạo ngay nhiều bộ đề.');
+    setNotice('Đã chèn dữ liệu mẫu đủ 3 dạng (ABCD rút gọn, Đúng/Sai 4 ý, Trả lời ngắn). Bạn có thể chỉnh sửa hoặc tạo đề ngay.');
   };
 
   const handleGenerateRawBatch = () => {
@@ -2414,8 +2411,8 @@ export const AdminControlCenter: React.FC = () => {
                         Tạo nhiều bộ đề từ tệp / văn bản câu hỏi &amp; đáp án thô
                       </h2>
                       <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] mt-1 leading-[1.6]">
-                        Hỗ trợ kiểu viết liền trên 1 dòng (<code className="font-mono">Q1:Câu hỏi:A. ...:B. ...:C. ...:D. ...:Đáp án: B</code>),
-                        nhiều dòng, đánh dấu <code className="font-mono">*A.</code> hoặc bảng đáp án ở cuối tệp. Tự động chia hoặc trộn thành nhiều bộ đề cùng lúc.
+                        Hỗ trợ đủ 3 dạng GDPT 2018: ABCD rút gọn (<code className="font-mono">Câu hỏi:A:B:C:D:Đáp án</code> hoặc <code className="font-mono">*Đáp án</code>),
+                        Đúng/Sai 4 ý (<code className="font-mono">[ĐS] ... | a)... | b)... | c)... | d)... : Đ-Đ-S-Đ</code>), Trả lời ngắn (<code className="font-mono">[TLN] ...:đáp số</code>) và bảng <code className="font-mono">.csv / .tsv</code>.
                       </p>
                     </div>
                     <button
@@ -2633,20 +2630,25 @@ export const AdminControlCenter: React.FC = () => {
                         setRawTextInput(e.target.value);
                         if (rawTextFiles.length > 0) setRawTextFiles([]);
                       }}
-                      placeholder={'Ví dụ:\nQ1:Ai là người giỏi?:A. An:B. Bình:C. Chi:D. Dũng:Đáp án: B\nQ2:Thủ đô Việt Nam là gì?:A. TP.HCM:B. Hà Nội:C. Đà Nẵng:D. Huế:B'}
+                      placeholder={'Ví dụ:\nCâu 1:Thủ đô Việt Nam là gì?:TP.HCM:*Hà Nội:Đà Nẵng:Huế\n[ĐS] Xét các mệnh đề:|a) Ý 1|b) Ý 2|c) Ý 3|d) Ý 4:Đ-Đ-S-Đ\n[TLN] Tính 15 x 4?:60 | 60,0'}
                       className={`${INPUT_CLASS} font-mono leading-relaxed`}
                     />
 
                     {/* Live Parse Stats */}
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <div className="flex flex-wrap items-center gap-3 font-mono tabular-nums">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono tabular-nums">
                         <span className="font-semibold text-sky-700 dark:text-sky-300">
                           Nhận diện: {rawParsedPreview.questions.length} câu
                         </span>
                         <span className="text-[#475B78] dark:text-[#B4C7E2]">
-                          ABCD: {rawParsedPreview.abcdCount} · Trả lời ngắn: {rawParsedPreview.shortAnswerCount} · Có đáp án:{' '}
+                          Trắc nghiệm ABCD: {rawParsedPreview.abcdCount} · Đúng/Sai 4 ý: {rawParsedPreview.trueFalseCount} · Trả lời ngắn: {rawParsedPreview.shortAnswerCount} · Có đáp án:{' '}
                           {rawParsedPreview.answeredCount}/{rawParsedPreview.questions.length}
                         </span>
+                        {rawParsedPreview.questions.length - rawParsedPreview.answeredCount > 0 && (
+                          <span className="font-semibold text-amber-700 dark:text-amber-300">
+                            · Cần kiểm tra đáp án: {rawParsedPreview.questions.length - rawParsedPreview.answeredCount}
+                          </span>
+                        )}
                       </div>
                       <div className="flex flex-wrap items-center gap-4 text-xs text-slate-700 dark:text-slate-300">
                         <label className="inline-flex items-center gap-1.5 cursor-pointer">

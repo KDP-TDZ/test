@@ -265,6 +265,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
 
   useGSAP(
     () => {
+      if (!isEthereal) return;
       const mm = gsap.matchMedia();
       mm.add(MOTION_ALLOWED_MEDIA, () => {
         const tl = gsap.timeline({ defaults: { ease: 'power3.out' } });
@@ -299,7 +300,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
           );
       });
     },
-    { scope: pageRef }
+    { scope: pageRef, dependencies: [isEthereal] }
   );
 
   const handleSelectSpecimen = (id: string) => {
@@ -485,16 +486,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                     : 'text-sky-700 dark:text-sky-400'
                 }`}
               >
-                <TypewriterText
-                  text="Nền tảng kiểm chứng học tập THPT · Lớp 10 · 11 · 12"
-                  charIntervalMs={28}
-                  startDelayMs={160}
-                  caretClassName={
-                    isEthereal
-                      ? 'bg-indigo-600 dark:bg-indigo-300'
-                      : 'bg-sky-700 dark:bg-sky-400'
-                  }
-                />
+                {isEthereal ? (
+                  <TypewriterText
+                    text="Nền tảng kiểm chứng học tập THPT · Lớp 10 · 11 · 12"
+                    charIntervalMs={28}
+                    startDelayMs={160}
+                    caretClassName="bg-indigo-600 dark:bg-indigo-300"
+                  />
+                ) : (
+                  'Nền tảng kiểm chứng học tập THPT · Lớp 10 · 11 · 12'
+                )}
               </p>
 
               <h1 className="hero-stagger font-display text-[clamp(1.9rem,4.5vw,3.15rem)] font-bold tracking-[-0.025em] text-[#16243E] dark:text-[#E6EFFC] leading-[1.14] text-balance">
@@ -567,101 +568,137 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
               </div>
             </div>
 
-            {/* Right Column: Existing Hero Prism Illustration + React/CSS Verification Preview Layer */}
+            {/* Right Column: Hero Prism Illustration (Clean flat card in Classic, Glass + Overlay Cards in Modern) */}
             <div className="hero-visual lg:col-span-6">
-              <GlassSurface
-                enableRipple
-                hoverLift={false}
-                className="h-full rounded-3xl p-2.5 sm:p-3 flex flex-col"
-              >
-                <div className="relative w-full h-full min-h-[320px] sm:min-h-[410px] lg:min-h-[440px] rounded-2xl overflow-hidden bg-gradient-to-br from-sky-50 via-white to-sky-100/70 dark:from-slate-900 dark:via-[#111C2E] dark:to-slate-900">
-                  {!heroImgError ? (
-                    <img
-                      src={heroPrismImage}
-                      alt="Minh họa lăng kính quang học Liquid Glass tượng trưng cho sự đối chiếu kiến thức trong sáng và chính xác"
-                      referrerPolicy="no-referrer"
-                      onError={() => setHeroImgError(true)}
-                      className="w-full h-full object-cover"
+              {isEthereal ? (
+                <GlassSurface
+                  enableRipple
+                  hoverLift={false}
+                  className="h-full rounded-3xl p-2.5 sm:p-3 flex flex-col"
+                >
+                  <div className="relative w-full h-full min-h-[320px] sm:min-h-[410px] lg:min-h-[440px] rounded-2xl overflow-hidden bg-gradient-to-br from-sky-50 via-white to-sky-100/70 dark:from-slate-900 dark:via-[#111C2E] dark:to-slate-900">
+                    {!heroImgError ? (
+                      <img
+                        src={heroPrismImage}
+                        alt="Minh họa lăng kính quang học Liquid Glass tượng trưng cho sự đối chiếu kiến thức trong sáng và chính xác"
+                        referrerPolicy="no-referrer"
+                        onError={() => setHeroImgError(true)}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center p-8 text-center">
+                        <div>
+                          <BookOpenCheck className="w-12 h-12 text-sky-600 dark:text-sky-400 mx-auto mb-3" />
+                          <p className="text-sm font-medium text-[#16243E] dark:text-[#E6EFFC]">
+                            StudyCheck AI Optical Verification
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Measured scrim for crisp WCAG contrast of the React/CSS overlay cards */}
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#09111E]/78 via-[#09111E]/22 to-transparent"
                     />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center p-8 text-center">
-                      <div>
-                        <BookOpenCheck className="w-12 h-12 text-sky-600 dark:text-sky-400 mx-auto mb-3" />
-                        <p className="text-sm font-medium text-[#16243E] dark:text-[#E6EFFC]">
-                          StudyCheck AI Optical Verification
-                        </p>
-                      </div>
+
+                    {/* Top subtle CSS verification scope strip */}
+                    <div className="hero-overlay-card absolute top-3.5 left-3.5 right-3.5 sm:top-4 sm:left-4 sm:right-4 flex items-center justify-between gap-2 px-3.5 py-2 rounded-xl bg-white/86 dark:bg-[#0D182B]/86 backdrop-blur-md border border-white/80 dark:border-sky-200/15 shadow-sm text-xs">
+                      <span className="font-medium text-[#16243E] dark:text-[#E6EFFC] truncate">
+                        Đối chiếu trực tiếp · Đề cương Hóa học 10
+                      </span>
+                      <span className="font-mono text-[11px] font-semibold text-sky-700 dark:text-sky-300 shrink-0 tabular-nums">
+                        SGK Chương 3
+                      </span>
                     </div>
-                  )}
 
-                  {/* Measured scrim for crisp WCAG contrast of the React/CSS overlay cards */}
-                  <div
-                    aria-hidden="true"
-                    className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#09111E]/78 via-[#09111E]/22 to-transparent"
-                  />
+                    {/* Bottom interactive React/CSS verification preview card */}
+                    <div className="hero-overlay-card hero-float-slow absolute bottom-3.5 left-3.5 right-3.5 sm:bottom-4 sm:left-4 sm:right-4 rounded-2xl bg-white/92 dark:bg-[#0E1B31]/92 backdrop-blur-xl border border-white/85 dark:border-sky-200/20 p-3.5 sm:p-4 shadow-[0_18px_38px_-14px_rgba(9,17,30,0.45)]">
+                      <div className="grid grid-cols-2 gap-3 pb-3 border-b border-sky-200/60 dark:border-slate-700/70">
+                        <div>
+                          <div className="flex items-baseline justify-between gap-2">
+                            <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
+                              Độ chính xác
+                            </span>
+                            <span className="font-display text-base sm:text-lg font-bold text-emerald-700 dark:text-emerald-400 tabular-nums">
+                              84%
+                            </span>
+                          </div>
+                          <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
+                            <div className="h-full w-[84%] rounded-full bg-emerald-500" />
+                          </div>
+                        </div>
 
-                  {/* Top subtle CSS verification scope strip */}
-                  <div className="hero-overlay-card absolute top-3.5 left-3.5 right-3.5 sm:top-4 sm:left-4 sm:right-4 flex items-center justify-between gap-2 px-3.5 py-2 rounded-xl bg-white/86 dark:bg-[#0D182B]/86 backdrop-blur-md border border-white/80 dark:border-sky-200/15 shadow-sm text-xs">
-                    <span className="font-medium text-[#16243E] dark:text-[#E6EFFC] truncate">
-                      Đối chiếu trực tiếp · Đề cương Hóa học 10
-                    </span>
-                    <span className="font-mono text-[11px] font-semibold text-sky-700 dark:text-sky-300 shrink-0 tabular-nums">
-                      SGK Chương 3
-                    </span>
+                        <div>
+                          <div className="flex items-baseline justify-between gap-2">
+                            <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
+                              Độ đầy đủ chương
+                            </span>
+                            <span className="font-display text-base sm:text-lg font-bold text-sky-700 dark:text-sky-400 tabular-nums">
+                              76%
+                            </span>
+                          </div>
+                          <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
+                            <div className="h-full w-[76%] rounded-full bg-sky-500" />
+                          </div>
+                        </div>
+                      </div>
+
+                      <a
+                        href="#specimen"
+                        className="group mt-3 flex items-center justify-between gap-3 rounded-xl px-2.5 py-2 -mx-1 hover:bg-sky-50/90 dark:hover:bg-white/5 transition-colors duration-180"
+                      >
+                        <div className="min-w-0 flex items-start gap-2">
+                          <XCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
+                              Phát hiện 1 nhận định sai · Liên kết hydrogen với C
+                            </p>
+                            <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2] truncate">
+                              Dẫn chứng: SGK Hóa học 10 · Trang 54 — Xem mẫu tương tác
+                            </p>
+                          </div>
+                        </div>
+                        <ChevronRight className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0 transition-transform duration-180 group-hover:translate-x-0.5" />
+                      </a>
+                    </div>
                   </div>
-
-                  {/* Bottom interactive React/CSS verification preview card */}
-                  <div className="hero-overlay-card hero-float-slow absolute bottom-3.5 left-3.5 right-3.5 sm:bottom-4 sm:left-4 sm:right-4 rounded-2xl bg-white/92 dark:bg-[#0E1B31]/92 backdrop-blur-xl border border-white/85 dark:border-sky-200/20 p-3.5 sm:p-4 shadow-[0_18px_38px_-14px_rgba(9,17,30,0.45)]">
-                    <div className="grid grid-cols-2 gap-3 pb-3 border-b border-sky-200/60 dark:border-slate-700/70">
-                      <div>
-                        <div className="flex items-baseline justify-between gap-2">
-                          <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
-                            Độ chính xác
-                          </span>
-                          <span className="font-display text-base sm:text-lg font-bold text-emerald-700 dark:text-emerald-400 tabular-nums">
-                            84%
-                          </span>
-                        </div>
-                        <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
-                          <div className="h-full w-[84%] rounded-full bg-emerald-500" />
-                        </div>
+                </GlassSurface>
+              ) : (
+                <div className="h-full rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111C2E] overflow-hidden flex flex-col">
+                  <div className="relative flex-1 min-h-[260px] sm:min-h-[330px] bg-slate-100 dark:bg-slate-900 overflow-hidden">
+                    {!heroImgError ? (
+                      <img
+                        src={heroPrismImage}
+                        alt="Minh họa đối chiếu kiến thức học tập THPT với sách giáo khoa chuẩn"
+                        referrerPolicy="no-referrer"
+                        onError={() => setHeroImgError(true)}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center p-8 text-center">
+                        <BookOpenCheck className="w-12 h-12 text-sky-700 dark:text-sky-400" />
                       </div>
-
-                      <div>
-                        <div className="flex items-baseline justify-between gap-2">
-                          <span className="text-[11px] font-medium text-[#475B78] dark:text-[#B4C7E2]">
-                            Độ đầy đủ chương
-                          </span>
-                          <span className="font-display text-base sm:text-lg font-bold text-sky-700 dark:text-sky-400 tabular-nums">
-                            76%
-                          </span>
-                        </div>
-                        <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
-                          <div className="h-full w-[76%] rounded-full bg-sky-500" />
-                        </div>
-                      </div>
+                    )}
+                  </div>
+                  <div className="px-4 py-3.5 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
+                        Đối chiếu trực tiếp đề cương với SGK chuẩn
+                      </p>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400 truncate mt-0.5">
+                        Độ chính xác 84% · Độ đầy đủ 76% · Dẫn chứng theo trang SGK
+                      </p>
                     </div>
-
                     <a
                       href="#specimen"
-                      className="group mt-3 flex items-center justify-between gap-3 rounded-xl px-2.5 py-2 -mx-1 hover:bg-sky-50/90 dark:hover:bg-white/5 transition-colors duration-180"
+                      className="text-xs font-semibold text-sky-700 dark:text-sky-400 hover:underline shrink-0"
                     >
-                      <div className="min-w-0 flex items-start gap-2">
-                        <XCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
-                        <div className="min-w-0">
-                          <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
-                            Phát hiện 1 nhận định sai · Liên kết hydrogen với C
-                          </p>
-                          <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2] truncate">
-                            Dẫn chứng: SGK Hóa học 10 · Trang 54 — Xem mẫu tương tác
-                          </p>
-                        </div>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0 transition-transform duration-180 group-hover:translate-x-0.5" />
+                      Xem mẫu
                     </a>
                   </div>
                 </div>
-              </GlassSurface>
+              )}
             </div>
           </div>
         </section>

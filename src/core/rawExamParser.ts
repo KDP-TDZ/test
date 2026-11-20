@@ -5,17 +5,19 @@ import type {
   ExamType,
   GradeLevel,
   SubjectId,
+  TrueFalseStatement,
 } from './types.js';
 
 export interface ParsedRawQuestion {
   sourceIndex: number;
-  questionType: 'abcd' | 'short_answer';
+  questionType: 'abcd' | 'true_false' | 'short_answer';
   questionText: string;
   optionA?: string;
   optionB?: string;
   optionC?: string;
   optionD?: string;
   correctAnswer?: 'A' | 'B' | 'C' | 'D';
+  trueFalseStatements?: TrueFalseStatement[];
   shortAnswerAccepted?: string[];
   explanation?: string;
   hasExplicitAnswer: boolean;
@@ -27,6 +29,7 @@ export interface RawParseResult {
   warnings: string[];
   answeredCount: number;
   abcdCount: number;
+  trueFalseCount: number;
   shortAnswerCount: number;
 }
 
@@ -55,6 +58,8 @@ export interface RawBatchExamConfig {
   shuffleOptionsInVariants: boolean;
 }
 
+const TF_LABELS: ReadonlyArray<'a' | 'b' | 'c' | 'd'> = ['a', 'b', 'c', 'd'];
+
 function deterministicHash(seed: string): number {
   let h = 2166136261;
   for (let i = 0; i < seed.length; i += 1) {
@@ -82,6 +87,113 @@ function cleanOptionText(raw: string): string {
     .trim();
 }
 
+function splitUnescaped(text: string, delimiter: ':' | '|'): string[] {
+  const parts: string[] = [];
+  let current = '';
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '\\' && i + 1 < text.length && text[i + 1] === delimiter) {
+      current += delimiter;
+      i += 1;
+      continue;
+    }
+    if (ch === delimiter) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts;
+}
+
+function stripLeadingQuestionNumber(raw: string, fallbackIndex: number): {
+  sourceIndex: number;
+  rest: string;
+  hadPrefix: boolean;
+} {
+  const trimmed = raw.trim();
+  const match = trimmed.match(/^(?:Q|Câu|Question|Bài)\s*(\d+)\s*[:.)\-]?\s*(.*)$/i);
+  if (match && match[1]) {
+    return {
+      sourceIndex: Number(match[1]),
+      rest: (match[2] || '').trim(),
+      hadPrefix: true,
+    };
+  }
+  const numOnlyMatch = trimmed.match(/^(\d{1,3})\s*[.)\-]\s*(.+)$/);
+  if (numOnlyMatch && numOnlyMatch[1]) {
+    return {
+      sourceIndex: Number(numOnlyMatch[1]),
+      rest: (numOnlyMatch[2] || '').trim(),
+      hadPrefix: true,
+    };
+  }
+  return {
+    sourceIndex: fallbackIndex,
+    rest: trimmed,
+    hadPrefix: false,
+  };
+}
+
+function isPureQuestionNumberToken(token: string): number | null {
+  const m = token.trim().match(/^(?:Q|Câu|Question|Bài)?\s*(\d{1,3})$/i);
+  return m ? Number(m[1]) : null;
+}
+
+function parseBooleanToken(raw: string): boolean | null {
+  const normalized = raw.trim().toLowerCase();
+  if (['đ', 'd', 't', 'đúng', 'dung', 'true', '1'].includes(normalized)) return true;
+  if (['s', 'f', 'sai', 'false', '0'].includes(normalized)) return false;
+  return null;
+}
+
+/**
+ * Parses flexible 4-item True/False answer strings:
+ *   "Đ-S-Đ-Đ", "Đ S Đ S", "T-F-T-T", "D,S,D,D", "ĐSĐĐ", "a:Đ b:S c:Đ d:S"
+ */
+export function parseTrueFalseAnswerKey(raw: string): boolean[] | null {
+  const cleaned = raw
+    .trim()
+    .replace(/^(?:đáp\s*án(?:\s*đúng)?|đ\.?a|answer|ans|key)\s*[:=\-]?\s*/i, '')
+    .trim();
+  if (!cleaned) return null;
+
+  // Format: "a:Đ b:S c:Đ d:S" or "a) Đ, b) S, c) Đ, d) S"
+  const labeledMap = new Map<'a' | 'b' | 'c' | 'd', boolean>();
+  const labeledRegex =
+    /(?:^|[\s,;/|])([a-d])\s*[:.)\-=]\s*(đúng|dung|true|sai|false|[đdtfs10])(?=$|[\s,;/|])/giu;
+  let lm: RegExpExecArray | null;
+  while ((lm = labeledRegex.exec(cleaned)) !== null) {
+    const lbl = lm[1].toLowerCase() as 'a' | 'b' | 'c' | 'd';
+    const val = parseBooleanToken(lm[2]);
+    if (val !== null) labeledMap.set(lbl, val);
+  }
+  if (labeledMap.size === 4) {
+    return TF_LABELS.map((l) => Boolean(labeledMap.get(l)));
+  }
+
+  // Format: compact 4-character string like "ĐSĐĐ", "TFTT", "DSDD"
+  if (/^[đdtfsĐDTFS]{4}$/u.test(cleaned)) {
+    const chars = Array.from(cleaned);
+    const parsed = chars.map((c) => parseBooleanToken(c));
+    if (parsed.every((v): v is boolean => v !== null)) return parsed;
+  }
+
+  // Format: separated tokens like "Đ-S-Đ-Đ", "T, F, T, T", "Đúng / Sai / Đúng / Sai"
+  const tokens = cleaned
+    .split(/[\s,\-;/|]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (tokens.length === 4) {
+    const parsed = tokens.map((t) => parseBooleanToken(t));
+    if (parsed.every((v): v is boolean => v !== null)) return parsed;
+  }
+
+  return null;
+}
+
 function extractInlineAnswerKeyMap(text: string): Map<number, string> {
   const keyMap = new Map<number, string>();
   const pairRegex = /(?:^|[\s,;|])(?:Q|Câu|Question|Bài)?\s*(\d{1,3})\s*[:.\-)]\s*([A-D])\b/gi;
@@ -105,7 +217,6 @@ function isAnswerKeyHeaderLine(line: string): boolean {
 function isCompactAnswerKeyLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
-  // E.g. "ĐÁP ÁN: 1A 2B 3C 4D" or "1.A  2.B  3.C  4.D" (no option B./C. sentences)
   const stripped = trimmed.replace(/^(?:đáp\s*án|bảng\s*đáp\s*án|answer\s*key|key)\s*:\s*/i, '');
   const pairs = stripped.match(/(?:^|[\s,;|])(?:Q|Câu)?\s*\d{1,3}\s*[:.\-)]?\s*[A-D](?=$|[\s,;|])/gi);
   if (!pairs || pairs.length < 2) return false;
@@ -116,7 +227,595 @@ function isCompactAnswerKeyLine(line: string): boolean {
 }
 
 /**
- * Parses a single compact line such as:
+ * RFC-4180 quote-aware CSV/TSV parser supporting multi-line quoted cells.
+ */
+function parseDelimitedRows(text: string, delimiter: ',' | '\t'): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (i + 1 < text.length && text[i + 1] === '"') {
+          cell += '"';
+          i += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cell += ch;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inQuotes = true;
+      continue;
+    }
+    if (ch === delimiter) {
+      row.push(cell.trim());
+      cell = '';
+      continue;
+    }
+    if (ch === '\r') continue;
+    if (ch === '\n') {
+      row.push(cell.trim());
+      if (row.some((c) => c.length > 0)) {
+        rows.push(row);
+      }
+      row = [];
+      cell = '';
+      continue;
+    }
+    cell += ch;
+  }
+
+  row.push(cell.trim());
+  if (row.some((c) => c.length > 0)) {
+    rows.push(row);
+  }
+  return rows;
+}
+
+function normalizeTableType(raw: string): 'abcd' | 'true_false' | 'short_answer' | null {
+  const t = raw.trim().toLowerCase();
+  if (['abcd', 'mc', 'mcq', 'trac_nghiem', 'trắc nghiệm', 'tn'].includes(t)) return 'abcd';
+  if (['true_false', 'tf', 'ds', 'đs', 'dung_sai', 'đúng sai', 'đúng/sai'].includes(t)) {
+    return 'true_false';
+  }
+  if (['short_answer', 'sa', 'tln', 'tra_loi_ngan', 'trả lời ngắn'].includes(t)) {
+    return 'short_answer';
+  }
+  return null;
+}
+
+function tryParseDelimitedTable(cleanedInput: string): RawParseResult | null {
+  const nonEmptyLines = cleanedInput
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (nonEmptyLines.length === 0) return null;
+
+  const firstLine = nonEmptyLines[0];
+  const isTsv = nonEmptyLines.filter((l) => l.includes('\t')).length >= Math.ceil(nonEmptyLines.length * 0.6);
+
+  let delimiter: ',' | '\t' | null = null;
+  if (isTsv) {
+    delimiter = '\t';
+  } else {
+    const firstCsvRow = parseDelimitedRows(firstLine, ',')[0] || [];
+    const headerCells = firstCsvRow.map((c) => c.toLowerCase().trim());
+    const looksLikeHeader =
+      headerCells.length >= 5 &&
+      (headerCells.includes('question') ||
+        headerCells.includes('cau_hoi') ||
+        headerCells.includes('câu hỏi') ||
+        headerCells.includes('type'));
+    const looksLikeTypedCsvRow =
+      firstCsvRow.length >= 5 && normalizeTableType(firstCsvRow[0]) !== null;
+    if (looksLikeHeader || looksLikeTypedCsvRow) {
+      delimiter = ',';
+    }
+  }
+
+  if (!delimiter) return null;
+
+  const rows = parseDelimitedRows(cleanedInput, delimiter);
+  if (rows.length === 0) return null;
+
+  // Detect optional header row
+  const headerLower = rows[0].map((c) => c.toLowerCase().replace(/\s+/g, '_'));
+  const hasHeader =
+    headerLower.includes('question') ||
+    headerLower.includes('cau_hoi') ||
+    headerLower.includes('câu_hỏi') ||
+    (headerLower.includes('type') && (headerLower.includes('answer') || headerLower.includes('a')));
+
+  const findCol = (aliases: string[], fallback: number): number => {
+    if (!hasHeader) return fallback;
+    for (const alias of aliases) {
+      const idx = headerLower.indexOf(alias);
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  };
+
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+  if (dataRows.length === 0) return null;
+
+  const colType = findCol(['type', 'loai', 'loại', 'question_type'], hasHeader ? -1 : 0);
+  const hasPositionalTypeCol =
+    !hasHeader && dataRows.some((r) => r.length > 0 && normalizeTableType(r[0]) !== null);
+
+  const idxType = hasHeader ? colType : hasPositionalTypeCol ? 0 : -1;
+  const idxQ = hasHeader
+    ? findCol(['question', 'cau_hoi', 'câu_hỏi', 'stem', 'noi_dung'], idxType === 0 ? 1 : 0)
+    : hasPositionalTypeCol
+    ? 1
+    : 0;
+  const idxA = hasHeader ? findCol(['a', 'optiona', 'option_a', 'phuong_an_a'], idxQ + 1) : idxQ + 1;
+  const idxB = hasHeader ? findCol(['b', 'optionb', 'option_b', 'phuong_an_b'], idxQ + 2) : idxQ + 2;
+  const idxC = hasHeader ? findCol(['c', 'optionc', 'option_c', 'phuong_an_c'], idxQ + 3) : idxQ + 3;
+  const idxD = hasHeader ? findCol(['d', 'optiond', 'option_d', 'phuong_an_d'], idxQ + 4) : idxQ + 4;
+  const idxAns = hasHeader ? findCol(['answer', 'dap_an', 'đáp_án', 'key', 'correct'], idxQ + 5) : idxQ + 5;
+  const idxExp = hasHeader
+    ? findCol(['explanation', 'giai_thich', 'giải_thích', 'note'], idxQ + 6)
+    : idxQ + 6;
+
+  const questions: ParsedRawQuestion[] = [];
+  const warnings: string[] = [];
+
+  dataRows.forEach((rawRow, rowIdx) => {
+    const sourceIndex = rowIdx + 1;
+    // Normalize stray extra empty commas on short_answer rows (e.g. `short_answer,"Q",,,, ,3,"Exp"`)
+    let row = [...rawRow];
+    const explicitType = idxType >= 0 ? normalizeTableType(row[idxType] || '') : null;
+
+    if (hasHeader && row.length > rows[0].length && explicitType === 'short_answer') {
+      const excess = row.length - rows[0].length;
+      let removed = 0;
+      const compacted: string[] = [];
+      for (let i = 0; i < row.length; i += 1) {
+        if (i >= idxA && i <= idxD + excess && row[i] === '' && removed < excess) {
+          removed += 1;
+          continue;
+        }
+        compacted.push(row[i]);
+      }
+      row = compacted;
+    }
+
+    const get = (colIdx: number): string => (colIdx >= 0 && colIdx < row.length ? row[colIdx].trim() : '');
+    const questionText = get(idxQ);
+    if (!questionText) return;
+
+    const rawA = get(idxA);
+    const rawB = get(idxB);
+    const rawC = get(idxC);
+    const rawD = get(idxD);
+    const rawAns = get(idxAns);
+    const rawExp = get(idxExp);
+
+    const inferredType: 'abcd' | 'true_false' | 'short_answer' =
+      explicitType ||
+      (parseTrueFalseAnswerKey(rawAns)
+        ? 'true_false'
+        : !rawA && !rawB && !rawC && !rawD && rawAns
+        ? 'short_answer'
+        : 'abcd');
+
+    if (inferredType === 'short_answer') {
+      const answerSource = rawAns || [rawA, rawB, rawC, rawD].find((v) => v.length > 0) || '';
+      const accepted = answerSource
+        .split(/[|;]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const qWarnings: string[] = [];
+      if (accepted.length === 0) {
+        qWarnings.push(`Câu ${sourceIndex} (Trả lời ngắn): chưa có đáp án trong bảng.`);
+      }
+      warnings.push(...qWarnings);
+      questions.push({
+        sourceIndex,
+        questionType: 'short_answer',
+        questionText,
+        shortAnswerAccepted: accepted.length > 0 ? accepted : [''],
+        explanation: rawExp || undefined,
+        hasExplicitAnswer: accepted.length > 0,
+        warnings: qWarnings,
+      });
+      return;
+    }
+
+    if (inferredType === 'true_false') {
+      const rawStmts = [rawA, rawB, rawC, rawD];
+      const starredFlags = rawStmts.map((s) => s.startsWith('*'));
+      const keyFlags = parseTrueFalseAnswerKey(rawAns);
+      const hasAnyStar = starredFlags.some(Boolean);
+      const flags = keyFlags || (hasAnyStar ? starredFlags : [true, false, true, false]);
+      const hasExplicitAnswer = Boolean(keyFlags || hasAnyStar);
+
+      const qWarnings: string[] = [];
+      if (!hasExplicitAnswer) {
+        qWarnings.push(`Câu ${sourceIndex} (Đúng/Sai): chưa có chuỗi đáp án 4 ý, cần kiểm tra.`);
+      }
+      const statements: TrueFalseStatement[] = TF_LABELS.map((label, idx) => ({
+        label,
+        text: rawStmts[idx].replace(/^\*\s*/, '').replace(/^[a-d][.):\-]\s*/i, '').trim() || `Mệnh đề ${label}`,
+        isTrue: Boolean(flags[idx]),
+      }));
+      warnings.push(...qWarnings);
+      questions.push({
+        sourceIndex,
+        questionType: 'true_false',
+        questionText,
+        trueFalseStatements: statements,
+        explanation: rawExp || undefined,
+        hasExplicitAnswer,
+        warnings: qWarnings,
+      });
+      return;
+    }
+
+    // ABCD row
+    let correctAnswer: 'A' | 'B' | 'C' | 'D' | undefined;
+    const rawOpts: Array<{ letter: 'A' | 'B' | 'C' | 'D'; val: string }> = [
+      { letter: 'A', val: rawA },
+      { letter: 'B', val: rawB },
+      { letter: 'C', val: rawC },
+      { letter: 'D', val: rawD },
+    ];
+    const cleanOpts: Record<'A' | 'B' | 'C' | 'D', string> = { A: '', B: '', C: '', D: '' };
+    for (const item of rawOpts) {
+      if (item.val.startsWith('*')) {
+        correctAnswer = item.letter;
+      }
+      cleanOpts[item.letter] = item.val.replace(/^\*\s*/, '').replace(/^[A-D][.):\-]\s*/i, '').trim();
+    }
+    const ansLetter = rawAns.match(/^\s*([A-D])\b/i);
+    if (ansLetter) {
+      correctAnswer = ansLetter[1].toUpperCase() as 'A' | 'B' | 'C' | 'D';
+    }
+    const qWarnings: string[] = [];
+    if (!correctAnswer) {
+      qWarnings.push(`Câu ${sourceIndex}: chưa có đáp án đúng, tạm đặt mặc định A (cần kiểm tra).`);
+    }
+    warnings.push(...qWarnings);
+    questions.push({
+      sourceIndex,
+      questionType: 'abcd',
+      questionText,
+      optionA: cleanOpts.A || '—',
+      optionB: cleanOpts.B || '—',
+      optionC: cleanOpts.C || '—',
+      optionD: cleanOpts.D || '—',
+      correctAnswer,
+      explanation: rawExp || undefined,
+      hasExplicitAnswer: Boolean(correctAnswer),
+      warnings: qWarnings,
+    });
+  });
+
+  if (questions.length === 0) return null;
+
+  return {
+    questions,
+    warnings: Array.from(new Set(warnings)),
+    answeredCount: questions.filter((q) => q.hasExplicitAnswer).length,
+    abcdCount: questions.filter((q) => q.questionType === 'abcd').length,
+    trueFalseCount: questions.filter((q) => q.questionType === 'true_false').length,
+    shortAnswerCount: questions.filter((q) => q.questionType === 'short_answer').length,
+  };
+}
+
+/**
+ * Parses True/False 4-statement blocks (GDPT 2018):
+ * - Single-line with `[ĐS]` / `[TF]` + `|` or `:` + `a) ... | b) ... | c) ... | d) ... : Đ-Đ-S-Đ : Giải thích`
+ * - Multi-line with `[ĐS]` or `a)`/`b)`/`c)`/`d)` lines and optional `*a)` star markers
+ */
+function tryParseTrueFalseBlock(
+  blockText: string,
+  fallbackIndex: number
+): ParsedRawQuestion | null {
+  const trimmed = blockText.trim();
+  const hasExplicitTag = /^(?:(?:Q|Câu|Question|Bài)\s*\d+\s*[:.)\-]?\s*)?\[(?:ĐS|DS|TF|ĐÚNG\s*\/?\s*SAI)\]/i.test(
+    trimmed
+  );
+
+  // Strip optional leading question number and [ĐS]/[TF] tag
+  const numStrip = stripLeadingQuestionNumber(trimmed, fallbackIndex);
+  let body = numStrip.rest.replace(/^\[(?:ĐS|DS|TF|ĐÚNG\s*\/?\s*SAI)\]\s*/i, '').trim();
+  let sourceIndex = numStrip.sourceIndex;
+  if (!numStrip.hadPrefix) {
+    const afterTagNum = stripLeadingQuestionNumber(body, fallbackIndex);
+    if (afterTagNum.hadPrefix) {
+      sourceIndex = afterTagNum.sourceIndex;
+      body = afterTagNum.rest;
+    }
+  }
+
+  // Must either have explicit [ĐS]/[TF] tag OR contain a), b), c), d) markers
+  const stmtRegex = /(?:^|[\n|:]|\s{2,})\s*(\*?)([a-d])\s*[.)]\s*/gi;
+  const matches: Array<{
+    letter: 'a' | 'b' | 'c' | 'd';
+    starred: boolean;
+    start: number;
+    contentStart: number;
+  }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = stmtRegex.exec(body)) !== null) {
+    // Require lowercase a-d unless explicit [ĐS]/[TF] tag is present (avoids hijacking ABCD questions)
+    const rawLetter = m[2];
+    if (!hasExplicitTag && rawLetter !== rawLetter.toLowerCase()) continue;
+    matches.push({
+      letter: rawLetter.toLowerCase() as 'a' | 'b' | 'c' | 'd',
+      starred: m[1] === '*',
+      start: m.index,
+      contentStart: m.index + m[0].length,
+    });
+  }
+
+  const hitA = matches.find((h) => h.letter === 'a');
+  const hitB = hitA ? matches.find((h) => h.letter === 'b' && h.start > hitA.start) : undefined;
+  const hitC = hitB ? matches.find((h) => h.letter === 'c' && h.start > hitB.start) : undefined;
+  const hitD = hitC ? matches.find((h) => h.letter === 'd' && h.start > hitC.start) : undefined;
+
+  if (!hitA || !hitB || !hitC || !hitD) {
+    // Also check pure positional `[ĐS] stem | s1 | s2 | s3 | s4 | Đ-S-Đ-S | explanation`
+    if (!hasExplicitTag) return null;
+    const sep: '|' | ':' = splitUnescaped(body, '|').length >= 5 ? '|' : ':';
+    const parts = splitUnescaped(body, sep).map((p) => p.trim());
+    if (parts.length < 5) return null;
+
+    let answerFlags: boolean[] | null = null;
+    let explanation: string | undefined;
+    let optEnd = parts.length;
+
+    if (parts.length >= 7 && parseTrueFalseAnswerKey(parts[parts.length - 2])) {
+      answerFlags = parseTrueFalseAnswerKey(parts[parts.length - 2]);
+      explanation = parts[parts.length - 1].replace(/^(?:giải\s*thích|explanation)\s*[:=\-]?\s*/i, '').trim() || undefined;
+      optEnd = parts.length - 2;
+    } else if (parts.length >= 6 && parseTrueFalseAnswerKey(parts[parts.length - 1])) {
+      answerFlags = parseTrueFalseAnswerKey(parts[parts.length - 1]);
+      optEnd = parts.length - 1;
+    }
+
+    if (optEnd < 5) return null;
+    const rawStmts = parts.slice(optEnd - 4, optEnd);
+    const stem = parts.slice(0, optEnd - 4).join(sep === ':' ? ': ' : ' ').replace(/[:|]\s*$/, '').trim();
+    if (!stem) return null;
+
+    const starredFlags = rawStmts.map((s) => s.startsWith('*'));
+    const hasAnyStar = starredFlags.some(Boolean);
+    const flags = answerFlags || (hasAnyStar ? starredFlags : [true, false, true, false]);
+    const hasExplicitAnswer = Boolean(answerFlags || hasAnyStar);
+
+    const warnings: string[] = [];
+    if (!hasExplicitAnswer) {
+      warnings.push(`Câu ${sourceIndex} (Đúng/Sai): chưa có đáp án 4 ý, vui lòng kiểm tra.`);
+    }
+
+    return {
+      sourceIndex,
+      questionType: 'true_false',
+      questionText: stem,
+      trueFalseStatements: TF_LABELS.map((label, idx) => ({
+        label,
+        text: rawStmts[idx].replace(/^\*\s*/, '').replace(/^[a-d][.):\-]\s*/i, '').trim(),
+        isTrue: Boolean(flags[idx]),
+      })),
+      explanation,
+      hasExplicitAnswer,
+      warnings,
+    };
+  }
+
+  const ordered = [hitA, hitB, hitC, hitD];
+  const stem = body
+    .slice(0, hitA.start)
+    .replace(/[|:\s]+$/, '')
+    .trim();
+  if (!stem) return null;
+
+  const rawTexts: string[] = [];
+  let tailRaw = '';
+
+  for (let i = 0; i < ordered.length; i += 1) {
+    const cur = ordered[i];
+    const nextStart = i + 1 < ordered.length ? ordered[i + 1].start : body.length;
+    let slice = body.slice(cur.contentStart, nextStart).trim();
+    if (i < ordered.length - 1) {
+      slice = slice.replace(/[|:\s]+$/, '').trim();
+      rawTexts.push(slice);
+    } else {
+      // Last statement (d): may be followed by newline answer/explanation OR `:Đ-Đ-S-Đ:Giải thích` OR `| Đ-Đ-S-Đ | Giải thích`
+      const lines = slice.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const firstPart = lines[0] || '';
+      const restLines = lines.slice(1);
+
+      // Check inline separator inside firstPart for TF answer key
+      const inlineKeyMatch = firstPart.match(
+        /^(.*?)[:|]\s*((?:(?:đáp\s*án(?:\s*đúng)?|answer|ans|key)\s*[:=\-]?\s*)?(?:[đdtfsĐDTFS](?:[\s,\-;/]+[đdtfsĐDTFS]){3}|[đdtfsĐDTFS]{4}|(?:[a-d]\s*[:.)\-=]\s*(?:đúng|dung|true|sai|false|[đdtfs10])\s*[,;/\s]*){4}))(?:[:|]\s*(.+))?$/i
+      );
+
+      if (inlineKeyMatch) {
+        rawTexts.push(inlineKeyMatch[1].replace(/[|:\s]+$/, '').trim());
+        tailRaw = [inlineKeyMatch[2], inlineKeyMatch[3] ? `Giải thích: ${inlineKeyMatch[3]}` : '', ...restLines]
+          .filter(Boolean)
+          .join('\n');
+      } else {
+        // Also check inline Giải thích without explicit key (when * markers are used)
+        const inlineExpMatch = firstPart.match(/^(.*?)[:|]\s*(?:giải\s*thích|explanation)\s*[:=\-]?\s*(.+)$/i);
+        if (inlineExpMatch) {
+          rawTexts.push(inlineExpMatch[1].replace(/[|:\s]+$/, '').trim());
+          tailRaw = [`Giải thích: ${inlineExpMatch[2]}`, ...restLines].join('\n');
+        } else {
+          rawTexts.push(firstPart.replace(/[|:\s]+$/, '').trim());
+          tailRaw = restLines.join('\n');
+        }
+      }
+    }
+  }
+
+  let answerFlags: boolean[] | null = null;
+  let explanation = '';
+
+  if (tailRaw) {
+    const tailLines = tailRaw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    for (const line of tailLines) {
+      const expMatch = line.match(/^(?:giải\s*thích|hướng\s*dẫn|hd|explanation)\s*[:=\-]\s*(.+)$/i);
+      if (expMatch) {
+        explanation = expMatch[1].trim();
+        continue;
+      }
+      const parsedKey = parseTrueFalseAnswerKey(line);
+      if (parsedKey && !answerFlags) {
+        answerFlags = parsedKey;
+        continue;
+      }
+      if (answerFlags && !explanation) {
+        explanation = line.replace(/^[:.\-\s]+/, '').trim();
+      }
+    }
+  }
+
+  const starredFlags = ordered.map((h) => h.starred);
+  const hasAnyStar = starredFlags.some(Boolean);
+  const finalFlags = answerFlags || (hasAnyStar ? starredFlags : [true, false, true, false]);
+  const hasExplicitAnswer = Boolean(answerFlags || hasAnyStar);
+
+  const warnings: string[] = [];
+  if (!hasExplicitAnswer) {
+    warnings.push(`Câu ${sourceIndex} (Đúng/Sai): chưa có đáp án 4 ý, vui lòng kiểm tra.`);
+  }
+
+  return {
+    sourceIndex,
+    questionType: 'true_false',
+    questionText: stem,
+    trueFalseStatements: TF_LABELS.map((label, idx) => ({
+      label,
+      text: rawTexts[idx] || `Mệnh đề ${label}`,
+      isTrue: Boolean(finalFlags[idx]),
+    })),
+    explanation: explanation || undefined,
+    hasExplicitAnswer,
+    warnings,
+  };
+}
+
+/**
+ * Parses Short-Answer blocks prefixed with `[TLN]` / `[SA]` / `[TRẢ LỜI NGẮN]`:
+ *   `[TLN] Tính 15 x 4 bằng bao nhiêu?:60 | 60,0`
+ *   `[TLN] Diện tích hình chữ nhật?:34 | 34,0 | 34 cm2`
+ */
+function tryParseTaggedShortAnswerBlock(
+  blockText: string,
+  fallbackIndex: number
+): ParsedRawQuestion | null {
+  const trimmed = blockText.trim();
+  const hasTag = /^(?:(?:Q|Câu|Question|Bài)\s*\d+\s*[:.)\-]?\s*)?\[(?:TLN|SA|TRẢ\s*LỜI\s*NGẮN)\]/i.test(
+    trimmed
+  );
+  if (!hasTag) return null;
+
+  const numStrip = stripLeadingQuestionNumber(trimmed, fallbackIndex);
+  let body = numStrip.rest.replace(/^\[(?:TLN|SA|TRẢ\s*LỜI\s*NGẮN)\]\s*/i, '').trim();
+  let sourceIndex = numStrip.sourceIndex;
+  if (!numStrip.hadPrefix) {
+    const afterTagNum = stripLeadingQuestionNumber(body, fallbackIndex);
+    if (afterTagNum.hadPrefix) {
+      sourceIndex = afterTagNum.sourceIndex;
+      body = afterTagNum.rest;
+    }
+  }
+
+  const lines = body.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  let explanation = '';
+  let explicitAns = '';
+  const stemLines: string[] = [];
+
+  for (const line of lines) {
+    const expMatch = line.match(/^(?:giải\s*thích|hướng\s*dẫn|hd|explanation)\s*[:=\-]\s*(.+)$/i);
+    if (expMatch) {
+      explanation = expMatch[1].trim();
+      continue;
+    }
+    const ansLineMatch = line.match(/^(?:đáp\s*án(?:\s*đúng)?|đ\.?a|answer|ans|key)\s*[:=\-]\s*(.+)$/i);
+    if (ansLineMatch) {
+      explicitAns = ansLineMatch[1].trim();
+      continue;
+    }
+    stemLines.push(line);
+  }
+
+  let stemText = stemLines.join(' ').trim();
+  if (!explicitAns) {
+    // Check explicit "Đáp án:" inline
+    const inlineAnsMatch = stemText.match(
+      /^(.*?)(?:[:|]\s*(?:đáp\s*án(?:\s*đúng)?|đ\.?a|answer|ans|key)\s*[:=\-]?\s*)(.+)$/i
+    );
+    if (inlineAnsMatch) {
+      stemText = inlineAnsMatch[1].trim();
+      explicitAns = inlineAnsMatch[2].trim();
+    } else {
+      // Split by unescaped ":" — last part (or second-to-last if explanation follows) is answer
+      const colonParts = splitUnescaped(stemText, ':').map((p) => p.trim());
+      if (colonParts.length >= 2) {
+        // Check if last part starts with "Giải thích"
+        if (
+          colonParts.length >= 3 &&
+          /^(?:giải\s*thích|explanation)\b/i.test(colonParts[colonParts.length - 1])
+        ) {
+          explanation =
+            colonParts[colonParts.length - 1]
+              .replace(/^(?:giải\s*thích|explanation)\s*[:=\-]?\s*/i, '')
+              .trim() || explanation;
+          explicitAns = colonParts[colonParts.length - 2];
+          stemText = colonParts.slice(0, colonParts.length - 2).join(': ').trim();
+        } else {
+          explicitAns = colonParts[colonParts.length - 1];
+          stemText = colonParts.slice(0, colonParts.length - 1).join(': ').trim();
+        }
+      }
+    }
+  }
+
+  // If explanation was attached after "::" or "Giải thích:" inside explicitAns
+  const trailingExp = explicitAns.match(/^(.*?)\s*[:|]\s*(?:giải\s*thích|explanation)\s*[:=\-]?\s*(.+)$/i);
+  if (trailingExp) {
+    explicitAns = trailingExp[1].trim();
+    explanation = explanation || trailingExp[2].trim();
+  }
+
+  if (!stemText) return null;
+
+  const accepted = explicitAns
+    .split(/[|;]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const warnings: string[] = [];
+  if (accepted.length === 0) {
+    warnings.push(`Câu ${sourceIndex} (Trả lời ngắn): chưa có đáp án.`);
+  }
+
+  return {
+    sourceIndex,
+    questionType: 'short_answer',
+    questionText: stemText,
+    shortAnswerAccepted: accepted.length > 0 ? accepted : [''],
+    explanation: explanation || undefined,
+    hasExplicitAnswer: accepted.length > 0,
+    warnings,
+  };
+}
+
+/**
+ * Parses a single compact line with explicit A./B./C./D. markers such as:
  *   "Q1:Ai là người giỏi:A..:B...:C...:D...:Đáp án: A"
  *   "Q1: Ai là người giỏi | A. Nam | B. Hoa | C. Lan | D. Bình | B"
  */
@@ -125,17 +824,13 @@ function tryParseDelimitedSingleBlock(
   fallbackIndex: number
 ): ParsedRawQuestion | null {
   const singleLine = blockText.replace(/\r?\n+/g, ' ').trim();
-  // Match compact colon or pipe delimiters before A.. / A. / *A. etc.
-  const delimiterRegex = /([:|])\s*(\*?[A-D](?:[.):\-]|\s+)|(?:đáp\s*án(?:\s*đúng)?|đ\.?a|answer|ans|key|giải\s*thích|explanation)\s*:?)/gi;
 
-  // Quick pre-check: must contain at least A and B markers preceded by : or |
   const hasColonOrPipeA = /(?:^|[:|])\s*\*?A(?:[.):\-]|\s+)/i.test(singleLine);
   const hasColonOrPipeB = /[:|]\s*\*?B(?:[.):\-]|\s+)/i.test(singleLine);
   if (!hasColonOrPipeA || !hasColonOrPipeB) {
     return null;
   }
 
-  // Find indices where option or answer tokens start right after : or |
   interface MarkerHit {
     sepIndex: number;
     tokenStart: number;
@@ -145,7 +840,8 @@ function tryParseDelimitedSingleBlock(
   }
 
   const hits: MarkerHit[] = [];
-  const markerScan = /([:|])\s*(?:(\*?)([A-D])(?=[.):\-\s])|(đáp\s*án(?:\s*đúng)?|đ\.?a|answer|ans|key)\s*[:=]?|(giải\s*thích|explanation)\s*[:=]?)/gi;
+  const markerScan =
+    /([:|])\s*(?:(\*?)([A-D])(?=[.):\-\s])|(đáp\s*án(?:\s*đúng)?|đ\.?a|answer|ans|key)\s*[:=]?|(giải\s*thích|explanation)\s*[:=]?)/gi;
 
   let m: RegExpExecArray | null;
   while ((m = markerScan.exec(singleLine)) !== null) {
@@ -154,7 +850,6 @@ function tryParseDelimitedSingleBlock(
     if (m[3]) {
       const letter = m[3].toUpperCase() as 'A' | 'B' | 'C' | 'D';
       const starred = m[2] === '*';
-      // Ensure we don't accidentally match a trailing single answer letter after D (handled separately)
       hits.push({
         sepIndex,
         tokenStart,
@@ -181,7 +876,6 @@ function tryParseDelimitedSingleBlock(
     }
   }
 
-  // We need ordered A, B (and usually C, D)
   const firstA = hits.find((h) => h.type === 'A');
   const firstB = firstA ? hits.find((h) => h.type === 'B' && h.sepIndex > firstA.sepIndex) : undefined;
   if (!firstA || !firstB) return null;
@@ -201,7 +895,6 @@ function tryParseDelimitedSingleBlock(
   }
   orderedHits.sort((a, b) => a.sepIndex - b.sepIndex);
 
-  // Extract question stem (before firstA.sepIndex)
   const rawStem = singleLine.slice(0, firstA.sepIndex).trim();
   const stemNumMatch = rawStem.match(/^(?:Q|Câu|Question|Bài)?\s*(\d+)\s*[:.)\-]?\s*(.*)$/i);
   const sourceIndex = stemNumMatch && stemNumMatch[1] ? Number(stemNumMatch[1]) : fallbackIndex;
@@ -223,7 +916,6 @@ function tryParseDelimitedSingleBlock(
 
     if (cur.type === 'A' || cur.type === 'B' || cur.type === 'C' || cur.type === 'D') {
       if (cur.starred) correctAnswer = cur.type;
-      // Check if the last option has a trailing ":A" / "| B" shorthand answer without "Đáp án:"
       if (i === orderedHits.length - 1 || orderedHits[i + 1].type === 'EXP') {
         const trailingAnsMatch = slice.match(/^(.*?)[:|]\s*([A-D])\s*$/i);
         if (trailingAnsMatch && !correctAnswer) {
@@ -246,9 +938,6 @@ function tryParseDelimitedSingleBlock(
     }
   }
 
-  // Silence unused regex var
-  void delimiterRegex;
-
   const warnings: string[] = [];
   if (!optionC || !optionD) {
     warnings.push(`Câu ${sourceIndex}: thiếu lựa chọn C hoặc D.`);
@@ -270,15 +959,156 @@ function tryParseDelimitedSingleBlock(
 }
 
 /**
+ * Parses positional delimited ABCD lines WITHOUT A./B./C./D. prefixes:
+ *   "Câu 1:Liên kết hydrogen...?:F, O, N:C, Si, P:Na, K, Ca:He, Ne, Ar:A:Giải thích..."
+ *   "Câu 2:Thủ đô Việt Nam?:TP.HCM:*Hà Nội:Đà Nẵng:Hải Phòng:Đáp án là Hà Nội."
+ *   "Giá trị của 2x + 5 tại x = 3?:9:10:11:12:C"
+ *   "Cho hàm số y = 2x + 1: Tìm y tại x=1?:1:2:3:4:C"
+ */
+function tryParsePositionalDelimitedAbcd(
+  blockText: string,
+  fallbackIndex: number
+): ParsedRawQuestion | null {
+  const singleLine = blockText.replace(/\r?\n+/g, ' ').trim();
+  const pipeParts = splitUnescaped(singleLine, '|').map((p) => p.trim());
+  const colonParts = splitUnescaped(singleLine, ':').map((p) => p.trim());
+
+  const delimiter: '|' | ':' | null =
+    pipeParts.length >= 5 ? '|' : colonParts.length >= 5 ? ':' : null;
+  if (!delimiter) return null;
+
+  let parts = delimiter === '|' ? pipeParts : colonParts;
+  let sourceIndex = fallbackIndex;
+
+  // Strip optional leading pure number token like "Câu 1" or "Q1"
+  if (parts.length >= 6) {
+    const leadingNum = isPureQuestionNumberToken(parts[0]);
+    if (leadingNum !== null) {
+      sourceIndex = leadingNum;
+      parts = parts.slice(1);
+    }
+  }
+
+  if (parts.length < 5) return null;
+
+  const isAnswerLetterToken = (token: string): 'A' | 'B' | 'C' | 'D' | null => {
+    const m = token
+      .trim()
+      .match(/^(?:(?:đáp\s*án(?:\s*đúng)?|đ\.?a|answer|ans|key)\s*[:=\-]?\s*)?([A-D])$/i);
+    return m ? (m[1].toUpperCase() as 'A' | 'B' | 'C' | 'D') : null;
+  };
+  const isAnswerLabelOnly = (token: string): boolean =>
+    /^(?:đáp\s*án(?:\s*đúng)?|đ\.?a|answer|ans|key)$/i.test(token.trim());
+
+  let optionSliceStart = -1;
+  let correctAnswer: 'A' | 'B' | 'C' | 'D' | undefined;
+  let explanation = '';
+
+  const n = parts.length;
+  // Pattern 1: [...stem, A, B, C, D, "Đáp án", "B", "Giải thích"]
+  if (
+    n >= 8 &&
+    isAnswerLabelOnly(parts[n - 3]) &&
+    isAnswerLetterToken(parts[n - 2]) !== null
+  ) {
+    correctAnswer = isAnswerLetterToken(parts[n - 2])!;
+    explanation = parts[n - 1].replace(/^(?:giải\s*thích|explanation)\s*[:=\-]?\s*/i, '').trim();
+    optionSliceStart = n - 7;
+  }
+  // Pattern 2: [...stem, A, B, C, D, "Đáp án", "B"]
+  else if (
+    n >= 7 &&
+    isAnswerLabelOnly(parts[n - 2]) &&
+    isAnswerLetterToken(parts[n - 1]) !== null
+  ) {
+    correctAnswer = isAnswerLetterToken(parts[n - 1])!;
+    optionSliceStart = n - 6;
+  }
+  // Pattern 3: [...stem, A, B, C, D, "A", "Giải thích..."]
+  else if (
+    n >= 7 &&
+    isAnswerLetterToken(parts[n - 2]) !== null &&
+    isAnswerLetterToken(parts[n - 1]) === null &&
+    parts[n - 1].length > 0
+  ) {
+    correctAnswer = isAnswerLetterToken(parts[n - 2])!;
+    explanation = parts[n - 1].replace(/^(?:giải\s*thích|explanation)\s*[:=\-]?\s*/i, '').trim();
+    optionSliceStart = n - 6;
+  }
+  // Pattern 4: [...stem, A, B, C, D, "B"]
+  else if (n >= 6 && isAnswerLetterToken(parts[n - 1]) !== null) {
+    correctAnswer = isAnswerLetterToken(parts[n - 1])!;
+    optionSliceStart = n - 5;
+  }
+  // Pattern 5: [...stem, A, *B, C, D, "Giải thích..."] (starred option + trailing explanation)
+  else if (n >= 6 && parts.slice(n - 5, n - 1).some((p) => p.startsWith('*'))) {
+    explanation = parts[n - 1].replace(/^(?:giải\s*thích|explanation)\s*[:=\-]?\s*/i, '').trim();
+    optionSliceStart = n - 5;
+  }
+  // Pattern 6: [...stem, A, B, C, D] (starred option or trailing key map)
+  else if (n >= 5) {
+    optionSliceStart = n - 4;
+  }
+
+  if (optionSliceStart < 1) return null;
+
+  const rawStem = parts.slice(0, optionSliceStart).join(delimiter === ':' ? ': ' : ' ').trim();
+  const numFromStem = stripLeadingQuestionNumber(rawStem, sourceIndex);
+  sourceIndex = numFromStem.sourceIndex;
+  const questionText = numFromStem.rest.trim();
+  if (!questionText) return null;
+
+  const optRaw = parts.slice(optionSliceStart, optionSliceStart + 4);
+  if (optRaw.some((o) => !o)) return null;
+
+  const letters: Array<'A' | 'B' | 'C' | 'D'> = ['A', 'B', 'C', 'D'];
+  const cleanedOpts: Record<'A' | 'B' | 'C' | 'D', string> = { A: '', B: '', C: '', D: '' };
+
+  optRaw.forEach((rawOpt, idx) => {
+    const letter = letters[idx];
+    if (rawOpt.startsWith('*')) {
+      correctAnswer = letter;
+    }
+    cleanedOpts[letter] = rawOpt.replace(/^\*\s*/, '').replace(/^[A-D][.):\-]\s*/i, '').trim();
+  });
+
+  return {
+    sourceIndex,
+    questionType: 'abcd',
+    questionText,
+    optionA: cleanedOpts.A || '—',
+    optionB: cleanedOpts.B || '—',
+    optionC: cleanedOpts.C || '—',
+    optionD: cleanedOpts.D || '—',
+    correctAnswer,
+    explanation: explanation || undefined,
+    hasExplicitAnswer: Boolean(correctAnswer),
+    warnings: [],
+  };
+}
+
+/**
  * Parses a multi-line or inline-option block (e.g. Q1: ... \n A. ... \n B. ... \n C. ... \n D. ... \n Đáp án: A)
  */
 function parseGeneralQuestionBlock(
   blockText: string,
   fallbackIndex: number
 ): ParsedRawQuestion | null {
-  // First try compact colon/pipe single-line style (e.g. Q1:...:A..:B...:C...:D...)
+  // 1. Tagged short-answer `[TLN]` / `[SA]`
+  const taggedShort = tryParseTaggedShortAnswerBlock(blockText, fallbackIndex);
+  if (taggedShort) return taggedShort;
+
+  // 2. True/False 4-statement block `[ĐS]` / `[TF]` or a)/b)/c)/d)
+  const tfBlock = tryParseTrueFalseBlock(blockText, fallbackIndex);
+  if (tfBlock) return tfBlock;
+
+  // 3. Compact colon/pipe single-line style with explicit A./B./C./D. markers
   const compact = tryParseDelimitedSingleBlock(blockText, fallbackIndex);
   if (compact) return compact;
+
+  // 4. Positional delimited ABCD without A./B./C./D. prefixes (`Câu hỏi:A:B:C:D:Đáp án`)
+  const positional = tryParsePositionalDelimitedAbcd(blockText, fallbackIndex);
+  if (positional) return positional;
 
   const lines = blockText
     .split(/\r?\n/)
@@ -286,7 +1116,6 @@ function parseGeneralQuestionBlock(
     .filter(Boolean);
   if (lines.length === 0) return null;
 
-  // Extract question number & stem start from first line
   const firstLine = lines[0];
   const qHeaderMatch = firstLine.match(/^(?:Q|Câu|Question|Bài)?\s*(\d+)\s*[:.)\-]?\s*(.*)$/i);
   const sourceIndex = qHeaderMatch && qHeaderMatch[1] ? Number(qHeaderMatch[1]) : fallbackIndex;
@@ -295,7 +1124,6 @@ function parseGeneralQuestionBlock(
   const normalizedLines = [firstRest, ...lines.slice(1)].filter(Boolean);
   const fullText = normalizedLines.join('\n');
 
-  // Check for explicit answer / explanation lines first
   let correctAnswer: 'A' | 'B' | 'C' | 'D' | undefined;
   let shortAnswerRaw = '';
   let explanation = '';
@@ -328,7 +1156,6 @@ function parseGeneralQuestionBlock(
   const bodyText = bodyLines.join('\n').trim();
   if (!bodyText) return null;
 
-  // Split inline options on the same line (e.g. "A. 1   B. 2   C. 3   D. 4") or multi-line options
   const optRegex = /(?:^|\n|\s{2,}|\t)(\*?[A-D]\*?)\s*[.):\-]\s*/g;
   const optMatches: Array<{ letter: 'A' | 'B' | 'C' | 'D'; starred: boolean; index: number; end: number }> = [];
   let om: RegExpExecArray | null;
@@ -344,7 +1171,6 @@ function parseGeneralQuestionBlock(
     });
   }
 
-  // Pick sequential A -> B -> C -> D
   const idxA = optMatches.find((m) => m.letter === 'A');
   const idxB = idxA ? optMatches.find((m) => m.letter === 'B' && m.index > idxA.index) : undefined;
   const idxC = idxB ? optMatches.find((m) => m.letter === 'C' && m.index > idxB.index) : undefined;
@@ -362,7 +1188,6 @@ function parseGeneralQuestionBlock(
       let optVal = bodyText.slice(cur.end, nextStart).trim();
       if (cur.starred) correctAnswer = cur.letter;
 
-      // Check inline "Đáp án: X" or "Giải thích: ..." stuck at end of last option
       if (i === chosen.length - 1) {
         const inlineAns = optVal.match(/^(.*?)\s*(?:đáp\s*án(?:\s*đúng)?|answer|key)\s*[:=\-]\s*([A-D])\b(.*)$/i);
         if (inlineAns) {
@@ -426,8 +1251,10 @@ function parseGeneralQuestionBlock(
 }
 
 /**
- * Parses raw question & answer text (supporting compact single-line `Q1:...:A..:B...:C...:D...`,
- * standard multi-line blocks, `*` answer markers, and trailing answer key sections).
+ * Parses raw question & answer text (supporting positional `Câu hỏi:A:B:C:D:Đáp án`,
+ * explicit `Q1:...:A..:B...:C...:D...`, `[ĐS]`/`[TF]` True/False 4-statement blocks,
+ * `[TLN]`/`[SA]` short-answer blocks, CSV/TSV tables, multi-line blocks, `*` answer markers,
+ * and trailing answer key sections).
  */
 export function parseRawExamQuestions(rawText: string): RawParseResult {
   const cleanedInput = (rawText || '').replace(/^\uFEFF/, '').trim();
@@ -437,9 +1264,14 @@ export function parseRawExamQuestions(rawText: string): RawParseResult {
       warnings: ['Nội dung văn bản thô đang trống.'],
       answeredCount: 0,
       abcdCount: 0,
+      trueFalseCount: 0,
       shortAnswerCount: 0,
     };
   }
+
+  // Try structured CSV / TSV table first
+  const tableResult = tryParseDelimitedTable(cleanedInput);
+  if (tableResult) return tableResult;
 
   const lines = cleanedInput.split(/\r?\n/);
   const questionLines: string[] = [];
@@ -467,7 +1299,18 @@ export function parseRawExamQuestions(rawText: string): RawParseResult {
   // Segment questionLines into discrete question blocks
   const blocks: string[] = [];
   let currentBlock: string[] = [];
-  const qStartLineRegex = /^(?:Q\d+|Câu\s+\d+|Question\s+\d+|Bài\s+\d+|\d+[.)])\s*(?:[:.)\-]|\s|$)/i;
+  const qStartLineRegex =
+    /^(?:Q\d+|Câu\s+\d+|Question\s+\d+|Bài\s+\d+|\d+[.)]|\[(?:ĐS|DS|TF|TLN|SA|ĐÚNG\s*\/?\s*SAI|TRẢ\s*LỜI\s*NGẮN)\])\s*(?:[:.)\-]|\s|$)/i;
+
+  const isStandaloneSingleLineQuestion = (line: string): boolean => {
+    if (/^\[(?:TLN|SA|TRẢ\s*LỜI\s*NGẮN)\]/i.test(line)) {
+      return splitUnescaped(line, ':').length >= 2 || /đáp\s*án/i.test(line);
+    }
+    if (/^\[(?:ĐS|DS|TF|ĐÚNG\s*\/?\s*SAI)\]/i.test(line)) {
+      return splitUnescaped(line, '|').length >= 5 || splitUnescaped(line, ':').length >= 5;
+    }
+    return splitUnescaped(line, ':').length >= 5 || splitUnescaped(line, '|').length >= 5;
+  };
 
   for (const rawLine of questionLines) {
     const trimmed = rawLine.trim();
@@ -479,13 +1322,16 @@ export function parseRawExamQuestions(rawText: string): RawParseResult {
       continue;
     }
 
-    // If a new question header starts immediately without blank line, flush previous block
-    if (currentBlock.length > 0 && qStartLineRegex.test(trimmed)) {
-      blocks.push(currentBlock.join('\n'));
-      currentBlock = [trimmed];
-    } else {
-      currentBlock.push(trimmed);
+    if (currentBlock.length > 0) {
+      const prevSingleStandalone =
+        currentBlock.length === 1 && isStandaloneSingleLineQuestion(currentBlock[0]);
+      if (qStartLineRegex.test(trimmed) || prevSingleStandalone || isStandaloneSingleLineQuestion(trimmed)) {
+        blocks.push(currentBlock.join('\n'));
+        currentBlock = [trimmed];
+        continue;
+      }
     }
+    currentBlock.push(trimmed);
   }
   if (currentBlock.length > 0) {
     blocks.push(currentBlock.join('\n'));
@@ -521,6 +1367,7 @@ export function parseRawExamQuestions(rawText: string): RawParseResult {
 
   const answeredCount = parsedQuestions.filter((q) => q.hasExplicitAnswer).length;
   const abcdCount = parsedQuestions.filter((q) => q.questionType === 'abcd').length;
+  const trueFalseCount = parsedQuestions.filter((q) => q.questionType === 'true_false').length;
   const shortAnswerCount = parsedQuestions.filter((q) => q.questionType === 'short_answer').length;
 
   return {
@@ -528,6 +1375,7 @@ export function parseRawExamQuestions(rawText: string): RawParseResult {
     warnings: Array.from(new Set(warnings)),
     answeredCount,
     abcdCount,
+    trueFalseCount,
     shortAnswerCount,
   };
 }
@@ -539,6 +1387,40 @@ function toExamQuestion(
   shuffleOptions: boolean
 ): ExamQuestion {
   const qId = `eq_raw_${deterministicHash(`${examSeed}:${orderIndex}:${parsed.questionText}`).toString(36)}_${orderIndex}`;
+
+  if (parsed.questionType === 'true_false') {
+    const rawStatements = (parsed.trueFalseStatements || []).slice(0, 4);
+    const statements: TrueFalseStatement[] = TF_LABELS.map((label, idx) => ({
+      label,
+      text: (rawStatements[idx]?.text || `Mệnh đề ${label}`).slice(0, 500),
+      isTrue: Boolean(rawStatements[idx]?.isTrue),
+    }));
+    const answerSummary = statements.map((s) => `${s.label}) ${s.isTrue ? 'Đúng' : 'Sai'}`).join(' · ');
+
+    return {
+      questionId: qId,
+      orderIndex,
+      chapterId: 'Tổng hợp từ ngân hàng chữ thô',
+      conceptId: 'Theo nội dung đề nhập',
+      learningOutcome: 'Đánh giá Đúng / Sai 4 mệnh đề',
+      cognitiveLevel: 'thong_hieu',
+      questionType: 'true_false',
+      scoreWeight: 1.0,
+      questionText: parsed.questionText.slice(0, 2000),
+      trueFalseStatements: statements,
+      explanation: (
+        parsed.explanation ||
+        (parsed.hasExplicitAnswer
+          ? `Đáp án chuẩn: ${answerSummary}.`
+          : `Chưa có đáp án gốc cho 4 mệnh đề (${answerSummary}) — Admin vui lòng kiểm tra lại.`)
+      ).slice(0, 2000),
+      sourceReference: 'Admin nhập từ tệp chữ thô',
+      sourceType: 'teacher_material',
+      validationStatus: parsed.hasExplicitAnswer ? 'passed' : 'needs_review',
+      validationIssues: parsed.warnings.length > 0 ? parsed.warnings : undefined,
+    };
+  }
+
   if (parsed.questionType === 'short_answer') {
     return {
       questionId: qId,
