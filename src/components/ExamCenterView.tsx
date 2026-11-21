@@ -227,13 +227,25 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
     });
   };
 
+  const getTrueFalseAnsweredCount = (q: ExamQuestion): { chosenCount: number; requiredCount: number } => {
+    const a = answersMap[q.questionId];
+    const statements = q.trueFalseStatements || [];
+    const requiredCount = statements.length > 0 ? statements.length : 4;
+    if (!a?.trueFalseChoices) return { chosenCount: 0, requiredCount };
+    const chosenCount =
+      statements.length > 0
+        ? statements.filter((s) => typeof a.trueFalseChoices?.[s.label] === 'boolean').length
+        : Object.values(a.trueFalseChoices).filter((v) => typeof v === 'boolean').length;
+    return { chosenCount, requiredCount };
+  };
+
   const isQuestionAnswered = (q: ExamQuestion): boolean => {
     const a = answersMap[q.questionId];
     if (!a) return false;
     if (q.questionType === 'abcd') return Boolean(a.selectedOption);
     if (q.questionType === 'true_false') {
-      const tf = a.trueFalseChoices || {};
-      return Object.keys(tf).length > 0;
+      const { chosenCount, requiredCount } = getTrueFalseAnsweredCount(q);
+      return chosenCount >= requiredCount;
     }
     return Boolean(a.shortAnswerText?.trim());
   };
@@ -562,6 +574,10 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
           <div className="flex flex-wrap gap-1.5">
             {activeExam.questions.map((q, idx) => {
               const answered = isQuestionAnswered(q);
+              const tfCounts =
+                q.questionType === 'true_false' ? getTrueFalseAnsweredCount(q) : null;
+              const isPartialTf =
+                tfCounts !== null && tfCounts.chosenCount > 0 && tfCounts.chosenCount < tfCounts.requiredCount;
               const bk = latestResult?.attempt.breakdown.find((b) => b.questionId === q.questionId);
               let cls =
                 'glass-control text-slate-700 dark:text-slate-300';
@@ -575,12 +591,19 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                 cls = isEthereal
                   ? 'bg-gradient-to-r from-[#4338CA] to-[#6366F1] border-indigo-500 text-white'
                   : 'bg-sky-700 border-sky-700 text-white';
+              } else if (isPartialTf) {
+                cls = 'border-amber-500 bg-amber-500/15 text-amber-800 dark:text-amber-300';
               }
               return (
                 <a
                   key={q.questionId}
                   href={`#exam-q-${q.questionId}`}
                   onClick={() => setFocusedQuestionIdx(idx)}
+                  title={
+                    isPartialTf && tfCounts
+                      ? `Câu ${idx + 1}: Đã chọn ${tfCounts.chosenCount}/${tfCounts.requiredCount} mệnh đề Đúng/Sai`
+                      : undefined
+                  }
                   className={`size-8 rounded-xl border font-mono text-xs font-bold flex items-center justify-center ${cls} ${
                     isEthereal && focusedQuestionIdx === idx && !latestResult
                       ? 'ring-2 ring-indigo-500 ring-offset-1 dark:ring-offset-slate-900'

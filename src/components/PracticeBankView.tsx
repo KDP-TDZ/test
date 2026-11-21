@@ -40,7 +40,7 @@ import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
 interface PracticeBankViewProps {
   items: PracticeItem[];
-  onItemsChange: (updated: PracticeItem[]) => void;
+  onItemsChange: React.Dispatch<React.SetStateAction<PracticeItem[]>>;
   initialSubTab?: 'bank' | 'sprint10' | 'flashcards';
 }
 
@@ -239,7 +239,14 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
     [flashcards, flashcardFilter]
   );
 
-  const currentCard = filteredCards[activeCardIndex] || null;
+  useEffect(() => {
+    setActiveCardIndex((idx) => {
+      if (filteredCards.length === 0) return 0;
+      return idx >= filteredCards.length ? filteredCards.length - 1 : idx;
+    });
+  }, [filteredCards.length]);
+
+  const currentCard = filteredCards[activeCardIndex] || filteredCards[0] || null;
 
   const handleRetryAnswer = async (item: PracticeItem, choice: 'A' | 'B' | 'C' | 'D') => {
     if (!user || selectedChoice) return;
@@ -276,7 +283,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
 
       const updatedItem = await recordPracticeRetryWithSchedule(item, isCorrect);
       // Update in state WITHOUT ever auto-deleting!
-      onItemsChange(items.map((x) => (x.itemId === item.itemId ? updatedItem : x)));
+      onItemsChange((prev) => prev.map((x) => (x.itemId === item.itemId ? updatedItem : x)));
       setPracticingItem(updatedItem);
     } catch (err) {
       console.error('Retry failed:', err);
@@ -286,7 +293,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
   const handleToggleFlag = async (item: PracticeItem) => {
     try {
       const updated = await togglePracticeItemFlag(item);
-      onItemsChange(items.map((x) => (x.itemId === item.itemId ? updated : x)));
+      onItemsChange((prev) => prev.map((x) => (x.itemId === item.itemId ? updated : x)));
     } catch (err) {
       console.error('Toggle flag failed:', err);
     }
@@ -294,7 +301,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
 
   const handleConfirmDelete = async (itemId: string) => {
     await manuallyDeletePracticeItem(itemId);
-    onItemsChange(items.filter((i) => i.itemId !== itemId));
+    onItemsChange((prev) => prev.filter((i) => i.itemId !== itemId));
     if (practicingItem?.itemId === itemId) {
       setPracticingItem(null);
       setSelectedChoice(null);
@@ -346,7 +353,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
         idempotencyAttemptId: `${sessionId}_sprint_${item.itemId}_${Date.now()}`,
       });
       const updated = await recordPracticeRetryWithSchedule(item, isCorrect);
-      onItemsChange(items.map((x) => (x.itemId === item.itemId ? updated : x)));
+      onItemsChange((prev) => prev.map((x) => (x.itemId === item.itemId ? updated : x)));
     } catch {
       // Keep UI responsive
     }
@@ -387,6 +394,8 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
     mastery: FlashcardItem['masteryStatus'],
     stage: 0 | 1 | 2 | 3
   ) => {
+    const staysInFilter = flashcardFilter === 'all' || mastery === flashcardFilter;
+    const currentLen = filteredCards.length;
     await updateFlashcardMastery(card.flashcardId, mastery, stage);
     setFlashcards((prev) =>
       prev.map((c) =>
@@ -396,7 +405,14 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
       )
     );
     setCardFlipped(false);
-    setActiveCardIndex((idx) => (filteredCards.length > 1 ? (idx + 1) % filteredCards.length : 0));
+    setActiveCardIndex((idx) => {
+      if (staysInFilter) {
+        return currentLen > 1 ? (idx + 1) % currentLen : 0;
+      }
+      const nextLen = Math.max(0, currentLen - 1);
+      if (nextLen === 0) return 0;
+      return idx >= nextLen ? 0 : idx;
+    });
   };
 
   const handleDeleteCard = async (flashcardId: string) => {

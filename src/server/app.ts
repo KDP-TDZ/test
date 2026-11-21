@@ -1547,7 +1547,7 @@ export function createApiApp(): express.Express {
     };
     const tokensOut: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
     try {
-      const cfg = await loadAuthoritativeAiConfig();
+      const cfg = await loadAuthoritativeAiConfig(user.idToken);
       const result = await TextbookSynthesisService.synthesizeOutline({
         grade: grade || '10',
         subject: subject || 'hoa_hoc',
@@ -1604,7 +1604,7 @@ export function createApiApp(): express.Express {
 
     const tokensOut: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
     try {
-      const cfg = await loadAuthoritativeAiConfig();
+      const cfg = await loadAuthoritativeAiConfig(user.idToken);
       const chunks = await TextbookSynthesisService.synthesizeChapterChunks({
         referenceId,
         grade: grade || '10',
@@ -1666,7 +1666,7 @@ export function createApiApp(): express.Express {
 
       const tokensOut: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
       try {
-        const cfg = await loadAuthoritativeAiConfig();
+        const cfg = await loadAuthoritativeAiConfig(user.idToken);
         const pages = await TextbookSynthesisService.ocrScannedTextbookPages({
           files: rawFiles.map((f, idx) => ({
             buffer: f.buffer,

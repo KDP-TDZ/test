@@ -24,12 +24,17 @@ export const GROQ_VISION_MODELS = [
 
 export function isGroqVisionModelId(modelId: string): boolean {
   const raw = stripGroqPrefix(modelId).toLowerCase();
-  return GROQ_VISION_MODELS.some((m) => m.toLowerCase() === raw) || raw.includes('llama-4-scout') || raw.includes('llama-4-maverick');
+  return (
+    GROQ_VISION_MODELS.some((m) => m.toLowerCase() === raw) ||
+    raw.includes('llama-4-scout') ||
+    raw.includes('llama-4-maverick') ||
+    raw.includes('vision') ||
+    raw.includes('llava') ||
+    raw.includes('pixtral')
+  );
 }
 
 const LEGACY_GROQ_MODEL_ALIASES: Record<string, string> = {
-  'llama-3.3-70b-versatile': 'openai/gpt-oss-120b',
-  'llama-3.1-8b-instant': 'openai/gpt-oss-20b',
   'llama3-70b-8192': 'openai/gpt-oss-120b',
   'llama3-8b-8192': 'openai/gpt-oss-20b',
   'mixtral-8x7b-32768': 'openai/gpt-oss-120b',
@@ -48,7 +53,7 @@ export function stripGroqPrefix(modelId: string): string {
 }
 
 /**
- * Normalizes retired/legacy Groq model IDs (e.g. `groq:llama-3.3-70b-versatile`)
+ * Normalizes retired/legacy Groq model IDs (e.g. `groq:llama3-70b-8192`)
  * to currently active Groq production models so saved Firestore configs never hit HTTP 404.
  */
 export function normalizeGroqModelId(modelId: string): string {
@@ -175,51 +180,64 @@ async function executeGroqRequest(params: {
   maxTokens: number;
   signal?: AbortSignal;
 }): Promise<{ ok: true; result: GroqCompletionResult } | { ok: false; status: number; errText: string }> {
-  const body: Record<string, unknown> = {
-    model: params.groqModel,
-    messages: params.messages,
-    temperature: 0.15,
-    max_tokens: params.maxTokens,
+  const sendOnce = async (useResponseFormatJson: boolean) => {
+    const body: Record<string, unknown> = {
+      model: params.groqModel,
+      messages: params.messages,
+      temperature: 0.15,
+      max_tokens: params.maxTokens,
+    };
+
+    if (useResponseFormatJson) {
+      body.response_format = { type: 'json_object' };
+    }
+
+    const res = await fetch(GROQ_API_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${params.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: params.signal,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      return { ok: false as const, status: res.status, errText };
+    }
+
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string; reasoning?: string } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    };
+
+    const msg = data.choices?.[0]?.message;
+    const rawText = msg?.content || msg?.reasoning || '';
+    const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
+
+    return {
+      ok: true as const,
+      result: {
+        text,
+        promptTokens: data.usage?.prompt_tokens || 0,
+        candidateTokens: data.usage?.completion_tokens || 0,
+        totalTokens: data.usage?.total_tokens || 0,
+        resolvedModel: `groq:${params.groqModel}`,
+      },
+    };
   };
 
-  if (params.jsonMode) {
-    body.response_format = { type: 'json_object' };
+  const primary = await sendOnce(Boolean(params.jsonMode));
+  // Some Groq models (reasoning/vision or strict JSON validator) return HTTP 400 when response_format=json_object is set;
+  // retry without response_format and extract JSON from the text output.
+  if (!primary.ok && primary.status === 400 && params.jsonMode) {
+    const withoutJsonFormat = await sendOnce(false);
+    if (withoutJsonFormat.ok) {
+      return withoutJsonFormat;
+    }
   }
-
-  const res = await fetch(GROQ_API_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${params.apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-    signal: params.signal,
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    return { ok: false, status: res.status, errText };
-  }
-
-  const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string; reasoning?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-  };
-
-  const msg = data.choices?.[0]?.message;
-  const rawText = msg?.content || (!params.jsonMode ? msg?.reasoning || '' : '');
-  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
-
-  return {
-    ok: true,
-    result: {
-      text,
-      promptTokens: data.usage?.prompt_tokens || 0,
-      candidateTokens: data.usage?.completion_tokens || 0,
-      totalTokens: data.usage?.total_tokens || 0,
-      resolvedModel: `groq:${params.groqModel}`,
-    },
-  };
+  return primary;
 }
 
 export async function callGroqChatCompletion(params: {
@@ -295,17 +313,46 @@ export async function callGroqChatCompletion(params: {
     return firstAttempt.result;
   }
 
-  // If Groq reports HTTP 404 (model retired or disabled on this org), discover active models on the key and retry once
-  if (firstAttempt.status === 404 && !params.disableModelAutoFallback) {
+  let lastStatus = firstAttempt.status;
+  let lastErrText = firstAttempt.errText;
+
+  // If Groq reports HTTP 404 or 400 (model not enabled on this org or unsupported parameter), discover active models and try multiple candidates
+  if ((firstAttempt.status === 404 || firstAttempt.status === 400) && !params.disableModelAutoFallback) {
     const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
-    const fallbackGroqModel = hasImages
-      ? availableModels.find((m) => isGroqVisionModelId(m) && m.toLowerCase() !== groqModel.toLowerCase()) ||
-        null
-      : pickBestAvailableGroqModel(availableModels, groqModel);
-    if (fallbackGroqModel) {
+    const tried = new Set<string>([groqModel.toLowerCase()]);
+    const candidatePool: string[] = [];
+
+    if (hasImages) {
+      for (const m of availableModels) {
+        if (isGroqVisionModelId(m)) candidatePool.push(m);
+      }
+      for (const v of GROQ_VISION_MODELS) {
+        candidatePool.push(v);
+      }
+    } else {
+      for (const pref of GROQ_PREFERRED_TEXT_MODELS) {
+        const match = availableModels.find((m) => m.toLowerCase() === pref.toLowerCase());
+        if (match) candidatePool.push(match);
+      }
+      for (const m of availableModels) {
+        candidatePool.push(m);
+      }
+      for (const pref of GROQ_PREFERRED_TEXT_MODELS) {
+        candidatePool.push(pref);
+      }
+    }
+
+    let attempts = 0;
+    for (const candidate of candidatePool) {
+      const lower = candidate.trim().toLowerCase();
+      if (!lower || tried.has(lower)) continue;
+      tried.add(lower);
+      attempts += 1;
+      if (attempts > 4) break;
+
       const retryAttempt = await executeGroqRequest({
         apiKey,
-        groqModel: fallbackGroqModel,
+        groqModel: candidate.trim(),
         messages,
         jsonMode: params.jsonMode,
         maxTokens,
@@ -314,10 +361,13 @@ export async function callGroqChatCompletion(params: {
       if (retryAttempt.ok) {
         return retryAttempt.result;
       }
+      lastStatus = retryAttempt.status;
+      lastErrText = retryAttempt.errText;
     }
   }
 
-  const { status, errText } = firstAttempt;
+  const status = lastStatus;
+  const errText = lastErrText;
   if (status === 429) {
     throw new Error(`429 RESOURCE_EXHAUSTED (Groq): ${errText.slice(0, 180)}`);
   }

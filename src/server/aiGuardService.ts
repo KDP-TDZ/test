@@ -130,6 +130,7 @@ function mergeTaskModels(
 
 let lastRemoteConfigSyncAt = 0;
 const CONFIG_SYNC_TTL_MS = 60_000;
+const pendingConsumedOverrides = new Set<AiTaskType>();
 
 export function getAuthoritativeAiConfigSnapshot(): SystemAiConfig {
   return authoritativeAiConfig;
@@ -154,6 +155,19 @@ export async function loadAuthoritativeAiConfig(
           remote.taskModels,
           true
         );
+        // Ensure any 1-time override consumed in memory by a student request is never rolled back by a stale Firestore read
+        let needsRemoteFlush = false;
+        for (const consumedTask of pendingConsumedOverrides) {
+          if (migratedTaskModels[consumedTask]?.oneTimeOverrideModel) {
+            migratedTaskModels[consumedTask] = {
+              ...migratedTaskModels[consumedTask],
+              oneTimeOverrideModel: null,
+            };
+            needsRemoteFlush = true;
+          } else {
+            pendingConsumedOverrides.delete(consumedTask);
+          }
+        }
         const resolvedActiveModel = hasLegacyPreV32Tasks
           ? 'groq:openai/gpt-oss-120b'
           : normalizeGroqModelId(remote.activeModel || 'groq:openai/gpt-oss-120b');
@@ -175,6 +189,19 @@ export async function loadAuthoritativeAiConfig(
             ...(remote.rateLimitConfig || {}),
           },
         };
+
+        if (needsRemoteFlush) {
+          try {
+            await firestoreRestSet(
+              'systemConfig/aiService',
+              authoritativeAiConfig as unknown as Record<string, unknown>,
+              idToken
+            );
+            pendingConsumedOverrides.clear();
+          } catch {
+            // Keep in pendingConsumedOverrides until an admin token flushes it
+          }
+        }
       }
     } catch {
       // Fall back to current authoritative server state if Firestore not yet initialized
@@ -193,6 +220,7 @@ export async function consumeOneTimeModelOverride(
 ): Promise<void> {
   const cur = authoritativeAiConfig.taskModels[taskType];
   if (!cur?.oneTimeOverrideModel) return;
+  pendingConsumedOverrides.add(taskType);
   authoritativeAiConfig = {
     ...authoritativeAiConfig,
     taskModels: {
@@ -212,8 +240,9 @@ export async function consumeOneTimeModelOverride(
         authoritativeAiConfig as unknown as Record<string, unknown>,
         idToken
       );
+      pendingConsumedOverrides.delete(taskType);
     } catch {
-      // Non-fatal if caller doesn't have systemConfig write role (in-memory clear still enforces single-run!)
+      // Non-fatal if caller doesn't have systemConfig write role (pendingConsumedOverrides prevents rollback!)
     }
   }
 }
@@ -226,6 +255,11 @@ export async function setOneTimeTaskOverride(params: {
   idToken: string;
 }): Promise<SystemAiConfig> {
   const { taskType, modelId, actorUid, actorEmail, idToken } = params;
+  if (modelId && modelId.trim()) {
+    pendingConsumedOverrides.delete(taskType);
+  } else {
+    pendingConsumedOverrides.add(taskType);
+  }
   const curTask = authoritativeAiConfig.taskModels[taskType] || DEFAULT_TASK_MODELS[taskType];
   const next: SystemAiConfig = {
     ...authoritativeAiConfig,
@@ -243,6 +277,7 @@ export async function setOneTimeTaskOverride(params: {
   lastRemoteConfigSyncAt = Date.now();
   try {
     await firestoreRestSet('systemConfig/aiService', next as unknown as Record<string, unknown>, idToken);
+    pendingConsumedOverrides.delete(taskType);
   } catch (err) {
     console.warn('Warning: unable to persist 1-run model override via REST:', err);
   }
@@ -275,18 +310,38 @@ export async function updateAuthoritativeAiConfig(
     clearAiResponseCache();
   }
 
+  let updatedTaskModels = patch.taskModels
+    ? mergeTaskModels(authoritativeAiConfig.taskModels, patch.taskModels)
+    : { ...authoritativeAiConfig.taskModels };
+
+  // When Super Admin changes activeModel in the Overview tab without passing patch.taskModels,
+  // propagate activeModel as defaultModel across text tasks so routing reflects their choice immediately.
+  if (patch.activeModel && !patch.taskModels) {
+    const normalizedActive = normalizeGroqModelId(patch.activeModel.trim());
+    const propagated = {} as Record<AiTaskType, TaskModelConfig>;
+    for (const taskKey of Object.keys(DEFAULT_TASK_MODELS) as AiTaskType[]) {
+      const cur = updatedTaskModels[taskKey] || DEFAULT_TASK_MODELS[taskKey];
+      propagated[taskKey] = {
+        ...cur,
+        defaultModel: normalizedActive,
+      };
+    }
+    updatedTaskModels = propagated;
+  }
+
   const next: SystemAiConfig = {
     ...authoritativeAiConfig,
     ...patch,
+    activeModel: patch.activeModel
+      ? normalizeGroqModelId(patch.activeModel.trim())
+      : authoritativeAiConfig.activeModel,
     configVersion: shouldBumpVersion
       ? (authoritativeAiConfig.configVersion || 1) + 1
       : authoritativeAiConfig.configVersion || 1,
     allowedOrigins: Array.isArray(patch.allowedOrigins)
       ? patch.allowedOrigins.map((o) => o.trim()).filter(Boolean)
       : authoritativeAiConfig.allowedOrigins,
-    taskModels: patch.taskModels
-      ? mergeTaskModels(authoritativeAiConfig.taskModels, patch.taskModels)
-      : authoritativeAiConfig.taskModels,
+    taskModels: updatedTaskModels,
     rateLimitConfig: {
       ...authoritativeAiConfig.rateLimitConfig,
       ...(patch.rateLimitConfig || {}),
@@ -296,6 +351,7 @@ export async function updateAuthoritativeAiConfig(
   };
   authoritativeAiConfig = next;
   lastRemoteConfigSyncAt = Date.now();
+  pendingConsumedOverrides.clear();
 
   try {
     await firestoreRestSet('systemConfig/aiService', next as unknown as Record<string, unknown>, idToken);

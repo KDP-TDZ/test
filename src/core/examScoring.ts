@@ -16,6 +16,30 @@ function normalizeShortAnswer(raw: string): string {
 }
 
 /**
+ * Parses a normalized short answer string as either a finite decimal number or a simple fraction a/b (b !== 0).
+ */
+export function parseFlexibleNumericAnswer(raw: string): number | null {
+  const cleaned = normalizeShortAnswer(raw);
+  if (!cleaned) return null;
+
+  const fractionMatch = cleaned.match(/^([+-]?\d+(?:\.\d+)?)\/([+-]?\d+(?:\.\d+)?)$/);
+  if (fractionMatch) {
+    const numerator = Number(fractionMatch[1]);
+    const denominator = Number(fractionMatch[2]);
+    if (Number.isFinite(numerator) && Number.isFinite(denominator) && denominator !== 0) {
+      return numerator / denominator;
+    }
+    return null;
+  }
+
+  if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(cleaned)) {
+    return null;
+  }
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : null;
+}
+
+/**
  * Deterministically grades an exam submission across ABCD, True/False (partial rubric), and Short Answer items.
  */
 export function gradeExamSubmission(
@@ -115,11 +139,17 @@ export function gradeExamSubmission(
         qEarned = qMax;
         isFullCorrect = true;
       } else if (normalizedInput) {
-        const numInput = Number(normalizedInput);
-        if (Number.isFinite(numInput)) {
+        const numInput = parseFlexibleNumericAnswer(normalizedInput);
+        if (numInput !== null) {
           const numericMatch = accepted.some((acc) => {
-            const accNum = Number(acc);
-            return Number.isFinite(accNum) && Math.abs(accNum - numInput) <= 0.01;
+            const accNum = parseFlexibleNumericAnswer(acc);
+            if (accNum === null) return false;
+            // Prevent "0" from matching small non-zero numbers via absolute tolerance
+            if (accNum === 0 || numInput === 0) {
+              return accNum === numInput;
+            }
+            const tolerance = Math.abs(accNum) < 0.1 ? Math.abs(accNum) * 0.01 : 0.01;
+            return Math.abs(accNum - numInput) <= tolerance + 1e-12;
           });
           if (numericMatch) {
             qEarned = qMax;

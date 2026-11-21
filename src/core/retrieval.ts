@@ -106,7 +106,8 @@ export function sanitizeReferenceChunkForFirestore(params: {
   const chapter = (params.chapter || 'Chương 1: Kiến thức trọng tâm').trim().slice(0, 190);
   const lesson = (params.lesson || 'Bài học trọng tâm').trim().slice(0, 180);
   const sectionTitle = (params.sectionTitle || lesson || 'Nội dung chuẩn SGK').trim().slice(0, 180);
-  const pageNumber = Math.max(0, Math.floor(Number(params.pageNumber) || idx));
+  const parsedPage = Math.floor(Number(params.pageNumber));
+  const pageNumber = Number.isFinite(parsedPage) && parsedPage >= 1 ? parsedPage : idx;
   const content = (params.content || '').trim().slice(0, 6000) || chapter;
 
   const cleanList = (arr: string[] | undefined, maxItems: number, maxLen = 140): string[] =>

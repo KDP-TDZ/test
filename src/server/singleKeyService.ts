@@ -930,26 +930,32 @@ export async function testSingleGeminiKey(params: {
   }
 
   let resultStatus: KeyTestStatus = 'Connected';
-  const modelToTest = activeModel || 'gemini-4-hydrogen';
+  const rawCandidate = (activeModel || '').trim();
+  const modelToTest =
+    !rawCandidate || rawCandidate.startsWith('groq:') || rawCandidate.startsWith('cf:')
+      ? 'gemini-3.1-flash-lite'
+      : rawCandidate;
+  let resolvedGeminiModel: string = modelToTest;
   let resultMessage = `Kết nối Gemini API thành công (${modelToTest} phản hồi bình thường).`;
 
   try {
-    const ai = new GoogleGenAI({
-      apiKey: keyToTest,
-      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-    });
-    const resp = await ai.models.generateContent({
+    const { generateGeminiContentWithFallback } = await import('./modelRouter.js');
+    const resp = await generateGeminiContentWithFallback({
+      apiKeyOverride: keyToTest,
       model: modelToTest,
       contents: 'Trả lời 1 từ: OK',
+      thinkingTier: 'minimal',
       config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         maxOutputTokens: 128,
         abortSignal: AbortSignal.timeout(30_000),
       },
     });
+    resolvedGeminiModel = resp.resolvedModel || modelToTest;
     if (!resp.text) {
       resultStatus = 'Temporary provider error';
       resultMessage = 'Model phản hồi rỗng.';
+    } else {
+      resultMessage = `Kết nối Gemini API thành công (model ${resolvedGeminiModel} phản hồi bình thường).`;
     }
   } catch (err) {
     const rawMsg = err instanceof Error ? err.message : String(err);
@@ -974,8 +980,24 @@ export async function testSingleGeminiKey(params: {
     }
   }
 
-  // Persist test status if testing the saved admin key
-  if (testedSource === 'admin' && cachedSingleKey) {
+  // If testing a key pasted in the input box succeeds, automatically save & activate it immediately
+  // so the user doesn't get "Model AI không khả dụng / Chưa cấu hình key" when going straight to Kiểm định.
+  if (testedSource === 'preview_input' && resultStatus === 'Connected') {
+    const check = validateApiKeyInput(keyToTest);
+    if (check.valid) {
+      await setSingleGeminiApiKey({
+        rawKey: keyToTest,
+        label: cachedSingleKey?.label || 'Gemini API Key duy nhất',
+        actorUid,
+        actorEmail,
+        idToken,
+      });
+      resultMessage = `${resultMessage} Đã tự động lưu và kích hoạt khóa này cho Kiểm định.`;
+    }
+  }
+
+  // Persist test status if testing the saved admin key (or just auto-saved preview_input key)
+  if ((testedSource === 'admin' || (testedSource === 'preview_input' && resultStatus === 'Connected')) && cachedSingleKey) {
     cachedSingleKey.lastTestStatus = resultStatus;
     cachedSingleKey.lastTestAt = testedAt;
     cachedSingleKey.lastTestMessage = resultMessage.slice(0, 280);
@@ -1161,7 +1183,22 @@ export async function testGroqApiKey(params: {
     resultMessage = `Lỗi kết nối Groq Cloud: ${(err instanceof Error ? err.message : String(err)).slice(0, 140)}`;
   }
 
-  if (testedSource === 'admin' && cachedGroqKey) {
+  // If testing a Groq key pasted in the input box succeeds, automatically save & activate it immediately
+  if (testedSource === 'preview_input' && resultStatus === 'Connected') {
+    const check = validateApiKeyInput(keyToTest);
+    if (check.valid) {
+      await setGroqApiKey({
+        rawKey: keyToTest,
+        label: cachedGroqKey?.label || 'Groq Cloud Free API Key',
+        actorUid,
+        actorEmail,
+        idToken,
+      });
+      resultMessage = `${resultMessage} Đã tự động lưu và kích hoạt khóa Groq này cho Kiểm định.`;
+    }
+  }
+
+  if ((testedSource === 'admin' || (testedSource === 'preview_input' && resultStatus === 'Connected')) && cachedGroqKey) {
     cachedGroqKey.lastTestStatus = resultStatus;
     cachedGroqKey.lastTestAt = testedAt;
     cachedGroqKey.lastTestMessage = resultMessage.slice(0, 280);
@@ -1243,8 +1280,8 @@ export async function testCloudflareCredentials(params: {
   let testedSource: 'admin' | 'server_env' | 'preview_input' | 'none' = 'none';
 
   if (accountIdOverride?.trim() || apiTokenOverride?.trim()) {
-    accountId = (accountIdOverride || '').trim();
-    apiToken = (apiTokenOverride || '').trim();
+    accountId = (accountIdOverride || '').trim() || cachedCloudflareCreds?.accountId || '';
+    apiToken = (apiTokenOverride || '').trim() || cachedCloudflareCreds?.apiToken || '';
     testedSource = 'preview_input';
   } else if (cachedCloudflareCreds) {
     accountId = cachedCloudflareCreds.accountId;
@@ -1324,7 +1361,22 @@ export async function testCloudflareCredentials(params: {
     resultMessage = `Lỗi kết nối Cloudflare Workers AI: ${(err instanceof Error ? err.message : String(err)).slice(0, 140)}`;
   }
 
-  if (testedSource === 'admin' && cachedCloudflareCreds) {
+  if (testedSource === 'preview_input' && resultStatus === 'Connected') {
+    const tokCheck = validateCloudflareToken(apiToken);
+    if (tokCheck.valid) {
+      await setCloudflareCredentials({
+        accountId,
+        apiToken,
+        label: cachedCloudflareCreds?.label || 'Cloudflare Workers AI Free',
+        actorUid,
+        actorEmail,
+        idToken,
+      });
+      resultMessage = `${resultMessage} Đã tự động lưu và kích hoạt Cloudflare Workers AI cho Kiểm định.`;
+    }
+  }
+
+  if ((testedSource === 'admin' || (testedSource === 'preview_input' && resultStatus === 'Connected')) && cachedCloudflareCreds) {
     cachedCloudflareCreds.lastTestStatus = resultStatus;
     cachedCloudflareCreds.lastTestAt = testedAt;
     cachedCloudflareCreds.lastTestMessage = resultMessage.slice(0, 280);

@@ -142,8 +142,13 @@ export async function withExponentialBackoff<T>(
 export function thinkingConfigForModel(
   modelId: string,
   tier: 'minimal' | 'low' | 'medium'
-): { thinkingLevel: ThinkingLevel } {
-  const isLite = modelId.toLowerCase().includes('flash-lite');
+): { thinkingLevel: ThinkingLevel } | undefined {
+  const lower = modelId.toLowerCase();
+  // Only Gemini 3 and Gemini 4 families support thinkingLevel; passing thinkingLevel to gemini-2.5-* causes HTTP 400.
+  if (!lower.includes('gemini-3') && !lower.includes('gemini-4')) {
+    return undefined;
+  }
+  const isLite = lower.includes('flash-lite');
   if (tier === 'minimal') {
     // Gemini 3.1 Flash Lite supports MINIMAL; Gemini 4 models require at least LOW (MINIMAL returns 400).
     return { thinkingLevel: isLite ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW };
@@ -155,6 +160,158 @@ export function thinkingConfigForModel(
 }
 
 let cachedAiClient: { apiKey: string; client: GoogleGenAI } | null = null;
+const workingGeminiModelPerKey = new Map<string, string>();
+
+export const GEMINI_FALLBACK_CANDIDATES = [
+  'gemini-3.1-flash-lite',
+  'gemini-4-hydrogen',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-3.1-flash-lite-preview',
+  'gemini-3-flash-preview',
+] as const;
+
+export function sanitizeGeminiModelId(modelId: string): string {
+  const trimmed = (modelId || '').trim();
+  if (!trimmed || isGroqModelId(trimmed) || isCloudflareModelId(trimmed)) {
+    return 'gemini-3.1-flash-lite';
+  }
+  return trimmed.startsWith('models/') ? trimmed.slice('models/'.length) : trimmed;
+}
+
+async function fetchPublicGeminiGenerateModels(apiKey: string, signal?: AbortSignal): Promise<string[]> {
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(url, { method: 'GET', signal });
+    if (!res.ok) return [];
+    const data = (await res.json()) as {
+      models?: Array<{ name?: string; supportedGenerationMethods?: string[] }>;
+    };
+    return (data.models || [])
+      .filter(
+        (m) =>
+          m &&
+          typeof m.name === 'string' &&
+          Array.isArray(m.supportedGenerationMethods) &&
+          m.supportedGenerationMethods.includes('generateContent')
+      )
+      .map((m) => m.name!.replace(/^models\//, '').trim())
+      .filter((name) => name.startsWith('gemini-') && !name.includes('embedding') && !name.includes('tts') && !name.includes('imagen'));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Calls `ai.models.generateContent` with automatic model discovery & fallback when an external or sandbox
+ * Gemini API key returns 404 NOT_FOUND on an internal model alias (e.g. `gemini-4-hydrogen` or `gemini-3.1-flash-lite`).
+ */
+export async function generateGeminiContentWithFallback(params: {
+  ai?: GoogleGenAI;
+  apiKeyOverride?: string;
+  model: string;
+  contents: unknown;
+  config?: Record<string, unknown>;
+  thinkingTier?: 'minimal' | 'low' | 'medium';
+}): Promise<{ text: string; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number }; resolvedModel: string }> {
+  const apiKey = (params.apiKeyOverride || '').trim() || (await resolveActiveGeminiApiKey());
+  const keyHash = crypto.createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
+  const ai =
+    params.ai ||
+    new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+
+  const requestedModel = sanitizeGeminiModelId(params.model);
+  const cachedWorking = workingGeminiModelPerKey.get(keyHash);
+  const candidates: string[] = [];
+  for (const m of [requestedModel, cachedWorking, ...GEMINI_FALLBACK_CANDIDATES]) {
+    if (m && !candidates.includes(m)) {
+      candidates.push(m);
+    }
+  }
+
+  let lastErr: unknown = null;
+  const tried = new Set<string>();
+
+  const tryCandidate = async (candidateModel: string) => {
+    tried.add(candidateModel);
+    const baseConfig = { ...(params.config || {}) };
+    delete baseConfig.thinkingConfig;
+    const tc = params.thinkingTier ? thinkingConfigForModel(candidateModel, params.thinkingTier) : undefined;
+    if (tc) {
+      baseConfig.thinkingConfig = tc;
+    }
+
+    try {
+      const resp = await ai.models.generateContent({
+        model: candidateModel,
+        contents: params.contents as never,
+        config: baseConfig as never,
+      });
+      workingGeminiModelPerKey.set(keyHash, candidateModel);
+      return {
+        text: resp.text || '',
+        usageMetadata: resp.usageMetadata,
+        resolvedModel: candidateModel,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // If thinkingConfig caused a 400 error on a preview/flash model, retry once without thinkingConfig
+      if (tc && (msg.includes('thinking') || msg.includes('Thinking') || msg.includes('INVALID_ARGUMENT'))) {
+        delete baseConfig.thinkingConfig;
+        const retryResp = await ai.models.generateContent({
+          model: candidateModel,
+          contents: params.contents as never,
+          config: baseConfig as never,
+        });
+        workingGeminiModelPerKey.set(keyHash, candidateModel);
+        return {
+          text: retryResp.text || '',
+          usageMetadata: retryResp.usageMetadata,
+          resolvedModel: candidateModel,
+        };
+      }
+      throw err;
+    }
+  };
+
+  for (const candidate of candidates) {
+    try {
+      return await tryCandidate(candidate);
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      const isModelNotFoundOrUnsupported =
+        msg.includes('NOT_FOUND') ||
+        msg.includes('404') ||
+        msg.includes('not found') ||
+        msg.includes('is not supported for generateContent');
+      if (!isModelNotFoundOrUnsupported) {
+        throw err;
+      }
+    }
+  }
+
+  // Last resort: query public /v1beta/models for this key and try the first available flash/pro model
+  const signal = params.config?.abortSignal as AbortSignal | undefined;
+  const discovered = await fetchPublicGeminiGenerateModels(apiKey, signal);
+  for (const disc of discovered) {
+    if (tried.has(disc)) continue;
+    try {
+      return await tryCandidate(disc);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  throw lastErr || new Error(`NOT_FOUND: Không tìm thấy model Gemini khả dụng cho khóa hiện tại.`);
+}
 
 export async function createServerAiClient(): Promise<GoogleGenAI> {
   const apiKey = await resolveActiveGeminiApiKey();
@@ -189,13 +346,43 @@ export function isModelProviderConfigured(modelId: string): boolean {
   return isGeminiConfigured();
 }
 
+function pickConfiguredProviderModel(
+  taskType: AiTaskType,
+  preferredModel: string,
+  activeModel: string,
+  excludeModel?: string
+): string {
+  if (isModelProviderConfigured(preferredModel) && preferredModel !== excludeModel) {
+    return preferredModel;
+  }
+  if (isModelProviderConfigured(activeModel) && activeModel !== excludeModel) {
+    return activeModel;
+  }
+  if (isGroqConfigured()) {
+    const groqPrimary = defaultGroqRescueModelForTask(taskType);
+    if (groqPrimary !== excludeModel) return groqPrimary;
+    return groqPrimary === GROQ_RESCUE_MODEL_STRONG ? GROQ_RESCUE_MODEL_FAST : 'groq:meta-llama/llama-4-scout-17b-16e-instruct';
+  }
+  if (isGeminiConfigured()) {
+    const geminiPrimary = 'gemini-3.1-flash-lite';
+    if (geminiPrimary !== excludeModel) return geminiPrimary;
+    return 'gemini-4-hydrogen';
+  }
+  if (isCloudflareConfigured()) {
+    const cfPrimary = defaultCloudflareRescueModelForTask(taskType);
+    if (cfPrimary !== excludeModel) return cfPrimary;
+    return cfPrimary === CF_RESCUE_MODEL_STRONG ? CF_RESCUE_MODEL_FAST : CF_RESCUE_MODEL_STRONG;
+  }
+  return preferredModel;
+}
+
 export function resolveModelForTask(
   taskType: AiTaskType,
   config: SystemAiConfig,
   consumeOverride?: () => void
 ): ResolvedModelDecision {
   const taskCfg = config.taskModels?.[taskType] || DEFAULT_TASK_MODELS[taskType];
-  const activeFallbackDefault = config.activeModel || 'groq:openai/gpt-oss-120b';
+  const activeFallbackDefault = (config.activeModel || 'groq:openai/gpt-oss-120b').trim();
 
   let modelId = (taskCfg.defaultModel || activeFallbackDefault).trim();
   let usedOverride = false;
@@ -210,22 +397,13 @@ export function resolveModelForTask(
     taskCfg.fallbackModel || 'groq:meta-llama/llama-4-scout-17b-16e-instruct'
   ).trim();
 
-  // If primary or fallback points to Gemini when Gemini API key is NOT configured and Groq IS configured,
-  // automatically route to Groq so a missing Gemini key never blocks Groq-unified tasks.
-  const isPrimaryGemini = !isGroqModelId(modelId) && !isCloudflareModelId(modelId);
-  if (isPrimaryGemini && !isGeminiConfigured() && isGroqConfigured()) {
-    modelId = isGroqModelId(activeFallbackDefault)
-      ? activeFallbackDefault
-      : 'groq:openai/gpt-oss-120b';
+  // Bidirectionally route to whichever provider key (Groq / Gemini / Cloudflare) is actually configured
+  if (!isModelProviderConfigured(modelId)) {
+    modelId = pickConfiguredProviderModel(taskType, modelId, activeFallbackDefault);
   }
 
-  const isFallbackGemini =
-    !isGroqModelId(fallbackModelId) && !isCloudflareModelId(fallbackModelId);
-  if (isFallbackGemini && !isGeminiConfigured() && isGroqConfigured()) {
-    fallbackModelId =
-      modelId === 'groq:meta-llama/llama-4-scout-17b-16e-instruct'
-        ? 'groq:openai/gpt-oss-20b'
-        : 'groq:meta-llama/llama-4-scout-17b-16e-instruct';
+  if (!isModelProviderConfigured(fallbackModelId) || fallbackModelId === modelId) {
+    fallbackModelId = pickConfiguredProviderModel(taskType, fallbackModelId, activeFallbackDefault, modelId);
   }
 
   return {
@@ -375,6 +553,9 @@ export async function executeRoutedAiTask<T>(params: {
       if (canFallback) {
         try {
           const fbResult = await withExponentialBackoff(() => runWithModel(decision.fallbackModelId), 1);
+          if (overrideConsumed && consumeOneTimeOverride) {
+            await consumeOneTimeOverride(taskType);
+          }
           if (cacheKey) {
             aiResponseCache.set(cacheKey, fbResult);
           }
@@ -478,6 +659,44 @@ export async function executeRoutedAiTask<T>(params: {
           };
         } catch (cfErr) {
           lastErr = cfErr;
+        }
+      }
+
+      // Cross-provider rescue hop 3 (Gemini): if Groq/Cloudflare failed and Gemini API Key is configured
+      const isPrimaryGemini = !isGroqModelId(decision.modelId) && !isCloudflareModelId(decision.modelId);
+      const isFallbackGemini =
+        canFallback && !isGroqModelId(decision.fallbackModelId) && !isCloudflareModelId(decision.fallbackModelId);
+      const canGeminiRescue = isGeminiConfigured() && !isPrimaryGemini && !isFallbackGemini;
+
+      if (canGeminiRescue) {
+        const geminiRescueModel = 'gemini-3.1-flash-lite';
+        try {
+          const gemResult = await withExponentialBackoff(() => runWithModel(geminiRescueModel), 1);
+          if (cacheKey) {
+            aiResponseCache.set(cacheKey, gemResult);
+          }
+          appendExecutionLog({
+            executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+            taskType,
+            modelId: geminiRescueModel,
+            usedFallback: true,
+            usedOverride: decision.usedOverride,
+            promptVersion: decision.promptVersion,
+            configVersion: decision.configVersion,
+            status: 'success',
+            durationMs: Date.now() - start,
+            cached: false,
+            timestamp: new Date().toISOString(),
+          });
+          return {
+            data: gemResult,
+            modelId: geminiRescueModel,
+            usedFallback: true,
+            usedOverride: decision.usedOverride,
+            cached: false,
+          };
+        } catch (gemErr) {
+          lastErr = gemErr;
         }
       }
 
@@ -599,23 +818,28 @@ export async function testModelConnectivity(modelId: string): Promise<{
 
     const ai = await createServerAiClient();
     const resp = await callWithTimeout((signal) =>
-      ai.models.generateContent({
+      generateGeminiContentWithFallback({
+        ai,
         model: modelId,
         contents: 'Trả lời 1 từ: OK',
+        thinkingTier: 'minimal',
         config: {
-          thinkingConfig: thinkingConfigForModel(modelId, 'minimal'),
           maxOutputTokens: 128,
           abortSignal: signal,
         },
       })
     );
     const text = (resp.text || '').trim();
+    const resolvedLabel =
+      resp.resolvedModel && resp.resolvedModel !== modelId
+        ? `${modelId} → tự động chạy bằng ${resp.resolvedModel}`
+        : modelId;
     return {
       ok: Boolean(text),
-      modelId,
+      modelId: resp.resolvedModel || modelId,
       latencyMs: Date.now() - start,
       message: text
-        ? `Model ${modelId} hoạt động bình thường (${Date.now() - start}ms).`
+        ? `Model ${resolvedLabel} hoạt động bình thường (${Date.now() - start}ms).`
         : `Model ${modelId} trả về nội dung rỗng.`,
     };
   } catch (err) {

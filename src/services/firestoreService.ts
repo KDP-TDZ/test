@@ -625,7 +625,7 @@ export async function recordQuizAttemptAndProgress(params: {
       attemptedAt: now,
       sessionId,
     };
-    await setDoc(attemptRef, attemptDoc);
+    await setDoc(attemptRef, stripUndefinedDeep(attemptDoc));
 
     const pSnap = await getDoc(progressRef);
     if (pSnap.exists()) {
@@ -692,7 +692,7 @@ export async function recordQuizAttemptAndProgress(params: {
       lastAttemptAt: now,
       updatedAt: now,
     };
-    await setDoc(progressRef, created);
+    await setDoc(progressRef, stripUndefinedDeep(created));
     return created;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `${attemptPath} | ${progressPath}`);
@@ -797,7 +797,7 @@ export async function flagQuizQuestionForReview(
       reviewStage: 0,
       reviewIntervalDays: 1,
       nextReviewAt: new Date(Date.now() + 86400000).toISOString(),
-      attemptCount: 1,
+      attemptCount: 0,
       correctCount: 0,
       incorrectCount: 0,
       lastAttemptAt: now,
@@ -888,7 +888,21 @@ export async function saveFlashcard(card: import('../core/types').FlashcardItem)
   const safeId = makeSafeId(card.flashcardId);
   const path = `flashcards/${safeId}`;
   try {
-    await setDoc(doc(db, 'flashcards', safeId), stripUndefinedDeep({ ...card, flashcardId: safeId }));
+    const safeFront = (card.front || 'Thuật ngữ / Khái niệm').trim().slice(0, 1000) || 'Thuật ngữ / Khái niệm';
+    const safeBack = (card.back || 'Nội dung ghi nhớ').trim().slice(0, 2000) || 'Nội dung ghi nhớ';
+    const safeChapter = (card.chapter || 'Chuyên đề tổng hợp').trim().slice(0, 200) || 'Chuyên đề tổng hợp';
+    const safeConcept = (card.concept || 'Khái niệm trọng tâm').trim().slice(0, 200) || 'Khái niệm trọng tâm';
+    await setDoc(
+      doc(db, 'flashcards', safeId),
+      stripUndefinedDeep({
+        ...card,
+        flashcardId: safeId,
+        front: safeFront,
+        back: safeBack,
+        chapter: safeChapter,
+        concept: safeConcept,
+      })
+    );
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }

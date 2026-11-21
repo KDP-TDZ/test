@@ -1,4 +1,4 @@
-import { distributeExamQuestionScores } from './quizValidation.js';
+import { distributeExamQuestionScores, syncShuffledAbcdExplanation } from './quizValidation.js';
 import type {
   ExamDocument,
   ExamQuestion,
@@ -1448,7 +1448,8 @@ function toExamQuestion(
   let optionB = (parsed.optionB || '—').slice(0, 500);
   let optionC = (parsed.optionC || '—').slice(0, 500);
   let optionD = (parsed.optionD || '—').slice(0, 500);
-  let correctAnswer: 'A' | 'B' | 'C' | 'D' = parsed.correctAnswer || 'A';
+  const origCorrect: 'A' | 'B' | 'C' | 'D' = parsed.correctAnswer || 'A';
+  let correctAnswer: 'A' | 'B' | 'C' | 'D' = origCorrect;
 
   if (shuffleOptions) {
     const pairs: Array<{ key: 'A' | 'B' | 'C' | 'D'; text: string }> = [
@@ -1459,13 +1460,23 @@ function toExamQuestion(
     ];
     const shuffled = shuffleWithSeed(pairs, `${examSeed}:${qId}`);
     const letters: Array<'A' | 'B' | 'C' | 'D'> = ['A', 'B', 'C', 'D'];
-    const newCorrectIdx = shuffled.findIndex((p) => p.key === correctAnswer);
+    const newCorrectIdx = shuffled.findIndex((p) => p.key === origCorrect);
     optionA = shuffled[0].text;
     optionB = shuffled[1].text;
     optionC = shuffled[2].text;
     optionD = shuffled[3].text;
     correctAnswer = letters[newCorrectIdx >= 0 ? newCorrectIdx : 0];
   }
+
+  const rawExplanation =
+    parsed.explanation ||
+    (parsed.hasExplicitAnswer
+      ? `Đáp án đúng theo tài liệu gốc là ${correctAnswer}.`
+      : `Tạm đặt đáp án ${correctAnswer} do tệp thô chưa ghi đáp án — Admin vui lòng kiểm tra lại.`);
+  const syncedExplanation =
+    shuffleOptions && parsed.explanation
+      ? syncShuffledAbcdExplanation(rawExplanation, origCorrect, correctAnswer)
+      : rawExplanation;
 
   return {
     questionId: qId,
@@ -1482,12 +1493,7 @@ function toExamQuestion(
     optionC,
     optionD,
     correctAnswer,
-    explanation: (
-      parsed.explanation ||
-      (parsed.hasExplicitAnswer
-        ? `Đáp án đúng theo tài liệu gốc là ${correctAnswer}.`
-        : `Tạm đặt đáp án ${correctAnswer} do tệp thô chưa ghi đáp án — Admin vui lòng kiểm tra lại.`)
-    ).slice(0, 2000),
+    explanation: syncedExplanation.slice(0, 2000),
     sourceReference: 'Admin nhập từ tệp chữ thô',
     sourceType: 'teacher_material',
     validationStatus: parsed.hasExplicitAnswer ? 'passed' : 'needs_review',

@@ -227,6 +227,30 @@ function shuffleWithSeed<T>(items: T[], seedStr: string): T[] {
 }
 
 /**
+ * Updates an explanation string when an ABCD option letter moves from oldKey to newKey during exam variant shuffling.
+ */
+export function syncShuffledAbcdExplanation(
+  explanation: string | undefined,
+  oldKey: 'A' | 'B' | 'C' | 'D',
+  newKey: 'A' | 'B' | 'C' | 'D'
+): string {
+  const raw = (explanation || '').trim();
+  if (!raw || oldKey === newKey) return raw;
+
+  let updated = raw
+    .replace(
+      new RegExp(`(\\b(?:Đáp án|Phương án)\\s+(?:đúng\\s+)?(?:theo tài liệu gốc\\s+)?(?:là\\s+)?)\\b${oldKey}\\b`, 'gi'),
+      `$1${newKey}`
+    )
+    .replace(new RegExp(`(\\bChọn\\s+(?:đáp án|phương án)?\\s*)\\b${oldKey}\\b`, 'gi'), `$1${newKey}`);
+
+  if (updated === raw) {
+    updated = `${raw} (Mã đề này đáp án đúng: ${newKey})`;
+  }
+  return updated;
+}
+
+/**
  * Generates a shuffled exam code variant (e.g. Mã đề 101, 102, 103) while keeping answer keys exact.
  */
 export function generateShuffledExamVariant(
@@ -238,6 +262,7 @@ export function generateShuffledExamVariant(
       if (q.questionType !== 'abcd') {
         return { ...q, orderIndex: idx + 1 };
       }
+      const origCorrect: 'A' | 'B' | 'C' | 'D' = q.correctAnswer || 'A';
       const pairs: Array<{ key: 'A' | 'B' | 'C' | 'D'; text: string }> = [
         { key: 'A', text: q.optionA || '' },
         { key: 'B', text: q.optionB || '' },
@@ -246,7 +271,8 @@ export function generateShuffledExamVariant(
       ];
       const shuffledOpts = shuffleWithSeed(pairs, `${exam.examId}:${variantCode}:${q.questionId}`);
       const letters: Array<'A' | 'B' | 'C' | 'D'> = ['A', 'B', 'C', 'D'];
-      const newCorrectIdx = shuffledOpts.findIndex((p) => p.key === (q.correctAnswer || 'A'));
+      const newCorrectIdx = shuffledOpts.findIndex((p) => p.key === origCorrect);
+      const nextCorrect = letters[newCorrectIdx >= 0 ? newCorrectIdx : 0];
       return {
         ...q,
         orderIndex: idx + 1,
@@ -254,7 +280,8 @@ export function generateShuffledExamVariant(
         optionB: shuffledOpts[1].text,
         optionC: shuffledOpts[2].text,
         optionD: shuffledOpts[3].text,
-        correctAnswer: letters[newCorrectIdx >= 0 ? newCorrectIdx : 0],
+        correctAnswer: nextCorrect,
+        explanation: syncShuffledAbcdExplanation(q.explanation, origCorrect, nextCorrect),
       };
     }
   );

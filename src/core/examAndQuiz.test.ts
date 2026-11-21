@@ -386,4 +386,76 @@ test('gradeExamSubmission awards full 100% score when a 2-statement or 3-stateme
   assert.equal(halfRes.breakdown[0].isFullCorrect, false);
 });
 
+test('gradeExamSubmission supports fraction short answers and prevents "0" from matching small non-zero answers', () => {
+  const exam: ExamDocument = {
+    examId: 'ex_short_frac',
+    blueprintId: 'bp1',
+    title: 'Đề trả lời ngắn phân số & số nhỏ',
+    description: 'Kiểm tra phân số và sai số tương đối',
+    grade: '11',
+    subject: 'vat_ly',
+    textbookSeries: 'Kết nối tri thức với cuộc sống',
+    examType: 'giua_ky_1',
+    academicYear: '2026-2027',
+    semester: '1',
+    chapters: ['Dao động'],
+    durationMinutes: 15,
+    totalScore: 2,
+    allowRetake: true,
+    published: true,
+    validationStatus: 'passed',
+    questions: [
+      {
+        questionId: 'sa_frac',
+        orderIndex: 1,
+        chapterId: 'Dao động',
+        conceptId: 'Chu kỳ',
+        learningOutcome: 'Tính chu kỳ',
+        cognitiveLevel: 'van_dung',
+        questionType: 'short_answer',
+        scoreWeight: 1,
+        questionText: 'Chu kỳ dao động bằng bao nhiêu giây?',
+        shortAnswerAccepted: ['0.5'],
+        explanation: 'T = 1/2 = 0.5 s.',
+        sourceReference: 'SGK',
+        sourceType: 'textbook_reference',
+        validationStatus: 'passed',
+      },
+      {
+        questionId: 'sa_small',
+        orderIndex: 2,
+        chapterId: 'Dao động',
+        conceptId: 'Biên độ nhỏ',
+        learningOutcome: 'Tính độ giãn nhỏ',
+        cognitiveLevel: 'van_dung',
+        questionType: 'short_answer',
+        scoreWeight: 1,
+        questionText: 'Độ biến dạng Δl bằng bao nhiêu mét?',
+        shortAnswerAccepted: ['0.005'],
+        explanation: 'Δl = 0.005 m.',
+        sourceReference: 'SGK',
+        sourceType: 'textbook_reference',
+        validationStatus: 'passed',
+      },
+    ],
+    createdBy: 'admin',
+    createdAt: '2026-11-19T00:00:00Z',
+    updatedAt: '2026-11-19T00:00:00Z',
+  };
 
+  // Fraction "1/2" matches "0.5", while "0" must NOT match "0.005"
+  const res = gradeExamSubmission(exam, [
+    { questionId: 'sa_frac', shortAnswerText: '1/2' },
+    { questionId: 'sa_small', shortAnswerText: '0' },
+  ]);
+  assert.equal(res.breakdown[0].isFullCorrect, true);
+  assert.equal(res.breakdown[1].isFullCorrect, false);
+  assert.equal(res.earnedScore, 1);
+
+  // Exact small number "0,005" or fraction "1/200" matches "0.005"
+  const resExact = gradeExamSubmission(exam, [
+    { questionId: 'sa_frac', shortAnswerText: '0,5' },
+    { questionId: 'sa_small', shortAnswerText: '1/200' },
+  ]);
+  assert.equal(resExact.earnedScore, 2);
+});

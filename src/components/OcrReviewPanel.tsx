@@ -71,6 +71,9 @@ export const OcrReviewPanel: React.FC<OcrReviewPanelProps> = ({
           ? {
               ...b,
               extractedText: newText,
+              ...(b.textType === 'formula' || b.formulaText !== undefined
+                ? { formulaText: newText }
+                : {}),
               confidence: Math.max(b.confidence, 0.95),
             }
           : b

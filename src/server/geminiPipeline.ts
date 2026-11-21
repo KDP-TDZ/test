@@ -52,6 +52,7 @@ import {
   callWithTimeout,
   createServerAiClient,
   executeRoutedAiTask,
+  generateGeminiContentWithFallback,
   thinkingConfigForModel,
 } from './modelRouter.js';
 import { callGroqChatCompletion, GROQ_VISION_MODEL, isGroqModelId } from './groqProvider.js';
@@ -67,7 +68,16 @@ export interface TokenTelemetry {
   totalTokens: number;
 }
 
-function accumulateTokens(acc: TokenTelemetry, resp: GenerateContentResponse): void {
+function accumulateTokens(
+  acc: TokenTelemetry,
+  resp: {
+    usageMetadata?: {
+      promptTokenCount?: number;
+      candidatesTokenCount?: number;
+      totalTokenCount?: number;
+    };
+  }
+): void {
   const meta = resp.usageMetadata;
   if (!meta) return;
   acc.promptTokens += meta.promptTokenCount || 0;
@@ -132,11 +142,12 @@ async function generateJsonWithProvider<T>(params: {
   const ai = await createServerAiClient();
   const response = await callWithTimeout(
     (signal) =>
-      ai.models.generateContent({
+      generateGeminiContentWithFallback({
+        ai,
         model: params.modelId,
         contents: params.prompt,
+        thinkingTier: params.thinkingTier,
         config: {
-          thinkingConfig: thinkingConfigForModel(params.modelId, params.thinkingTier),
           maxOutputTokens: params.maxOutputTokens,
           abortSignal: signal,
           responseMimeType: 'application/json',
@@ -192,11 +203,12 @@ async function generatePlainTextWithProvider(params: {
   const ai = await createServerAiClient();
   const resp = await callWithTimeout(
     (signal) =>
-      ai.models.generateContent({
+      generateGeminiContentWithFallback({
+        ai,
         model: params.modelId,
         contents: params.prompt,
+        thinkingTier: params.thinkingTier,
         config: {
-          thinkingConfig: thinkingConfigForModel(params.modelId, params.thinkingTier),
           maxOutputTokens: params.maxOutputTokens,
           abortSignal: signal,
         },
@@ -335,30 +347,42 @@ export class DocumentExtractionService {
             ].join('\n');
 
             if (isGroqModelId(modelId)) {
-              const resp = await callWithTimeout(
-                (signal) =>
-                  callGroqChatCompletion({
-                    modelId,
-                    prompt: ocrPrompt,
-                    images: [{ mimeType: file.mimeType, base64 }],
-                    jsonMode: true,
-                    jsonSchemaHint:
-                      '{"rawText":"...","ocrConfidence":0.95,"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
-                    maxOutputTokens: 1536,
-                    signal,
-                  }),
-                OCR_FAST_TIMEOUT_MS
-              );
-              accumulateRawTokens(tokensOut, resp);
-              return JSON.parse((resp.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+              try {
+                const resp = await callWithTimeout(
+                  (signal) =>
+                    callGroqChatCompletion({
+                      modelId,
+                      prompt: ocrPrompt,
+                      images: [{ mimeType: file.mimeType, base64 }],
+                      jsonMode: true,
+                      jsonSchemaHint:
+                        '{"rawText":"...","ocrConfidence":0.95,"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
+                      maxOutputTokens: 1536,
+                      signal,
+                    }),
+                  OCR_FAST_TIMEOUT_MS
+                );
+                accumulateRawTokens(tokensOut, resp);
+                return JSON.parse((resp.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+              } catch (groqVisionErr) {
+                if (!isGeminiConfigured()) {
+                  throw groqVisionErr;
+                }
+                // Fall through to Gemini vision OCR if Groq vision model fails and Gemini key is configured
+              }
             }
 
             const ai = await createServerAiClient();
-            const visionModel = isCloudflareModelId(modelId) ? 'gemini-3.1-flash-lite' : modelId;
+            const visionModel =
+              isGroqModelId(modelId) || isCloudflareModelId(modelId)
+                ? 'gemini-3.1-flash-lite'
+                : modelId;
             const response = await callWithTimeout(
               (signal) =>
-                ai.models.generateContent({
+                generateGeminiContentWithFallback({
+                  ai,
                   model: visionModel,
+                  thinkingTier: 'minimal',
                   contents: {
                     parts: [
                       {
@@ -373,7 +397,6 @@ export class DocumentExtractionService {
                     ],
                   },
                   config: {
-                    thinkingConfig: thinkingConfigForModel(visionModel, 'minimal'),
                     maxOutputTokens: 1536,
                     abortSignal: signal,
                     responseMimeType: 'application/json',
@@ -535,8 +558,10 @@ export class DocumentExtractionService {
         const base64 = buffer.toString('base64');
         const response = await callWithTimeout(
           (signal) =>
-            ai.models.generateContent({
+            generateGeminiContentWithFallback({
+              ai,
               model: visionModel,
+              thinkingTier: 'minimal',
               contents: {
                 parts: [
                   {
@@ -551,7 +576,6 @@ export class DocumentExtractionService {
                 ],
               },
               config: {
-                thinkingConfig: thinkingConfigForModel(visionModel, 'minimal'),
                 maxOutputTokens: 4096,
                 abortSignal: signal,
                 responseMimeType: 'application/json',
@@ -1569,12 +1593,22 @@ export class QuizGenerationService {
 
     const validation = validateQuizQuestionSet(mapped);
 
+    const hasActualTextbookChunks = needsTextbookSupplement && supplementChunks.length > 0;
+    const finalQuestions = validation.questions.slice(0, totalWanted);
+
+    let supplementNotice: string | undefined;
+    if (needsTextbookSupplement) {
+      if (hasActualTextbookChunks) {
+        supplementNotice = `Nội dung tải lên chỉ có ${distinctUploadConcepts.size} đơn vị kiến thức khác nhau (< 5). Hệ thống đã tự động bổ sung thêm từ sách giáo khoa tham chiếu (${textbookTitle || 'Thư viện SGK'}) để đủ ${Math.min(finalQuestions.length, baseTargetCount)} câu.`;
+      } else {
+        supplementNotice = `Phạm vi lọc hiện tại chỉ có ${distinctUploadConcepts.size} đơn vị kiến thức (< 5). Hệ thống đã tự động mở rộng câu hỏi dựa trên toàn bộ tài liệu tải lên và chuẩn chương trình GDPT 2018 môn ${SUBJECT_LABELS[subject]} Lớp ${grade} để đủ ${Math.min(finalQuestions.length, baseTargetCount)} câu.`;
+      }
+    }
+
     return {
-      questions: validation.questions.slice(0, totalWanted),
-      supplementedFromTextbook: needsTextbookSupplement,
-      supplementNotice: needsTextbookSupplement
-        ? `Nội dung tải lên chỉ tạo được ít hơn 5 câu hỏi khác nhau (${distinctUploadConcepts.size} ý). Hệ thống đã tự động bổ sung thêm từ kiến thức sách giáo khoa / tham chiếu chuẩn để đủ ${Math.min(validation.questions.length, baseTargetCount)} câu.`
-        : undefined,
+      questions: finalQuestions,
+      supplementedFromTextbook: hasActualTextbookChunks,
+      supplementNotice,
       modelUsed,
     };
   }

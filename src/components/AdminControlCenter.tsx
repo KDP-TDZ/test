@@ -640,6 +640,10 @@ export const AdminControlCenter: React.FC = () => {
       const data = await parseApiResponse<any>(res, 'Không thể kiểm tra API key.');
       setTestResult(data);
       if (data.keyStatus) setSingleKeyStatus(data.keyStatus);
+      if (rawKeyOverride && data.status === 'Connected') {
+        setNewRawKey('');
+        setNotice(data.message || 'Đã thử nghiệm thành công và tự động kích hoạt Gemini API Key cho Kiểm định.');
+      }
       await loadAllAdminData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Lỗi kiểm tra API key.');
@@ -718,6 +722,11 @@ export const AdminControlCenter: React.FC = () => {
                 } as CloudflareKeyStatus,
               }
         );
+      }
+      if (rawKeyOverride && data.status === 'Connected') {
+        setGroqRawKey('');
+        setGroqConfigured(true);
+        setNotice(data.message || 'Đã thử nghiệm thành công và tự động kích hoạt Groq API Key cho Kiểm định.');
       }
       await loadAllAdminData();
     } catch (err) {
@@ -806,6 +815,12 @@ export const AdminControlCenter: React.FC = () => {
                 cloudflare: data.keyStatus,
               }
         );
+      }
+      if ((accountIdOverride || apiTokenOverride) && data.status === 'Connected') {
+        setCfAccountIdInput('');
+        setCfApiTokenInput('');
+        setCloudflareConfigured(true);
+        setNotice(data.message || 'Đã thử nghiệm thành công và tự động kích hoạt Cloudflare Workers AI cho Kiểm định.');
       }
       await loadAllAdminData();
     } catch (err) {

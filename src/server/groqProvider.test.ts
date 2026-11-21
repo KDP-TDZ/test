@@ -44,8 +44,10 @@ test('isGroqModelId, isCloudflareModelId, and prefix strippers handle groq:*, cf
 });
 
 test('normalizeGroqModelId upgrades retired/legacy Groq IDs and preserves active models', () => {
-  assert.equal(normalizeGroqModelId('groq:llama-3.3-70b-versatile'), 'groq:openai/gpt-oss-120b');
-  assert.equal(normalizeGroqModelId('groq:llama-3.1-8b-instant'), 'groq:openai/gpt-oss-20b');
+  assert.equal(normalizeGroqModelId('groq:llama3-70b-8192'), 'groq:openai/gpt-oss-120b');
+  assert.equal(normalizeGroqModelId('groq:llama3-8b-8192'), 'groq:openai/gpt-oss-20b');
+  assert.equal(normalizeGroqModelId('groq:llama-3.3-70b-versatile'), 'groq:llama-3.3-70b-versatile');
+  assert.equal(normalizeGroqModelId('groq:llama-3.1-8b-instant'), 'groq:llama-3.1-8b-instant');
   assert.equal(normalizeGroqModelId('groq:openai/gpt-oss-120b'), 'groq:openai/gpt-oss-120b');
   assert.equal(normalizeGroqModelId('gemini-4-hydrogen'), 'gemini-4-hydrogen');
 });
