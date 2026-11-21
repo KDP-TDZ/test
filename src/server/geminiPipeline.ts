@@ -101,6 +101,165 @@ function accumulateRawTokens(
   acc.totalTokens += usage.totalTokens || 0;
 }
 
+function repairJsonLikeText(rawText: string): string {
+  const trimmed = (rawText || '').trim();
+  if (!trimmed) return '{}';
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  let candidate = fenced && fenced[1] ? fenced[1].trim() : trimmed;
+  const fb = candidate.indexOf('{');
+  const lb = candidate.lastIndexOf('}');
+  if (fb >= 0 && lb > fb) {
+    candidate = candidate.slice(fb, lb + 1);
+  }
+  return candidate;
+}
+
+function normalizeJsonEscapeAndControlChars(jsonCandidate: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  const isHex = (ch: string) => /^[0-9a-fA-F]$/.test(ch);
+
+  for (let i = 0; i < jsonCandidate.length; i += 1) {
+    const ch = jsonCandidate[i];
+    if (inString) {
+      if (escaped) {
+        out += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        const next = jsonCandidate[i + 1] || '';
+        const isStandardEscape =
+          next === '"' ||
+          next === '\\' ||
+          next === '/' ||
+          next === 'b' ||
+          next === 'f' ||
+          next === 'n' ||
+          next === 'r' ||
+          next === 't' ||
+          (next === 'u' &&
+            i + 5 < jsonCandidate.length &&
+            isHex(jsonCandidate[i + 2]) &&
+            isHex(jsonCandidate[i + 3]) &&
+            isHex(jsonCandidate[i + 4]) &&
+            isHex(jsonCandidate[i + 5]));
+        if (isStandardEscape) {
+          out += ch;
+          escaped = true;
+        } else {
+          // Escape invalid backslashes commonly emitted in LaTeX formulas (\sqrt, \alpha, \Delta, \cdot, ...)
+          out += '\\\\';
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+        out += ch;
+        continue;
+      }
+      if (ch === '\n') {
+        out += '\\n';
+        continue;
+      }
+      if (ch === '\r') {
+        out += '\\r';
+        continue;
+      }
+      if (ch === '\t') {
+        out += '\\t';
+        continue;
+      }
+      const code = ch.charCodeAt(0);
+      if (code < 0x20) {
+        out += ' ';
+        continue;
+      }
+      out += ch;
+    } else {
+      if (ch === '"') {
+        inString = true;
+      }
+      out += ch;
+    }
+  }
+
+  return out.replace(/,\s*([}\]])/g, '$1');
+}
+
+function safeParseModelJson<T>(rawText: string, fallbackJson: string): T {
+  const source = (rawText || '').trim() || fallbackJson;
+  const candidate = repairJsonLikeText(source);
+  try {
+    return JSON.parse(candidate) as T;
+  } catch {
+    const repaired = normalizeJsonEscapeAndControlChars(candidate);
+    try {
+      return JSON.parse(repaired) as T;
+    } catch {
+      return JSON.parse(fallbackJson) as T;
+    }
+  }
+}
+
+interface ParsedOcrPayload {
+  rawText?: string;
+  ocrConfidence?: number;
+  suggestedGrade?: string;
+  suggestedSubject?: string;
+  suggestedChapters?: string[];
+  suggestedTitle?: string;
+  blocks?: Array<{
+    extractedText: string;
+    textType: string;
+    confidence: number;
+    formulaText?: string;
+  }>;
+}
+
+function parseOcrResponsePayload(rawText: string): ParsedOcrPayload {
+  const trimmed = (rawText || '').trim();
+  if (!trimmed) {
+    return { rawText: '', ocrConfidence: 0.85 };
+  }
+
+  const candidate = repairJsonLikeText(trimmed);
+  for (const attemptText of [candidate, normalizeJsonEscapeAndControlChars(candidate)]) {
+    try {
+      const obj = JSON.parse(attemptText) as ParsedOcrPayload;
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        return obj;
+      }
+    } catch {
+      // Try next repair or plain-text fallback
+    }
+  }
+
+  // Try extracting `"rawText": "..."` if JSON was truncated mid-object (e.g. hit maxOutputTokens)
+  const rawFieldMatch = trimmed.match(/"rawText"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (rawFieldMatch && rawFieldMatch[1]) {
+    const recoveredText = rawFieldMatch[1]
+      .replace(/\\n/g, '\n')
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, '\\')
+      .trim();
+    if (recoveredText.length > 0) {
+      return { rawText: recoveredText, ocrConfidence: 0.8 };
+    }
+  }
+
+  // Plain-text fallback when a multimodal vision model returns direct OCR text instead of JSON
+  const cleanedPlain = trimmed
+    .replace(/^```[a-zA-Z]*\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+  if (!cleanedPlain || cleanedPlain === '{}') {
+    throw new Error('Mô hình AI trả về dữ liệu OCR rỗng.');
+  }
+  return { rawText: cleanedPlain, ocrConfidence: 0.85 };
+}
+
 async function generateJsonWithProvider<T>(params: {
   modelId: string;
   prompt: string;
@@ -126,7 +285,7 @@ async function generateJsonWithProvider<T>(params: {
       params.timeoutMs
     );
     accumulateRawTokens(params.tokensOut, resp);
-    return JSON.parse((resp.text || params.fallbackJson).trim()) as T;
+    return safeParseModelJson<T>(resp.text, params.fallbackJson);
   }
 
   if (isCloudflareModelId(params.modelId)) {
@@ -143,7 +302,7 @@ async function generateJsonWithProvider<T>(params: {
       params.timeoutMs
     );
     accumulateRawTokens(params.tokensOut, resp);
-    return JSON.parse((resp.text || params.fallbackJson).trim()) as T;
+    return safeParseModelJson<T>(resp.text, params.fallbackJson);
   }
 
   const ai = await createServerAiClient();
@@ -164,7 +323,7 @@ async function generateJsonWithProvider<T>(params: {
     params.timeoutMs
   );
   accumulateTokens(params.tokensOut, response);
-  return JSON.parse((response.text || params.fallbackJson).trim()) as T;
+  return safeParseModelJson<T>(response.text, params.fallbackJson);
 }
 
 async function generatePlainTextWithProvider(params: {
@@ -257,7 +416,7 @@ export interface InlineScopeSuggestion {
   suggestedTitle: string;
 }
 
-const OCR_FAST_TIMEOUT_MS = 14_000;
+const OCR_FAST_TIMEOUT_MS = 30_000;
 
 function buildExtractedBlocksFromRawText(
   rawText: string,
@@ -365,13 +524,13 @@ export class DocumentExtractionService {
                     images: [{ mimeType: file.mimeType, base64 }],
                     jsonMode: true,
                     jsonSchemaHint: jsonHint,
-                    maxOutputTokens: 1536,
+                    maxOutputTokens: 2048,
                     signal,
                   }),
                 OCR_FAST_TIMEOUT_MS
               );
               accumulateRawTokens(tokensOut, resp);
-              return JSON.parse((resp.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+              return parseOcrResponsePayload(resp.text || '');
             };
 
             const runCloudflareVision = async () => {
@@ -383,13 +542,13 @@ export class DocumentExtractionService {
                     images: [{ mimeType: file.mimeType, base64 }],
                     jsonMode: true,
                     jsonSchemaHint: jsonHint,
-                    maxOutputTokens: 1536,
+                    maxOutputTokens: 2048,
                     signal,
                   }),
                 OCR_FAST_TIMEOUT_MS
               );
               accumulateRawTokens(tokensOut, resp);
-              return JSON.parse((resp.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+              return parseOcrResponsePayload(resp.text || '');
             };
 
             const runGeminiVision = async () => {
@@ -404,21 +563,24 @@ export class DocumentExtractionService {
                     ai,
                     model: visionModel,
                     thinkingTier: 'minimal',
-                    contents: {
-                      parts: [
-                        {
-                          inlineData: {
-                            mimeType: file.mimeType,
-                            data: base64,
+                    contents: [
+                      {
+                        role: 'user',
+                        parts: [
+                          {
+                            inlineData: {
+                              mimeType: file.mimeType,
+                              data: base64,
+                            },
                           },
-                        },
-                        {
-                          text: `${ocrPrompt}\n\nCấu trúc JSON bắt buộc:\n${jsonHint}`,
-                        },
-                      ],
-                    },
+                          {
+                            text: `${ocrPrompt}\n\nCấu trúc JSON bắt buộc:\n${jsonHint}`,
+                          },
+                        ],
+                      },
+                    ],
                     config: {
-                      maxOutputTokens: 1536,
+                      maxOutputTokens: 2048,
                       abortSignal: signal,
                       responseMimeType: 'application/json',
                       responseSchema: {
@@ -452,60 +614,54 @@ export class DocumentExtractionService {
                 OCR_FAST_TIMEOUT_MS
               );
               accumulateTokens(tokensOut, response);
-              return JSON.parse((response.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+              return parseOcrResponsePayload(response.text || '');
             };
 
-            if (isGroqModelId(modelId)) {
+            const visionOrder: Array<{
+              name: string;
+              enabled: boolean;
+              run: () => Promise<ParsedOcrPayload>;
+            }> = isGroqModelId(modelId)
+              ? [
+                  { name: 'Groq', enabled: isGroqConfigured(), run: runGroqVision },
+                  { name: 'Gemini', enabled: isGeminiConfigured(), run: runGeminiVision },
+                  { name: 'Cloudflare', enabled: isCloudflareConfigured(), run: runCloudflareVision },
+                ]
+              : isCloudflareModelId(modelId)
+                ? [
+                    { name: 'Cloudflare', enabled: isCloudflareConfigured(), run: runCloudflareVision },
+                    { name: 'Groq', enabled: isGroqConfigured(), run: runGroqVision },
+                    { name: 'Gemini', enabled: isGeminiConfigured(), run: runGeminiVision },
+                  ]
+                : [
+                    { name: 'Gemini', enabled: isGeminiConfigured(), run: runGeminiVision },
+                    { name: 'Groq', enabled: isGroqConfigured(), run: runGroqVision },
+                    { name: 'Cloudflare', enabled: isCloudflareConfigured(), run: runCloudflareVision },
+                  ];
+
+            let firstVisionError: unknown = null;
+            const errorSummary: string[] = [];
+            for (const provider of visionOrder) {
+              if (!provider.enabled) continue;
               try {
-                return await runGroqVision();
-              } catch (groqVisionErr) {
-                if (isGeminiConfigured()) {
-                  try {
-                    return await runGeminiVision();
-                  } catch {
-                    // Continue to Cloudflare if configured
-                  }
-                }
-                if (isCloudflareConfigured()) {
-                  return await runCloudflareVision();
-                }
-                throw groqVisionErr;
+                return await provider.run();
+              } catch (err) {
+                if (!firstVisionError) firstVisionError = err;
+                const msg = err instanceof Error ? err.message : String(err);
+                errorSummary.push(`${provider.name}: ${msg.slice(0, 180)}`);
               }
             }
 
-            if (isCloudflareModelId(modelId)) {
-              try {
-                return await runCloudflareVision();
-              } catch (cfVisionErr) {
-                if (isGroqConfigured()) {
-                  try {
-                    return await runGroqVision();
-                  } catch {
-                    // Continue to Gemini if configured
-                  }
-                }
-                if (isGeminiConfigured()) {
-                  return await runGeminiVision();
-                }
-                throw cfVisionErr;
-              }
+            if (errorSummary.length > 1) {
+              throw new Error(errorSummary.join(' | '));
             }
-
-            try {
-              return await runGeminiVision();
-            } catch (geminiVisionErr) {
-              if (isGroqConfigured()) {
-                try {
-                  return await runGroqVision();
-                } catch {
-                  // Continue to Cloudflare if configured
-                }
-              }
-              if (isCloudflareConfigured()) {
-                return await runCloudflareVision();
-              }
-              throw geminiVisionErr;
+            if (firstVisionError) {
+              throw firstVisionError;
             }
+            // Fallback to primary call to emit standard unconfigured-key error code
+            if (isGroqModelId(modelId)) return await runGroqVision();
+            if (isCloudflareModelId(modelId)) return await runCloudflareVision();
+            return await runGeminiVision();
           },
         });
 
@@ -642,19 +798,22 @@ export class DocumentExtractionService {
               ai,
               model: visionModel,
               thinkingTier: 'minimal',
-              contents: {
-                parts: [
-                  {
-                    inlineData: {
-                      mimeType: 'application/pdf',
-                      data: base64,
+              contents: [
+                {
+                  role: 'user',
+                  parts: [
+                    {
+                      inlineData: {
+                        mimeType: 'application/pdf',
+                        data: base64,
+                      },
                     },
-                  },
-                  {
-                    text: 'Trích xuất toàn bộ văn bản, công thức và chữ viết tay theo từng trang của file PDF này. Giữ nguyên chính tả và nội dung gốc theo từng dòng xuống hàng (\\n), không tự sửa lỗi kiến thức, không thêm bình luận.',
-                  },
-                ],
-              },
+                    {
+                      text: 'Trích xuất toàn bộ văn bản, công thức và chữ viết tay theo từng trang của file PDF này. Giữ nguyên chính tả và nội dung gốc theo từng dòng xuống hàng (\\n), không tự sửa lỗi kiến thức, không thêm bình luận.',
+                    },
+                  ],
+                },
+              ],
               config: {
                 maxOutputTokens: 4096,
                 abortSignal: signal,
@@ -679,10 +838,22 @@ export class DocumentExtractionService {
                 },
               },
             }),
-          20_000
+          30_000
         );
         accumulateTokens(tokensOut, response);
-        return JSON.parse((response.text || '{"pages":[]}').trim());
+        return safeParseModelJson<{
+          pages: Array<{
+            pageNumber: number;
+            rawText?: string;
+            ocrConfidence?: number;
+            blocks?: Array<{
+              extractedText: string;
+              textType: string;
+              confidence: number;
+              formulaText?: string;
+            }>;
+          }>;
+        }>(response.text || '', '{"pages":[]}');
       },
     });
 
@@ -783,7 +954,7 @@ export class SubjectDetectionService {
           prompt: scopePrompt,
           thinkingTier: 'minimal',
           maxOutputTokens: 384,
-          timeoutMs: 8_000,
+          timeoutMs: 15_000,
           tokensOut,
           fallbackJson: '{}',
           groqSchemaHint:
@@ -2346,10 +2517,10 @@ export class ExamPipelineService {
             })
           );
           accumulateRawTokens(tokensOut, resp);
-          return JSON.parse((resp.text || '{"questions":[]}').trim()) as {
+          return safeParseModelJson<{
             detectedTitle?: string;
             questions: RawCopiedQuestion[];
-          };
+          }>(resp.text || '', '{"questions":[]}');
         }
 
         const ai = await createServerAiClient();
@@ -2359,7 +2530,7 @@ export class ExamPipelineService {
             : modelId;
         const contents =
           inlineParts.length > 0
-            ? { parts: [...inlineParts, { text: promptText }] }
+            ? [{ role: 'user', parts: [...inlineParts, { text: promptText }] }]
             : promptText;
         const resp = await callWithTimeout((signal) =>
           generateGeminiContentWithFallback({
@@ -2431,10 +2602,10 @@ export class ExamPipelineService {
           })
         );
         accumulateTokens(tokensOut, resp);
-        return JSON.parse((resp.text || '{"questions":[]}').trim()) as {
+        return safeParseModelJson<{
           detectedTitle?: string;
           questions: RawCopiedQuestion[];
-        };
+        }>(resp.text || '', '{"questions":[]}');
       },
     });
 

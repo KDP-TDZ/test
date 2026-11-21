@@ -20,8 +20,6 @@ export const GROQ_PREFERRED_TEXT_MODELS = [
 export const GROQ_VISION_MODELS = [
   'meta-llama/llama-4-scout-17b-16e-instruct',
   'meta-llama/llama-4-maverick-17b-128e-instruct',
-  'llama-3.2-90b-vision-preview',
-  'llama-3.2-11b-vision-preview',
 ] as const;
 
 export function isGroqVisionModelId(modelId: string): boolean {
@@ -339,6 +337,16 @@ export async function callGroqChatCompletion(params: {
     return firstAttempt.result;
   }
 
+  const isModelNotFoundResponse = (status: number, errText: string): boolean => {
+    const low = errText.toLowerCase();
+    return (
+      status === 404 ||
+      low.includes('model_not_found') ||
+      low.includes('model_decommissioned') ||
+      low.includes('does not exist')
+    );
+  };
+
   let lastStatus = firstAttempt.status;
   let lastErrText = firstAttempt.errText;
   const triedModels: string[] = [groqModel];
@@ -394,8 +402,13 @@ export async function callGroqChatCompletion(params: {
       if (retryAttempt.ok) {
         return retryAttempt.result;
       }
-      lastStatus = retryAttempt.status;
-      lastErrText = retryAttempt.errText;
+      // Do not overwrite an actionable payload/auth/400 error from an active model with a secondary 404/decommissioned error
+      const prevWasNotFound = isModelNotFoundResponse(lastStatus, lastErrText);
+      const currIsNotFound = isModelNotFoundResponse(retryAttempt.status, retryAttempt.errText);
+      if (prevWasNotFound || !currIsNotFound) {
+        lastStatus = retryAttempt.status;
+        lastErrText = retryAttempt.errText;
+      }
     }
   }
 
@@ -407,14 +420,17 @@ export async function callGroqChatCompletion(params: {
   if (status === 401 || status === 403) {
     throw new Error(`PERMISSION_DENIED (Groq ${status}): Groq API Key không hợp lệ hoặc đã bị thu hồi.`);
   }
-  if (status === 404 || (status === 400 && (errText.includes('model_not_found') || errText.includes('model_decommissioned')))) {
+  if (isModelNotFoundResponse(status, errText)) {
     const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
     const sampleHint =
       availableModels.length > 0
         ? ` Các model khả dụng trên tài khoản Groq của bạn: ${availableModels.slice(0, 6).join(', ')}.`
         : ' Vui lòng kiểm tra mục Model Access trên Groq Console.';
+    const visionNote = hasImages
+      ? ' Lưu ý: tác vụ đọc ảnh OCR trên Groq yêu cầu model Vision (ví dụ meta-llama/llama-4-scout-17b-16e-instruct).'
+      : '';
     throw new Error(
-      `NOT_FOUND (Groq ${status}): Đã thử các model [${triedModels.join(', ')}] nhưng đều không khả dụng trên tài khoản Groq này.${sampleHint} Chi tiết: ${errText.slice(0, 180)}`
+      `NOT_FOUND (Groq ${status}): Đã thử các model [${triedModels.join(', ')}] nhưng đều không khả dụng trên tài khoản Groq này.${visionNote}${sampleHint} Chi tiết: ${errText.slice(0, 180)}`
     );
   }
   if (status === 503 || status === 502) {

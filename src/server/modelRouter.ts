@@ -352,12 +352,24 @@ export async function generateGeminiContentWithFallback(params: {
     }
   };
 
+  const signal = params.config?.abortSignal as AbortSignal | undefined;
+  let sawNotFound = false;
+
   for (const candidate of candidates) {
+    if (signal?.aborted) {
+      throw lastErr || new Error('Yêu cầu AI vượt quá thời gian chờ.');
+    }
     try {
       return await tryCandidate(candidate);
     } catch (err) {
       lastErr = err;
       const msg = err instanceof Error ? err.message : String(err);
+      if (signal?.aborted || msg.includes('AbortError') || msg.includes('aborted')) {
+        throw err;
+      }
+      if (msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('not found')) {
+        sawNotFound = true;
+      }
       // Only abort immediately if the API key itself is invalid or disabled
       const isFatalKeyError =
         msg.includes('API_KEY_INVALID') ||
@@ -371,15 +383,25 @@ export async function generateGeminiContentWithFallback(params: {
   }
 
   // Last resort: query public /v1beta/models for this key and try available flash/pro models
-  const signal = params.config?.abortSignal as AbortSignal | undefined;
-  const discovered = await fetchPublicGeminiGenerateModels(apiKey, signal);
-  for (const disc of discovered) {
-    if (tried.has(disc)) continue;
-    try {
-      return await tryCandidate(disc);
-    } catch (err) {
-      lastErr = err;
+  if (!signal?.aborted) {
+    const discovered = await fetchPublicGeminiGenerateModels(apiKey, signal);
+    for (const disc of discovered) {
+      if (signal?.aborted) break;
+      if (tried.has(disc)) continue;
+      try {
+        return await tryCandidate(disc);
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('404') || msg.includes('NOT_FOUND') || msg.includes('not found')) {
+          sawNotFound = true;
+        }
+      }
     }
+  }
+
+  if (!sawNotFound && lastErr) {
+    throw lastErr;
   }
 
   const lastMsg = lastErr instanceof Error ? lastErr.message : String(lastErr || '');
@@ -745,7 +767,7 @@ export async function executeRoutedAiTask<T>(params: {
       const canGeminiRescue = isGeminiConfigured() && !isPrimaryGemini && !isFallbackGemini;
 
       if (canGeminiRescue) {
-        const geminiRescueModel = 'gemini-3.1-flash-lite';
+        const geminiRescueModel = 'gemini-2.5-flash';
         try {
           const gemResult = await withExponentialBackoff(() => runWithModel(geminiRescueModel), 1);
           if (cacheKey) {

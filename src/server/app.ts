@@ -628,18 +628,26 @@ export function createApiApp(): express.Express {
       }
 
       const combinedForScope = [previousText, ...pages.map((p) => p.rawText)].filter(Boolean).join('\n');
-      const scopeSuggestion =
-        !skipScope && combinedForScope.trim().length > 15
-          ? await SubjectDetectionService.detectScope(combinedForScope, tokens, {
-              config: guard.config,
-              idToken: user.idToken,
-            })
-          : {
-              suggestedGrade: presetGrade,
-              suggestedSubject: presetSubject,
-              suggestedChapters: [],
-              suggestedTitle: first.originalname.replace(/\.[^.]+$/, ''),
-            };
+      const heuristicScope = inferGradeAndSubjectFromFileNames([first.originalname]);
+      const fallbackScopeSuggestion = {
+        suggestedGrade: presetGrade || heuristicScope.grade || '10',
+        suggestedSubject:
+          presetSubject !== 'khac' ? presetSubject : heuristicScope.subject || 'khac',
+        suggestedChapters: [] as string[],
+        suggestedTitle: first.originalname.replace(/\.[^.]+$/, ''),
+      };
+
+      let scopeSuggestion = fallbackScopeSuggestion;
+      if (!skipScope && combinedForScope.trim().length > 15) {
+        try {
+          scopeSuggestion = await SubjectDetectionService.detectScope(combinedForScope, tokens, {
+            config: guard.config,
+            idToken: user.idToken,
+          });
+        } catch (scopeErr) {
+          console.warn('Non-fatal scope detection fallback during /api/ai/extract:', scopeErr);
+        }
+      }
 
       recordUsageEvent({
         uid: user.uid,
@@ -1139,7 +1147,7 @@ export function createApiApp(): express.Express {
         'completeness_analysis',
         'quiz_blueprint',
         'quiz_generation',
-        'feedback_classification',
+        'feedback_analysis',
       ];
       const taskRouting = taskTypes.map((t) => resolveModelForTask(t, config));
       res.json({

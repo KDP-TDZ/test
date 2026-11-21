@@ -3,11 +3,23 @@ import { resolveActiveCloudflareCredentials } from './singleKeyService.js';
 
 export const CF_RESCUE_MODEL_STRONG = 'cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 export const CF_RESCUE_MODEL_FAST = 'cf:@cf/meta/llama-3.1-8b-instruct-fast';
+export const CF_VISION_MODEL = 'cf:@cf/meta/llama-3.2-11b-vision-instruct';
+export const CF_VISION_MODELS = [
+  '@cf/meta/llama-3.2-11b-vision-instruct',
+  '@cf/llava-hf/llava-1.5-7b-hf',
+] as const;
 
 const CF_FALLBACK_ON_404: Record<string, string> = {
   '@cf/meta/llama-3.1-8b-instruct-fast': '@cf/meta/llama-3.1-8b-instruct-fp8-fast',
   '@cf/meta/llama-3.1-8b-instruct-fp8-fast': '@cf/meta/llama-3.1-8b-instruct-fast',
+  '@cf/meta/llama-3.2-11b-vision-instruct': '@cf/llava-hf/llava-1.5-7b-hf',
+  '@cf/llava-hf/llava-1.5-7b-hf': '@cf/meta/llama-3.2-11b-vision-instruct',
 };
+
+export function isCloudflareVisionModelId(modelId: string): boolean {
+  const raw = stripCloudflarePrefix(modelId).toLowerCase();
+  return raw.includes('vision') || raw.includes('llava');
+}
 
 export function isCloudflareModelId(modelId: string): boolean {
   return modelId.trim().toLowerCase().startsWith('cf:');
@@ -39,11 +51,21 @@ export interface CloudflareCompletionResult {
   resolvedModel?: string;
 }
 
+type CloudflareMessageContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
+type CloudflareMessage = {
+  role: 'system' | 'user';
+  content: string | CloudflareMessageContentPart[];
+};
+
 async function executeCloudflareRequest(params: {
   accountId: string;
   apiToken: string;
   cfModel: string;
-  messages: Array<{ role: 'system' | 'user'; content: string }>;
+  messages: CloudflareMessage[];
+  hasImages?: boolean;
   jsonMode?: boolean;
   maxTokens: number;
   signal?: AbortSignal;
@@ -55,7 +77,7 @@ async function executeCloudflareRequest(params: {
     max_tokens: params.maxTokens,
   };
 
-  if (params.jsonMode) {
+  if (params.jsonMode && !params.hasImages) {
     body.response_format = { type: 'json_object' };
   }
 
@@ -98,6 +120,7 @@ async function executeCloudflareRequest(params: {
 export async function callCloudflareChatCompletion(params: {
   modelId: string;
   prompt: string;
+  images?: Array<{ mimeType: string; base64: string }>;
   systemInstruction?: string;
   jsonMode?: boolean;
   jsonSchemaHint?: string;
@@ -114,7 +137,13 @@ export async function callCloudflareChatCompletion(params: {
     );
   }
 
-  const cfModel = stripCloudflarePrefix(params.modelId);
+  const hasImages = Array.isArray(params.images) && params.images.length > 0;
+  const requestedCfModel = stripCloudflarePrefix(params.modelId);
+  const cfModel =
+    hasImages && !isCloudflareVisionModelId(requestedCfModel)
+      ? stripCloudflarePrefix(CF_VISION_MODEL)
+      : requestedCfModel;
+
   const systemParts: string[] = [];
   if (params.systemInstruction) {
     systemParts.push(params.systemInstruction.trim());
@@ -128,11 +157,24 @@ export async function callCloudflareChatCompletion(params: {
     }
   }
 
-  const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
-  if (systemParts.length > 0) {
-    messages.push({ role: 'system', content: systemParts.join('\n\n') });
+  const messages: CloudflareMessage[] = [];
+  if (hasImages) {
+    const combinedPrompt =
+      systemParts.length > 0 ? `${systemParts.join('\n\n')}\n\n${params.prompt}` : params.prompt;
+    const userContent: CloudflareMessageContentPart[] = [
+      ...params.images!.map((img) => ({
+        type: 'image_url' as const,
+        image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+      })),
+      { type: 'text', text: combinedPrompt },
+    ];
+    messages.push({ role: 'user', content: userContent });
+  } else {
+    if (systemParts.length > 0) {
+      messages.push({ role: 'system', content: systemParts.join('\n\n') });
+    }
+    messages.push({ role: 'user', content: params.prompt });
   }
-  messages.push({ role: 'user', content: params.prompt });
 
   const maxTokens = Math.min(4096, Math.max(128, params.maxOutputTokens || 2048));
 
@@ -141,6 +183,7 @@ export async function callCloudflareChatCompletion(params: {
     apiToken,
     cfModel,
     messages,
+    hasImages,
     jsonMode: params.jsonMode,
     maxTokens,
     signal: params.signal,
@@ -150,33 +193,61 @@ export async function callCloudflareChatCompletion(params: {
     return firstAttempt.result;
   }
 
-  const fallbackModel = CF_FALLBACK_ON_404[cfModel];
-  if (firstAttempt.status === 404 && fallbackModel) {
-    const retryAttempt = await executeCloudflareRequest({
-      accountId,
-      apiToken,
-      cfModel: fallbackModel,
-      messages,
-      jsonMode: params.jsonMode,
-      maxTokens,
-      signal: params.signal,
-    });
-    if (retryAttempt.ok) {
-      return retryAttempt.result;
+  let lastStatus = firstAttempt.status;
+  let lastErrText = firstAttempt.errText;
+  const triedCfModels = new Set<string>([cfModel]);
+
+  const fallbackCandidates: string[] = [];
+  if (hasImages) {
+    for (const v of CF_VISION_MODELS) {
+      if (!triedCfModels.has(v)) fallbackCandidates.push(v);
+    }
+  } else if (CF_FALLBACK_ON_404[cfModel]) {
+    fallbackCandidates.push(CF_FALLBACK_ON_404[cfModel]);
+  }
+
+  if (
+    (firstAttempt.status === 404 || (hasImages && (firstAttempt.status === 400 || firstAttempt.status === 503))) &&
+    fallbackCandidates.length > 0
+  ) {
+    for (const candidate of fallbackCandidates) {
+      if (triedCfModels.has(candidate)) continue;
+      triedCfModels.add(candidate);
+      const retryAttempt = await executeCloudflareRequest({
+        accountId,
+        apiToken,
+        cfModel: candidate,
+        messages,
+        hasImages,
+        jsonMode: params.jsonMode,
+        maxTokens,
+        signal: params.signal,
+      });
+      if (retryAttempt.ok) {
+        return retryAttempt.result;
+      }
+      if (lastStatus === 404 || (retryAttempt.status !== 404 && retryAttempt.status !== 500)) {
+        lastStatus = retryAttempt.status;
+        lastErrText = retryAttempt.errText;
+      }
     }
   }
 
-  const { status, errText } = firstAttempt;
-  if (status === 429) {
-    throw new Error(`429 RESOURCE_EXHAUSTED (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
+  if (lastStatus === 429) {
+    throw new Error(`429 RESOURCE_EXHAUSTED (Cloudflare Workers AI): ${lastErrText.slice(0, 180)}`);
   }
-  if (status === 401 || status === 403) {
+  if (lastStatus === 401 || lastStatus === 403) {
     throw new Error(
-      `PERMISSION_DENIED (Cloudflare ${status}): Cloudflare Account ID hoặc API Token không hợp lệ.`
+      `PERMISSION_DENIED (Cloudflare ${lastStatus}): Cloudflare Account ID hoặc API Token không hợp lệ.`
     );
   }
-  if (status === 503 || status === 502) {
-    throw new Error(`503 UNAVAILABLE (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
+  if (lastStatus === 404) {
+    throw new Error(
+      `NOT_FOUND (Cloudflare 404): Model [${Array.from(triedCfModels).join(', ')}] không khả dụng. Chi tiết: ${lastErrText.slice(0, 180)}`
+    );
   }
-  throw new Error(`Cloudflare Workers AI error (HTTP ${status}): ${errText.slice(0, 200)}`);
+  if (lastStatus === 503 || lastStatus === 502) {
+    throw new Error(`503 UNAVAILABLE (Cloudflare Workers AI): ${lastErrText.slice(0, 180)}`);
+  }
+  throw new Error(`Cloudflare Workers AI error (HTTP ${lastStatus}): ${lastErrText.slice(0, 200)}`);
 }

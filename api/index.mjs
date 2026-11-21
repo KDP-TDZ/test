@@ -575,6 +575,10 @@ var init_cache = __esm({
 });
 
 // src/server/cloudflareProvider.ts
+function isCloudflareVisionModelId(modelId) {
+  const raw = stripCloudflarePrefix(modelId).toLowerCase();
+  return raw.includes("vision") || raw.includes("llava");
+}
 function isCloudflareModelId(modelId) {
   return modelId.trim().toLowerCase().startsWith("cf:");
 }
@@ -599,7 +603,7 @@ async function executeCloudflareRequest(params) {
     temperature: 0.15,
     max_tokens: params.maxTokens
   };
-  if (params.jsonMode) {
+  if (params.jsonMode && !params.hasImages) {
     body.response_format = { type: "json_object" };
   }
   const res = await fetch(buildCloudflareChatEndpoint(params.accountId), {
@@ -638,7 +642,9 @@ async function callCloudflareChatCompletion(params) {
       "CLOUDFLARE_AI_UNCONFIGURED: Ch\u01B0a c\u1EA5u h\xECnh Cloudflare Account ID / API Token. Qu\u1EA3n tr\u1ECB vi\xEAn c\xF3 th\u1EC3 th\xEAm tr\u1EF1c ti\u1EBFp trong Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt ho\u1EB7c bi\u1EBFn m\xF4i tr\u01B0\u1EDDng."
     );
   }
-  const cfModel = stripCloudflarePrefix(params.modelId);
+  const hasImages = Array.isArray(params.images) && params.images.length > 0;
+  const requestedCfModel = stripCloudflarePrefix(params.modelId);
+  const cfModel = hasImages && !isCloudflareVisionModelId(requestedCfModel) ? stripCloudflarePrefix(CF_VISION_MODEL) : requestedCfModel;
   const systemParts = [];
   if (params.systemInstruction) {
     systemParts.push(params.systemInstruction.trim());
@@ -653,16 +659,31 @@ ${params.jsonSchemaHint}`);
     }
   }
   const messages = [];
-  if (systemParts.length > 0) {
-    messages.push({ role: "system", content: systemParts.join("\n\n") });
+  if (hasImages) {
+    const combinedPrompt = systemParts.length > 0 ? `${systemParts.join("\n\n")}
+
+${params.prompt}` : params.prompt;
+    const userContent = [
+      ...params.images.map((img) => ({
+        type: "image_url",
+        image_url: { url: `data:${img.mimeType};base64,${img.base64}` }
+      })),
+      { type: "text", text: combinedPrompt }
+    ];
+    messages.push({ role: "user", content: userContent });
+  } else {
+    if (systemParts.length > 0) {
+      messages.push({ role: "system", content: systemParts.join("\n\n") });
+    }
+    messages.push({ role: "user", content: params.prompt });
   }
-  messages.push({ role: "user", content: params.prompt });
   const maxTokens = Math.min(4096, Math.max(128, params.maxOutputTokens || 2048));
   const firstAttempt = await executeCloudflareRequest({
     accountId,
     apiToken,
     cfModel,
     messages,
+    hasImages,
     jsonMode: params.jsonMode,
     maxTokens,
     signal: params.signal
@@ -670,45 +691,75 @@ ${params.jsonSchemaHint}`);
   if (firstAttempt.ok) {
     return firstAttempt.result;
   }
-  const fallbackModel = CF_FALLBACK_ON_404[cfModel];
-  if (firstAttempt.status === 404 && fallbackModel) {
-    const retryAttempt = await executeCloudflareRequest({
-      accountId,
-      apiToken,
-      cfModel: fallbackModel,
-      messages,
-      jsonMode: params.jsonMode,
-      maxTokens,
-      signal: params.signal
-    });
-    if (retryAttempt.ok) {
-      return retryAttempt.result;
+  let lastStatus = firstAttempt.status;
+  let lastErrText = firstAttempt.errText;
+  const triedCfModels = /* @__PURE__ */ new Set([cfModel]);
+  const fallbackCandidates = [];
+  if (hasImages) {
+    for (const v of CF_VISION_MODELS) {
+      if (!triedCfModels.has(v)) fallbackCandidates.push(v);
+    }
+  } else if (CF_FALLBACK_ON_404[cfModel]) {
+    fallbackCandidates.push(CF_FALLBACK_ON_404[cfModel]);
+  }
+  if ((firstAttempt.status === 404 || hasImages && (firstAttempt.status === 400 || firstAttempt.status === 503)) && fallbackCandidates.length > 0) {
+    for (const candidate of fallbackCandidates) {
+      if (triedCfModels.has(candidate)) continue;
+      triedCfModels.add(candidate);
+      const retryAttempt = await executeCloudflareRequest({
+        accountId,
+        apiToken,
+        cfModel: candidate,
+        messages,
+        hasImages,
+        jsonMode: params.jsonMode,
+        maxTokens,
+        signal: params.signal
+      });
+      if (retryAttempt.ok) {
+        return retryAttempt.result;
+      }
+      if (lastStatus === 404 || retryAttempt.status !== 404 && retryAttempt.status !== 500) {
+        lastStatus = retryAttempt.status;
+        lastErrText = retryAttempt.errText;
+      }
     }
   }
-  const { status, errText } = firstAttempt;
-  if (status === 429) {
-    throw new Error(`429 RESOURCE_EXHAUSTED (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
+  if (lastStatus === 429) {
+    throw new Error(`429 RESOURCE_EXHAUSTED (Cloudflare Workers AI): ${lastErrText.slice(0, 180)}`);
   }
-  if (status === 401 || status === 403) {
+  if (lastStatus === 401 || lastStatus === 403) {
     throw new Error(
-      `PERMISSION_DENIED (Cloudflare ${status}): Cloudflare Account ID ho\u1EB7c API Token kh\xF4ng h\u1EE3p l\u1EC7.`
+      `PERMISSION_DENIED (Cloudflare ${lastStatus}): Cloudflare Account ID ho\u1EB7c API Token kh\xF4ng h\u1EE3p l\u1EC7.`
     );
   }
-  if (status === 503 || status === 502) {
-    throw new Error(`503 UNAVAILABLE (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
+  if (lastStatus === 404) {
+    throw new Error(
+      `NOT_FOUND (Cloudflare 404): Model [${Array.from(triedCfModels).join(", ")}] kh\xF4ng kh\u1EA3 d\u1EE5ng. Chi ti\u1EBFt: ${lastErrText.slice(0, 180)}`
+    );
   }
-  throw new Error(`Cloudflare Workers AI error (HTTP ${status}): ${errText.slice(0, 200)}`);
+  if (lastStatus === 503 || lastStatus === 502) {
+    throw new Error(`503 UNAVAILABLE (Cloudflare Workers AI): ${lastErrText.slice(0, 180)}`);
+  }
+  throw new Error(`Cloudflare Workers AI error (HTTP ${lastStatus}): ${lastErrText.slice(0, 200)}`);
 }
-var CF_RESCUE_MODEL_STRONG, CF_RESCUE_MODEL_FAST, CF_FALLBACK_ON_404;
+var CF_RESCUE_MODEL_STRONG, CF_RESCUE_MODEL_FAST, CF_VISION_MODEL, CF_VISION_MODELS, CF_FALLBACK_ON_404;
 var init_cloudflareProvider = __esm({
   "src/server/cloudflareProvider.ts"() {
     init_groqProvider();
     init_singleKeyService();
     CF_RESCUE_MODEL_STRONG = "cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast";
     CF_RESCUE_MODEL_FAST = "cf:@cf/meta/llama-3.1-8b-instruct-fast";
+    CF_VISION_MODEL = "cf:@cf/meta/llama-3.2-11b-vision-instruct";
+    CF_VISION_MODELS = [
+      "@cf/meta/llama-3.2-11b-vision-instruct",
+      "@cf/llava-hf/llava-1.5-7b-hf"
+    ];
     CF_FALLBACK_ON_404 = {
       "@cf/meta/llama-3.1-8b-instruct-fast": "@cf/meta/llama-3.1-8b-instruct-fp8-fast",
-      "@cf/meta/llama-3.1-8b-instruct-fp8-fast": "@cf/meta/llama-3.1-8b-instruct-fast"
+      "@cf/meta/llama-3.1-8b-instruct-fp8-fast": "@cf/meta/llama-3.1-8b-instruct-fast",
+      "@cf/meta/llama-3.2-11b-vision-instruct": "@cf/llava-hf/llava-1.5-7b-hf",
+      "@cf/llava-hf/llava-1.5-7b-hf": "@cf/meta/llama-3.2-11b-vision-instruct"
     };
   }
 });
@@ -831,7 +882,7 @@ function thinkingConfigForModel(modelId, tier) {
 function sanitizeGeminiModelId(modelId) {
   const trimmed = (modelId || "").trim();
   if (!trimmed || isGroqModelId(trimmed) || isCloudflareModelId(trimmed)) {
-    return "gemini-3.1-flash-lite";
+    return "gemini-2.5-flash";
   }
   return trimmed.startsWith("models/") ? trimmed.slice("models/".length) : trimmed;
 }
@@ -843,7 +894,9 @@ async function fetchPublicGeminiGenerateModels(apiKey, signal) {
     const data = await res.json();
     return (data.models || []).filter(
       (m) => m && typeof m.name === "string" && Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent")
-    ).map((m) => m.name.replace(/^models\//, "").trim()).filter((name) => name.startsWith("gemini-") && !name.includes("embedding") && !name.includes("tts") && !name.includes("imagen"));
+    ).map((m) => m.name.replace(/^models\//, "").trim()).filter(
+      (name) => name.startsWith("gemini-") && !name.includes("embedding") && !name.includes("tts") && !name.includes("imagen") && !name.includes("aqa")
+    );
   } catch {
     return [];
   }
@@ -862,15 +915,36 @@ async function generateGeminiContentWithFallback(params) {
   const requestedModel = sanitizeGeminiModelId(params.model);
   const cachedWorking = workingGeminiModelPerKey.get(keyHash);
   const candidates = [];
-  for (const m of [requestedModel, cachedWorking, ...GEMINI_FALLBACK_CANDIDATES]) {
+  for (const m of [cachedWorking, requestedModel, ...GEMINI_FALLBACK_CANDIDATES]) {
     if (m && !candidates.includes(m)) {
       candidates.push(m);
     }
   }
   let lastErr = null;
   const tried = /* @__PURE__ */ new Set();
+  const triedList = [];
+  const wantsJson = params.config?.responseMimeType === "application/json";
+  const normalizeOutputText = (rawText) => {
+    if (!wantsJson) return rawText || "";
+    const trimmed = (rawText || "").trim();
+    if (!trimmed) return "";
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fenced && fenced[1]) {
+      const inner = fenced[1].trim();
+      const fb2 = inner.indexOf("{");
+      const lb2 = inner.lastIndexOf("}");
+      return fb2 >= 0 && lb2 > fb2 ? inner.slice(fb2, lb2 + 1) : inner;
+    }
+    const fb = trimmed.indexOf("{");
+    const lb = trimmed.lastIndexOf("}");
+    if (fb >= 0 && lb > fb) {
+      return trimmed.slice(fb, lb + 1);
+    }
+    return trimmed;
+  };
   const tryCandidate = async (candidateModel) => {
     tried.add(candidateModel);
+    triedList.push(candidateModel);
     const baseConfig = { ...params.config || {} };
     delete baseConfig.thinkingConfig;
     const tc = params.thinkingTier ? thinkingConfigForModel(candidateModel, params.thinkingTier) : void 0;
@@ -885,52 +959,99 @@ async function generateGeminiContentWithFallback(params) {
       });
       workingGeminiModelPerKey.set(keyHash, candidateModel);
       return {
-        text: resp.text || "",
+        text: normalizeOutputText(resp.text || ""),
         usageMetadata: resp.usageMetadata,
         resolvedModel: candidateModel
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (tc && (msg.includes("thinking") || msg.includes("Thinking") || msg.includes("INVALID_ARGUMENT"))) {
+      const is400OrParamErr = msg.includes("400") || msg.includes("INVALID_ARGUMENT") || msg.includes("thinking") || msg.includes("Thinking") || msg.includes("response_schema") || msg.includes("responseSchema");
+      if (tc && is400OrParamErr) {
         delete baseConfig.thinkingConfig;
-        const retryResp = await ai.models.generateContent({
+        try {
+          const retryResp = await ai.models.generateContent({
+            model: candidateModel,
+            contents: params.contents,
+            config: baseConfig
+          });
+          workingGeminiModelPerKey.set(keyHash, candidateModel);
+          return {
+            text: normalizeOutputText(retryResp.text || ""),
+            usageMetadata: retryResp.usageMetadata,
+            resolvedModel: candidateModel
+          };
+        } catch (err2) {
+          const msg2 = err2 instanceof Error ? err2.message : String(err2);
+          if (!baseConfig.responseSchema || !msg2.includes("400") && !msg2.includes("INVALID_ARGUMENT")) {
+            throw err2;
+          }
+        }
+      }
+      if (baseConfig.responseSchema && is400OrParamErr) {
+        const schemaLessConfig = { ...baseConfig };
+        delete schemaLessConfig.thinkingConfig;
+        delete schemaLessConfig.responseSchema;
+        const retryResp2 = await ai.models.generateContent({
           model: candidateModel,
           contents: params.contents,
-          config: baseConfig
+          config: schemaLessConfig
         });
         workingGeminiModelPerKey.set(keyHash, candidateModel);
         return {
-          text: retryResp.text || "",
-          usageMetadata: retryResp.usageMetadata,
+          text: normalizeOutputText(retryResp2.text || ""),
+          usageMetadata: retryResp2.usageMetadata,
           resolvedModel: candidateModel
         };
       }
       throw err;
     }
   };
+  const signal = params.config?.abortSignal;
+  let sawNotFound = false;
   for (const candidate of candidates) {
+    if (signal?.aborted) {
+      throw lastErr || new Error("Y\xEAu c\u1EA7u AI v\u01B0\u1EE3t qu\xE1 th\u1EDDi gian ch\u1EDD.");
+    }
     try {
       return await tryCandidate(candidate);
     } catch (err) {
       lastErr = err;
       const msg = err instanceof Error ? err.message : String(err);
-      const isModelNotFoundOrUnsupported = msg.includes("NOT_FOUND") || msg.includes("404") || msg.includes("not found") || msg.includes("is not supported for generateContent");
-      if (!isModelNotFoundOrUnsupported) {
+      if (signal?.aborted || msg.includes("AbortError") || msg.includes("aborted")) {
+        throw err;
+      }
+      if (msg.includes("404") || msg.includes("NOT_FOUND") || msg.includes("not found")) {
+        sawNotFound = true;
+      }
+      const isFatalKeyError = msg.includes("API_KEY_INVALID") || msg.includes("API key not valid") || msg.includes("SERVICE_DISABLED") || msg.includes("API has not been used");
+      if (isFatalKeyError) {
         throw err;
       }
     }
   }
-  const signal = params.config?.abortSignal;
-  const discovered = await fetchPublicGeminiGenerateModels(apiKey, signal);
-  for (const disc of discovered) {
-    if (tried.has(disc)) continue;
-    try {
-      return await tryCandidate(disc);
-    } catch (err) {
-      lastErr = err;
+  if (!signal?.aborted) {
+    const discovered = await fetchPublicGeminiGenerateModels(apiKey, signal);
+    for (const disc of discovered) {
+      if (signal?.aborted) break;
+      if (tried.has(disc)) continue;
+      try {
+        return await tryCandidate(disc);
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("404") || msg.includes("NOT_FOUND") || msg.includes("not found")) {
+          sawNotFound = true;
+        }
+      }
     }
   }
-  throw lastErr || new Error(`NOT_FOUND: Kh\xF4ng t\xECm th\u1EA5y model Gemini kh\u1EA3 d\u1EE5ng cho kh\xF3a hi\u1EC7n t\u1EA1i.`);
+  if (!sawNotFound && lastErr) {
+    throw lastErr;
+  }
+  const lastMsg = lastErr instanceof Error ? lastErr.message : String(lastErr || "");
+  throw new Error(
+    `NOT_FOUND (Gemini): \u0110\xE3 th\u1EED c\xE1c model [${triedList.join(", ")}] nh\u01B0ng \u0111\u1EC1u kh\xF4ng kh\u1EA3 d\u1EE5ng cho kh\xF3a hi\u1EC7n t\u1EA1i. Chi ti\u1EBFt: ${lastMsg.slice(0, 220)}`
+  );
 }
 async function createServerAiClient() {
   const apiKey = await resolveActiveGeminiApiKey();
@@ -966,9 +1087,9 @@ function pickConfiguredProviderModel(taskType, preferredModel, activeModel, excl
     return groqPrimary === GROQ_RESCUE_MODEL_STRONG ? GROQ_RESCUE_MODEL_FAST : "groq:meta-llama/llama-4-scout-17b-16e-instruct";
   }
   if (isGeminiConfigured()) {
-    const geminiPrimary = "gemini-3.1-flash-lite";
+    const geminiPrimary = "gemini-2.5-flash";
     if (geminiPrimary !== excludeModel) return geminiPrimary;
-    return "gemini-4-hydrogen";
+    return "gemini-3.1-flash-lite-preview";
   }
   if (isCloudflareConfigured()) {
     const cfPrimary = defaultCloudflareRescueModelForTask(taskType);
@@ -998,7 +1119,7 @@ function resolveModelForTask(taskType, config, consumeOverride) {
     taskType,
     modelId,
     fallbackModelId,
-    enableFallback: Boolean(taskCfg.enableFallback),
+    enableFallback: taskCfg.enableFallback !== false,
     usedOverride,
     promptVersion: taskCfg.promptVersion || "v3.2",
     configVersion: config.configVersion || 1
@@ -1011,7 +1132,7 @@ async function executeRoutedAiTask(params) {
     consumeOneTimeOverride,
     cacheInput,
     bypassCache,
-    allowGroqRescue = false,
+    allowGroqRescue = true,
     groqRescueModelId,
     runWithModel
   } = params;
@@ -1062,7 +1183,7 @@ async function executeRoutedAiTask(params) {
       };
     }
   }
-  const canFallback = decision.enableFallback && Boolean(decision.fallbackModelId) && decision.fallbackModelId !== decision.modelId && isModelProviderConfigured(decision.fallbackModelId);
+  const canFallback = Boolean(decision.fallbackModelId) && decision.fallbackModelId !== decision.modelId && isModelProviderConfigured(decision.fallbackModelId);
   const primaryUnconfigured = !isModelProviderConfigured(decision.modelId);
   const executeTask = async () => {
     const start = Date.now();
@@ -1203,7 +1324,7 @@ async function executeRoutedAiTask(params) {
       const isFallbackGemini = canFallback && !isGroqModelId(decision.fallbackModelId) && !isCloudflareModelId(decision.fallbackModelId);
       const canGeminiRescue = isGeminiConfigured() && !isPrimaryGemini && !isFallbackGemini;
       if (canGeminiRescue) {
-        const geminiRescueModel = "gemini-3.1-flash-lite";
+        const geminiRescueModel = "gemini-2.5-flash";
         try {
           const gemResult = await withExponentialBackoff(() => runWithModel(geminiRescueModel), 1);
           if (cacheKey) {
@@ -1364,12 +1485,14 @@ var init_modelRouter = __esm({
     cachedAiClient = null;
     workingGeminiModelPerKey = /* @__PURE__ */ new Map();
     GEMINI_FALLBACK_CANDIDATES = [
-      "gemini-3.1-flash-lite",
-      "gemini-4-hydrogen",
       "gemini-2.5-flash",
       "gemini-2.5-flash-lite",
       "gemini-3.1-flash-lite-preview",
-      "gemini-3-flash-preview"
+      "gemini-3-flash-preview",
+      "gemini-2.0-flash",
+      "gemini-2.5-pro",
+      "gemini-3.1-flash-lite",
+      "gemini-4-hydrogen"
     ];
   }
 });
@@ -2599,12 +2722,12 @@ function isGroqChatModelId(id) {
   ];
   return !excludedTokens.some((tok) => lower.includes(tok));
 }
-async function fetchAvailableGroqChatModels(apiKey, signal) {
+async function fetchAvailableGroqChatModels(apiKey, signal, forceRefresh = false) {
   const cleanKey = apiKey.trim();
   if (!cleanKey) return [];
   const cacheKey = crypto4.createHash("sha256").update(cleanKey).digest("hex").slice(0, 16);
   const cached = availableModelsCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
     return cached.models;
   }
   try {
@@ -2615,24 +2738,32 @@ async function fetchAvailableGroqChatModels(apiKey, signal) {
       },
       signal
     });
-    if (!res.ok) return [];
+    if (!res.ok) return cached?.models || [];
     const data = await res.json();
     const models = (data.data || []).filter((item) => item && typeof item.id === "string" && item.active !== false).map((item) => item.id.trim()).filter((id) => isGroqChatModelId(id));
-    availableModelsCache.set(cacheKey, {
-      expiresAt: Date.now() + 10 * 60 * 1e3,
-      models
-    });
+    if (models.length > 0) {
+      availableModelsCache.set(cacheKey, {
+        expiresAt: Date.now() + 10 * 60 * 1e3,
+        models
+      });
+    }
     return models;
   } catch {
-    return [];
+    return cached?.models || [];
   }
 }
 function extractJsonStringFromModelOutput(raw) {
   const trimmed = (raw || "").trim();
   if (!trimmed) return "{}";
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenced && fenced[1]) {
-    return fenced[1].trim();
+    const inner = fenced[1].trim();
+    const fb = inner.indexOf("{");
+    const lb = inner.lastIndexOf("}");
+    if (fb >= 0 && lb > fb) {
+      return inner.slice(fb, lb + 1);
+    }
+    return inner;
   }
   const firstBrace = trimmed.indexOf("{");
   const lastBrace = trimmed.lastIndexOf("}");
@@ -2680,11 +2811,16 @@ async function executeGroqRequest(params) {
       }
     };
   };
-  const primary = await sendOnce(Boolean(params.jsonMode));
-  if (!primary.ok && primary.status === 400 && params.jsonMode) {
-    const withoutJsonFormat = await sendOnce(false);
-    if (withoutJsonFormat.ok) {
-      return withoutJsonFormat;
+  const useStrictJsonHeaderFirst = Boolean(params.jsonMode) && !params.hasImages;
+  const primary = await sendOnce(useStrictJsonHeaderFirst);
+  if (!primary.ok && primary.status === 400 && useStrictJsonHeaderFirst) {
+    const lowerErr = primary.errText.toLowerCase();
+    const isDeadModel = lowerErr.includes("model_not_found") || lowerErr.includes("model_decommissioned") || lowerErr.includes("does not exist") || lowerErr.includes("not found");
+    if (!isDeadModel) {
+      const withoutJsonFormat = await sendOnce(false);
+      if (withoutJsonFormat.ok) {
+        return withoutJsonFormat;
+      }
     }
   }
   return primary;
@@ -2714,19 +2850,22 @@ ${params.jsonSchemaHint}`);
     }
   }
   const messages = [];
-  if (systemParts.length > 0) {
-    messages.push({ role: "system", content: systemParts.join("\n\n") });
-  }
   if (hasImages) {
+    const combinedPrompt = systemParts.length > 0 ? `${systemParts.join("\n\n")}
+
+${params.prompt}` : params.prompt;
     const userContent = [
       ...params.images.map((img) => ({
         type: "image_url",
         image_url: { url: `data:${img.mimeType};base64,${img.base64}` }
       })),
-      { type: "text", text: params.prompt }
+      { type: "text", text: combinedPrompt }
     ];
     messages.push({ role: "user", content: userContent });
   } else {
+    if (systemParts.length > 0) {
+      messages.push({ role: "system", content: systemParts.join("\n\n") });
+    }
     messages.push({ role: "user", content: params.prompt });
   }
   const maxTokens = Math.min(8192, Math.max(256, params.maxOutputTokens || 2048));
@@ -2734,6 +2873,7 @@ ${params.jsonSchemaHint}`);
     apiKey,
     groqModel,
     messages,
+    hasImages,
     jsonMode: params.jsonMode,
     maxTokens,
     signal: params.signal
@@ -2741,10 +2881,15 @@ ${params.jsonSchemaHint}`);
   if (firstAttempt.ok) {
     return firstAttempt.result;
   }
+  const isModelNotFoundResponse = (status2, errText2) => {
+    const low = errText2.toLowerCase();
+    return status2 === 404 || low.includes("model_not_found") || low.includes("model_decommissioned") || low.includes("does not exist");
+  };
   let lastStatus = firstAttempt.status;
   let lastErrText = firstAttempt.errText;
-  if ((firstAttempt.status === 404 || firstAttempt.status === 400) && !params.disableModelAutoFallback) {
-    const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
+  const triedModels = [groqModel];
+  if ((firstAttempt.status === 404 || firstAttempt.status === 400 || firstAttempt.status === 503) && !params.disableModelAutoFallback) {
+    const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal, true);
     const tried = /* @__PURE__ */ new Set([groqModel.toLowerCase()]);
     const candidatePool = [];
     if (hasImages) {
@@ -2768,15 +2913,18 @@ ${params.jsonSchemaHint}`);
     }
     let attempts = 0;
     for (const candidate of candidatePool) {
-      const lower = candidate.trim().toLowerCase();
+      const cleanCandidate = candidate.trim();
+      const lower = cleanCandidate.toLowerCase();
       if (!lower || tried.has(lower)) continue;
       tried.add(lower);
+      triedModels.push(cleanCandidate);
       attempts += 1;
-      if (attempts > 4) break;
+      if (attempts > 5) break;
       const retryAttempt = await executeGroqRequest({
         apiKey,
-        groqModel: candidate.trim(),
+        groqModel: cleanCandidate,
         messages,
+        hasImages,
         jsonMode: params.jsonMode,
         maxTokens,
         signal: params.signal
@@ -2784,27 +2932,34 @@ ${params.jsonSchemaHint}`);
       if (retryAttempt.ok) {
         return retryAttempt.result;
       }
-      lastStatus = retryAttempt.status;
-      lastErrText = retryAttempt.errText;
+      const prevWasNotFound = isModelNotFoundResponse(lastStatus, lastErrText);
+      const currIsNotFound = isModelNotFoundResponse(retryAttempt.status, retryAttempt.errText);
+      if (prevWasNotFound || !currIsNotFound) {
+        lastStatus = retryAttempt.status;
+        lastErrText = retryAttempt.errText;
+      }
     }
   }
   const status = lastStatus;
   const errText = lastErrText;
   if (status === 429) {
-    throw new Error(`429 RESOURCE_EXHAUSTED (Groq): ${errText.slice(0, 180)}`);
+    throw new Error(`429 RESOURCE_EXHAUSTED (Groq): ${errText.slice(0, 220)}`);
   }
   if (status === 401 || status === 403) {
     throw new Error(`PERMISSION_DENIED (Groq ${status}): Groq API Key kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c \u0111\xE3 b\u1ECB thu h\u1ED3i.`);
   }
-  if (status === 404) {
+  if (isModelNotFoundResponse(status, errText)) {
     const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
-    const sampleHint = availableModels.length > 0 ? ` C\xE1c model kh\u1EA3 d\u1EE5ng tr\xEAn t\xE0i kho\u1EA3n Groq c\u1EE7a b\u1EA1n: ${availableModels.slice(0, 4).join(", ")}.` : " Vui l\xF2ng ki\u1EC3m tra m\u1EE5c Model Access tr\xEAn Groq Console.";
-    throw new Error(`NOT_FOUND (Groq 404): Model "${groqModel}" kh\xF4ng kh\u1EA3 d\u1EE5ng tr\xEAn t\xE0i kho\u1EA3n Groq n\xE0y.${sampleHint}`);
+    const sampleHint = availableModels.length > 0 ? ` C\xE1c model kh\u1EA3 d\u1EE5ng tr\xEAn t\xE0i kho\u1EA3n Groq c\u1EE7a b\u1EA1n: ${availableModels.slice(0, 6).join(", ")}.` : " Vui l\xF2ng ki\u1EC3m tra m\u1EE5c Model Access tr\xEAn Groq Console.";
+    const visionNote = hasImages ? " L\u01B0u \xFD: t\xE1c v\u1EE5 \u0111\u1ECDc \u1EA3nh OCR tr\xEAn Groq y\xEAu c\u1EA7u model Vision (v\xED d\u1EE5 meta-llama/llama-4-scout-17b-16e-instruct)." : "";
+    throw new Error(
+      `NOT_FOUND (Groq ${status}): \u0110\xE3 th\u1EED c\xE1c model [${triedModels.join(", ")}] nh\u01B0ng \u0111\u1EC1u kh\xF4ng kh\u1EA3 d\u1EE5ng tr\xEAn t\xE0i kho\u1EA3n Groq n\xE0y.${visionNote}${sampleHint} Chi ti\u1EBFt: ${errText.slice(0, 180)}`
+    );
   }
   if (status === 503 || status === 502) {
-    throw new Error(`503 UNAVAILABLE (Groq): ${errText.slice(0, 180)}`);
+    throw new Error(`503 UNAVAILABLE (Groq): ${errText.slice(0, 220)}`);
   }
-  throw new Error(`Groq API error (HTTP ${status}): ${errText.slice(0, 200)}`);
+  throw new Error(`Groq API error (HTTP ${status} tr\xEAn model ${triedModels.join(" -> ")}): ${errText.slice(0, 240)}`);
 }
 var GROQ_API_ENDPOINT, GROQ_MODELS_ENDPOINT, GROQ_RESCUE_MODEL_STRONG, GROQ_RESCUE_MODEL_FAST, GROQ_VISION_MODEL, GROQ_PREFERRED_TEXT_MODELS, GROQ_VISION_MODELS, LEGACY_GROQ_MODEL_ALIASES, availableModelsCache;
 var init_groqProvider = __esm({
@@ -3045,7 +3200,7 @@ async function updateAuthoritativeAiConfig(patch, actorUid, actorEmail, idToken)
       const cur = updatedTaskModels[taskKey] || DEFAULT_TASK_MODELS[taskKey];
       propagated[taskKey] = {
         ...cur,
-        defaultModel: taskKey === "ocr_extraction" && normalizedActive.startsWith("groq:") ? "groq:meta-llama/llama-4-scout-17b-16e-instruct" : normalizedActive
+        defaultModel: normalizedActive
       };
     }
     updatedTaskModels = propagated;
@@ -4210,6 +4365,116 @@ function accumulateRawTokens(acc, usage) {
   acc.candidateTokens += usage.candidateTokens || 0;
   acc.totalTokens += usage.totalTokens || 0;
 }
+function repairJsonLikeText(rawText) {
+  const trimmed = (rawText || "").trim();
+  if (!trimmed) return "{}";
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  let candidate = fenced && fenced[1] ? fenced[1].trim() : trimmed;
+  const fb = candidate.indexOf("{");
+  const lb = candidate.lastIndexOf("}");
+  if (fb >= 0 && lb > fb) {
+    candidate = candidate.slice(fb, lb + 1);
+  }
+  return candidate;
+}
+function normalizeJsonEscapeAndControlChars(jsonCandidate) {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  const isHex = (ch) => /^[0-9a-fA-F]$/.test(ch);
+  for (let i = 0; i < jsonCandidate.length; i += 1) {
+    const ch = jsonCandidate[i];
+    if (inString) {
+      if (escaped) {
+        out += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        const next = jsonCandidate[i + 1] || "";
+        const isStandardEscape = next === '"' || next === "\\" || next === "/" || next === "b" || next === "f" || next === "n" || next === "r" || next === "t" || next === "u" && i + 5 < jsonCandidate.length && isHex(jsonCandidate[i + 2]) && isHex(jsonCandidate[i + 3]) && isHex(jsonCandidate[i + 4]) && isHex(jsonCandidate[i + 5]);
+        if (isStandardEscape) {
+          out += ch;
+          escaped = true;
+        } else {
+          out += "\\\\";
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+        out += ch;
+        continue;
+      }
+      if (ch === "\n") {
+        out += "\\n";
+        continue;
+      }
+      if (ch === "\r") {
+        out += "\\r";
+        continue;
+      }
+      if (ch === "	") {
+        out += "\\t";
+        continue;
+      }
+      const code = ch.charCodeAt(0);
+      if (code < 32) {
+        out += " ";
+        continue;
+      }
+      out += ch;
+    } else {
+      if (ch === '"') {
+        inString = true;
+      }
+      out += ch;
+    }
+  }
+  return out.replace(/,\s*([}\]])/g, "$1");
+}
+function safeParseModelJson(rawText, fallbackJson) {
+  const source = (rawText || "").trim() || fallbackJson;
+  const candidate = repairJsonLikeText(source);
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    const repaired = normalizeJsonEscapeAndControlChars(candidate);
+    try {
+      return JSON.parse(repaired);
+    } catch {
+      return JSON.parse(fallbackJson);
+    }
+  }
+}
+function parseOcrResponsePayload(rawText) {
+  const trimmed = (rawText || "").trim();
+  if (!trimmed) {
+    return { rawText: "", ocrConfidence: 0.85 };
+  }
+  const candidate = repairJsonLikeText(trimmed);
+  for (const attemptText of [candidate, normalizeJsonEscapeAndControlChars(candidate)]) {
+    try {
+      const obj = JSON.parse(attemptText);
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+        return obj;
+      }
+    } catch {
+    }
+  }
+  const rawFieldMatch = trimmed.match(/"rawText"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (rawFieldMatch && rawFieldMatch[1]) {
+    const recoveredText = rawFieldMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\").trim();
+    if (recoveredText.length > 0) {
+      return { rawText: recoveredText, ocrConfidence: 0.8 };
+    }
+  }
+  const cleanedPlain = trimmed.replace(/^```[a-zA-Z]*\s*/i, "").replace(/```\s*$/i, "").trim();
+  if (!cleanedPlain || cleanedPlain === "{}") {
+    throw new Error("M\xF4 h\xECnh AI tr\u1EA3 v\u1EC1 d\u1EEF li\u1EC7u OCR r\u1ED7ng.");
+  }
+  return { rawText: cleanedPlain, ocrConfidence: 0.85 };
+}
 async function generateJsonWithProvider(params) {
   if (isGroqModelId(params.modelId)) {
     const resp = await callWithTimeout(
@@ -4224,7 +4489,7 @@ async function generateJsonWithProvider(params) {
       params.timeoutMs
     );
     accumulateRawTokens(params.tokensOut, resp);
-    return JSON.parse((resp.text || params.fallbackJson).trim());
+    return safeParseModelJson(resp.text, params.fallbackJson);
   }
   if (isCloudflareModelId(params.modelId)) {
     const resp = await callWithTimeout(
@@ -4239,7 +4504,7 @@ async function generateJsonWithProvider(params) {
       params.timeoutMs
     );
     accumulateRawTokens(params.tokensOut, resp);
-    return JSON.parse((resp.text || params.fallbackJson).trim());
+    return safeParseModelJson(resp.text, params.fallbackJson);
   }
   const ai = await createServerAiClient();
   const response = await callWithTimeout(
@@ -4258,7 +4523,7 @@ async function generateJsonWithProvider(params) {
     params.timeoutMs
   );
   accumulateTokens(params.tokensOut, response);
-  return JSON.parse((response.text || params.fallbackJson).trim());
+  return safeParseModelJson(response.text, params.fallbackJson);
 }
 async function generatePlainTextWithProvider(params) {
   if (isGroqModelId(params.modelId)) {
@@ -4320,7 +4585,7 @@ async function runTaskWithRouter(params) {
   });
   return { data: res.data, modelId: res.modelId };
 }
-var OCR_FAST_TIMEOUT_MS = 14e3;
+var OCR_FAST_TIMEOUT_MS = 3e4;
 function buildExtractedBlocksFromRawText(rawText, pageNumber, confidence) {
   const safeConf = Math.max(0.1, Math.min(1, Number(confidence) || 0.92));
   const lines = (rawText || "").split(/\r?\n+/).map((l) => l.trim()).filter((l) => l.length > 0);
@@ -4380,83 +4645,136 @@ var DocumentExtractionService = class {
               "- Ch\u1EA5m \u0111\u1ED9 r\xF5 n\xE9t ch\u1EEF vi\u1EBFt ocrConfidence (0.0-1.0; n\u1EBFu m\u1EDD/kh\xF3 \u0111\u1ECDc \u0111\u1EB7t < 0.65).",
               '- Nh\u1EADn di\u1EC7n lu\xF4n l\u1EDBp ("10"|"11"|"12"), m\xF4n h\u1ECDc THPT, t\xEAn ch\u01B0\u01A1ng v\xE0 ti\xEAu \u0111\u1EC1 b\xE0i ghi.'
             ].join("\n");
-            if (isGroqModelId(modelId)) {
+            const jsonHint = '{"rawText":"...","ocrConfidence":0.95,"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}';
+            const runGroqVision = async () => {
+              const resp = await callWithTimeout(
+                (signal) => callGroqChatCompletion({
+                  modelId: isGroqModelId(modelId) ? modelId : GROQ_VISION_MODEL,
+                  prompt: ocrPrompt,
+                  images: [{ mimeType: file.mimeType, base64 }],
+                  jsonMode: true,
+                  jsonSchemaHint: jsonHint,
+                  maxOutputTokens: 2048,
+                  signal
+                }),
+                OCR_FAST_TIMEOUT_MS
+              );
+              accumulateRawTokens(tokensOut, resp);
+              return parseOcrResponsePayload(resp.text || "");
+            };
+            const runCloudflareVision = async () => {
+              const resp = await callWithTimeout(
+                (signal) => callCloudflareChatCompletion({
+                  modelId: isCloudflareModelId(modelId) ? modelId : CF_VISION_MODEL,
+                  prompt: ocrPrompt,
+                  images: [{ mimeType: file.mimeType, base64 }],
+                  jsonMode: true,
+                  jsonSchemaHint: jsonHint,
+                  maxOutputTokens: 2048,
+                  signal
+                }),
+                OCR_FAST_TIMEOUT_MS
+              );
+              accumulateRawTokens(tokensOut, resp);
+              return parseOcrResponsePayload(resp.text || "");
+            };
+            const runGeminiVision = async () => {
+              const ai = await createServerAiClient();
+              const visionModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-2.5-flash" : modelId;
+              const response = await callWithTimeout(
+                (signal) => generateGeminiContentWithFallback({
+                  ai,
+                  model: visionModel,
+                  thinkingTier: "minimal",
+                  contents: [
+                    {
+                      role: "user",
+                      parts: [
+                        {
+                          inlineData: {
+                            mimeType: file.mimeType,
+                            data: base64
+                          }
+                        },
+                        {
+                          text: `${ocrPrompt}
+
+C\u1EA5u tr\xFAc JSON b\u1EAFt bu\u1ED9c:
+${jsonHint}`
+                        }
+                      ]
+                    }
+                  ],
+                  config: {
+                    maxOutputTokens: 2048,
+                    abortSignal: signal,
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                      type: Type.OBJECT,
+                      properties: {
+                        rawText: { type: Type.STRING },
+                        ocrConfidence: { type: Type.NUMBER },
+                        suggestedGrade: { type: Type.STRING, description: "10 | 11 | 12" },
+                        suggestedSubject: {
+                          type: Type.STRING,
+                          description: "toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac"
+                        },
+                        suggestedChapters: {
+                          type: Type.ARRAY,
+                          items: { type: Type.STRING }
+                        },
+                        suggestedTitle: { type: Type.STRING }
+                      },
+                      required: [
+                        "rawText",
+                        "ocrConfidence",
+                        "suggestedGrade",
+                        "suggestedSubject",
+                        "suggestedChapters",
+                        "suggestedTitle"
+                      ]
+                    }
+                  }
+                }),
+                OCR_FAST_TIMEOUT_MS
+              );
+              accumulateTokens(tokensOut, response);
+              return parseOcrResponsePayload(response.text || "");
+            };
+            const visionOrder = isGroqModelId(modelId) ? [
+              { name: "Groq", enabled: isGroqConfigured(), run: runGroqVision },
+              { name: "Gemini", enabled: isGeminiConfigured(), run: runGeminiVision },
+              { name: "Cloudflare", enabled: isCloudflareConfigured(), run: runCloudflareVision }
+            ] : isCloudflareModelId(modelId) ? [
+              { name: "Cloudflare", enabled: isCloudflareConfigured(), run: runCloudflareVision },
+              { name: "Groq", enabled: isGroqConfigured(), run: runGroqVision },
+              { name: "Gemini", enabled: isGeminiConfigured(), run: runGeminiVision }
+            ] : [
+              { name: "Gemini", enabled: isGeminiConfigured(), run: runGeminiVision },
+              { name: "Groq", enabled: isGroqConfigured(), run: runGroqVision },
+              { name: "Cloudflare", enabled: isCloudflareConfigured(), run: runCloudflareVision }
+            ];
+            let firstVisionError = null;
+            const errorSummary = [];
+            for (const provider of visionOrder) {
+              if (!provider.enabled) continue;
               try {
-                const resp = await callWithTimeout(
-                  (signal) => callGroqChatCompletion({
-                    modelId,
-                    prompt: ocrPrompt,
-                    images: [{ mimeType: file.mimeType, base64 }],
-                    jsonMode: true,
-                    jsonSchemaHint: '{"rawText":"...","ocrConfidence":0.95,"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
-                    maxOutputTokens: 1536,
-                    signal
-                  }),
-                  OCR_FAST_TIMEOUT_MS
-                );
-                accumulateRawTokens(tokensOut, resp);
-                return JSON.parse((resp.text || '{"rawText":"","ocrConfidence":0.85}').trim());
-              } catch (groqVisionErr) {
-                if (!isGeminiConfigured()) {
-                  throw groqVisionErr;
-                }
+                return await provider.run();
+              } catch (err) {
+                if (!firstVisionError) firstVisionError = err;
+                const msg = err instanceof Error ? err.message : String(err);
+                errorSummary.push(`${provider.name}: ${msg.slice(0, 180)}`);
               }
             }
-            const ai = await createServerAiClient();
-            const visionModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-3.1-flash-lite" : modelId;
-            const response = await callWithTimeout(
-              (signal) => generateGeminiContentWithFallback({
-                ai,
-                model: visionModel,
-                thinkingTier: "minimal",
-                contents: {
-                  parts: [
-                    {
-                      inlineData: {
-                        mimeType: file.mimeType,
-                        data: base64
-                      }
-                    },
-                    {
-                      text: ocrPrompt
-                    }
-                  ]
-                },
-                config: {
-                  maxOutputTokens: 1536,
-                  abortSignal: signal,
-                  responseMimeType: "application/json",
-                  responseSchema: {
-                    type: Type.OBJECT,
-                    properties: {
-                      rawText: { type: Type.STRING },
-                      ocrConfidence: { type: Type.NUMBER },
-                      suggestedGrade: { type: Type.STRING, description: "10 | 11 | 12" },
-                      suggestedSubject: {
-                        type: Type.STRING,
-                        description: "toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac"
-                      },
-                      suggestedChapters: {
-                        type: Type.ARRAY,
-                        items: { type: Type.STRING }
-                      },
-                      suggestedTitle: { type: Type.STRING }
-                    },
-                    required: [
-                      "rawText",
-                      "ocrConfidence",
-                      "suggestedGrade",
-                      "suggestedSubject",
-                      "suggestedChapters",
-                      "suggestedTitle"
-                    ]
-                  }
-                }
-              }),
-              OCR_FAST_TIMEOUT_MS
-            );
-            accumulateTokens(tokensOut, response);
-            return JSON.parse((response.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+            if (errorSummary.length > 1) {
+              throw new Error(errorSummary.join(" | "));
+            }
+            if (firstVisionError) {
+              throw firstVisionError;
+            }
+            if (isGroqModelId(modelId)) return await runGroqVision();
+            if (isCloudflareModelId(modelId)) return await runCloudflareVision();
+            return await runGeminiVision();
           }
         });
         let rawText = (parsed.rawText || "").trim();
@@ -4504,7 +4822,7 @@ var DocumentExtractionService = class {
       const { extractPdfPagesFromBuffer: extractPdfPagesFromBuffer2 } = await Promise.resolve().then(() => (init_referenceIngestService(), referenceIngestService_exports));
       const textPages = await extractPdfPagesFromBuffer2(buffer);
       const totalChars = textPages.reduce((sum, p) => sum + p.text.trim().length, 0);
-      if (totalChars >= 80) {
+      if (totalChars >= 12) {
         return textPages.map((p) => {
           const paragraphs = p.text.split(/\n+/).map((t) => t.trim()).filter(Boolean);
           const blocks = paragraphs.map((line, i) => ({
@@ -4526,6 +4844,11 @@ var DocumentExtractionService = class {
       }
     } catch {
     }
+    if (!isGeminiConfigured()) {
+      throw new Error(
+        "T\u1EC7p PDF n\xE0y l\xE0 b\u1EA3n scan \u1EA3nh (kh\xF4ng ch\u1EE9a v\u0103n b\u1EA3n nh\xFAng), trong khi h\u1EC7 th\u1ED1ng hi\u1EC7n ch\u1EC9 c\u1EA5u h\xECnh Groq/Cloudflare (ch\u01B0a c\xF3 Gemini API Key cho OCR t\u1EC7p PDF scan). Vui l\xF2ng t\u1EA3i l\xEAn d\u01B0\u1EDBi d\u1EA1ng \u1EA3nh JPG/PNG ho\u1EB7c th\xEAm Gemini API Key t\u1EA1i tab Qu\u1EA3n tr\u1ECB \u2192 API Key & B\u1EA3o m\u1EADt."
+      );
+    }
     const pdfHash = crypto6.createHash("sha256").update(buffer).digest("hex");
     const { data: parsed } = await runTaskWithRouter({
       taskType: "curriculum_extraction",
@@ -4534,26 +4857,29 @@ var DocumentExtractionService = class {
       cacheInput: { ocrKind: "pdf_scan_v2", sha256: pdfHash },
       runWithModel: async (modelId) => {
         const ai = await createServerAiClient();
-        const visionModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-3.1-flash-lite" : modelId;
+        const visionModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-2.5-flash" : modelId;
         const base64 = buffer.toString("base64");
         const response = await callWithTimeout(
           (signal) => generateGeminiContentWithFallback({
             ai,
             model: visionModel,
             thinkingTier: "minimal",
-            contents: {
-              parts: [
-                {
-                  inlineData: {
-                    mimeType: "application/pdf",
-                    data: base64
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: "application/pdf",
+                      data: base64
+                    }
+                  },
+                  {
+                    text: "Tr\xEDch xu\u1EA5t to\xE0n b\u1ED9 v\u0103n b\u1EA3n, c\xF4ng th\u1EE9c v\xE0 ch\u1EEF vi\u1EBFt tay theo t\u1EEBng trang c\u1EE7a file PDF n\xE0y. Gi\u1EEF nguy\xEAn ch\xEDnh t\u1EA3 v\xE0 n\u1ED9i dung g\u1ED1c theo t\u1EEBng d\xF2ng xu\u1ED1ng h\xE0ng (\\n), kh\xF4ng t\u1EF1 s\u1EEDa l\u1ED7i ki\u1EBFn th\u1EE9c, kh\xF4ng th\xEAm b\xECnh lu\u1EADn."
                   }
-                },
-                {
-                  text: "Tr\xEDch xu\u1EA5t to\xE0n b\u1ED9 v\u0103n b\u1EA3n, c\xF4ng th\u1EE9c v\xE0 ch\u1EEF vi\u1EBFt tay theo t\u1EEBng trang c\u1EE7a file PDF n\xE0y. Gi\u1EEF nguy\xEAn ch\xEDnh t\u1EA3 v\xE0 n\u1ED9i dung g\u1ED1c theo t\u1EEBng d\xF2ng xu\u1ED1ng h\xE0ng (\\n), kh\xF4ng t\u1EF1 s\u1EEDa l\u1ED7i ki\u1EBFn th\u1EE9c, kh\xF4ng th\xEAm b\xECnh lu\u1EADn."
-                }
-              ]
-            },
+                ]
+              }
+            ],
             config: {
               maxOutputTokens: 4096,
               abortSignal: signal,
@@ -4578,10 +4904,10 @@ var DocumentExtractionService = class {
               }
             }
           }),
-          2e4
+          3e4
         );
         accumulateTokens(tokensOut, response);
-        return JSON.parse((response.text || '{"pages":[]}').trim());
+        return safeParseModelJson(response.text || "", '{"pages":[]}');
       }
     });
     return (parsed.pages || []).map((p, idx) => {
@@ -4653,7 +4979,7 @@ var SubjectDetectionService = class {
         prompt: scopePrompt,
         thinkingTier: "minimal",
         maxOutputTokens: 384,
-        timeoutMs: 8e3,
+        timeoutMs: 15e3,
         tokensOut,
         fallbackJson: "{}",
         groqSchemaHint: '{"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
@@ -4737,7 +5063,7 @@ ${h.chunk.content}`
           idToken,
           cacheInput: { webSearchText: fullText.slice(0, 2e3), grade, subject, scope },
           runWithModel: async (modelId) => {
-            const searchModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-3.1-flash-lite" : modelId;
+            const searchModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-2.5-flash" : modelId;
             const resp = await callWithTimeout(
               (signal) => ai.models.generateContent({
                 model: searchModel,
@@ -5772,17 +6098,18 @@ ${extractedTextContent.slice(0, 48e3)}` : ""
             })
           );
           accumulateRawTokens(tokensOut, resp2);
-          return JSON.parse((resp2.text || '{"questions":[]}').trim());
+          return safeParseModelJson(resp2.text || "", '{"questions":[]}');
         }
         const ai = await createServerAiClient();
-        const safeModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-3.1-flash-lite" : modelId;
-        const contents = inlineParts.length > 0 ? { parts: [...inlineParts, { text: promptText }] } : promptText;
+        const safeModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-2.5-flash" : modelId;
+        const contents = inlineParts.length > 0 ? [{ role: "user", parts: [...inlineParts, { text: promptText }] }] : promptText;
         const resp = await callWithTimeout(
-          (signal) => ai.models.generateContent({
+          (signal) => generateGeminiContentWithFallback({
+            ai,
             model: safeModel,
             contents,
+            thinkingTier: "minimal",
             config: {
-              thinkingConfig: thinkingConfigForModel(safeModel, "minimal"),
               maxOutputTokens: 6144,
               abortSignal: signal,
               responseMimeType: "application/json",
@@ -5842,7 +6169,7 @@ ${extractedTextContent.slice(0, 48e3)}` : ""
           })
         );
         accumulateTokens(tokensOut, resp);
-        return JSON.parse((resp.text || '{"questions":[]}').trim());
+        return safeParseModelJson(resp.text || "", '{"questions":[]}');
       }
     });
     const allowedTypes = new Set(
@@ -6100,11 +6427,12 @@ var TextbookSynthesisService = class {
         const ai = await createServerAiClient();
         const searchQuery = `M\u1EE5c l\u1EE5c c\xE1c ch\u01B0\u01A1ng v\xE0 b\xE0i h\u1ECDc s\xE1ch gi\xE1o khoa ${subjectName} l\u1EDBp ${grade} b\u1ED9 s\xE1ch ${textbookSeries} ch\u01B0\u01A1ng tr\xECnh GDPT 2018`;
         const searchResp = await callWithTimeout(
-          (signal) => ai.models.generateContent({
-            model: "gemini-3.1-flash-lite",
+          (signal) => generateGeminiContentWithFallback({
+            ai,
+            model: "gemini-2.5-flash",
             contents: searchQuery,
+            thinkingTier: "minimal",
             config: {
-              thinkingConfig: thinkingConfigForModel("gemini-3.1-flash-lite", "minimal"),
               maxOutputTokens: 1024,
               abortSignal: signal,
               tools: [{ googleSearch: {} }]
@@ -6591,59 +6919,92 @@ async function requireSuperAdmin(req, res, next) {
 }
 function mapGeminiErrorResponse(err) {
   const msg = err instanceof Error ? err.message : String(err);
+  const cfg = getAuthoritativeAiConfigSnapshot();
+  const configuredProviders = {
+    groq: isGroqConfigured(),
+    gemini: isGeminiConfigured(),
+    cloudflare: isCloudflareConfigured()
+  };
+  const debug = {
+    activeModel: cfg.activeModel,
+    configuredProviders,
+    recentExecutions: getRecentExecutionLogs().slice(0, 6),
+    timestamp: (/* @__PURE__ */ new Date()).toISOString()
+  };
   if (msg.includes("v\u01B0\u1EE3t qu\xE1 th\u1EDDi gian ch\u1EDD") || msg.includes("AbortError") || msg.includes("timed out")) {
     return {
       status: 504,
       code: "AI_TIMEOUT",
-      error: "AI ph\u1EA3n h\u1ED3i qu\xE1 45 gi\xE2y n\xEAn h\u1EC7 th\u1ED1ng \u0111\xE3 t\u1EF1 \u0111\u1ED9ng ng\u1EAFt \u0111\u1EC3 b\u1EA3o v\u1EC7 k\u1EBFt n\u1ED1i. Vui l\xF2ng th\u1EED l\u1EA1i."
+      error: "AI ph\u1EA3n h\u1ED3i qu\xE1 th\u1EDDi gian ch\u1EDD n\xEAn h\u1EC7 th\u1ED1ng \u0111\xE3 t\u1EF1 \u0111\u1ED9ng ng\u1EAFt \u0111\u1EC3 b\u1EA3o v\u1EC7 k\u1EBFt n\u1ED1i. Vui l\xF2ng th\u1EED l\u1EA1i.",
+      technicalDetail: msg,
+      debug
     };
   }
   if (msg.includes("GROQ_API_KEY_UNCONFIGURED") || msg.includes("Ch\u01B0a c\u1EA5u h\xECnh Groq API Key")) {
     return {
       status: 503,
       code: "GROQ_KEY_MISSING",
-      error: "H\u1EC7 th\u1ED1ng ch\u01B0a c\xF3 Groq API Key. Qu\u1EA3n tr\u1ECB vi\xEAn vui l\xF2ng v\xE0o Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt \u0111\u1EC3 d\xE1n Groq API Key (gsk_...)."
+      error: "H\u1EC7 th\u1ED1ng ch\u01B0a c\xF3 Groq API Key. Qu\u1EA3n tr\u1ECB vi\xEAn vui l\xF2ng v\xE0o Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt \u0111\u1EC3 d\xE1n Groq API Key (gsk_...).",
+      technicalDetail: msg,
+      debug
     };
   }
   if (msg.includes("CLOUDFLARE_CREDENTIALS_UNCONFIGURED") || msg.includes("Ch\u01B0a c\u1EA5u h\xECnh Cloudflare")) {
     return {
       status: 503,
       code: "CLOUDFLARE_KEY_MISSING",
-      error: "H\u1EC7 th\u1ED1ng ch\u01B0a c\u1EA5u h\xECnh Cloudflare Workers AI. Qu\u1EA3n tr\u1ECB vi\xEAn vui l\xF2ng v\xE0o Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt \u0111\u1EC3 th\xEAm Account ID & Token."
+      error: "H\u1EC7 th\u1ED1ng ch\u01B0a c\u1EA5u h\xECnh Cloudflare Workers AI. Qu\u1EA3n tr\u1ECB vi\xEAn vui l\xF2ng v\xE0o Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt \u0111\u1EC3 th\xEAm Account ID & Token.",
+      technicalDetail: msg,
+      debug
     };
   }
   if (msg.includes("GEMINI_API_KEY_UNCONFIGURED")) {
     return {
       status: 503,
       code: "GEMINI_KEY_MISSING",
-      error: "Ch\u01B0a c\u1EA5u h\xECnh kh\xF3a API cho AI \u0111ang ch\u1ECDn (\u01B0u ti\xEAn th\xEAm Groq API Key t\u1EA1i Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt)."
+      error: "Ch\u01B0a c\u1EA5u h\xECnh kh\xF3a API cho AI \u0111ang ch\u1ECDn (\u01B0u ti\xEAn th\xEAm Groq API Key ho\u1EB7c Gemini API Key t\u1EA1i Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt).",
+      technicalDetail: msg,
+      debug
     };
   }
   if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes("429")) {
     return {
       status: 429,
       code: "PROVIDER_QUOTA_EXCEEDED",
-      error: "D\u1ECBch v\u1EE5 AI t\u1EA1m th\u1EDDi \u0111\u1EA1t gi\u1EDBi h\u1EA1n l\u01B0u l\u01B0\u1EE3ng (429). Vui l\xF2ng th\u1EED l\u1EA1i sau \xEDt ph\xFAt."
+      error: `D\u1ECBch v\u1EE5 AI t\u1EA1m th\u1EDDi \u0111\u1EA1t gi\u1EDBi h\u1EA1n l\u01B0u l\u01B0\u1EE3ng (429). Chi ti\u1EBFt: ${msg.slice(0, 180)}`,
+      technicalDetail: msg,
+      debug
     };
   }
-  if (msg.includes("API_KEY_INVALID") || msg.includes("PERMISSION_DENIED") || msg.includes("403")) {
+  if (msg.includes("API_KEY_INVALID") || msg.includes("PERMISSION_DENIED") || msg.includes("403") || msg.includes("401")) {
     return {
       status: 502,
       code: "PROVIDER_AUTH_ERROR",
-      error: "Kh\xF3a API AI hi\u1EC7n t\u1EA1i kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp model."
+      error: `Kh\xF3a API AI hi\u1EC7n t\u1EA1i kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp model. Chi ti\u1EBFt: ${msg.slice(0, 220)}`,
+      technicalDetail: msg,
+      debug
     };
   }
   if (msg.includes("NOT_FOUND") || msg.includes("404")) {
+    const activeProvidersList = [
+      configuredProviders.groq ? "Groq" : "",
+      configuredProviders.gemini ? "Gemini" : "",
+      configuredProviders.cloudflare ? "Cloudflare" : ""
+    ].filter(Boolean).join(", ") || "Ch\u01B0a c\xF3 kh\xF3a n\xE0o";
     return {
       status: 502,
       code: "MODEL_UNAVAILABLE",
-      error: "Model AI \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh hi\u1EC7n kh\xF4ng kh\u1EA3 d\u1EE5ng."
+      error: `Kh\xF4ng t\xECm th\u1EA5y model AI kh\u1EA3 d\u1EE5ng tr\xEAn kh\xF3a hi\u1EC7n t\u1EA1i (Provider \u0111\xE3 c\u1EA5u h\xECnh: ${activeProvidersList}). Chi ti\u1EBFt k\u1EF9 thu\u1EADt: ${msg.slice(0, 280)}`,
+      technicalDetail: msg,
+      debug
     };
   }
   return {
     status: 500,
     code: "AI_PROCESSING_ERROR",
-    error: `Kh\xF4ng th\u1EC3 ho\xE0n t\u1EA5t x\u1EED l\xFD t\xE0i li\u1EC7u: ${msg.slice(0, 180)}`
+    error: `Kh\xF4ng th\u1EC3 ho\xE0n t\u1EA5t x\u1EED l\xFD t\xE0i li\u1EC7u: ${msg.slice(0, 260)}`,
+    technicalDetail: msg,
+    debug
   };
 }
 function createApiApp() {
@@ -6914,15 +7275,24 @@ function createApiApp() {
         return;
       }
       const combinedForScope = [previousText, ...pages.map((p) => p.rawText)].filter(Boolean).join("\n");
-      const scopeSuggestion = !skipScope && combinedForScope.trim().length > 15 ? await SubjectDetectionService.detectScope(combinedForScope, tokens, {
-        config: guard.config,
-        idToken: user.idToken
-      }) : {
-        suggestedGrade: presetGrade,
-        suggestedSubject: presetSubject,
+      const heuristicScope = inferGradeAndSubjectFromFileNames([first.originalname]);
+      const fallbackScopeSuggestion = {
+        suggestedGrade: presetGrade || heuristicScope.grade || "10",
+        suggestedSubject: presetSubject !== "khac" ? presetSubject : heuristicScope.subject || "khac",
         suggestedChapters: [],
         suggestedTitle: first.originalname.replace(/\.[^.]+$/, "")
       };
+      let scopeSuggestion = fallbackScopeSuggestion;
+      if (!skipScope && combinedForScope.trim().length > 15) {
+        try {
+          scopeSuggestion = await SubjectDetectionService.detectScope(combinedForScope, tokens, {
+            config: guard.config,
+            idToken: user.idToken
+          });
+        } catch (scopeErr) {
+          console.warn("Non-fatal scope detection fallback during /api/ai/extract:", scopeErr);
+        }
+      }
       recordUsageEvent({
         uid: user.uid,
         email: user.email,
@@ -7326,15 +7696,230 @@ function createApiApp() {
   app.post("/api/admin/models/test", requireSuperAdmin, async (req, res) => {
     try {
       const { modelId } = req.body || {};
-      const targetModel = (modelId || "gemini-4-hydrogen").trim();
+      const targetModel = (modelId || "gemini-2.5-flash").trim();
       const result = await testModelConnectivity(targetModel);
       res.json(result);
     } catch (err) {
       res.status(500).json({
         ok: false,
-        modelId: String(req.body?.modelId || "gemini-4-hydrogen"),
+        modelId: String(req.body?.modelId || "gemini-2.5-flash"),
         latencyMs: 0,
         message: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 ki\u1EC3m tra k\u1EBFt n\u1ED1i model."
+      });
+    }
+  });
+  app.get("/api/admin/debug/snapshot", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    try {
+      const [config, singleKeyStatus, providerKeys] = await Promise.all([
+        loadAuthoritativeAiConfig(user.idToken),
+        getSingleKeyStatus(user.idToken),
+        getProviderKeysStatus(user.idToken)
+      ]);
+      const taskTypes = [
+        "subject_classification",
+        "curriculum_extraction",
+        "claim_validation",
+        "knowledge_analysis",
+        "completeness_analysis",
+        "quiz_blueprint",
+        "quiz_generation",
+        "feedback_analysis"
+      ];
+      const taskRouting = taskTypes.map((t) => resolveModelForTask(t, config));
+      res.json({
+        timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+        adminEmail: user.email,
+        activeModel: config.activeModel,
+        enabled: config.enabled,
+        configuredProviders: {
+          groq: isGroqConfigured(),
+          gemini: isGeminiConfigured(),
+          cloudflare: isCloudflareConfigured()
+        },
+        singleKeyStatus,
+        providerKeys,
+        taskRouting,
+        executionLogs: getRecentExecutionLogs().slice(0, 40)
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 t\u1EA3i snapshot debug h\u1EC7 th\u1ED1ng."
+      });
+    }
+  });
+  app.post("/api/admin/debug/diagnostics", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    try {
+      const config = await loadAuthoritativeAiConfig(user.idToken);
+      const checks = [];
+      if (isGroqConfigured()) {
+        const groqKey = getGroqApiKey();
+        const availableGroq = await fetchAvailableGroqChatModels(groqKey, void 0, true);
+        const targetGroq = config.activeModel.startsWith("groq:") ? config.activeModel : "groq:openai/gpt-oss-120b";
+        const tStart = Date.now();
+        try {
+          const jsonResp = await callWithTimeout(
+            (signal) => callGroqChatCompletion({
+              modelId: targetGroq,
+              prompt: 'Ki\u1EC3m tra JSON mode cho h\u1EC7 th\u1ED1ng Ki\u1EC3m \u0111\u1ECBnh: tr\u1EA3 v\u1EC1 {"status":"OK","subject":"vat_ly"}',
+              jsonMode: true,
+              jsonSchemaHint: '{"status":"OK","subject":"vat_ly"}',
+              maxOutputTokens: 256,
+              signal
+            }),
+            15e3
+          );
+          const parsed = JSON.parse(jsonResp.text || "{}");
+          checks.push({
+            provider: "groq",
+            mode: "json_schema",
+            configured: true,
+            ok: Boolean(parsed && typeof parsed === "object"),
+            requestedModel: targetGroq,
+            resolvedModel: jsonResp.resolvedModel || targetGroq,
+            latencyMs: Date.now() - tStart,
+            detail: `JSON Mode th\xE0nh c\xF4ng (${jsonResp.text.slice(0, 90)})`,
+            availableModels: availableGroq.slice(0, 12)
+          });
+        } catch (err) {
+          checks.push({
+            provider: "groq",
+            mode: "json_schema",
+            configured: true,
+            ok: false,
+            requestedModel: targetGroq,
+            resolvedModel: targetGroq,
+            latencyMs: Date.now() - tStart,
+            detail: err instanceof Error ? err.message : String(err),
+            availableModels: availableGroq.slice(0, 12)
+          });
+        }
+      } else {
+        checks.push({
+          provider: "groq",
+          mode: "json_schema",
+          configured: false,
+          ok: false,
+          requestedModel: "groq:openai/gpt-oss-120b",
+          resolvedModel: "-",
+          latencyMs: 0,
+          detail: "Ch\u01B0a c\u1EA5u h\xECnh Groq API Key."
+        });
+      }
+      if (isGeminiConfigured()) {
+        const targetGemini = !config.activeModel.startsWith("groq:") && !config.activeModel.startsWith("cf:") ? config.activeModel : "gemini-2.5-flash";
+        const gStart = Date.now();
+        try {
+          const ai = await createServerAiClient();
+          const gemResp = await callWithTimeout(
+            (signal) => generateGeminiContentWithFallback({
+              ai,
+              model: targetGemini,
+              contents: 'Tr\u1EA3 v\u1EC1 JSON \u0111\xFAng chu\u1EA9n: {"status":"OK","provider":"gemini"}',
+              thinkingTier: "minimal",
+              config: {
+                maxOutputTokens: 256,
+                abortSignal: signal,
+                responseMimeType: "application/json"
+              }
+            }),
+            15e3
+          );
+          const parsed = JSON.parse(gemResp.text || "{}");
+          checks.push({
+            provider: "gemini",
+            mode: "json_schema",
+            configured: true,
+            ok: Boolean(parsed && typeof parsed === "object"),
+            requestedModel: targetGemini,
+            resolvedModel: gemResp.resolvedModel,
+            latencyMs: Date.now() - gStart,
+            detail: `JSON Mode th\xE0nh c\xF4ng tr\xEAn ${gemResp.resolvedModel} (${gemResp.text.slice(0, 90)})`
+          });
+        } catch (err) {
+          checks.push({
+            provider: "gemini",
+            mode: "json_schema",
+            configured: true,
+            ok: false,
+            requestedModel: targetGemini,
+            resolvedModel: targetGemini,
+            latencyMs: Date.now() - gStart,
+            detail: err instanceof Error ? err.message : String(err)
+          });
+        }
+      } else {
+        checks.push({
+          provider: "gemini",
+          mode: "json_schema",
+          configured: false,
+          ok: false,
+          requestedModel: "gemini-2.5-flash",
+          resolvedModel: "-",
+          latencyMs: 0,
+          detail: "Ch\u01B0a c\u1EA5u h\xECnh Gemini API Key."
+        });
+      }
+      if (isCloudflareConfigured()) {
+        const targetCf = config.activeModel.startsWith("cf:") ? config.activeModel : "cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+        const cStart = Date.now();
+        try {
+          const cfResp = await callWithTimeout(
+            (signal) => callCloudflareChatCompletion({
+              modelId: targetCf,
+              prompt: 'Tr\u1EA3 v\u1EC1 JSON h\u1EE3p l\u1EC7: {"status":"OK","provider":"cloudflare"}',
+              jsonMode: true,
+              jsonSchemaHint: '{"status":"OK","provider":"cloudflare"}',
+              maxOutputTokens: 256,
+              signal
+            }),
+            15e3
+          );
+          const parsed = JSON.parse(cfResp.text || "{}");
+          checks.push({
+            provider: "cloudflare",
+            mode: "json_schema",
+            configured: true,
+            ok: Boolean(parsed && typeof parsed === "object"),
+            requestedModel: targetCf,
+            resolvedModel: cfResp.resolvedModel || targetCf,
+            latencyMs: Date.now() - cStart,
+            detail: `JSON Mode th\xE0nh c\xF4ng (${cfResp.text.slice(0, 90)})`
+          });
+        } catch (err) {
+          checks.push({
+            provider: "cloudflare",
+            mode: "json_schema",
+            configured: true,
+            ok: false,
+            requestedModel: targetCf,
+            resolvedModel: targetCf,
+            latencyMs: Date.now() - cStart,
+            detail: err instanceof Error ? err.message : String(err)
+          });
+        }
+      } else {
+        checks.push({
+          provider: "cloudflare",
+          mode: "json_schema",
+          configured: false,
+          ok: false,
+          requestedModel: "cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+          resolvedModel: "-",
+          latencyMs: 0,
+          detail: "Ch\u01B0a c\u1EA5u h\xECnh Cloudflare Workers AI."
+        });
+      }
+      res.json({
+        ranAt: (/* @__PURE__ */ new Date()).toISOString(),
+        activeModel: config.activeModel,
+        checks,
+        executionLogs: getRecentExecutionLogs().slice(0, 20)
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : "L\u1ED7i khi ch\u1EA1y ch\u1EA9n \u0111o\xE1n AI."
       });
     }
   });
