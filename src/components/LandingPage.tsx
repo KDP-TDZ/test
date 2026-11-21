@@ -75,7 +75,7 @@ const FEATURED_CARDS: FeaturedFeatureCard[] = [
     category: 'Thi thử',
     image: cardExamImg,
     targetSectionId: 'workspace-preview',
-    actionMode: 'login',
+    actionMode: 'scroll',
   },
   {
     id: 'flashcard-3d',
@@ -293,7 +293,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
 
   useEffect(() => {
     if (typeof IntersectionObserver === 'undefined') return;
-    const sectionIds = ['top', 'featured', 'workspace-preview', 'specimen', 'faq'];
+    const sectionIds = ['top', 'featured', 'specimen', 'workspace-preview', 'faq'];
     const elements = sectionIds
       .map((id) => document.getElementById(id))
       .filter((el): el is HTMLElement => Boolean(el));
@@ -1128,12 +1128,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
         </section>
 
         {/* =====================================================================
-            E. INTERACTIVE POST-LOGIN WORKSPACE PREVIEW
-           ===================================================================== */}
-        <LandingWorkspacePreview onOpenAuth={onOpenAuth} />
-
-        {/* =====================================================================
-            F. INTERACTIVE TEXTBOOK VERIFICATION SPECIMEN
+            E. INTERACTIVE TEXTBOOK VERIFICATION SPECIMEN (Kiểm chứng)
            ===================================================================== */}
         <section
           id="specimen"
@@ -1290,6 +1285,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
         </section>
 
         {/* =====================================================================
+            F. INTERACTIVE 2025 EXAM ARENA & GRADE LEADERBOARD (Thi & Đua Top)
+           ===================================================================== */}
+        <LandingWorkspacePreview onOpenAuth={onOpenAuth} />
+
+        {/* =====================================================================
             G. FAQ + CONVERSION BAND
            ===================================================================== */}
         <section
@@ -1384,6 +1384,17 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                 className="hover:text-[#2563EB] dark:hover:text-white transition-colors"
               >
                 Kiểm chứng
+              </a>
+              <span aria-hidden="true">·</span>
+              <a
+                href="#workspace-preview"
+                onClick={(e) => {
+                  e.preventDefault();
+                  scrollToSection('workspace-preview');
+                }}
+                className="hover:text-[#2563EB] dark:hover:text-white transition-colors"
+              >
+                Thi &amp; Đua Top
               </a>
               <span aria-hidden="true">·</span>
               <a

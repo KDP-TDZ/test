@@ -476,6 +476,7 @@ const StudyCheckShell: React.FC = () => {
           }}
           onOpenFlashcards={() => handleNavigate('practice', undefined, 'flashcards')}
           onBack={() => handleNavigate('history')}
+          onStartNewUpload={() => handleNavigate('upload')}
         />
       )}
 

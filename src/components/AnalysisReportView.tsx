@@ -28,6 +28,17 @@ import { ScoreRing } from './LiquidGlass/ScoreRing';
 import { SmoothAccordion } from './LiquidGlass/SmoothAccordion';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 import { SplitDocumentViewer } from './SplitDocumentViewer';
+import { VerificationFiveStepBar } from './VerificationFiveStepBar';
+import {
+  buildErrorCorrectionQueue,
+  type VerificationStepId,
+} from '../core/verificationStepper';
+
+interface StudentCorrectionRecord {
+  studentText: string;
+  resolved: boolean;
+  updatedAt: string;
+}
 
 interface AnalysisReportViewProps {
   analysis: AnalysisRecord;
@@ -36,6 +47,7 @@ interface AnalysisReportViewProps {
   onStartQuiz: (analysis: AnalysisRecord) => void;
   onOpenFlashcards?: () => void;
   onBack?: () => void;
+  onStartNewUpload?: () => void;
 }
 
 const FEEDBACK_CATEGORIES: FeedbackEntry['category'][] = [
@@ -53,6 +65,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
   onStartQuiz,
   onOpenFlashcards,
   onBack,
+  onStartNewUpload,
 }) => {
   const reportRef = useRef<HTMLDivElement>(null);
   const { user, systemStatus } = useAuth();
@@ -70,6 +83,120 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
   const [feedbackNote, setFeedbackNote] = useState('');
   const [sendingFeedback, setSendingFeedback] = useState(false);
   const [feedbackResult, setFeedbackResult] = useState<string | null>(null);
+
+  // Step 4 & Step 5 Guided Error-Correction Workflow State
+  const actionableQueue = useMemo(() => buildErrorCorrectionQueue(analysis), [analysis]);
+  const storageKey = `studycheck_corrections_v1_${analysis.analysisId}`;
+
+  const [correctionsMap, setCorrectionsMap] = useState<Record<string, StudentCorrectionRecord>>(() => {
+    try {
+      const raw = window.localStorage.getItem(`studycheck_corrections_v1_${analysis.analysisId}`);
+      return raw ? (JSON.parse(raw) as Record<string, StudentCorrectionRecord>) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      setCorrectionsMap(raw ? (JSON.parse(raw) as Record<string, StudentCorrectionRecord>) : {});
+    } catch {
+      setCorrectionsMap({});
+    }
+  }, [storageKey]);
+
+  const persistCorrectionsMap = (next: Record<string, StudentCorrectionRecord>) => {
+    setCorrectionsMap(next);
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(next));
+    } catch {
+      // Ignore quota errors
+    }
+  };
+
+  const resolvedItemsCount = useMemo(
+    () => actionableQueue.filter((item) => Boolean(correctionsMap[item.id]?.resolved)).length,
+    [actionableQueue, correctionsMap]
+  );
+
+  const allActionableResolved =
+    actionableQueue.length === 0 || resolvedItemsCount >= actionableQueue.length;
+
+  const [activeWorkflowStep, setActiveWorkflowStep] = useState<4 | 5>(() =>
+    actionableQueue.length === 0 ? 5 : 4
+  );
+  const [correctionFilter, setCorrectionFilter] = useState<
+    'all' | 'claim_error' | 'gaps' | 'resolved'
+  >('all');
+
+  useEffect(() => {
+    setActiveWorkflowStep(actionableQueue.length === 0 ? 5 : 4);
+    setCorrectionFilter('all');
+  }, [analysis.analysisId, actionableQueue.length]);
+
+  const handleUpdateStudentCorrectionText = (itemId: string, text: string) => {
+    const existing = correctionsMap[itemId];
+    persistCorrectionsMap({
+      ...correctionsMap,
+      [itemId]: {
+        studentText: text,
+        resolved: existing?.resolved ?? false,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  };
+
+  const handleToggleItemResolved = (itemId: string, suggestedFallback: string) => {
+    const existing = correctionsMap[itemId];
+    const nextResolved = !existing?.resolved;
+    const nextMap: Record<string, StudentCorrectionRecord> = {
+      ...correctionsMap,
+      [itemId]: {
+        studentText: existing?.studentText?.trim()
+          ? existing.studentText
+          : nextResolved
+          ? suggestedFallback
+          : '',
+        resolved: nextResolved,
+        updatedAt: new Date().toISOString(),
+      },
+    };
+    persistCorrectionsMap(nextMap);
+  };
+
+  const handleMarkAllItemsResolved = () => {
+    const now = new Date().toISOString();
+    const nextMap: Record<string, StudentCorrectionRecord> = { ...correctionsMap };
+    for (const item of actionableQueue) {
+      const existing = nextMap[item.id];
+      nextMap[item.id] = {
+        studentText: existing?.studentText?.trim() ? existing.studentText : item.suggestedFix,
+        resolved: true,
+        updatedAt: now,
+      };
+    }
+    persistCorrectionsMap(nextMap);
+    setActiveWorkflowStep(5);
+  };
+
+  const filteredActionableQueue = useMemo(() => {
+    return actionableQueue.filter((item) => {
+      const isResolved = Boolean(correctionsMap[item.id]?.resolved);
+      if (correctionFilter === 'claim_error') return item.kind === 'claim_error';
+      if (correctionFilter === 'gaps')
+        return item.kind === 'claim_partial' || item.kind === 'coverage_gap';
+      if (correctionFilter === 'resolved') return isResolved;
+      return true;
+    });
+  }, [actionableQueue, correctionsMap, correctionFilter]);
+
+  const dynamicProgressPct =
+    activeWorkflowStep === 5
+      ? 100
+      : actionableQueue.length === 0
+      ? 100
+      : Math.min(96, 80 + Math.round((resolvedItemsCount / actionableQueue.length) * 16));
 
   const acc = analysis.accuracyBreakdown;
   const comp = analysis.completenessBreakdown;
@@ -253,8 +380,37 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
     }
   };
 
+  const reportInteractiveSteps: VerificationStepId[] = [
+    ...(onStartNewUpload ? ([1] as VerificationStepId[]) : []),
+    4,
+    5,
+  ];
+
   return (
     <div ref={reportRef} className="space-y-6 sm:space-y-8">
+      {/* 5-Step Progress Stepper Card (Matched to Reference Design — Steps 4 & 5 Active) */}
+      <VerificationFiveStepBar
+        activeStep={activeWorkflowStep}
+        customProgressPct={dynamicProgressPct}
+        interactiveSteps={reportInteractiveSteps}
+        statusSummaryText={
+          activeWorkflowStep === 4
+            ? actionableQueue.length === 0
+              ? 'Bài làm đạt chuẩn 100% — Không có lỗi kiến thức cần chỉnh sửa'
+              : `Đã rà soát & sửa ${resolvedItemsCount}/${actionableQueue.length} mục cần khắc phục`
+            : `Đã hoàn tất kiểm định · Chính xác ${analysis.accuracyScore ?? '—'}% · Đầy đủ ${
+                analysis.completenessScore ?? '—'
+              }%`
+        }
+        onSelectStep={(stepId) => {
+          if (stepId === 1 && onStartNewUpload) {
+            onStartNewUpload();
+          } else if (stepId === 4 || stepId === 5) {
+            setActiveWorkflowStep(stepId);
+          }
+        }}
+      />
+
       {/* Header & Actions */}
       <GlassSurface className="report-hero-block rounded-3xl p-4 sm:p-7 no-print">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 sm:gap-5">
@@ -574,120 +730,422 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
         <SplitDocumentViewer analysis={analysis} localFile={localFile} />
       </section>
 
-      {/* Claim Suggested Fixes & User Feedback Controls */}
-      {analysis.claims.length > 0 && (
-        <GlassSurface className="report-scroll-section rounded-3xl p-4 sm:p-6 space-y-4 no-print">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                Chi tiết lỗi sai & thiếu thông tin ({analysis.claims.length} mệnh đề)
-              </h2>
-              <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] mt-0.5">
-                Phát hiện{' '}
-                <strong className="text-rose-700 dark:text-rose-400">
-                  {errorClaimsCount} lỗi sai kiến thức / công thức
-                </strong>{' '}
-                ·{' '}
-                <strong className="text-amber-700 dark:text-amber-400">
-                  {missingInfoCount} mục thiếu thông tin / giải thích ký hiệu
-                </strong>
-              </p>
+      {/* STEP 4 & STEP 5: Guided 5-Part Error-Correction Workflow & Completion Workspace */}
+      <GlassSurface className="report-scroll-section rounded-3xl p-4 sm:p-7 space-y-5 no-print">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-sky-200/70 dark:border-slate-700/80 pb-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-[#475B78] dark:text-[#B4C7E2] mb-1">
+              <span className="font-semibold text-[#0E4D5D] dark:text-cyan-300 font-mono tabular-nums">
+                {activeWorkflowStep === 4 ? 'Bước 4 / 5 · Không gian sửa lỗi chi tiết' : 'Bước 5 / 5 · Tổng kết & Hoàn tất'}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono tabular-nums">
+                Đã khắc phục {resolvedItemsCount}/{actionableQueue.length} mục
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                {errorClaimsCount} lỗi sai kiến thức/công thức · {missingInfoCount} mục thiếu điều kiện/ý SGK
+              </span>
             </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Phát hiện AI nhận định nhầm? Bấm “Báo sai / Phản hồi” để Admin rà soát.
-            </p>
+            <h2 className="font-display text-lg sm:text-xl font-bold text-[#16243E] dark:text-[#E6EFFC]">
+              {activeWorkflowStep === 4
+                ? 'Quy trình sửa lỗi từng mệnh đề & bổ sung kiến thức thiếu'
+                : 'Hoàn tất rà soát lỗi & củng cố kiến thức sau kiểm định'}
+            </h2>
           </div>
-          <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
-            {analysis.claims.map((c) => {
-              const isReporting = reportingClaimId === c.claimId;
-              return (
-                <div
-                  key={c.claimId}
-                  className="document-paper rounded-2xl p-4 text-xs space-y-2"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
-                      {c.concept} · {c.chapter} (Tr. {c.sourcePage})
-                    </span>
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={`font-semibold ${
-                          c.evaluationStatus === 'CORRECT'
-                            ? 'text-emerald-700 dark:text-emerald-400'
-                            : c.evaluationStatus === 'INCORRECT'
-                            ? 'text-rose-700 dark:text-rose-400'
-                            : c.evaluationStatus === 'PARTIALLY_CORRECT'
-                            ? 'text-amber-700 dark:text-amber-400'
-                            : 'text-slate-600 dark:text-slate-400'
+
+          {/* Interactive Mode Switcher between Step 4 (Sửa lỗi) and Step 5 (Hoàn tất) */}
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-slate-100/90 dark:bg-slate-800/90 border border-slate-200/80 dark:border-slate-700">
+              <button
+                type="button"
+                onClick={() => setActiveWorkflowStep(4)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  activeWorkflowStep === 4
+                    ? 'bg-[#0E4D5D] dark:bg-[#0891B2] text-white shadow-xs'
+                    : 'text-[#475B78] dark:text-[#B4C7E2] hover:text-[#16243E] dark:hover:text-white'
+                }`}
+              >
+                4. Sửa lỗi ({resolvedItemsCount}/{actionableQueue.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveWorkflowStep(5)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  activeWorkflowStep === 5
+                    ? 'bg-[#0E4D5D] dark:bg-[#0891B2] text-white shadow-xs'
+                    : 'text-[#475B78] dark:text-[#B4C7E2] hover:text-[#16243E] dark:hover:text-white'
+                }`}
+              >
+                5. Hoàn tất (100%)
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {activeWorkflowStep === 4 ? (
+          actionableQueue.length === 0 ? (
+            /* Zero-error positive empty state required by contract */
+            <div className="rounded-2xl border border-emerald-200/90 dark:border-emerald-800/70 bg-emerald-50/75 dark:bg-emerald-950/35 p-6 text-center space-y-3">
+              <CheckCircle2 className="w-10 h-10 text-emerald-600 dark:text-emerald-400 mx-auto" />
+              <div className="space-y-1">
+                <h3 className="font-display text-base font-bold text-emerald-950 dark:text-emerald-200">
+                  Bài làm không có lỗi kiến thức cần chỉnh sửa
+                </h3>
+                <p className="text-xs text-slate-700 dark:text-slate-300 max-w-xl mx-auto leading-relaxed">
+                  Toàn bộ mệnh đề đã kiểm chứng trong bài làm đều chính xác và các mục tiêu chương
+                  tham chiếu đã được bao phủ đầy đủ. Bạn có thể chuyển thẳng sang Bước 5 để xuất
+                  phiếu xác nhận hoặc luyện đề nâng cao.
+                </p>
+              </div>
+              <div className="pt-1">
+                <WaterRippleButton onClick={() => setActiveWorkflowStep(5)}>
+                  <CheckCircle2 className="w-4 h-4" />
+                  Chuyển thẳng sang Bước 5: Hoàn tất →
+                </WaterRippleButton>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Filter Tabs & Bulk Complete Action */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100/90 dark:bg-slate-800/80 border border-slate-200/70 dark:border-slate-700/80">
+                  {[
+                    { id: 'all' as const, label: `Tất cả cần sửa (${actionableQueue.length})` },
+                    {
+                      id: 'claim_error' as const,
+                      label: `Sai kiến thức / CT (${
+                        actionableQueue.filter((i) => i.kind === 'claim_error').length
+                      })`,
+                    },
+                    {
+                      id: 'gaps' as const,
+                      label: `Thiếu điều kiện / Ý SGK (${
+                        actionableQueue.filter(
+                          (i) => i.kind === 'claim_partial' || i.kind === 'coverage_gap'
+                        ).length
+                      })`,
+                    },
+                    {
+                      id: 'resolved' as const,
+                      label: `Đã đánh dấu sửa (${resolvedItemsCount})`,
+                    },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setCorrectionFilter(tab.id)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                        correctionFilter === tab.id
+                          ? 'bg-white dark:bg-[#111C2D] text-[#0F172A] dark:text-white font-semibold shadow-xs'
+                          : 'text-[#475B78] dark:text-[#B4C7E2] hover:text-[#0F172A] dark:hover:text-white'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {!allActionableResolved && (
+                    <button
+                      type="button"
+                      onClick={handleMarkAllItemsResolved}
+                      className="glass-control min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs font-semibold text-[#0E4D5D] dark:text-cyan-300 cursor-pointer whitespace-nowrap"
+                    >
+                      Áp dụng gợi ý chuẩn cho tất cả & Hoàn tất
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setActiveWorkflowStep(5)}
+                    className="min-h-[38px] px-4 py-1.5 rounded-xl text-xs font-semibold text-white bg-[#0E4D5D] hover:bg-[#136175] dark:bg-[#0891B2] dark:hover:bg-[#06B6D4] transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    Sang Bước 5: Hoàn tất →
+                  </button>
+                </div>
+              </div>
+
+              {/* 5-Part Error Correction Cards (a..e) */}
+              {filteredActionableQueue.length === 0 ? (
+                <div className="document-paper rounded-2xl p-6 text-center text-xs text-slate-600 dark:text-slate-300">
+                  Không có mục nào trong bộ lọc này. Hãy chọn tab “Tất cả cần sửa” để xem toàn bộ danh sách.
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {filteredActionableQueue.map((item, idx) => {
+                    const correctionState = correctionsMap[item.id];
+                    const isResolved = Boolean(correctionState?.resolved);
+                    const isReporting = Boolean(item.claimId && reportingClaimId === item.claimId);
+
+                    return (
+                      <article
+                        key={item.id}
+                        className={`document-paper rounded-2xl p-4 sm:p-5 text-xs space-y-3.5 border transition-colors ${
+                          isResolved
+                            ? 'border-emerald-300/90 dark:border-emerald-700/80 bg-emerald-50/40 dark:bg-emerald-950/20'
+                            : item.kind === 'claim_error'
+                            ? 'border-rose-200/90 dark:border-rose-800/70'
+                            : 'border-amber-200/90 dark:border-amber-800/70'
                         }`}
                       >
-                        {c.evaluationStatus === 'CORRECT'
-                          ? 'Đúng'
-                          : c.evaluationStatus === 'INCORRECT'
-                          ? 'Sai kiến thức / Công thức'
-                          : c.evaluationStatus === 'PARTIALLY_CORRECT'
-                          ? 'Thiếu thông tin / Điều kiện'
-                          : c.evaluationStatus === 'OCR_UNCERTAIN'
-                          ? 'Chữ OCR mờ'
-                          : c.evaluationStatus === 'OUT_OF_SCOPE'
-                          ? 'Ngoài phạm vi'
-                          : 'Chưa xác định'}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setReportingClaimId(isReporting ? null : c.claimId)}
-                        className="inline-flex items-center gap-1 text-slate-500 dark:text-slate-400 hover:text-sky-600 dark:hover:text-sky-400 cursor-pointer"
-                      >
-                        <Flag className="w-3.5 h-3.5" />
-                        Báo sai / Phản hồi
-                      </button>
-                    </div>
-                  </div>
-                  <p className="text-slate-700 dark:text-slate-300 italic">“{c.sourceText}”</p>
-                  {c.suggestedFix && (
-                    <p className="rounded-xl bg-sky-50/85 dark:bg-sky-950/40 px-3 py-2 text-sky-950 dark:text-sky-200">
-                      <strong>Gợi ý sửa:</strong> {c.suggestedFix}
-                    </p>
-                  )}
+                        {/* Card Header: Concept, Chapter & Dual-Coded Status */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-200/80 dark:border-slate-700/80">
+                          <div className="flex flex-wrap items-center gap-1.5 text-sm font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                            <span className="font-mono tabular-nums text-[#0E4D5D] dark:text-cyan-300">
+                              #{idx + 1}
+                            </span>
+                            <span>·</span>
+                            <span>{item.concept}</span>
+                            <span className="text-xs font-normal text-[#475B78] dark:text-[#B4C7E2]">
+                              · {item.chapter}
+                              {item.sourcePage ? ` · Trang ${item.sourcePage}` : ''}
+                            </span>
+                          </div>
 
-                  {isReporting && (
-                    <div className="pt-2 border-t border-sky-200/60 dark:border-slate-700 space-y-2">
-                      <div className="flex flex-wrap gap-2">
-                        <select
-                          value={feedbackCategory}
-                          onChange={(e) => setFeedbackCategory(e.target.value as FeedbackEntry['category'])}
-                          className="glass-control px-2.5 py-1.5 rounded-xl text-xs"
-                        >
-                          {FEEDBACK_CATEGORIES.map((cat) => (
-                            <option key={cat} value={cat}>
-                              {cat}
-                            </option>
-                          ))}
-                        </select>
-                        <input
-                          type="text"
-                          value={feedbackNote}
-                          onChange={(e) => setFeedbackNote(e.target.value)}
-                          placeholder="Ghi rõ lý do hoặc dẫn chứng sách giáo khoa..."
-                          className="glass-control flex-1 min-w-[200px] px-2.5 py-1.5 rounded-xl text-xs"
-                        />
-                        <button
-                          type="button"
-                          disabled={sendingFeedback || !feedbackNote.trim()}
-                          onClick={() => handleSubmitClaimFeedback(c.claimId)}
-                          className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 text-white font-semibold disabled:opacity-50 cursor-pointer"
-                        >
-                          {sendingFeedback ? 'Đang gửi...' : 'Gửi phản hồi'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                          <div className="flex flex-wrap items-center gap-3">
+                            {/* Dual-coded Icon + Explicit Vietnamese Status Text */}
+                            <span
+                              className={`inline-flex items-center gap-1.5 font-semibold ${
+                                isResolved
+                                  ? 'text-emerald-700 dark:text-emerald-400'
+                                  : item.kind === 'claim_error'
+                                  ? 'text-rose-700 dark:text-rose-400'
+                                  : 'text-amber-700 dark:text-amber-400'
+                              }`}
+                            >
+                              {isResolved ? (
+                                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                              ) : item.kind === 'claim_error' ? (
+                                <XCircle className="w-4 h-4 shrink-0" />
+                              ) : (
+                                <AlertTriangle className="w-4 h-4 shrink-0" />
+                              )}
+                              <span>{isResolved ? 'Đã hiểu & đã sửa' : item.statusLabel}</span>
+                            </span>
+
+                            {item.claimId && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setReportingClaimId(isReporting ? null : item.claimId || null)
+                                }
+                                className="inline-flex items-center gap-1 text-slate-500 dark:text-slate-400 hover:text-sky-600 dark:hover:text-sky-400 cursor-pointer"
+                              >
+                                <Flag className="w-3.5 h-3.5" />
+                                <span>Báo sai / Phản hồi</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* (a) Trích đoạn bài làm & (b) Phân loại trạng thái + lý do */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                          <div className="rounded-xl bg-slate-50/90 dark:bg-slate-900/70 border border-slate-200/80 dark:border-slate-800 p-3 space-y-1">
+                            <p className="text-[11px] font-semibold text-[#475B78] dark:text-[#B4C7E2]">
+                              (a) Trích đoạn trong bài làm {item.sourcePage ? `· Trang ${item.sourcePage}` : ''}
+                            </p>
+                            <p className="text-slate-800 dark:text-slate-200 italic leading-relaxed">
+                              “{item.sourceText}”
+                            </p>
+                          </div>
+
+                          <div className="rounded-xl bg-slate-50/90 dark:bg-slate-900/70 border border-slate-200/80 dark:border-slate-800 p-3 space-y-1">
+                            <p className="text-[11px] font-semibold text-[#475B78] dark:text-[#B4C7E2]">
+                              (b) Nguyên nhân & giải thích học thuật
+                            </p>
+                            <p className="text-slate-800 dark:text-slate-200 leading-relaxed">
+                              {item.explanation}
+                            </p>
+                            {item.reason && item.reason !== item.explanation && (
+                              <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
+                                Lưu ý thêm: {item.reason}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* (c) Kiến thức chuẩn & gợi ý sửa + (d) Nguồn đối chiếu SGK/Web */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                          <div className="rounded-xl bg-sky-50/85 dark:bg-sky-950/35 border border-sky-200/80 dark:border-sky-800/60 p-3 space-y-1.5">
+                            <p className="text-[11px] font-semibold text-sky-900 dark:text-sky-300">
+                              (c) Kiến thức chuẩn & Gợi ý sửa
+                            </p>
+                            <p className="text-sky-950 dark:text-sky-100 font-medium leading-relaxed">
+                              {item.suggestedFix}
+                            </p>
+                            {item.correctKnowledge &&
+                              item.correctKnowledge !== item.suggestedFix && (
+                                <p className="text-slate-700 dark:text-slate-300 leading-relaxed">
+                                  Chuẩn SGK: {item.correctKnowledge}
+                                </p>
+                              )}
+                          </div>
+
+                          <div className="rounded-xl bg-slate-50/90 dark:bg-slate-900/70 border border-slate-200/80 dark:border-slate-800 p-3 space-y-1.5">
+                            <p className="text-[11px] font-semibold text-[#475B78] dark:text-[#B4C7E2]">
+                              (d) Dẫn chứng SGK / Nguồn chuẩn ({item.evidences.length})
+                            </p>
+                            {item.evidences.length === 0 ? (
+                              <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
+                                Đối chiếu trực tiếp theo khung kiến thức chuẩn chương{' '}
+                                {item.chapter || analysis.scope || SUBJECT_LABELS[analysis.subject]}.
+                              </p>
+                            ) : (
+                              <div className="space-y-1.5">
+                                {item.evidences.map((ev) => (
+                                  <div key={ev.evidenceId} className="space-y-0.5">
+                                    <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                                      {ev.title}
+                                      {ev.chapter ? ` · ${ev.chapter}` : ''}
+                                      {ev.pageNumber ? ` · Tr. ${ev.pageNumber}` : ''}
+                                    </p>
+                                    <p className="text-slate-600 dark:text-slate-300 italic leading-relaxed">
+                                      “{ev.excerpt}”
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* (e) Tương tác của học sinh: Ô tự sửa + Đánh dấu đã sửa + Báo sai */}
+                        <div className="pt-2 border-t border-slate-200/70 dark:border-slate-700/70 space-y-2.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <label
+                              htmlFor={`student-fix-${item.id}`}
+                              className="text-[11px] font-semibold text-[#16243E] dark:text-[#E6EFFC]"
+                            >
+                              (e) Bản tự sửa của bạn (tự viết lại câu đúng hoặc công thức chuẩn để ghi nhớ)
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleUpdateStudentCorrectionText(item.id, item.suggestedFix)
+                              }
+                              className="text-[11px] font-semibold text-[#0E4D5D] dark:text-cyan-300 hover:underline cursor-pointer"
+                            >
+                              Điền nhanh từ gợi ý chuẩn
+                            </button>
+                          </div>
+
+                          <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center">
+                            <input
+                              id={`student-fix-${item.id}`}
+                              type="text"
+                              value={correctionState?.studentText || ''}
+                              onChange={(e) =>
+                                handleUpdateStudentCorrectionText(item.id, e.target.value)
+                              }
+                              placeholder="Nhập câu hoặc công thức đã sửa chuẩn của bạn..."
+                              className="glass-control flex-1 min-h-[40px] px-3 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
+                            />
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleToggleItemResolved(item.id, item.suggestedFix)
+                              }
+                              className={`min-h-[40px] inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                                isResolved
+                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                  : 'bg-[#0E4D5D] hover:bg-[#136175] dark:bg-[#0891B2] dark:hover:bg-[#06B6D4] text-white'
+                              }`}
+                            >
+                              <CheckCircle2 className="w-4 h-4 shrink-0" />
+                              <span>
+                                {isResolved ? 'Đã sửa xong (Bấm để mở lại)' : 'Đã hiểu & đã sửa'}
+                              </span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {isReporting && item.claimId && (
+                          <div className="pt-2 border-t border-sky-200/60 dark:border-slate-700 space-y-2">
+                            <div className="flex flex-wrap gap-2">
+                              <select
+                                value={feedbackCategory}
+                                onChange={(e) =>
+                                  setFeedbackCategory(
+                                    e.target.value as FeedbackEntry['category']
+                                  )
+                                }
+                                className="glass-control px-2.5 py-1.5 rounded-xl text-xs"
+                              >
+                                {FEEDBACK_CATEGORIES.map((cat) => (
+                                  <option key={cat} value={cat}>
+                                    {cat}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                type="text"
+                                value={feedbackNote}
+                                onChange={(e) => setFeedbackNote(e.target.value)}
+                                placeholder="Ghi rõ lý do hoặc dẫn chứng sách giáo khoa..."
+                                className="glass-control flex-1 min-w-[200px] px-2.5 py-1.5 rounded-xl text-xs"
+                              />
+                              <button
+                                type="button"
+                                disabled={sendingFeedback || !feedbackNote.trim()}
+                                onClick={() => handleSubmitClaimFeedback(item.claimId!)}
+                                className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 text-white font-semibold disabled:opacity-50 cursor-pointer"
+                              >
+                                {sendingFeedback ? 'Đang gửi...' : 'Gửi phản hồi'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
                 </div>
-              );
-            })}
+              )}
+            </div>
+          )
+        ) : (
+          /* STEP 5: Completion Summary Panel (keeps Accuracy & Completeness strictly independent) */
+          <div className="rounded-2xl border border-cyan-200/90 dark:border-cyan-800/70 bg-gradient-to-br from-cyan-50/70 via-white to-sky-50/70 dark:from-[#0C2230]/80 dark:via-[#111C2D] dark:to-[#0F172A] p-5 sm:p-6 space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-[#0E4D5D] dark:text-cyan-300 font-semibold">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>Hoàn tất quy trình 5 bước kiểm định & sửa lỗi bài tập</span>
+                </div>
+                <h3 className="font-display text-base sm:text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                  Đã khắc phục {resolvedItemsCount}/{actionableQueue.length} mục cần chỉnh sửa · Sẵn sàng xuất phiếu hoặc luyện tập
+                </h3>
+                <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] leading-relaxed prose-measure">
+                  Hai chỉ số được giữ độc lập tuyệt đối: Độ chính xác phản ánh tỷ lệ kiến thức bạn đã viết đúng ({analysis.accuracyScore ?? '—'}%), còn Độ đầy đủ phản ánh mức bao phủ khung kiến thức chương SGK ({analysis.completenessScore ?? '—'}%).
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setActiveWorkflowStep(4)}
+                  className="glass-control min-h-[42px] px-3.5 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
+                >
+                  ← Xem lại Bước 4 (Sửa lỗi)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="glass-control min-h-[42px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
+                >
+                  <Printer className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+                  <span>In Phiếu sửa lỗi</span>
+                </button>
+                <WaterRippleButton onClick={() => onStartQuiz(analysis)}>
+                  <HelpCircle className="w-4 h-4" />
+                  <span>Làm trắc nghiệm củng cố</span>
+                </WaterRippleButton>
+              </div>
+            </div>
           </div>
-        </GlassSurface>
-      )}
+        )}
+      </GlassSurface>
 
       {/* Strengths, Weaknesses, Suggestions */}
       <div className="report-scroll-section grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 no-print">

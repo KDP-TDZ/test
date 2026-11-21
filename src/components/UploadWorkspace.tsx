@@ -48,6 +48,11 @@ import {
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 import { OcrReviewPanel } from './OcrReviewPanel';
+import { VerificationFiveStepBar } from './VerificationFiveStepBar';
+import {
+  resolveStepFromAnalysisStage,
+  type VerificationStepId,
+} from '../core/verificationStepper';
 
 interface UploadWorkspaceProps {
   onAnalysisCompleted: (analysis: AnalysisRecord, localFile: File | null) => void;
@@ -951,32 +956,42 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
   };
 
   const activeStageIdx = PIPELINE_STAGES.findIndex((s) => s.id === activeStage);
+  const currentFiveStepId: VerificationStepId =
+    step === 'select'
+      ? 1
+      : step === 'review_ocr'
+      ? 2
+      : Math.max(2, resolveStepFromAnalysisStage(activeStage)) as VerificationStepId;
+
+  const uploadInteractiveSteps: VerificationStepId[] =
+    step === 'select' && ocrDraft
+      ? [1, 2]
+      : step === 'review_ocr'
+      ? [1, 2]
+      : [];
 
   return (
     <div ref={workspaceRef} className="space-y-4 sm:space-y-6">
-      {/* Compact 2-Step Progress Stepper */}
-      <div className="glass-segment rounded-2xl px-3.5 sm:px-4 py-2.5 flex flex-wrap items-center gap-1.5 sm:gap-2 text-xs font-medium">
-        {[
-          { id: 'select', label: '1. Tải tài liệu' },
-          { id: 'processing', label: '2. Trích xuất & Chấm điểm tự động' },
-        ].map((s, idx) => {
-          const active = step === s.id;
-          return (
-            <React.Fragment key={s.id}>
-              {idx > 0 && <span className="text-sky-300 dark:text-slate-600">/</span>}
-              <span
-                className={
-                  active
-                    ? 'px-3 py-1 rounded-xl bg-gradient-to-r from-sky-500 to-sky-600 text-white font-semibold shadow-sm'
-                    : 'px-2 py-1 text-[#475B78] dark:text-[#B4C7E2]'
-                }
-              >
-                {s.label}
-              </span>
-            </React.Fragment>
-          );
-        })}
-      </div>
+      {/* 5-Step Progress Stepper Card (Matched to Reference Design) */}
+      <VerificationFiveStepBar
+        activeStep={currentFiveStepId}
+        interactiveSteps={uploadInteractiveSteps}
+        statusSummaryText={
+          step === 'processing'
+            ? statusLabel || PIPELINE_STAGES[Math.max(0, activeStageIdx)]?.label
+            : step === 'review_ocr' && ocrDraft
+            ? `Đang rà soát ${ocrDraft.pages.length} trang OCR trước khi chấm điểm`
+            : undefined
+        }
+        onSelectStep={(targetStep) => {
+          if (step === 'processing') return;
+          if (targetStep === 1) {
+            setStep('select');
+          } else if (targetStep === 2 && ocrDraft) {
+            setStep('review_ocr');
+          }
+        }}
+      />
 
       {/* Resumable OCR Draft Banner (1-click direct grading) */}
       {step === 'select' && ocrDraft && (
