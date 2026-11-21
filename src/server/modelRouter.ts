@@ -79,7 +79,7 @@ function appendExecutionLog(log: AiExecutionLog): void {
   }
 }
 
-export const GEMINI_TIMEOUT_MS = 22_000;
+export const GEMINI_TIMEOUT_MS = 45_000;
 
 export async function callWithTimeout<T>(
   operation: (signal: AbortSignal) => Promise<T>,

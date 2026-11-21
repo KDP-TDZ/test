@@ -50,6 +50,7 @@ import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 import { OcrReviewPanel } from './OcrReviewPanel';
 import { VerificationFiveStepBar } from './VerificationFiveStepBar';
 import {
+  computeLivePipelineProgressPct,
   resolveStepFromAnalysisStage,
   type VerificationStepId,
 } from '../core/verificationStepper';
@@ -957,41 +958,31 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
 
   const activeStageIdx = PIPELINE_STAGES.findIndex((s) => s.id === activeStage);
   const currentFiveStepId: VerificationStepId =
-    step === 'select'
-      ? 1
-      : step === 'review_ocr'
+    step === 'review_ocr'
       ? 2
-      : Math.max(2, resolveStepFromAnalysisStage(activeStage)) as VerificationStepId;
+      : resolveStepFromAnalysisStage(activeStage);
 
-  const uploadInteractiveSteps: VerificationStepId[] =
-    step === 'select' && ocrDraft
-      ? [1, 2]
-      : step === 'review_ocr'
-      ? [1, 2]
-      : [];
+  const livePipelinePct =
+    step === 'review_ocr'
+      ? 45
+      : computeLivePipelineProgressPct(activeStage, progressDetail);
 
   return (
     <div ref={workspaceRef} className="space-y-4 sm:space-y-6">
-      {/* 5-Step Progress Stepper Card (Matched to Reference Design) */}
-      <VerificationFiveStepBar
-        activeStep={currentFiveStepId}
-        interactiveSteps={uploadInteractiveSteps}
-        statusSummaryText={
-          step === 'processing'
-            ? statusLabel || PIPELINE_STAGES[Math.max(0, activeStageIdx)]?.label
-            : step === 'review_ocr' && ocrDraft
-            ? `Đang rà soát ${ocrDraft.pages.length} trang OCR trước khi chấm điểm`
-            : undefined
-        }
-        onSelectStep={(targetStep) => {
-          if (step === 'processing') return;
-          if (targetStep === 1) {
-            setStep('select');
-          } else if (targetStep === 2 && ocrDraft) {
-            setStep('review_ocr');
-          }
-        }}
-      />
+      {/* 5-Step Progress Stepper Card — ONLY shown AFTER the user has uploaded & confirmed verification/OCR */}
+      {step === 'review_ocr' && ocrDraft && (
+        <VerificationFiveStepBar
+          activeStep={2}
+          customProgressPct={livePipelinePct}
+          interactiveSteps={[1, 2]}
+          statusSummaryText={`Đang rà soát ${ocrDraft.pages.length} trang OCR trước khi đối chiếu SGK`}
+          onSelectStep={(targetStep) => {
+            if (targetStep === 1) {
+              setStep('select');
+            }
+          }}
+        />
+      )}
 
       {/* Resumable OCR Draft Banner (1-click direct grading) */}
       {step === 'select' && ocrDraft && (
@@ -1437,75 +1428,78 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         </div>
       )}
 
-      {/* STEP 2: Automatic End-to-End OCR & Grading Progress */}
+      {/* STEP 2: Automatic End-to-End OCR & Grading Progress (5-Step Bar + Live Stage Details) */}
       {step === 'processing' && (
-        <GlassSurface className="upload-step-panel rounded-3xl p-5 sm:p-10 space-y-5 sm:space-y-6">
-          <div className="text-center space-y-3">
-            <div className="glass-segment inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-sky-700 dark:text-sky-300">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              <span>
-                Giai đoạn {Math.max(1, activeStageIdx + 1)}/{PIPELINE_STAGES.length}
-                {progressDetail && progressDetail.total > 0
-                  ? ` · Tiến độ ${progressDetail.current}/${progressDetail.total}`
-                  : ''}
-              </span>
-            </div>
-            <h2 className="upload-status-label font-display text-[clamp(1.1rem,3.4vw,1.35rem)] font-bold text-[#16243E] dark:text-[#E6EFFC]">
-              {statusLabel || PIPELINE_STAGES[Math.max(0, activeStageIdx)]?.label}
-            </h2>
-            {progressDetail && progressDetail.total > 0 && (
-              <div className="max-w-md mx-auto space-y-1.5">
-                <div className="h-2.5 w-full rounded-full bg-sky-100/90 dark:bg-slate-800 overflow-hidden">
-                  <div
-                    ref={progressFillRef}
-                    className="h-full w-full origin-left rounded-full bg-gradient-to-r from-sky-500 to-sky-600"
-                    style={{ transform: 'scaleX(0.08)' }}
-                  />
+        <div className="upload-step-panel">
+          <VerificationFiveStepBar
+            activeStep={currentFiveStepId}
+            customProgressPct={livePipelinePct}
+            statusSummaryText={
+              statusLabel || PIPELINE_STAGES[Math.max(0, activeStageIdx)]?.label
+            }
+          >
+            <div className="space-y-5">
+              <div className="text-center space-y-2.5">
+                <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-[#0E4D5D] dark:text-cyan-300 bg-[#F0FDFA] dark:bg-cyan-950/50 border border-[#0E4D5D]/20 dark:border-cyan-500/30">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>
+                    Chặng xử lý {Math.max(1, activeStageIdx + 1)}/{PIPELINE_STAGES.length}
+                    {progressDetail && progressDetail.total > 0
+                      ? ` · Trang/Mục ${progressDetail.current}/${progressDetail.total}`
+                      : ''}
+                  </span>
                 </div>
-              </div>
-            )}
-            <p className="inline-flex items-center gap-1.5 font-mono text-xs text-[#475B78] dark:text-[#B4C7E2] tabular-nums">
-              <Clock className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
-              Thời gian đã trôi qua: {elapsedSeconds}s
-            </p>
-          </div>
-
-          <div className="max-w-lg mx-auto space-y-2">
-            {PIPELINE_STAGES.map((st, idx) => {
-              const isDone = idx < activeStageIdx;
-              const isCurrent = idx === activeStageIdx;
-              return (
-                <div
-                  key={st.id}
-                  className={`flex items-center justify-between gap-3 rounded-2xl px-3.5 sm:px-4 py-2.5 text-xs border transition-colors ${
-                    isCurrent
-                      ? 'bg-sky-50/90 dark:bg-sky-950/50 border-sky-300/90 dark:border-sky-700 text-sky-900 dark:text-sky-100 font-semibold shadow-sm'
-                      : isDone
-                      ? 'bg-emerald-50/75 dark:bg-emerald-950/35 border-emerald-200/80 dark:border-emerald-800/60 text-emerald-800 dark:text-emerald-300'
-                      : 'bg-white/50 dark:bg-slate-900/45 border-sky-200/50 dark:border-slate-800 text-[#475B78] dark:text-[#B4C7E2]'
-                  }`}
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span className="font-mono w-5 text-center shrink-0">
-                      {isDone ? '✓' : isCurrent ? '→' : `${idx + 1}`}
-                    </span>
-                    <span className="truncate">{st.label}</span>
+                <h2 className="upload-status-label font-display text-[clamp(1.05rem,3.2vw,1.3rem)] font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                  {statusLabel || PIPELINE_STAGES[Math.max(0, activeStageIdx)]?.label}
+                </h2>
+                {progressDetail && progressDetail.total > 0 && (
+                  <div className="sr-only" aria-hidden="true">
+                    <div ref={progressFillRef} />
                   </div>
-                  {isCurrent && progressDetail && progressDetail.total > 1 && (
-                    <span className="font-mono text-[11px] shrink-0 text-sky-700 dark:text-sky-300 tabular-nums">
-                      {progressDetail.current}/{progressDetail.total}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                )}
+                <p className="inline-flex items-center gap-1.5 font-mono text-xs text-[#475B78] dark:text-[#B4C7E2] tabular-nums">
+                  <Clock className="w-3.5 h-3.5 text-[#0E4D5D] dark:text-cyan-400" />
+                  Thời gian đã trôi qua: {elapsedSeconds}s
+                </p>
+              </div>
 
-          <p className="text-xs text-center text-[#475B78] dark:text-[#B4C7E2] max-w-md mx-auto leading-[1.6]">
-            Vui lòng giữ tab trình duyệt mở để hoàn tất quá trình kiểm định và lưu kết quả vào tài
-            khoản của bạn.
-          </p>
-        </GlassSurface>
+              <div className="max-w-lg mx-auto space-y-2">
+                {PIPELINE_STAGES.map((st, idx) => {
+                  const isDone = idx < activeStageIdx;
+                  const isCurrent = idx === activeStageIdx;
+                  return (
+                    <div
+                      key={st.id}
+                      className={`flex items-center justify-between gap-3 rounded-2xl px-3.5 sm:px-4 py-2.5 text-xs border transition-colors ${
+                        isCurrent
+                          ? 'bg-[#F0FDFA] dark:bg-cyan-950/50 border-[#06B6D4]/60 dark:border-cyan-600 text-[#0E4D5D] dark:text-cyan-100 font-semibold shadow-xs'
+                          : isDone
+                          ? 'bg-emerald-50/75 dark:bg-emerald-950/35 border-emerald-200/80 dark:border-emerald-800/60 text-emerald-800 dark:text-emerald-300'
+                          : 'bg-slate-50/80 dark:bg-slate-900/45 border-slate-200/70 dark:border-slate-800 text-[#475B78] dark:text-[#B4C7E2]'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="font-mono w-5 text-center shrink-0 tabular-nums">
+                          {isDone ? '✓' : isCurrent ? '→' : `${idx + 1}`}
+                        </span>
+                        <span className="truncate">{st.label}</span>
+                      </div>
+                      {isCurrent && progressDetail && progressDetail.total > 1 && (
+                        <span className="font-mono text-[11px] shrink-0 text-[#0E4D5D] dark:text-cyan-300 tabular-nums">
+                          {progressDetail.current}/{progressDetail.total}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <p className="text-xs text-center text-[#475B78] dark:text-[#B4C7E2] max-w-md mx-auto leading-[1.6]">
+                Vui lòng giữ tab trình duyệt mở để hoàn tất quá trình kiểm định và chuyển sang bước sửa lỗi chi tiết.
+              </p>
+            </div>
+          </VerificationFiveStepBar>
+        </div>
       )}
     </div>
   );

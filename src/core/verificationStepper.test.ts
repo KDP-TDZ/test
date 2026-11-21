@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildErrorCorrectionQueue,
-  GEMINI_ARGON_VERIFICATION_UI_PROMPT,
+  computeLivePipelineProgressPct,
   getStepProgressFraction,
   resolveStepFromAnalysisStage,
   VERIFICATION_STEPS,
@@ -46,6 +46,23 @@ test('resolveStepFromAnalysisStage maps every AnalysisStage to the correct 1..5 
   assert.equal(resolveStepFromAnalysisStage('completed', { hasUnresolvedErrors: true }), 4);
   assert.equal(resolveStepFromAnalysisStage('completed', { hasUnresolvedErrors: false }), 5);
   assert.equal(resolveStepFromAnalysisStage('completed', { forceCompletedStep: true }), 5);
+});
+
+test('computeLivePipelineProgressPct monotonically increases across upload, OCR, and verification stages', () => {
+  const pUploadStart = computeLivePipelineProgressPct('uploading', { current: 0, total: 2 });
+  const pUploadEnd = computeLivePipelineProgressPct('uploading', { current: 2, total: 2 });
+  const pOcrStart = computeLivePipelineProgressPct('extracting', { current: 1, total: 4 });
+  const pOcrEnd = computeLivePipelineProgressPct('extracting', { current: 4, total: 4 });
+  const pRef = computeLivePipelineProgressPct('retrieving_references');
+  const pVerify = computeLivePipelineProgressPct('verifying', { current: 2, total: 3 });
+  const pReport = computeLivePipelineProgressPct('generating_report');
+
+  assert.ok(pUploadStart >= 12 && pUploadStart <= pUploadEnd);
+  assert.ok(pUploadEnd < pOcrStart);
+  assert.ok(pOcrStart <= pOcrEnd);
+  assert.ok(pOcrEnd < pRef);
+  assert.ok(pRef < pVerify);
+  assert.ok(pVerify < pReport);
 });
 
 test('buildErrorCorrectionQueue orders incorrect claims first, then partial/missing claims, then coverage gaps', () => {
@@ -144,19 +161,4 @@ test('buildErrorCorrectionQueue orders incorrect claims first, then partial/miss
   assert.equal(queue[1]?.kind, 'claim_partial');
   assert.equal(queue[2]?.id, 'coverage:cov_missing');
   assert.equal(queue[2]?.kind, 'coverage_gap');
-});
-
-test('GEMINI_ARGON_VERIFICATION_UI_PROMPT includes all 7 contract blocks and strict data fields', () => {
-  assert.ok(GEMINI_ARGON_VERIFICATION_UI_PROMPT.includes('KHỐI 1:'));
-  assert.ok(GEMINI_ARGON_VERIFICATION_UI_PROMPT.includes('KHỐI 2:'));
-  assert.ok(GEMINI_ARGON_VERIFICATION_UI_PROMPT.includes('KHỐI 3:'));
-  assert.ok(GEMINI_ARGON_VERIFICATION_UI_PROMPT.includes('KHỐI 4:'));
-  assert.ok(GEMINI_ARGON_VERIFICATION_UI_PROMPT.includes('KHỐI 5:'));
-  assert.ok(GEMINI_ARGON_VERIFICATION_UI_PROMPT.includes('KHỐI 6:'));
-  assert.ok(GEMINI_ARGON_VERIFICATION_UI_PROMPT.includes('KHỐI 7:'));
-  assert.ok(GEMINI_ARGON_VERIFICATION_UI_PROMPT.includes('AnalysisRecord'));
-  assert.ok(GEMINI_ARGON_VERIFICATION_UI_PROMPT.includes('ExtractedClaim'));
-  assert.ok(GEMINI_ARGON_VERIFICATION_UI_PROMPT.includes('KnowledgeCoverageItem'));
-  assert.ok(GEMINI_ARGON_VERIFICATION_UI_PROMPT.includes('#0E4D5D'));
-  assert.ok(GEMINI_ARGON_VERIFICATION_UI_PROMPT.includes('#06B6D4'));
 });

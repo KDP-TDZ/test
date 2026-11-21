@@ -188,7 +188,7 @@ function mapGeminiErrorResponse(err: unknown): { status: number; code: string; e
     return {
       status: 504,
       code: 'AI_TIMEOUT',
-      error: 'AI phản hồi quá 30 giây nên hệ thống đã tự động ngắt. Vui lòng thử lại.',
+      error: 'AI phản hồi quá 45 giây nên hệ thống đã tự động ngắt để bảo vệ kết nối. Vui lòng thử lại.',
     };
   }
   if (msg.includes('GEMINI_API_KEY_UNCONFIGURED')) {
