@@ -494,7 +494,7 @@ export async function testModelConnectivity(modelId: string): Promise<{
           modelId,
           latencyMs: Date.now() - start,
           message:
-            'Chưa thiết lập biến môi trường GROQ_API_KEY trên máy chủ (Vercel Environment Variables hoặc .env).',
+            'Chưa cấu hình Groq API Key. Super Admin có thể thêm trực tiếp tại tab "API Key & Bảo mật" trong web (không cần sửa biến môi trường Vercel).',
         };
       }
       const resp = await callWithTimeout(
@@ -502,18 +502,22 @@ export async function testModelConnectivity(modelId: string): Promise<{
           callGroqChatCompletion({
             modelId,
             prompt: 'Trả lời duy nhất 1 từ: OK',
-            maxOutputTokens: 32,
+            maxOutputTokens: 256,
             signal,
           }),
         15_000
       );
       const text = (resp.text || '').trim();
+      const resolvedLabel =
+        resp.resolvedModel && resp.resolvedModel !== modelId
+          ? `${modelId} → tự động chạy bằng ${resp.resolvedModel}`
+          : modelId;
       return {
         ok: Boolean(text),
-        modelId,
+        modelId: resp.resolvedModel || modelId,
         latencyMs: Date.now() - start,
         message: text
-          ? `Model ${modelId} (Groq Cloud Free) hoạt động bình thường (${Date.now() - start}ms).`
+          ? `Model ${resolvedLabel} (Groq Cloud Free) hoạt động bình thường (${Date.now() - start}ms).`
           : `Model ${modelId} trả về nội dung rỗng.`,
       };
     }
@@ -525,7 +529,7 @@ export async function testModelConnectivity(modelId: string): Promise<{
           modelId,
           latencyMs: Date.now() - start,
           message:
-            'Chưa thiết lập CLOUDFLARE_ACCOUNT_ID và CLOUDFLARE_API_TOKEN trên máy chủ (Vercel Environment Variables hoặc .env).',
+            'Chưa cấu hình Cloudflare Account ID & API Token. Super Admin có thể thêm trực tiếp tại tab "API Key & Bảo mật" trong web (không cần sửa biến môi trường Vercel).',
         };
       }
       const resp = await callWithTimeout(
@@ -533,18 +537,22 @@ export async function testModelConnectivity(modelId: string): Promise<{
           callCloudflareChatCompletion({
             modelId,
             prompt: 'Trả lời duy nhất 1 từ: OK',
-            maxOutputTokens: 32,
+            maxOutputTokens: 128,
             signal,
           }),
         15_000
       );
       const text = (resp.text || '').trim();
+      const resolvedLabel =
+        resp.resolvedModel && resp.resolvedModel !== modelId
+          ? `${modelId} → tự động chạy bằng ${resp.resolvedModel}`
+          : modelId;
       return {
         ok: Boolean(text),
-        modelId,
+        modelId: resp.resolvedModel || modelId,
         latencyMs: Date.now() - start,
         message: text
-          ? `Model ${modelId} (Cloudflare Workers AI Free) hoạt động bình thường (${Date.now() - start}ms).`
+          ? `Model ${resolvedLabel} (Cloudflare Workers AI Free) hoạt động bình thường (${Date.now() - start}ms).`
           : `Model ${modelId} trả về nội dung rỗng.`,
       };
     }
@@ -576,7 +584,7 @@ export async function testModelConnectivity(modelId: string): Promise<{
       ok: false,
       modelId,
       latencyMs: Date.now() - start,
-      message: `Lỗi kết nối model ${modelId}: ${msg.slice(0, 160)}`,
+      message: `Lỗi kết nối model ${modelId}: ${msg.slice(0, 220)}`,
     };
   }
 }

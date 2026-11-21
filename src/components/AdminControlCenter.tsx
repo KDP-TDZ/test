@@ -50,6 +50,7 @@ import {
   type AiTaskType,
   type ApiUsageDaily,
   type AuditLogEntry,
+  type CloudflareKeyStatus,
   type CognitiveLevel,
   type ExamBlueprint,
   type ExamBlueprintRow,
@@ -60,6 +61,7 @@ import {
   type FeedbackEntry,
   type GradeLevel,
   type KnowledgeSourceType,
+  type ProviderKeysStatus,
   type RateLimitConfig,
   type ReferenceBook,
   type ReferenceChunk,
@@ -129,19 +131,19 @@ const FALLBACK_MODEL_CATALOG: ModelCatalogItem[] = [
     supportsMultimodal: true,
   },
   {
-    modelId: 'groq:llama-3.3-70b-versatile',
-    displayName: 'Groq · Llama 3.3 70B (Groq Cloud Free)',
+    modelId: 'groq:openai/gpt-oss-120b',
+    displayName: 'Groq · GPT-OSS 120B (Groq Cloud Free)',
     provider: 'groq',
     tier: 'free',
-    strengths: 'Miễn phí (~1.000 req/ngày, ~300–500 tok/s) — xử lý văn bản/JSON: kiểm định kiến thức, tạo đề & dự phòng khi Gemini 429.',
+    strengths: 'Model sản xuất mạnh nhất của Groq (~500 tok/s, miễn phí) — xử lý văn bản/JSON: kiểm định kiến thức, tạo đề & dự phòng khi Gemini 429.',
     supportsMultimodal: false,
   },
   {
-    modelId: 'groq:llama-3.1-8b-instant',
-    displayName: 'Groq · Llama 3.1 8B Instant (Groq Cloud Free)',
+    modelId: 'groq:openai/gpt-oss-20b',
+    displayName: 'Groq · GPT-OSS 20B Fast (Groq Cloud Free)',
     provider: 'groq',
     tier: 'free',
-    strengths: 'Siêu nhanh (<0.6s), miễn phí — phân loại môn, gợi ý tên tệp, flashcard & dự phòng nhẹ.',
+    strengths: 'Siêu nhanh (~1.000 tok/s), miễn phí — phân loại môn, gợi ý tên tệp, flashcard & dự phòng nhẹ.',
     supportsMultimodal: false,
   },
   {
@@ -210,6 +212,7 @@ export const AdminControlCenter: React.FC = () => {
   } | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [singleKeyStatus, setSingleKeyStatus] = useState<SingleApiKeyStatus | null>(null);
+  const [providerKeys, setProviderKeys] = useState<ProviderKeysStatus | null>(null);
   const [executionLogs, setExecutionLogs] = useState<AiExecutionLog[]>([]);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogItem[]>(FALLBACK_MODEL_CATALOG);
   const [groqConfigured, setGroqConfigured] = useState<boolean>(false);
@@ -244,6 +247,31 @@ export const AdminControlCenter: React.FC = () => {
   const [savingKey, setSavingKey] = useState(false);
   const [testingKey, setTestingKey] = useState(false);
   const [testResult, setTestResult] = useState<{ status: string; message: string; testedSource: string } | null>(null);
+
+  // Groq Cloud Key state (Admin in-web)
+  const [groqKeyLabel, setGroqKeyLabel] = useState('Groq Cloud Free API Key');
+  const [groqRawKey, setGroqRawKey] = useState('');
+  const [savingGroqKey, setSavingGroqKey] = useState(false);
+  const [testingGroqKey, setTestingGroqKey] = useState(false);
+  const [groqTestResult, setGroqTestResult] = useState<{
+    status: string;
+    message: string;
+    testedSource: string;
+    availableModels?: string[];
+  } | null>(null);
+
+  // Cloudflare Workers AI credentials state (Admin in-web)
+  const [cfKeyLabel, setCfKeyLabel] = useState('Cloudflare Workers AI Free');
+  const [cfAccountIdInput, setCfAccountIdInput] = useState('');
+  const [cfApiTokenInput, setCfApiTokenInput] = useState('');
+  const [savingCfKey, setSavingCfKey] = useState(false);
+  const [testingCfKey, setTestingCfKey] = useState(false);
+  const [cfTestResult, setCfTestResult] = useState<{
+    status: string;
+    message: string;
+    testedSource: string;
+  } | null>(null);
+
   const [newOriginInput, setNewOriginInput] = useState('');
 
   // Rate Limits form
@@ -360,8 +388,9 @@ export const AdminControlCenter: React.FC = () => {
       setUsageStats(data.usageStats);
       setAuditLogs(data.auditLogs || []);
       setSingleKeyStatus(data.singleKeyStatus || null);
-      setGroqConfigured(Boolean(data.groqConfigured));
-      setCloudflareConfigured(Boolean(data.cloudflareConfigured));
+      setProviderKeys(data.providerKeys || null);
+      setGroqConfigured(Boolean(data.groqConfigured || data.providerKeys?.groq?.configured));
+      setCloudflareConfigured(Boolean(data.cloudflareConfigured || data.providerKeys?.cloudflare?.configured));
       setExecutionLogs(data.executionLogs || []);
       if (Array.isArray(data.modelCatalog) && data.modelCatalog.length > 0) {
         setModelCatalog(data.modelCatalog);
@@ -542,6 +571,174 @@ export const AdminControlCenter: React.FC = () => {
       await loadAllAdminData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Lỗi xóa API key.');
+    }
+  };
+
+  const handleSaveGroqKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingGroqKey(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await authorizedFetch('/api/admin/provider-keys/groq', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: groqKeyLabel, apiKey: groqRawKey }),
+      });
+      const data = await parseApiResponse<any>(res, 'Không thể lưu Groq API Key.');
+      if (data.providerKeys) setProviderKeys(data.providerKeys);
+      setGroqConfigured(Boolean(data.groqConfigured ?? data.groqStatus?.configured));
+      setGroqRawKey('');
+      setGroqTestResult(null);
+      setNotice(
+        `Đã lưu & kích hoạt ngay Groq API Key (${data.groqStatus?.maskedKey || ''}) mà không cần thêm biến trên Vercel.`
+      );
+      await loadAllAdminData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lỗi lưu Groq API Key.');
+    } finally {
+      setSavingGroqKey(false);
+    }
+  };
+
+  const handleTestGroqKey = async (rawKeyOverride?: string) => {
+    setTestingGroqKey(true);
+    setError(null);
+    try {
+      const res = await authorizedFetch('/api/admin/provider-keys/groq/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(rawKeyOverride ? { apiKey: rawKeyOverride } : {}),
+      });
+      const data = await parseApiResponse<any>(res, 'Không thể kiểm tra Groq API Key.');
+      setGroqTestResult(data);
+      if (data.keyStatus) {
+        setProviderKeys((prev) =>
+          prev
+            ? { ...prev, groq: data.keyStatus }
+            : {
+                groq: data.keyStatus,
+                cloudflare: {
+                  configured: false,
+                  source: 'none',
+                  maskedAccountId: '',
+                  maskedKey: '',
+                  label: '',
+                  hasEnvFallbackKey: false,
+                  lastTestStatus: 'Untested',
+                } as CloudflareKeyStatus,
+              }
+        );
+      }
+      await loadAllAdminData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lỗi kiểm tra Groq API Key.');
+    } finally {
+      setTestingGroqKey(false);
+    }
+  };
+
+  const handleClearGroqKey = async () => {
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await authorizedFetch('/api/admin/provider-keys/groq', { method: 'DELETE' });
+      const data = await parseApiResponse<any>(res, 'Không thể gỡ Groq API Key quản trị.');
+      if (data.providerKeys) setProviderKeys(data.providerKeys);
+      setGroqConfigured(Boolean(data.groqConfigured));
+      setGroqTestResult(null);
+      setNotice('Đã gỡ Groq API Key trong Admin UI (quay về biến GROQ_API_KEY của máy chủ nếu có).');
+      await loadAllAdminData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lỗi gỡ Groq API Key.');
+    }
+  };
+
+  const handleSaveCloudflareKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingCfKey(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await authorizedFetch('/api/admin/provider-keys/cloudflare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          label: cfKeyLabel,
+          accountId: cfAccountIdInput,
+          apiToken: cfApiTokenInput,
+        }),
+      });
+      const data = await parseApiResponse<any>(res, 'Không thể lưu thông tin Cloudflare Workers AI.');
+      if (data.providerKeys) setProviderKeys(data.providerKeys);
+      setCloudflareConfigured(Boolean(data.cloudflareConfigured ?? data.cloudflareStatus?.configured));
+      setCfAccountIdInput('');
+      setCfApiTokenInput('');
+      setCfTestResult(null);
+      setNotice(
+        'Đã lưu & kích hoạt ngay Cloudflare Workers AI (Account ID + API Token) mà không cần thêm biến trên Vercel.'
+      );
+      await loadAllAdminData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lỗi lưu thông tin Cloudflare.');
+    } finally {
+      setSavingCfKey(false);
+    }
+  };
+
+  const handleTestCloudflareKey = async (accountIdOverride?: string, apiTokenOverride?: string) => {
+    setTestingCfKey(true);
+    setError(null);
+    try {
+      const res = await authorizedFetch('/api/admin/provider-keys/cloudflare/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          accountIdOverride || apiTokenOverride
+            ? { accountId: accountIdOverride, apiToken: apiTokenOverride }
+            : {}
+        ),
+      });
+      const data = await parseApiResponse<any>(res, 'Không thể kiểm tra Cloudflare Workers AI.');
+      setCfTestResult(data);
+      if (data.keyStatus) {
+        setProviderKeys((prev) =>
+          prev
+            ? { ...prev, cloudflare: data.keyStatus }
+            : {
+                groq: {
+                  configured: false,
+                  source: 'none',
+                  maskedKey: '',
+                  label: '',
+                  hasEnvFallbackKey: false,
+                  lastTestStatus: 'Untested',
+                },
+                cloudflare: data.keyStatus,
+              }
+        );
+      }
+      await loadAllAdminData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lỗi kiểm tra Cloudflare Workers AI.');
+    } finally {
+      setTestingCfKey(false);
+    }
+  };
+
+  const handleClearCloudflareKey = async () => {
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await authorizedFetch('/api/admin/provider-keys/cloudflare', { method: 'DELETE' });
+      const data = await parseApiResponse<any>(res, 'Không thể gỡ thông tin Cloudflare quản trị.');
+      if (data.providerKeys) setProviderKeys(data.providerKeys);
+      setCloudflareConfigured(Boolean(data.cloudflareConfigured));
+      setCfTestResult(null);
+      setNotice('Đã gỡ thông tin Cloudflare trong Admin UI (quay về biến môi trường máy chủ nếu có).');
+      await loadAllAdminData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lỗi gỡ thông tin Cloudflare.');
     }
   };
 
@@ -1580,7 +1777,7 @@ export const AdminControlCenter: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-sky-200/80 dark:border-sky-800/60 bg-sky-50/70 dark:bg-sky-950/35 px-4 py-3.5 text-xs text-[#16243E] dark:text-[#E6EFFC] space-y-2">
+                <div className="rounded-2xl border border-sky-200/80 dark:border-sky-800/60 bg-sky-50/70 dark:bg-sky-950/35 px-4 py-3.5 text-xs text-[#16243E] dark:text-[#E6EFFC] space-y-2.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="font-semibold">
                       Định tuyến 3 Nhà cung cấp AI Miễn phí (Tối ưu cho nhóm 2–3 người dùng cùng lúc)
@@ -1594,8 +1791,10 @@ export const AdminControlCenter: React.FC = () => {
                         }`}
                       >
                         {groqConfigured
-                          ? 'Groq Cloud: Đã bật (GROQ_API_KEY)'
-                          : 'Groq Cloud: Chưa đặt GROQ_API_KEY'}
+                          ? providerKeys?.groq?.source === 'admin'
+                            ? 'Groq Cloud: Đã bật (Key Admin)'
+                            : 'Groq Cloud: Đã bật (GROQ_API_KEY)'
+                          : 'Groq Cloud: Chưa cấu hình Key'}
                       </span>
                       <span
                         className={`inline-flex items-center px-2.5 py-0.5 rounded-lg text-[11px] font-semibold ${
@@ -1605,9 +1804,19 @@ export const AdminControlCenter: React.FC = () => {
                         }`}
                       >
                         {cloudflareConfigured
-                          ? 'Cloudflare AI: Đã bật (CLOUDFLARE_API_TOKEN)'
-                          : 'Cloudflare AI: Chưa đặt CLOUDFLARE_ACCOUNT_ID / TOKEN'}
+                          ? providerKeys?.cloudflare?.source === 'admin'
+                            ? 'Cloudflare AI: Đã bật (Key Admin)'
+                            : 'Cloudflare AI: Đã bật (Env máy chủ)'
+                          : 'Cloudflare AI: Chưa cấu hình Key'}
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => setTab('api_security')}
+                        className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-sky-600 text-white text-[11px] font-semibold hover:bg-sky-700 transition-colors cursor-pointer"
+                      >
+                        <KeyRound className="w-3 h-3" />
+                        Nhập Key trong web
+                      </button>
                     </div>
                   </div>
                   <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
@@ -1615,14 +1824,13 @@ export const AdminControlCenter: React.FC = () => {
                     <strong>(1) Gemini 4 Hydrogen / 3.1 Flash Lite</strong> bắt buộc giữ vị trí số 1 cho{' '}
                     <strong>OCR Ảnh/PDF</strong> và kiểm định chính vì hỗ trợ đa phương thức (vision) và suy luận
                     công thức chuẩn nhất; <strong>(2) Groq Cloud Free</strong> (
-                    <code className="font-mono text-[11px]">groq:llama-3.3-70b-versatile</code>,{' '}
-                    <code className="font-mono text-[11px]">groq:llama-3.1-8b-instant</code>) ưu tiên số 2 cho
-                    tác vụ văn bản/JSON vì tốc độ ~400 token/s giúp 2–3 người bấm cùng lúc không bị nghẽn hàng đợi;{' '}
+                    <code className="font-mono text-[11px]">groq:openai/gpt-oss-120b</code>,{' '}
+                    <code className="font-mono text-[11px]">groq:openai/gpt-oss-20b</code>) ưu tiên số 2 cho
+                    tác vụ văn bản/JSON vì tốc độ ~500–1.000 token/s (tự động chuyển model khả dụng nếu tài khoản Groq giới hạn);{' '}
                     <strong>(3) Cloudflare Workers AI Free</strong> (
                     <code className="font-mono text-[11px]">cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast</code>)
-                    làm tầng cứu hộ thứ 3 (10.000 Neurons/ngày). Khi cả 3 cùng được khai báo biến môi trường,
-                    Router tự động chuyển tiếp <code className="font-mono text-[11px]">Gemini → Groq → Cloudflare</code>{' '}
-                    nếu có bất kỳ bên nào báo <code className="font-mono text-[11px]">429</code>.
+                    làm tầng cứu hộ thứ 3 (10.000 Neurons/ngày). Super Admin có thể thêm trực tiếp cả 3 bộ khóa trong mục{' '}
+                    <strong>API Key &amp; Bảo mật</strong> mà không cần chỉnh biến môi trường trên Vercel.
                   </p>
                 </div>
 
@@ -1962,6 +2170,268 @@ export const AdminControlCenter: React.FC = () => {
                       className="px-4 py-2 rounded-xl glass-control text-xs font-semibold disabled:opacity-45 cursor-pointer"
                     >
                       Thử nghiệm key đang nhập
+                    </button>
+                  </div>
+                </form>
+              </GlassSurface>
+
+              {/* GROQ CLOUD FREE KEY (IN-WEB SUPER ADMIN) */}
+              <GlassSurface className="rounded-3xl p-6 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                      API Key Groq Cloud Free (Tăng tốc văn bản/JSON &amp; dự phòng Gemini 429)
+                    </h2>
+                    <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                      Lưu mã hóa AES-256-GCM trên Cloud Firestore (<code className="font-mono">adminSecrets/groq</code>). Có hiệu lực ngay lập tức mà <strong>không cần đặt biến môi trường trên Vercel</strong>.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <WaterRippleButton
+                      size="sm"
+                      variant="secondary"
+                      disabled={testingGroqKey || !providerKeys?.groq?.configured}
+                      onClick={() => handleTestGroqKey()}
+                    >
+                      {testingGroqKey ? 'Đang kiểm tra...' : 'Test Groq Key đang dùng'}
+                    </WaterRippleButton>
+                    {providerKeys?.groq?.source === 'admin' && (
+                      <button
+                        type="button"
+                        onClick={handleClearGroqKey}
+                        className="px-3 py-1.5 rounded-xl border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 text-xs font-semibold hover:bg-rose-100 cursor-pointer"
+                      >
+                        Gỡ Groq Key Admin
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="glass-panel-subtle rounded-2xl p-4 text-xs grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <p className="text-slate-500 dark:text-slate-400">Trạng thái hiện tại</p>
+                    <p
+                      className={`font-semibold mt-0.5 ${
+                        providerKeys?.groq?.configured
+                          ? 'text-emerald-700 dark:text-emerald-400'
+                          : 'text-amber-700 dark:text-amber-400'
+                      }`}
+                    >
+                      {providerKeys?.groq?.configured
+                        ? providerKeys.groq.source === 'admin'
+                          ? 'Đang dùng Groq Key của Quản trị viên'
+                          : 'Đang dùng biến GROQ_API_KEY của máy chủ'
+                        : 'Chưa cấu hình Groq Key'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 dark:text-slate-400">Mã nhận diện (đã che)</p>
+                    <p className="font-mono font-semibold mt-0.5">
+                      {providerKeys?.groq?.maskedKey || '—'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 dark:text-slate-400">Kiểm tra gần nhất</p>
+                    <p className="font-semibold mt-0.5">
+                      {providerKeys?.groq?.lastTestStatus || 'Untested'}
+                    </p>
+                  </div>
+                </div>
+
+                {groqTestResult && (
+                  <div
+                    className={`rounded-xl border p-3.5 text-xs space-y-1 ${
+                      groqTestResult.status === 'Connected'
+                        ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+                        : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-200'
+                    }`}
+                  >
+                    <p>
+                      <strong>Kết quả kiểm tra Groq ({groqTestResult.status}):</strong> {groqTestResult.message}
+                    </p>
+                    {groqTestResult.availableModels && groqTestResult.availableModels.length > 0 && (
+                      <p className="text-[11px] opacity-85 font-mono">
+                        Model văn bản khả dụng trên key này: {groqTestResult.availableModels.slice(0, 6).join(', ')}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <form onSubmit={handleSaveGroqKey} className="space-y-4 pt-2 border-t border-sky-200/60 dark:border-slate-700/70">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Tên gợi nhớ Groq Key (tùy chọn)
+                      </label>
+                      <input
+                        type="text"
+                        value={groqKeyLabel}
+                        onChange={(e) => setGroqKeyLabel(e.target.value)}
+                        placeholder="Ví dụ: Groq Free Production"
+                        className={INPUT_CLASS}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Groq API Key mới
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        value={groqRawKey}
+                        onChange={(e) => setGroqRawKey(e.target.value)}
+                        placeholder="Dán Groq API key vào đây (ví dụ gsk_...)"
+                        className={`${INPUT_CLASS} font-mono`}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    <WaterRippleButton type="submit" disabled={savingGroqKey}>
+                      {savingGroqKey ? 'Đang lưu...' : 'Lưu Groq Key & Áp dụng ngay'}
+                    </WaterRippleButton>
+                    <button
+                      type="button"
+                      disabled={testingGroqKey || !groqRawKey.trim()}
+                      onClick={() => handleTestGroqKey(groqRawKey)}
+                      className="px-4 py-2 rounded-xl glass-control text-xs font-semibold disabled:opacity-45 cursor-pointer"
+                    >
+                      Thử nghiệm Groq Key đang nhập
+                    </button>
+                  </div>
+                </form>
+              </GlassSurface>
+
+              {/* CLOUDFLARE WORKERS AI CREDENTIALS (IN-WEB SUPER ADMIN) */}
+              <GlassSurface className="rounded-3xl p-6 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                      Cloudflare Workers AI Free (Account ID &amp; API Token — Tầng dự phòng thứ 3)
+                    </h2>
+                    <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                      Lưu mã hóa AES-256-GCM trên Cloud Firestore (<code className="font-mono">adminSecrets/cloudflare</code>). Dùng trực tiếp trên web mà <strong>không cần cấu hình biến môi trường trên Vercel</strong>.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <WaterRippleButton
+                      size="sm"
+                      variant="secondary"
+                      disabled={testingCfKey || !providerKeys?.cloudflare?.configured}
+                      onClick={() => handleTestCloudflareKey()}
+                    >
+                      {testingCfKey ? 'Đang kiểm tra...' : 'Test Cloudflare đang dùng'}
+                    </WaterRippleButton>
+                    {providerKeys?.cloudflare?.source === 'admin' && (
+                      <button
+                        type="button"
+                        onClick={handleClearCloudflareKey}
+                        className="px-3 py-1.5 rounded-xl border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 text-xs font-semibold hover:bg-rose-100 cursor-pointer"
+                      >
+                        Gỡ Cloudflare Key Admin
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="glass-panel-subtle rounded-2xl p-4 text-xs grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <p className="text-slate-500 dark:text-slate-400">Trạng thái hiện tại</p>
+                    <p
+                      className={`font-semibold mt-0.5 ${
+                        providerKeys?.cloudflare?.configured
+                          ? 'text-emerald-700 dark:text-emerald-400'
+                          : 'text-amber-700 dark:text-amber-400'
+                      }`}
+                    >
+                      {providerKeys?.cloudflare?.configured
+                        ? providerKeys.cloudflare.source === 'admin'
+                          ? 'Đang dùng Cloudflare Key của Quản trị viên'
+                          : 'Đang dùng biến CLOUDFLARE_* của máy chủ'
+                        : 'Chưa cấu hình Cloudflare AI'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 dark:text-slate-400">Account ID / API Token (đã che)</p>
+                    <p className="font-mono font-semibold mt-0.5">
+                      {providerKeys?.cloudflare?.configured
+                        ? `${providerKeys.cloudflare.maskedAccountId || '—'} · ${providerKeys.cloudflare.maskedKey || '—'}`
+                        : '—'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 dark:text-slate-400">Kiểm tra gần nhất</p>
+                    <p className="font-semibold mt-0.5">
+                      {providerKeys?.cloudflare?.lastTestStatus || 'Untested'}
+                    </p>
+                  </div>
+                </div>
+
+                {cfTestResult && (
+                  <div
+                    className={`rounded-xl border p-3.5 text-xs ${
+                      cfTestResult.status === 'Connected'
+                        ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+                        : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-200'
+                    }`}
+                  >
+                    <strong>Kết quả kiểm tra Cloudflare ({cfTestResult.status}):</strong> {cfTestResult.message}
+                  </div>
+                )}
+
+                <form onSubmit={handleSaveCloudflareKey} className="space-y-4 pt-2 border-t border-sky-200/60 dark:border-slate-700/70">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Tên gợi nhớ (tùy chọn)
+                      </label>
+                      <input
+                        type="text"
+                        value={cfKeyLabel}
+                        onChange={(e) => setCfKeyLabel(e.target.value)}
+                        placeholder="Ví dụ: Cloudflare Workers AI"
+                        className={INPUT_CLASS}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Cloudflare Account ID
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={cfAccountIdInput}
+                        onChange={(e) => setCfAccountIdInput(e.target.value)}
+                        placeholder="32 ký tự hex trong Cloudflare Dashboard"
+                        className={`${INPUT_CLASS} font-mono`}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Cloudflare API Token (Workers AI)
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        value={cfApiTokenInput}
+                        onChange={(e) => setCfApiTokenInput(e.target.value)}
+                        placeholder="Dán Workers AI API Token vào đây"
+                        className={`${INPUT_CLASS} font-mono`}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    <WaterRippleButton type="submit" disabled={savingCfKey}>
+                      {savingCfKey ? 'Đang lưu...' : 'Lưu Cloudflare & Áp dụng ngay'}
+                    </WaterRippleButton>
+                    <button
+                      type="button"
+                      disabled={testingCfKey || !cfAccountIdInput.trim() || !cfApiTokenInput.trim()}
+                      onClick={() => handleTestCloudflareKey(cfAccountIdInput, cfApiTokenInput)}
+                      className="px-4 py-2 rounded-xl glass-control text-xs font-semibold disabled:opacity-45 cursor-pointer"
+                    >
+                      Thử nghiệm Cloudflare đang nhập
                     </button>
                   </div>
                 </form>

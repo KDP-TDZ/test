@@ -1,7 +1,13 @@
 import { extractJsonStringFromModelOutput } from './groqProvider.js';
+import { resolveActiveCloudflareCredentials } from './singleKeyService.js';
 
 export const CF_RESCUE_MODEL_STRONG = 'cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 export const CF_RESCUE_MODEL_FAST = 'cf:@cf/meta/llama-3.1-8b-instruct-fast';
+
+const CF_FALLBACK_ON_404: Record<string, string> = {
+  '@cf/meta/llama-3.1-8b-instruct-fast': '@cf/meta/llama-3.1-8b-instruct-fp8-fast',
+  '@cf/meta/llama-3.1-8b-instruct-fp8-fast': '@cf/meta/llama-3.1-8b-instruct-fast',
+};
 
 export function isCloudflareModelId(modelId: string): boolean {
   return modelId.trim().toLowerCase().startsWith('cf:');
@@ -13,10 +19,7 @@ export function stripCloudflarePrefix(modelId: string): string {
 }
 
 export function getCloudflareCredentials(): { accountId: string; apiToken: string } {
-  return {
-    accountId: (process.env.CLOUDFLARE_ACCOUNT_ID || '').trim(),
-    apiToken: (process.env.CLOUDFLARE_API_TOKEN || '').trim(),
-  };
+  return resolveActiveCloudflareCredentials();
 }
 
 export function isCloudflareConfigured(): boolean {
@@ -33,6 +36,63 @@ export interface CloudflareCompletionResult {
   promptTokens: number;
   candidateTokens: number;
   totalTokens: number;
+  resolvedModel?: string;
+}
+
+async function executeCloudflareRequest(params: {
+  accountId: string;
+  apiToken: string;
+  cfModel: string;
+  messages: Array<{ role: 'system' | 'user'; content: string }>;
+  jsonMode?: boolean;
+  maxTokens: number;
+  signal?: AbortSignal;
+}): Promise<{ ok: true; result: CloudflareCompletionResult } | { ok: false; status: number; errText: string }> {
+  const body: Record<string, unknown> = {
+    model: params.cfModel,
+    messages: params.messages,
+    temperature: 0.15,
+    max_tokens: params.maxTokens,
+  };
+
+  if (params.jsonMode) {
+    body.response_format = { type: 'json_object' };
+  }
+
+  const res = await fetch(buildCloudflareChatEndpoint(params.accountId), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${params.apiToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: params.signal,
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    return { ok: false, status: res.status, errText };
+  }
+
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    result?: { response?: string };
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  };
+
+  const rawText = data.choices?.[0]?.message?.content || data.result?.response || '';
+  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
+
+  return {
+    ok: true,
+    result: {
+      text,
+      promptTokens: data.usage?.prompt_tokens || 0,
+      candidateTokens: data.usage?.completion_tokens || 0,
+      totalTokens: data.usage?.total_tokens || 0,
+      resolvedModel: `cf:${params.cfModel}`,
+    },
+  };
 }
 
 export async function callCloudflareChatCompletion(params: {
@@ -43,11 +103,14 @@ export async function callCloudflareChatCompletion(params: {
   jsonSchemaHint?: string;
   maxOutputTokens?: number;
   signal?: AbortSignal;
+  credentialsOverride?: { accountId: string; apiToken: string };
 }): Promise<CloudflareCompletionResult> {
-  const { accountId, apiToken } = getCloudflareCredentials();
+  const activeCreds = params.credentialsOverride || getCloudflareCredentials();
+  const accountId = (activeCreds.accountId || '').trim();
+  const apiToken = (activeCreds.apiToken || '').trim();
   if (!accountId || !apiToken) {
     throw new Error(
-      'CLOUDFLARE_AI_UNCONFIGURED: Biến môi trường CLOUDFLARE_ACCOUNT_ID hoặc CLOUDFLARE_API_TOKEN chưa được thiết lập trên máy chủ.'
+      'CLOUDFLARE_AI_UNCONFIGURED: Chưa cấu hình Cloudflare Account ID / API Token. Quản trị viên có thể thêm trực tiếp trong Quản trị hệ thống → API Key & Bảo mật hoặc biến môi trường.'
     );
   }
 
@@ -71,56 +134,49 @@ export async function callCloudflareChatCompletion(params: {
   }
   messages.push({ role: 'user', content: params.prompt });
 
-  const body: Record<string, unknown> = {
-    model: cfModel,
+  const maxTokens = Math.min(4096, Math.max(128, params.maxOutputTokens || 2048));
+
+  const firstAttempt = await executeCloudflareRequest({
+    accountId,
+    apiToken,
+    cfModel,
     messages,
-    temperature: 0.15,
-    max_tokens: Math.min(4096, Math.max(128, params.maxOutputTokens || 2048)),
-  };
-
-  if (params.jsonMode) {
-    body.response_format = { type: 'json_object' };
-  }
-
-  const res = await fetch(buildCloudflareChatEndpoint(accountId), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
+    jsonMode: params.jsonMode,
+    maxTokens,
     signal: params.signal,
   });
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    if (res.status === 429) {
-      throw new Error(`429 RESOURCE_EXHAUSTED (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
-    }
-    if (res.status === 401 || res.status === 403) {
-      throw new Error(
-        `PERMISSION_DENIED (Cloudflare ${res.status}): CLOUDFLARE_ACCOUNT_ID hoặc CLOUDFLARE_API_TOKEN không hợp lệ.`
-      );
-    }
-    if (res.status === 503 || res.status === 502) {
-      throw new Error(`503 UNAVAILABLE (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
-    }
-    throw new Error(`Cloudflare Workers AI error (HTTP ${res.status}): ${errText.slice(0, 200)}`);
+  if (firstAttempt.ok) {
+    return firstAttempt.result;
   }
 
-  const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    result?: { response?: string };
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-  };
+  const fallbackModel = CF_FALLBACK_ON_404[cfModel];
+  if (firstAttempt.status === 404 && fallbackModel) {
+    const retryAttempt = await executeCloudflareRequest({
+      accountId,
+      apiToken,
+      cfModel: fallbackModel,
+      messages,
+      jsonMode: params.jsonMode,
+      maxTokens,
+      signal: params.signal,
+    });
+    if (retryAttempt.ok) {
+      return retryAttempt.result;
+    }
+  }
 
-  const rawText = data.choices?.[0]?.message?.content || data.result?.response || '';
-  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
-
-  return {
-    text,
-    promptTokens: data.usage?.prompt_tokens || 0,
-    candidateTokens: data.usage?.completion_tokens || 0,
-    totalTokens: data.usage?.total_tokens || 0,
-  };
+  const { status, errText } = firstAttempt;
+  if (status === 429) {
+    throw new Error(`429 RESOURCE_EXHAUSTED (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
+  }
+  if (status === 401 || status === 403) {
+    throw new Error(
+      `PERMISSION_DENIED (Cloudflare ${status}): Cloudflare Account ID hoặc API Token không hợp lệ.`
+    );
+  }
+  if (status === 503 || status === 502) {
+    throw new Error(`503 UNAVAILABLE (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
+  }
+  throw new Error(`Cloudflare Workers AI error (HTTP ${status}): ${errText.slice(0, 200)}`);
 }

@@ -754,6 +754,15 @@ export interface SingleApiKeyStatus {
   updatedBy?: string;
 }
 
+export interface CloudflareKeyStatus extends SingleApiKeyStatus {
+  maskedAccountId: string;
+}
+
+export interface ProviderKeysStatus {
+  groq: SingleApiKeyStatus;
+  cloudflare: CloudflareKeyStatus;
+}
+
 export interface AuditLogEntry {
   logId: string;
   actorUid: string;

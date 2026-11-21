@@ -14,6 +14,7 @@ import {
   SUPER_ADMIN_EMAIL,
 } from './firebaseServer.js';
 import { DEFAULT_TASK_MODELS } from './modelDefaults.js';
+import { normalizeGroqModelId } from './groqProvider.js';
 import { clearAiResponseCache } from './modelRouter.js';
 
 export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
@@ -96,10 +97,18 @@ function mergeTaskModels(
 ): Record<AiTaskType, TaskModelConfig> {
   const merged = {} as Record<AiTaskType, TaskModelConfig>;
   for (const taskKey of Object.keys(DEFAULT_TASK_MODELS) as AiTaskType[]) {
-    merged[taskKey] = {
+    const combined: TaskModelConfig = {
       ...DEFAULT_TASK_MODELS[taskKey],
       ...(base?.[taskKey] || {}),
       ...(patch?.[taskKey] || {}),
+    };
+    merged[taskKey] = {
+      ...combined,
+      defaultModel: normalizeGroqModelId(combined.defaultModel),
+      fallbackModel: normalizeGroqModelId(combined.fallbackModel),
+      oneTimeOverrideModel: combined.oneTimeOverrideModel
+        ? normalizeGroqModelId(combined.oneTimeOverrideModel)
+        : null,
     };
   }
   return merged;

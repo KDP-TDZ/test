@@ -1,7 +1,31 @@
-export const GROQ_API_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
+import crypto from 'node:crypto';
+import { resolveActiveGroqApiKey } from './singleKeyService.js';
 
-export const GROQ_RESCUE_MODEL_STRONG = 'groq:llama-3.3-70b-versatile';
-export const GROQ_RESCUE_MODEL_FAST = 'groq:llama-3.1-8b-instant';
+export const GROQ_API_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
+export const GROQ_MODELS_ENDPOINT = 'https://api.groq.com/openai/v1/models';
+
+export const GROQ_RESCUE_MODEL_STRONG = 'groq:openai/gpt-oss-120b';
+export const GROQ_RESCUE_MODEL_FAST = 'groq:openai/gpt-oss-20b';
+
+export const GROQ_PREFERRED_TEXT_MODELS = [
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'llama-3.3-70b-versatile',
+  'llama-3.1-8b-instant',
+  'qwen/qwen3-32b',
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+] as const;
+
+const LEGACY_GROQ_MODEL_ALIASES: Record<string, string> = {
+  'llama-3.3-70b-versatile': 'openai/gpt-oss-120b',
+  'llama-3.1-8b-instant': 'openai/gpt-oss-20b',
+  'llama3-70b-8192': 'openai/gpt-oss-120b',
+  'llama3-8b-8192': 'openai/gpt-oss-20b',
+  'mixtral-8x7b-32768': 'openai/gpt-oss-120b',
+  'gemma2-9b-it': 'openai/gpt-oss-20b',
+};
+
+const availableModelsCache = new Map<string, { expiresAt: number; models: string[] }>();
 
 export function isGroqModelId(modelId: string): boolean {
   return modelId.trim().toLowerCase().startsWith('groq:');
@@ -12,12 +36,92 @@ export function stripGroqPrefix(modelId: string): string {
   return trimmed.toLowerCase().startsWith('groq:') ? trimmed.slice(5).trim() : trimmed;
 }
 
+/**
+ * Normalizes retired/legacy Groq model IDs (e.g. `groq:llama-3.3-70b-versatile`)
+ * to currently active Groq production models so saved Firestore configs never hit HTTP 404.
+ */
+export function normalizeGroqModelId(modelId: string): string {
+  const trimmed = (modelId || '').trim();
+  if (!isGroqModelId(trimmed)) return trimmed;
+  const rawName = stripGroqPrefix(trimmed);
+  const mapped = LEGACY_GROQ_MODEL_ALIASES[rawName.toLowerCase()];
+  return mapped ? `groq:${mapped}` : `groq:${rawName}`;
+}
+
 export function getGroqApiKey(): string {
-  return (process.env.GROQ_API_KEY || '').trim();
+  return resolveActiveGroqApiKey();
 }
 
 export function isGroqConfigured(): boolean {
   return getGroqApiKey().length > 0;
+}
+
+export function isGroqChatModelId(id: string): boolean {
+  const lower = id.trim().toLowerCase();
+  if (!lower) return false;
+  const excludedTokens = [
+    'whisper',
+    'tts',
+    'playai',
+    'guard',
+    'safeguard',
+    'orpheus',
+    'distil-whisper',
+    'compound',
+  ];
+  return !excludedTokens.some((tok) => lower.includes(tok));
+}
+
+export async function fetchAvailableGroqChatModels(
+  apiKey: string,
+  signal?: AbortSignal
+): Promise<string[]> {
+  const cleanKey = apiKey.trim();
+  if (!cleanKey) return [];
+  const cacheKey = crypto.createHash('sha256').update(cleanKey).digest('hex').slice(0, 16);
+  const cached = availableModelsCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.models;
+  }
+
+  try {
+    const res = await fetch(GROQ_MODELS_ENDPOINT, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${cleanKey}`,
+      },
+      signal,
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { data?: Array<{ id?: string; active?: boolean }> };
+    const models = (data.data || [])
+      .filter((item) => item && typeof item.id === 'string' && item.active !== false)
+      .map((item) => item.id!.trim())
+      .filter((id) => isGroqChatModelId(id));
+
+    availableModelsCache.set(cacheKey, {
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      models,
+    });
+    return models;
+  } catch {
+    return [];
+  }
+}
+
+export function pickBestAvailableGroqModel(
+  availableModels: string[],
+  excludeModel?: string
+): string | null {
+  const excludedLower = (excludeModel || '').trim().toLowerCase();
+  const candidates = availableModels.filter((m) => m.toLowerCase() !== excludedLower);
+  if (candidates.length === 0) return null;
+
+  for (const preferred of GROQ_PREFERRED_TEXT_MODELS) {
+    const found = candidates.find((m) => m.toLowerCase() === preferred.toLowerCase());
+    if (found) return found;
+  }
+  return candidates[0];
 }
 
 export function extractJsonStringFromModelOutput(raw: string): string {
@@ -40,6 +144,62 @@ export interface GroqCompletionResult {
   promptTokens: number;
   candidateTokens: number;
   totalTokens: number;
+  resolvedModel?: string;
+}
+
+async function executeGroqRequest(params: {
+  apiKey: string;
+  groqModel: string;
+  messages: Array<{ role: 'system' | 'user'; content: string }>;
+  jsonMode?: boolean;
+  maxTokens: number;
+  signal?: AbortSignal;
+}): Promise<{ ok: true; result: GroqCompletionResult } | { ok: false; status: number; errText: string }> {
+  const body: Record<string, unknown> = {
+    model: params.groqModel,
+    messages: params.messages,
+    temperature: 0.15,
+    max_tokens: params.maxTokens,
+  };
+
+  if (params.jsonMode) {
+    body.response_format = { type: 'json_object' };
+  }
+
+  const res = await fetch(GROQ_API_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${params.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: params.signal,
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    return { ok: false, status: res.status, errText };
+  }
+
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string; reasoning?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  };
+
+  const msg = data.choices?.[0]?.message;
+  const rawText = msg?.content || (!params.jsonMode ? msg?.reasoning || '' : '');
+  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
+
+  return {
+    ok: true,
+    result: {
+      text,
+      promptTokens: data.usage?.prompt_tokens || 0,
+      candidateTokens: data.usage?.completion_tokens || 0,
+      totalTokens: data.usage?.total_tokens || 0,
+      resolvedModel: `groq:${params.groqModel}`,
+    },
+  };
 }
 
 export async function callGroqChatCompletion(params: {
@@ -50,15 +210,18 @@ export async function callGroqChatCompletion(params: {
   jsonSchemaHint?: string;
   maxOutputTokens?: number;
   signal?: AbortSignal;
+  apiKeyOverride?: string;
+  disableModelAutoFallback?: boolean;
 }): Promise<GroqCompletionResult> {
-  const apiKey = getGroqApiKey();
+  const apiKey = (params.apiKeyOverride || '').trim() || getGroqApiKey();
   if (!apiKey) {
     throw new Error(
-      'GROQ_API_KEY_UNCONFIGURED: Biến môi trường GROQ_API_KEY chưa được thiết lập trên máy chủ.'
+      'GROQ_API_KEY_UNCONFIGURED: Chưa cấu hình Groq API Key. Quản trị viên có thể thêm trực tiếp trong Quản trị hệ thống → API Key & Bảo mật hoặc biến môi trường GROQ_API_KEY.'
     );
   }
 
-  const groqModel = stripGroqPrefix(params.modelId);
+  const normalizedModelId = normalizeGroqModelId(params.modelId);
+  const groqModel = stripGroqPrefix(normalizedModelId);
   const systemParts: string[] = [];
   if (params.systemInstruction) {
     systemParts.push(params.systemInstruction.trim());
@@ -78,53 +241,58 @@ export async function callGroqChatCompletion(params: {
   }
   messages.push({ role: 'user', content: params.prompt });
 
-  const body: Record<string, unknown> = {
-    model: groqModel,
+  // Reasoning-capable models (e.g. openai/gpt-oss-*) need at least 256 tokens so final content isn't truncated
+  const maxTokens = Math.min(8192, Math.max(256, params.maxOutputTokens || 2048));
+
+  const firstAttempt = await executeGroqRequest({
+    apiKey,
+    groqModel,
     messages,
-    temperature: 0.15,
-    max_tokens: Math.min(8192, Math.max(128, params.maxOutputTokens || 2048)),
-  };
-
-  if (params.jsonMode) {
-    body.response_format = { type: 'json_object' };
-  }
-
-  const res = await fetch(GROQ_API_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
+    jsonMode: params.jsonMode,
+    maxTokens,
     signal: params.signal,
   });
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    if (res.status === 429) {
-      throw new Error(`429 RESOURCE_EXHAUSTED (Groq): ${errText.slice(0, 180)}`);
-    }
-    if (res.status === 401 || res.status === 403) {
-      throw new Error(`PERMISSION_DENIED (Groq ${res.status}): Khóa GROQ_API_KEY không hợp lệ.`);
-    }
-    if (res.status === 503 || res.status === 502) {
-      throw new Error(`503 UNAVAILABLE (Groq): ${errText.slice(0, 180)}`);
-    }
-    throw new Error(`Groq API error (HTTP ${res.status}): ${errText.slice(0, 200)}`);
+  if (firstAttempt.ok) {
+    return firstAttempt.result;
   }
 
-  const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-  };
+  // If Groq reports HTTP 404 (model retired or disabled on this org), discover active models on the key and retry once
+  if (firstAttempt.status === 404 && !params.disableModelAutoFallback) {
+    const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
+    const fallbackGroqModel = pickBestAvailableGroqModel(availableModels, groqModel);
+    if (fallbackGroqModel) {
+      const retryAttempt = await executeGroqRequest({
+        apiKey,
+        groqModel: fallbackGroqModel,
+        messages,
+        jsonMode: params.jsonMode,
+        maxTokens,
+        signal: params.signal,
+      });
+      if (retryAttempt.ok) {
+        return retryAttempt.result;
+      }
+    }
+  }
 
-  const rawText = data.choices?.[0]?.message?.content || '';
-  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
-
-  return {
-    text,
-    promptTokens: data.usage?.prompt_tokens || 0,
-    candidateTokens: data.usage?.completion_tokens || 0,
-    totalTokens: data.usage?.total_tokens || 0,
-  };
+  const { status, errText } = firstAttempt;
+  if (status === 429) {
+    throw new Error(`429 RESOURCE_EXHAUSTED (Groq): ${errText.slice(0, 180)}`);
+  }
+  if (status === 401 || status === 403) {
+    throw new Error(`PERMISSION_DENIED (Groq ${status}): Groq API Key không hợp lệ hoặc đã bị thu hồi.`);
+  }
+  if (status === 404) {
+    const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
+    const sampleHint =
+      availableModels.length > 0
+        ? ` Các model khả dụng trên tài khoản Groq của bạn: ${availableModels.slice(0, 4).join(', ')}.`
+        : ' Vui lòng kiểm tra mục Model Access trên Groq Console.';
+    throw new Error(`NOT_FOUND (Groq 404): Model "${groqModel}" không khả dụng trên tài khoản Groq này.${sampleHint}`);
+  }
+  if (status === 503 || status === 502) {
+    throw new Error(`503 UNAVAILABLE (Groq): ${errText.slice(0, 180)}`);
+  }
+  throw new Error(`Groq API error (HTTP ${status}): ${errText.slice(0, 200)}`);
 }

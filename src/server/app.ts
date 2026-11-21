@@ -29,10 +29,17 @@ import {
   updateAuthoritativeAiConfig,
 } from './aiGuardService.js';
 import {
+  clearCloudflareCredentials,
+  clearGroqApiKey,
   clearSingleGeminiApiKey,
+  getProviderKeysStatus,
   getSingleKeyStatus,
   hydrateSingleKeyForSuperAdmin,
+  setCloudflareCredentials,
+  setGroqApiKey,
   setSingleGeminiApiKey,
+  testCloudflareCredentials,
+  testGroqApiKey,
   testSingleGeminiKey,
 } from './singleKeyService.js';
 import {
@@ -897,7 +904,7 @@ export function createApiApp(): express.Express {
   app.get('/api/admin/overview', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
     try {
-      const [config, usageStats, auditLogs, singleKeyStatus] = await Promise.all([
+      const [config, usageStats, auditLogs, singleKeyStatus, providerKeys] = await Promise.all([
         loadAuthoritativeAiConfig(user.idToken),
         getUsageStatistics(user.idToken).catch(() => ({
           today: {
@@ -929,12 +936,32 @@ export function createApiApp(): express.Express {
           hasEnvFallbackKey: false,
           lastTestStatus: 'Untested' as const,
         })),
+        getProviderKeysStatus(user.idToken).catch(() => ({
+          groq: {
+            configured: false,
+            source: 'none' as const,
+            maskedKey: '',
+            label: '',
+            hasEnvFallbackKey: false,
+            lastTestStatus: 'Untested' as const,
+          },
+          cloudflare: {
+            configured: false,
+            source: 'none' as const,
+            maskedAccountId: '',
+            maskedKey: '',
+            label: '',
+            hasEnvFallbackKey: false,
+            lastTestStatus: 'Untested' as const,
+          },
+        })),
       ]);
       res.json({
         config,
         usageStats,
         auditLogs,
         singleKeyStatus,
+        providerKeys,
         groqConfigured: isGroqConfigured(),
         cloudflareConfigured: isCloudflareConfigured(),
         executionLogs: getRecentExecutionLogs(),
@@ -1214,6 +1241,176 @@ export function createApiApp(): express.Express {
       res.json({ singleKeyStatus: result.status });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể xóa Gemini API key.' });
+    }
+  });
+
+  // --- Super Admin Provider Backup Keys (Groq Cloud & Cloudflare Workers AI) ---
+  app.get('/api/admin/provider-keys', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const providerKeys = await getProviderKeysStatus(user.idToken);
+      res.json({
+        providerKeys,
+        groqConfigured: isGroqConfigured(),
+        cloudflareConfigured: isCloudflareConfigured(),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Không tải được trạng thái API key dự phòng.',
+      });
+    }
+  });
+
+  app.post('/api/admin/provider-keys/groq', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const { apiKey, label } = (req.body || {}) as { apiKey?: string; label?: string };
+      if (!apiKey || typeof apiKey !== 'string') {
+        res.status(400).json({ error: 'Vui lòng nhập Groq API Key (bắt đầu bằng gsk_...).' });
+        return;
+      }
+      const result = await setGroqApiKey({
+        rawKey: apiKey,
+        label,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+      });
+      if (!result.ok) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+      res.json({
+        groqStatus: result.status,
+        providerKeys: await getProviderKeysStatus(user.idToken),
+        groqConfigured: isGroqConfigured(),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Không thể lưu Groq API Key.',
+      });
+    }
+  });
+
+  app.post('/api/admin/provider-keys/groq/test', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const { apiKey } = (req.body || {}) as { apiKey?: string };
+      const result = await testGroqApiKey({
+        rawKeyOverride: typeof apiKey === 'string' ? apiKey : undefined,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        status: 'Temporary provider error',
+        message: err instanceof Error ? err.message : 'Không thể kiểm tra Groq API Key.',
+        testedSource: 'none',
+        testedAt: new Date().toISOString(),
+      });
+    }
+  });
+
+  app.delete('/api/admin/provider-keys/groq', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const result = await clearGroqApiKey({
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+      });
+      res.json({
+        groqStatus: result.status,
+        providerKeys: await getProviderKeysStatus(user.idToken),
+        groqConfigured: isGroqConfigured(),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Không thể gỡ Groq API Key.',
+      });
+    }
+  });
+
+  app.post('/api/admin/provider-keys/cloudflare', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const { accountId, apiToken, label } = (req.body || {}) as {
+        accountId?: string;
+        apiToken?: string;
+        label?: string;
+      };
+      if (!accountId || typeof accountId !== 'string' || !apiToken || typeof apiToken !== 'string') {
+        res.status(400).json({ error: 'Vui lòng nhập đầy đủ Cloudflare Account ID và API Token.' });
+        return;
+      }
+      const result = await setCloudflareCredentials({
+        accountId,
+        apiToken,
+        label,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+      });
+      if (!result.ok) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+      res.json({
+        cloudflareStatus: result.status,
+        providerKeys: await getProviderKeysStatus(user.idToken),
+        cloudflareConfigured: isCloudflareConfigured(),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Không thể lưu thông tin Cloudflare Workers AI.',
+      });
+    }
+  });
+
+  app.post('/api/admin/provider-keys/cloudflare/test', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const { accountId, apiToken } = (req.body || {}) as {
+        accountId?: string;
+        apiToken?: string;
+      };
+      const result = await testCloudflareCredentials({
+        accountIdOverride: typeof accountId === 'string' ? accountId : undefined,
+        apiTokenOverride: typeof apiToken === 'string' ? apiToken : undefined,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        status: 'Temporary provider error',
+        message: err instanceof Error ? err.message : 'Không thể kiểm tra Cloudflare Workers AI.',
+        testedSource: 'none',
+        testedAt: new Date().toISOString(),
+      });
+    }
+  });
+
+  app.delete('/api/admin/provider-keys/cloudflare', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const result = await clearCloudflareCredentials({
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+      });
+      res.json({
+        cloudflareStatus: result.status,
+        providerKeys: await getProviderKeysStatus(user.idToken),
+        cloudflareConfigured: isCloudflareConfigured(),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Không thể gỡ thông tin Cloudflare Workers AI.',
+      });
     }
   });
 
