@@ -163,18 +163,20 @@ let cachedAiClient: { apiKey: string; client: GoogleGenAI } | null = null;
 const workingGeminiModelPerKey = new Map<string, string>();
 
 export const GEMINI_FALLBACK_CANDIDATES = [
-  'gemini-3.1-flash-lite',
-  'gemini-4-hydrogen',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
   'gemini-3.1-flash-lite-preview',
   'gemini-3-flash-preview',
+  'gemini-2.0-flash',
+  'gemini-2.5-pro',
+  'gemini-3.1-flash-lite',
+  'gemini-4-hydrogen',
 ] as const;
 
 export function sanitizeGeminiModelId(modelId: string): string {
   const trimmed = (modelId || '').trim();
   if (!trimmed || isGroqModelId(trimmed) || isCloudflareModelId(trimmed)) {
-    return 'gemini-3.1-flash-lite';
+    return 'gemini-2.5-flash';
   }
   return trimmed.startsWith('models/') ? trimmed.slice('models/'.length) : trimmed;
 }
@@ -196,7 +198,14 @@ async function fetchPublicGeminiGenerateModels(apiKey: string, signal?: AbortSig
           m.supportedGenerationMethods.includes('generateContent')
       )
       .map((m) => m.name!.replace(/^models\//, '').trim())
-      .filter((name) => name.startsWith('gemini-') && !name.includes('embedding') && !name.includes('tts') && !name.includes('imagen'));
+      .filter(
+        (name) =>
+          name.startsWith('gemini-') &&
+          !name.includes('embedding') &&
+          !name.includes('tts') &&
+          !name.includes('imagen') &&
+          !name.includes('aqa')
+      );
   } catch {
     return [];
   }
@@ -204,7 +213,7 @@ async function fetchPublicGeminiGenerateModels(apiKey: string, signal?: AbortSig
 
 /**
  * Calls `ai.models.generateContent` with automatic model discovery & fallback when an external or sandbox
- * Gemini API key returns 404 NOT_FOUND on an internal model alias (e.g. `gemini-4-hydrogen` or `gemini-3.1-flash-lite`).
+ * Gemini API key returns 404 NOT_FOUND or 400 INVALID_ARGUMENT on an internal model alias or schema config.
  */
 export async function generateGeminiContentWithFallback(params: {
   ai?: GoogleGenAI;
@@ -213,7 +222,11 @@ export async function generateGeminiContentWithFallback(params: {
   contents: unknown;
   config?: Record<string, unknown>;
   thinkingTier?: 'minimal' | 'low' | 'medium';
-}): Promise<{ text: string; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number }; resolvedModel: string }> {
+}): Promise<{
+  text: string;
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
+  resolvedModel: string;
+}> {
   const apiKey = (params.apiKeyOverride || '').trim() || (await resolveActiveGeminiApiKey());
   const keyHash = crypto.createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
   const ai =
@@ -230,7 +243,8 @@ export async function generateGeminiContentWithFallback(params: {
   const requestedModel = sanitizeGeminiModelId(params.model);
   const cachedWorking = workingGeminiModelPerKey.get(keyHash);
   const candidates: string[] = [];
-  for (const m of [requestedModel, cachedWorking, ...GEMINI_FALLBACK_CANDIDATES]) {
+  // Prioritize cachedWorking first if known for this key, then requestedModel, then public v1beta fallback candidates
+  for (const m of [cachedWorking, requestedModel, ...GEMINI_FALLBACK_CANDIDATES]) {
     if (m && !candidates.includes(m)) {
       candidates.push(m);
     }
@@ -238,9 +252,31 @@ export async function generateGeminiContentWithFallback(params: {
 
   let lastErr: unknown = null;
   const tried = new Set<string>();
+  const triedList: string[] = [];
+  const wantsJson = params.config?.responseMimeType === 'application/json';
+
+  const normalizeOutputText = (rawText: string): string => {
+    if (!wantsJson) return rawText || '';
+    const trimmed = (rawText || '').trim();
+    if (!trimmed) return '';
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fenced && fenced[1]) {
+      const inner = fenced[1].trim();
+      const fb = inner.indexOf('{');
+      const lb = inner.lastIndexOf('}');
+      return fb >= 0 && lb > fb ? inner.slice(fb, lb + 1) : inner;
+    }
+    const fb = trimmed.indexOf('{');
+    const lb = trimmed.lastIndexOf('}');
+    if (fb >= 0 && lb > fb) {
+      return trimmed.slice(fb, lb + 1);
+    }
+    return trimmed;
+  };
 
   const tryCandidate = async (candidateModel: string) => {
     tried.add(candidateModel);
+    triedList.push(candidateModel);
     const baseConfig = { ...(params.config || {}) };
     delete baseConfig.thinkingConfig;
     const tc = params.thinkingTier ? thinkingConfigForModel(candidateModel, params.thinkingTier) : undefined;
@@ -256,27 +292,62 @@ export async function generateGeminiContentWithFallback(params: {
       });
       workingGeminiModelPerKey.set(keyHash, candidateModel);
       return {
-        text: resp.text || '',
+        text: normalizeOutputText(resp.text || ''),
         usageMetadata: resp.usageMetadata,
         resolvedModel: candidateModel,
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // If thinkingConfig caused a 400 error on a preview/flash model, retry once without thinkingConfig
-      if (tc && (msg.includes('thinking') || msg.includes('Thinking') || msg.includes('INVALID_ARGUMENT'))) {
+      const is400OrParamErr =
+        msg.includes('400') ||
+        msg.includes('INVALID_ARGUMENT') ||
+        msg.includes('thinking') ||
+        msg.includes('Thinking') ||
+        msg.includes('response_schema') ||
+        msg.includes('responseSchema');
+
+      // Progressive fallback 1: retry without thinkingConfig
+      if (tc && is400OrParamErr) {
         delete baseConfig.thinkingConfig;
-        const retryResp = await ai.models.generateContent({
+        try {
+          const retryResp = await ai.models.generateContent({
+            model: candidateModel,
+            contents: params.contents as never,
+            config: baseConfig as never,
+          });
+          workingGeminiModelPerKey.set(keyHash, candidateModel);
+          return {
+            text: normalizeOutputText(retryResp.text || ''),
+            usageMetadata: retryResp.usageMetadata,
+            resolvedModel: candidateModel,
+          };
+        } catch (err2) {
+          // Proceed to Progressive fallback 2 if responseSchema was present
+          const msg2 = err2 instanceof Error ? err2.message : String(err2);
+          if (!baseConfig.responseSchema || (!msg2.includes('400') && !msg2.includes('INVALID_ARGUMENT'))) {
+            throw err2;
+          }
+        }
+      }
+
+      // Progressive fallback 2: retry without responseSchema (keeping responseMimeType: 'application/json')
+      if (baseConfig.responseSchema && is400OrParamErr) {
+        const schemaLessConfig = { ...baseConfig };
+        delete schemaLessConfig.thinkingConfig;
+        delete schemaLessConfig.responseSchema;
+        const retryResp2 = await ai.models.generateContent({
           model: candidateModel,
           contents: params.contents as never,
-          config: baseConfig as never,
+          config: schemaLessConfig as never,
         });
         workingGeminiModelPerKey.set(keyHash, candidateModel);
         return {
-          text: retryResp.text || '',
-          usageMetadata: retryResp.usageMetadata,
+          text: normalizeOutputText(retryResp2.text || ''),
+          usageMetadata: retryResp2.usageMetadata,
           resolvedModel: candidateModel,
         };
       }
+
       throw err;
     }
   };
@@ -287,18 +358,19 @@ export async function generateGeminiContentWithFallback(params: {
     } catch (err) {
       lastErr = err;
       const msg = err instanceof Error ? err.message : String(err);
-      const isModelNotFoundOrUnsupported =
-        msg.includes('NOT_FOUND') ||
-        msg.includes('404') ||
-        msg.includes('not found') ||
-        msg.includes('is not supported for generateContent');
-      if (!isModelNotFoundOrUnsupported) {
+      // Only abort immediately if the API key itself is invalid or disabled
+      const isFatalKeyError =
+        msg.includes('API_KEY_INVALID') ||
+        msg.includes('API key not valid') ||
+        msg.includes('SERVICE_DISABLED') ||
+        msg.includes('API has not been used');
+      if (isFatalKeyError) {
         throw err;
       }
     }
   }
 
-  // Last resort: query public /v1beta/models for this key and try the first available flash/pro model
+  // Last resort: query public /v1beta/models for this key and try available flash/pro models
   const signal = params.config?.abortSignal as AbortSignal | undefined;
   const discovered = await fetchPublicGeminiGenerateModels(apiKey, signal);
   for (const disc of discovered) {
@@ -310,7 +382,10 @@ export async function generateGeminiContentWithFallback(params: {
     }
   }
 
-  throw lastErr || new Error(`NOT_FOUND: Không tìm thấy model Gemini khả dụng cho khóa hiện tại.`);
+  const lastMsg = lastErr instanceof Error ? lastErr.message : String(lastErr || '');
+  throw new Error(
+    `NOT_FOUND (Gemini): Đã thử các model [${triedList.join(', ')}] nhưng đều không khả dụng cho khóa hiện tại. Chi tiết: ${lastMsg.slice(0, 220)}`
+  );
 }
 
 export async function createServerAiClient(): Promise<GoogleGenAI> {
@@ -361,12 +436,14 @@ function pickConfiguredProviderModel(
   if (isGroqConfigured()) {
     const groqPrimary = defaultGroqRescueModelForTask(taskType);
     if (groqPrimary !== excludeModel) return groqPrimary;
-    return groqPrimary === GROQ_RESCUE_MODEL_STRONG ? GROQ_RESCUE_MODEL_FAST : 'groq:meta-llama/llama-4-scout-17b-16e-instruct';
+    return groqPrimary === GROQ_RESCUE_MODEL_STRONG
+      ? GROQ_RESCUE_MODEL_FAST
+      : 'groq:meta-llama/llama-4-scout-17b-16e-instruct';
   }
   if (isGeminiConfigured()) {
-    const geminiPrimary = 'gemini-3.1-flash-lite';
+    const geminiPrimary = 'gemini-2.5-flash';
     if (geminiPrimary !== excludeModel) return geminiPrimary;
-    return 'gemini-4-hydrogen';
+    return 'gemini-3.1-flash-lite-preview';
   }
   if (isCloudflareConfigured()) {
     const cfPrimary = defaultCloudflareRescueModelForTask(taskType);
@@ -410,7 +487,7 @@ export function resolveModelForTask(
     taskType,
     modelId,
     fallbackModelId,
-    enableFallback: Boolean(taskCfg.enableFallback),
+    enableFallback: taskCfg.enableFallback !== false,
     usedOverride,
     promptVersion: taskCfg.promptVersion || 'v3.2',
     configVersion: config.configVersion || 1,
@@ -433,7 +510,7 @@ export async function executeRoutedAiTask<T>(params: {
     consumeOneTimeOverride,
     cacheInput,
     bypassCache,
-    allowGroqRescue = false,
+    allowGroqRescue = true,
     groqRescueModelId,
     runWithModel,
   } = params;
@@ -493,7 +570,6 @@ export async function executeRoutedAiTask<T>(params: {
   }
 
   const canFallback =
-    decision.enableFallback &&
     Boolean(decision.fallbackModelId) &&
     decision.fallbackModelId !== decision.modelId &&
     isModelProviderConfigured(decision.fallbackModelId);

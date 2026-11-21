@@ -20,6 +20,8 @@ export const GROQ_PREFERRED_TEXT_MODELS = [
 export const GROQ_VISION_MODELS = [
   'meta-llama/llama-4-scout-17b-16e-instruct',
   'meta-llama/llama-4-maverick-17b-128e-instruct',
+  'llama-3.2-90b-vision-preview',
+  'llama-3.2-11b-vision-preview',
 ] as const;
 
 export function isGroqVisionModelId(modelId: string): boolean {
@@ -90,13 +92,14 @@ export function isGroqChatModelId(id: string): boolean {
 
 export async function fetchAvailableGroqChatModels(
   apiKey: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  forceRefresh = false
 ): Promise<string[]> {
   const cleanKey = apiKey.trim();
   if (!cleanKey) return [];
   const cacheKey = crypto.createHash('sha256').update(cleanKey).digest('hex').slice(0, 16);
   const cached = availableModelsCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
     return cached.models;
   }
 
@@ -108,20 +111,22 @@ export async function fetchAvailableGroqChatModels(
       },
       signal,
     });
-    if (!res.ok) return [];
+    if (!res.ok) return cached?.models || [];
     const data = (await res.json()) as { data?: Array<{ id?: string; active?: boolean }> };
     const models = (data.data || [])
       .filter((item) => item && typeof item.id === 'string' && item.active !== false)
       .map((item) => item.id!.trim())
       .filter((id) => isGroqChatModelId(id));
 
-    availableModelsCache.set(cacheKey, {
-      expiresAt: Date.now() + 10 * 60 * 1000,
-      models,
-    });
+    if (models.length > 0) {
+      availableModelsCache.set(cacheKey, {
+        expiresAt: Date.now() + 10 * 60 * 1000,
+        models,
+      });
+    }
     return models;
   } catch {
-    return [];
+    return cached?.models || [];
   }
 }
 
@@ -143,9 +148,15 @@ export function pickBestAvailableGroqModel(
 export function extractJsonStringFromModelOutput(raw: string): string {
   const trimmed = (raw || '').trim();
   if (!trimmed) return '{}';
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenced && fenced[1]) {
-    return fenced[1].trim();
+    const inner = fenced[1].trim();
+    const fb = inner.indexOf('{');
+    const lb = inner.lastIndexOf('}');
+    if (fb >= 0 && lb > fb) {
+      return inner.slice(fb, lb + 1);
+    }
+    return inner;
   }
   const firstBrace = trimmed.indexOf('{');
   const lastBrace = trimmed.lastIndexOf('}');
@@ -176,6 +187,7 @@ async function executeGroqRequest(params: {
   apiKey: string;
   groqModel: string;
   messages: GroqMessage[];
+  hasImages?: boolean;
   jsonMode?: boolean;
   maxTokens: number;
   signal?: AbortSignal;
@@ -228,13 +240,22 @@ async function executeGroqRequest(params: {
     };
   };
 
-  const primary = await sendOnce(Boolean(params.jsonMode));
-  // Some Groq models (reasoning/vision or strict JSON validator) return HTTP 400 when response_format=json_object is set;
-  // retry without response_format and extract JSON from the text output.
-  if (!primary.ok && primary.status === 400 && params.jsonMode) {
-    const withoutJsonFormat = await sendOnce(false);
-    if (withoutJsonFormat.ok) {
-      return withoutJsonFormat;
+  // For multimodal image requests, some Groq vision models reject response_format: { type: 'json_object' } with HTTP 400
+  const useStrictJsonHeaderFirst = Boolean(params.jsonMode) && !params.hasImages;
+  const primary = await sendOnce(useStrictJsonHeaderFirst);
+  if (!primary.ok && primary.status === 400 && useStrictJsonHeaderFirst) {
+    // Only retry same model without response_format if the 400 error isn't model_not_found / model_decommissioned
+    const lowerErr = primary.errText.toLowerCase();
+    const isDeadModel =
+      lowerErr.includes('model_not_found') ||
+      lowerErr.includes('model_decommissioned') ||
+      lowerErr.includes('does not exist') ||
+      lowerErr.includes('not found');
+    if (!isDeadModel) {
+      const withoutJsonFormat = await sendOnce(false);
+      if (withoutJsonFormat.ok) {
+        return withoutJsonFormat;
+      }
     }
   }
   return primary;
@@ -281,19 +302,23 @@ export async function callGroqChatCompletion(params: {
   }
 
   const messages: GroqMessage[] = [];
-  if (systemParts.length > 0) {
-    messages.push({ role: 'system', content: systemParts.join('\n\n') });
-  }
   if (hasImages) {
+    // Combine system instructions directly into the user text block for vision models
+    // because several Groq vision endpoints reject separate role:'system' messages when image_url parts are present
+    const combinedPrompt =
+      systemParts.length > 0 ? `${systemParts.join('\n\n')}\n\n${params.prompt}` : params.prompt;
     const userContent: GroqMessageContentPart[] = [
       ...params.images!.map((img) => ({
         type: 'image_url' as const,
         image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
       })),
-      { type: 'text', text: params.prompt },
+      { type: 'text', text: combinedPrompt },
     ];
     messages.push({ role: 'user', content: userContent });
   } else {
+    if (systemParts.length > 0) {
+      messages.push({ role: 'system', content: systemParts.join('\n\n') });
+    }
     messages.push({ role: 'user', content: params.prompt });
   }
 
@@ -304,6 +329,7 @@ export async function callGroqChatCompletion(params: {
     apiKey,
     groqModel,
     messages,
+    hasImages,
     jsonMode: params.jsonMode,
     maxTokens,
     signal: params.signal,
@@ -315,10 +341,14 @@ export async function callGroqChatCompletion(params: {
 
   let lastStatus = firstAttempt.status;
   let lastErrText = firstAttempt.errText;
+  const triedModels: string[] = [groqModel];
 
-  // If Groq reports HTTP 404 or 400 (model not enabled on this org or unsupported parameter), discover active models and try multiple candidates
-  if ((firstAttempt.status === 404 || firstAttempt.status === 400) && !params.disableModelAutoFallback) {
-    const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
+  // If Groq reports HTTP 404, 400 (model not enabled / decommissioned / unsupported param), or 503, discover active models and try candidates
+  if (
+    (firstAttempt.status === 404 || firstAttempt.status === 400 || firstAttempt.status === 503) &&
+    !params.disableModelAutoFallback
+  ) {
+    const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal, true);
     const tried = new Set<string>([groqModel.toLowerCase()]);
     const candidatePool: string[] = [];
 
@@ -344,16 +374,19 @@ export async function callGroqChatCompletion(params: {
 
     let attempts = 0;
     for (const candidate of candidatePool) {
-      const lower = candidate.trim().toLowerCase();
+      const cleanCandidate = candidate.trim();
+      const lower = cleanCandidate.toLowerCase();
       if (!lower || tried.has(lower)) continue;
       tried.add(lower);
+      triedModels.push(cleanCandidate);
       attempts += 1;
-      if (attempts > 4) break;
+      if (attempts > 5) break;
 
       const retryAttempt = await executeGroqRequest({
         apiKey,
-        groqModel: candidate.trim(),
+        groqModel: cleanCandidate,
         messages,
+        hasImages,
         jsonMode: params.jsonMode,
         maxTokens,
         signal: params.signal,
@@ -369,21 +402,23 @@ export async function callGroqChatCompletion(params: {
   const status = lastStatus;
   const errText = lastErrText;
   if (status === 429) {
-    throw new Error(`429 RESOURCE_EXHAUSTED (Groq): ${errText.slice(0, 180)}`);
+    throw new Error(`429 RESOURCE_EXHAUSTED (Groq): ${errText.slice(0, 220)}`);
   }
   if (status === 401 || status === 403) {
     throw new Error(`PERMISSION_DENIED (Groq ${status}): Groq API Key không hợp lệ hoặc đã bị thu hồi.`);
   }
-  if (status === 404) {
+  if (status === 404 || (status === 400 && (errText.includes('model_not_found') || errText.includes('model_decommissioned')))) {
     const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
     const sampleHint =
       availableModels.length > 0
-        ? ` Các model khả dụng trên tài khoản Groq của bạn: ${availableModels.slice(0, 4).join(', ')}.`
+        ? ` Các model khả dụng trên tài khoản Groq của bạn: ${availableModels.slice(0, 6).join(', ')}.`
         : ' Vui lòng kiểm tra mục Model Access trên Groq Console.';
-    throw new Error(`NOT_FOUND (Groq 404): Model "${groqModel}" không khả dụng trên tài khoản Groq này.${sampleHint}`);
+    throw new Error(
+      `NOT_FOUND (Groq ${status}): Đã thử các model [${triedModels.join(', ')}] nhưng đều không khả dụng trên tài khoản Groq này.${sampleHint} Chi tiết: ${errText.slice(0, 180)}`
+    );
   }
   if (status === 503 || status === 502) {
-    throw new Error(`503 UNAVAILABLE (Groq): ${errText.slice(0, 180)}`);
+    throw new Error(`503 UNAVAILABLE (Groq): ${errText.slice(0, 220)}`);
   }
-  throw new Error(`Groq API error (HTTP ${status}): ${errText.slice(0, 200)}`);
+  throw new Error(`Groq API error (HTTP ${status} trên model ${triedModels.join(' -> ')}): ${errText.slice(0, 240)}`);
 }

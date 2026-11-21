@@ -55,9 +55,16 @@ import {
   generateGeminiContentWithFallback,
   thinkingConfigForModel,
 } from './modelRouter.js';
-import { callGroqChatCompletion, GROQ_VISION_MODEL, isGroqModelId } from './groqProvider.js';
+import {
+  callGroqChatCompletion,
+  GROQ_VISION_MODEL,
+  isGroqConfigured,
+  isGroqModelId,
+} from './groqProvider.js';
 import {
   callCloudflareChatCompletion,
+  CF_VISION_MODEL,
+  isCloudflareConfigured,
   isCloudflareModelId,
 } from './cloudflareProvider.js';
 import { isGeminiConfigured } from './singleKeyService.js';
@@ -346,92 +353,159 @@ export class DocumentExtractionService {
               '- Nhận diện luôn lớp ("10"|"11"|"12"), môn học THPT, tên chương và tiêu đề bài ghi.',
             ].join('\n');
 
+            const jsonHint =
+              '{"rawText":"...","ocrConfidence":0.95,"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}';
+
+            const runGroqVision = async () => {
+              const resp = await callWithTimeout(
+                (signal) =>
+                  callGroqChatCompletion({
+                    modelId: isGroqModelId(modelId) ? modelId : GROQ_VISION_MODEL,
+                    prompt: ocrPrompt,
+                    images: [{ mimeType: file.mimeType, base64 }],
+                    jsonMode: true,
+                    jsonSchemaHint: jsonHint,
+                    maxOutputTokens: 1536,
+                    signal,
+                  }),
+                OCR_FAST_TIMEOUT_MS
+              );
+              accumulateRawTokens(tokensOut, resp);
+              return JSON.parse((resp.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+            };
+
+            const runCloudflareVision = async () => {
+              const resp = await callWithTimeout(
+                (signal) =>
+                  callCloudflareChatCompletion({
+                    modelId: isCloudflareModelId(modelId) ? modelId : CF_VISION_MODEL,
+                    prompt: ocrPrompt,
+                    images: [{ mimeType: file.mimeType, base64 }],
+                    jsonMode: true,
+                    jsonSchemaHint: jsonHint,
+                    maxOutputTokens: 1536,
+                    signal,
+                  }),
+                OCR_FAST_TIMEOUT_MS
+              );
+              accumulateRawTokens(tokensOut, resp);
+              return JSON.parse((resp.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+            };
+
+            const runGeminiVision = async () => {
+              const ai = await createServerAiClient();
+              const visionModel =
+                isGroqModelId(modelId) || isCloudflareModelId(modelId)
+                  ? 'gemini-2.5-flash'
+                  : modelId;
+              const response = await callWithTimeout(
+                (signal) =>
+                  generateGeminiContentWithFallback({
+                    ai,
+                    model: visionModel,
+                    thinkingTier: 'minimal',
+                    contents: {
+                      parts: [
+                        {
+                          inlineData: {
+                            mimeType: file.mimeType,
+                            data: base64,
+                          },
+                        },
+                        {
+                          text: `${ocrPrompt}\n\nCấu trúc JSON bắt buộc:\n${jsonHint}`,
+                        },
+                      ],
+                    },
+                    config: {
+                      maxOutputTokens: 1536,
+                      abortSignal: signal,
+                      responseMimeType: 'application/json',
+                      responseSchema: {
+                        type: Type.OBJECT,
+                        properties: {
+                          rawText: { type: Type.STRING },
+                          ocrConfidence: { type: Type.NUMBER },
+                          suggestedGrade: { type: Type.STRING, description: '10 | 11 | 12' },
+                          suggestedSubject: {
+                            type: Type.STRING,
+                            description:
+                              'toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac',
+                          },
+                          suggestedChapters: {
+                            type: Type.ARRAY,
+                            items: { type: Type.STRING },
+                          },
+                          suggestedTitle: { type: Type.STRING },
+                        },
+                        required: [
+                          'rawText',
+                          'ocrConfidence',
+                          'suggestedGrade',
+                          'suggestedSubject',
+                          'suggestedChapters',
+                          'suggestedTitle',
+                        ],
+                      },
+                    },
+                  }),
+                OCR_FAST_TIMEOUT_MS
+              );
+              accumulateTokens(tokensOut, response);
+              return JSON.parse((response.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+            };
+
             if (isGroqModelId(modelId)) {
               try {
-                const resp = await callWithTimeout(
-                  (signal) =>
-                    callGroqChatCompletion({
-                      modelId,
-                      prompt: ocrPrompt,
-                      images: [{ mimeType: file.mimeType, base64 }],
-                      jsonMode: true,
-                      jsonSchemaHint:
-                        '{"rawText":"...","ocrConfidence":0.95,"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
-                      maxOutputTokens: 1536,
-                      signal,
-                    }),
-                  OCR_FAST_TIMEOUT_MS
-                );
-                accumulateRawTokens(tokensOut, resp);
-                return JSON.parse((resp.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+                return await runGroqVision();
               } catch (groqVisionErr) {
-                if (!isGeminiConfigured()) {
-                  throw groqVisionErr;
+                if (isGeminiConfigured()) {
+                  try {
+                    return await runGeminiVision();
+                  } catch {
+                    // Continue to Cloudflare if configured
+                  }
                 }
-                // Fall through to Gemini vision OCR if Groq vision model fails and Gemini key is configured
+                if (isCloudflareConfigured()) {
+                  return await runCloudflareVision();
+                }
+                throw groqVisionErr;
               }
             }
 
-            const ai = await createServerAiClient();
-            const visionModel =
-              isGroqModelId(modelId) || isCloudflareModelId(modelId)
-                ? 'gemini-3.1-flash-lite'
-                : modelId;
-            const response = await callWithTimeout(
-              (signal) =>
-                generateGeminiContentWithFallback({
-                  ai,
-                  model: visionModel,
-                  thinkingTier: 'minimal',
-                  contents: {
-                    parts: [
-                      {
-                        inlineData: {
-                          mimeType: file.mimeType,
-                          data: base64,
-                        },
-                      },
-                      {
-                        text: ocrPrompt,
-                      },
-                    ],
-                  },
-                  config: {
-                    maxOutputTokens: 1536,
-                    abortSignal: signal,
-                    responseMimeType: 'application/json',
-                    responseSchema: {
-                      type: Type.OBJECT,
-                      properties: {
-                        rawText: { type: Type.STRING },
-                        ocrConfidence: { type: Type.NUMBER },
-                        suggestedGrade: { type: Type.STRING, description: '10 | 11 | 12' },
-                        suggestedSubject: {
-                          type: Type.STRING,
-                          description:
-                            'toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac',
-                        },
-                        suggestedChapters: {
-                          type: Type.ARRAY,
-                          items: { type: Type.STRING },
-                        },
-                        suggestedTitle: { type: Type.STRING },
-                      },
-                      required: [
-                        'rawText',
-                        'ocrConfidence',
-                        'suggestedGrade',
-                        'suggestedSubject',
-                        'suggestedChapters',
-                        'suggestedTitle',
-                      ],
-                    },
-                  },
-                }),
-              OCR_FAST_TIMEOUT_MS
-            );
-            accumulateTokens(tokensOut, response);
-            return JSON.parse((response.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+            if (isCloudflareModelId(modelId)) {
+              try {
+                return await runCloudflareVision();
+              } catch (cfVisionErr) {
+                if (isGroqConfigured()) {
+                  try {
+                    return await runGroqVision();
+                  } catch {
+                    // Continue to Gemini if configured
+                  }
+                }
+                if (isGeminiConfigured()) {
+                  return await runGeminiVision();
+                }
+                throw cfVisionErr;
+              }
+            }
+
+            try {
+              return await runGeminiVision();
+            } catch (geminiVisionErr) {
+              if (isGroqConfigured()) {
+                try {
+                  return await runGroqVision();
+                } catch {
+                  // Continue to Cloudflare if configured
+                }
+              }
+              if (isCloudflareConfigured()) {
+                return await runCloudflareVision();
+              }
+              throw geminiVisionErr;
+            }
           },
         });
 
@@ -504,7 +578,7 @@ export class DocumentExtractionService {
       const { extractPdfPagesFromBuffer } = await import('./referenceIngestService.js');
       const textPages = await extractPdfPagesFromBuffer(buffer);
       const totalChars = textPages.reduce((sum, p) => sum + p.text.trim().length, 0);
-      if (totalChars >= 80) {
+      if (totalChars >= 12) {
         return textPages.map((p) => {
           const paragraphs = p.text
             .split(/\n+/)
@@ -531,6 +605,12 @@ export class DocumentExtractionService {
       // Fall back to Gemini multimodal PDF OCR for scanned PDFs
     }
 
+    if (!isGeminiConfigured()) {
+      throw new Error(
+        'Tệp PDF này là bản scan ảnh (không chứa văn bản nhúng), trong khi hệ thống hiện chỉ cấu hình Groq/Cloudflare (chưa có Gemini API Key cho OCR tệp PDF scan). Vui lòng tải lên dưới dạng ảnh JPG/PNG hoặc thêm Gemini API Key tại tab Quản trị → API Key & Bảo mật.'
+      );
+    }
+
     const pdfHash = crypto.createHash('sha256').update(buffer).digest('hex');
     const { data: parsed } = await runTaskWithRouter<{
       pages: Array<{
@@ -553,7 +633,7 @@ export class DocumentExtractionService {
         const ai = await createServerAiClient();
         const visionModel =
           isGroqModelId(modelId) || isCloudflareModelId(modelId)
-            ? 'gemini-3.1-flash-lite'
+            ? 'gemini-2.5-flash'
             : modelId;
         const base64 = buffer.toString('base64');
         const response = await callWithTimeout(
@@ -845,7 +925,7 @@ export class KnowledgeAnalysisService {
           runWithModel: async (modelId) => {
             const searchModel =
               isGroqModelId(modelId) || isCloudflareModelId(modelId)
-                ? 'gemini-3.1-flash-lite'
+                ? 'gemini-2.5-flash'
                 : modelId;
             const resp = await callWithTimeout((signal) =>
               ai.models.generateContent({
@@ -2275,18 +2355,19 @@ export class ExamPipelineService {
         const ai = await createServerAiClient();
         const safeModel =
           isGroqModelId(modelId) || isCloudflareModelId(modelId)
-            ? 'gemini-3.1-flash-lite'
+            ? 'gemini-2.5-flash'
             : modelId;
         const contents =
           inlineParts.length > 0
             ? { parts: [...inlineParts, { text: promptText }] }
             : promptText;
         const resp = await callWithTimeout((signal) =>
-          ai.models.generateContent({
+          generateGeminiContentWithFallback({
+            ai,
             model: safeModel,
             contents,
+            thinkingTier: 'minimal',
             config: {
-              thinkingConfig: thinkingConfigForModel(safeModel, 'minimal'),
               maxOutputTokens: 6144,
               abortSignal: signal,
               responseMimeType: 'application/json',
@@ -2716,11 +2797,12 @@ export class TextbookSynthesisService {
         const searchQuery = `Mục lục các chương và bài học sách giáo khoa ${subjectName} lớp ${grade} bộ sách ${textbookSeries} chương trình GDPT 2018`;
         const searchResp = await callWithTimeout(
           (signal) =>
-            ai.models.generateContent({
-              model: 'gemini-3.1-flash-lite',
+            generateGeminiContentWithFallback({
+              ai,
+              model: 'gemini-2.5-flash',
               contents: searchQuery,
+              thinkingTier: 'minimal',
               config: {
-                thinkingConfig: thinkingConfigForModel('gemini-3.1-flash-lite', 'minimal'),
                 maxOutputTokens: 1024,
                 abortSignal: signal,
                 tools: [{ googleSearch: {} }],

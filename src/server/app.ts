@@ -16,6 +16,7 @@ import {
   checkAiRequestGuard,
   decrementConcurrentJob,
   getAuditLogs,
+  getAuthoritativeAiConfigSnapshot,
   getIdempotentResult,
   getUsageStatistics,
   incrementConcurrentJob,
@@ -35,6 +36,7 @@ import {
   getProviderKeysStatus,
   getSingleKeyStatus,
   hydrateSingleKeyForSuperAdmin,
+  isGeminiConfigured,
   setCloudflareCredentials,
   setGroqApiKey,
   setSingleGeminiApiKey,
@@ -60,12 +62,21 @@ import {
   ingestReferenceFromUrl,
 } from './referenceIngestService.js';
 import {
+  callWithTimeout,
+  createServerAiClient,
+  generateGeminiContentWithFallback,
   getRecentExecutionLogs,
   MODEL_CATALOG,
+  resolveModelForTask,
   testModelConnectivity,
 } from './modelRouter.js';
-import { isGroqConfigured } from './groqProvider.js';
-import { isCloudflareConfigured } from './cloudflareProvider.js';
+import {
+  callGroqChatCompletion,
+  fetchAvailableGroqChatModels,
+  getGroqApiKey,
+  isGroqConfigured,
+} from './groqProvider.js';
+import { callCloudflareChatCompletion, isCloudflareConfigured } from './cloudflareProvider.js';
 import {
   SUBJECT_LABELS,
   type AiTaskType,
@@ -183,13 +194,39 @@ async function requireSuperAdmin(req: Request, res: Response, next: NextFunction
   }
 }
 
-function mapGeminiErrorResponse(err: unknown): { status: number; code: string; error: string } {
+function mapGeminiErrorResponse(err: unknown): {
+  status: number;
+  code: string;
+  error: string;
+  technicalDetail: string;
+  debug: {
+    activeModel: string;
+    configuredProviders: { groq: boolean; gemini: boolean; cloudflare: boolean };
+    recentExecutions: ReturnType<typeof getRecentExecutionLogs>;
+    timestamp: string;
+  };
+} {
   const msg = err instanceof Error ? err.message : String(err);
+  const cfg = getAuthoritativeAiConfigSnapshot();
+  const configuredProviders = {
+    groq: isGroqConfigured(),
+    gemini: isGeminiConfigured(),
+    cloudflare: isCloudflareConfigured(),
+  };
+  const debug = {
+    activeModel: cfg.activeModel,
+    configuredProviders,
+    recentExecutions: getRecentExecutionLogs().slice(0, 6),
+    timestamp: new Date().toISOString(),
+  };
+
   if (msg.includes('vượt quá thời gian chờ') || msg.includes('AbortError') || msg.includes('timed out')) {
     return {
       status: 504,
       code: 'AI_TIMEOUT',
-      error: 'AI phản hồi quá 45 giây nên hệ thống đã tự động ngắt để bảo vệ kết nối. Vui lòng thử lại.',
+      error: 'AI phản hồi quá thời gian chờ nên hệ thống đã tự động ngắt để bảo vệ kết nối. Vui lòng thử lại.',
+      technicalDetail: msg,
+      debug,
     };
   }
   if (msg.includes('GROQ_API_KEY_UNCONFIGURED') || msg.includes('Chưa cấu hình Groq API Key')) {
@@ -198,6 +235,8 @@ function mapGeminiErrorResponse(err: unknown): { status: number; code: string; e
       code: 'GROQ_KEY_MISSING',
       error:
         'Hệ thống chưa có Groq API Key. Quản trị viên vui lòng vào Quản trị hệ thống → API Key & Bảo mật để dán Groq API Key (gsk_...).',
+      technicalDetail: msg,
+      debug,
     };
   }
   if (
@@ -209,6 +248,8 @@ function mapGeminiErrorResponse(err: unknown): { status: number; code: string; e
       code: 'CLOUDFLARE_KEY_MISSING',
       error:
         'Hệ thống chưa cấu hình Cloudflare Workers AI. Quản trị viên vui lòng vào Quản trị hệ thống → API Key & Bảo mật để thêm Account ID & Token.',
+      technicalDetail: msg,
+      debug,
     };
   }
   if (msg.includes('GEMINI_API_KEY_UNCONFIGURED')) {
@@ -216,34 +257,52 @@ function mapGeminiErrorResponse(err: unknown): { status: number; code: string; e
       status: 503,
       code: 'GEMINI_KEY_MISSING',
       error:
-        'Chưa cấu hình khóa API cho AI đang chọn (ưu tiên thêm Groq API Key tại Quản trị hệ thống → API Key & Bảo mật).',
+        'Chưa cấu hình khóa API cho AI đang chọn (ưu tiên thêm Groq API Key hoặc Gemini API Key tại Quản trị hệ thống → API Key & Bảo mật).',
+      technicalDetail: msg,
+      debug,
     };
   }
   if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
     return {
       status: 429,
       code: 'PROVIDER_QUOTA_EXCEEDED',
-      error: 'Dịch vụ AI tạm thời đạt giới hạn lưu lượng (429). Vui lòng thử lại sau ít phút.',
+      error: `Dịch vụ AI tạm thời đạt giới hạn lưu lượng (429). Chi tiết: ${msg.slice(0, 180)}`,
+      technicalDetail: msg,
+      debug,
     };
   }
-  if (msg.includes('API_KEY_INVALID') || msg.includes('PERMISSION_DENIED') || msg.includes('403')) {
+  if (msg.includes('API_KEY_INVALID') || msg.includes('PERMISSION_DENIED') || msg.includes('403') || msg.includes('401')) {
     return {
       status: 502,
       code: 'PROVIDER_AUTH_ERROR',
-      error: 'Khóa API AI hiện tại không hợp lệ hoặc không có quyền truy cập model.',
+      error: `Khóa API AI hiện tại không hợp lệ hoặc không có quyền truy cập model. Chi tiết: ${msg.slice(0, 220)}`,
+      technicalDetail: msg,
+      debug,
     };
   }
   if (msg.includes('NOT_FOUND') || msg.includes('404')) {
+    const activeProvidersList =
+      [
+        configuredProviders.groq ? 'Groq' : '',
+        configuredProviders.gemini ? 'Gemini' : '',
+        configuredProviders.cloudflare ? 'Cloudflare' : '',
+      ]
+        .filter(Boolean)
+        .join(', ') || 'Chưa có khóa nào';
     return {
       status: 502,
       code: 'MODEL_UNAVAILABLE',
-      error: 'Model AI được cấu hình hiện không khả dụng.',
+      error: `Không tìm thấy model AI khả dụng trên khóa hiện tại (Provider đã cấu hình: ${activeProvidersList}). Chi tiết kỹ thuật: ${msg.slice(0, 280)}`,
+      technicalDetail: msg,
+      debug,
     };
   }
   return {
     status: 500,
     code: 'AI_PROCESSING_ERROR',
-    error: `Không thể hoàn tất xử lý tài liệu: ${msg.slice(0, 180)}`,
+    error: `Không thể hoàn tất xử lý tài liệu: ${msg.slice(0, 260)}`,
+    technicalDetail: msg,
+    debug,
   };
 }
 
@@ -1051,15 +1110,259 @@ export function createApiApp(): express.Express {
   app.post('/api/admin/models/test', requireSuperAdmin, async (req, res) => {
     try {
       const { modelId } = (req.body || {}) as { modelId?: string };
-      const targetModel = (modelId || 'gemini-4-hydrogen').trim();
+      const targetModel = (modelId || 'gemini-2.5-flash').trim();
       const result = await testModelConnectivity(targetModel);
       res.json(result);
     } catch (err) {
       res.status(500).json({
         ok: false,
-        modelId: String(req.body?.modelId || 'gemini-4-hydrogen'),
+        modelId: String(req.body?.modelId || 'gemini-2.5-flash'),
         latencyMs: 0,
         message: err instanceof Error ? err.message : 'Không thể kiểm tra kết nối model.',
+      });
+    }
+  });
+
+  app.get('/api/admin/debug/snapshot', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const [config, singleKeyStatus, providerKeys] = await Promise.all([
+        loadAuthoritativeAiConfig(user.idToken),
+        getSingleKeyStatus(user.idToken),
+        getProviderKeysStatus(user.idToken),
+      ]);
+      const taskTypes: AiTaskType[] = [
+        'subject_classification',
+        'curriculum_extraction',
+        'claim_validation',
+        'knowledge_analysis',
+        'completeness_analysis',
+        'quiz_blueprint',
+        'quiz_generation',
+        'feedback_classification',
+      ];
+      const taskRouting = taskTypes.map((t) => resolveModelForTask(t, config));
+      res.json({
+        timestamp: new Date().toISOString(),
+        adminEmail: user.email,
+        activeModel: config.activeModel,
+        enabled: config.enabled,
+        configuredProviders: {
+          groq: isGroqConfigured(),
+          gemini: isGeminiConfigured(),
+          cloudflare: isCloudflareConfigured(),
+        },
+        singleKeyStatus,
+        providerKeys,
+        taskRouting,
+        executionLogs: getRecentExecutionLogs().slice(0, 40),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Không thể tải snapshot debug hệ thống.',
+      });
+    }
+  });
+
+  app.post('/api/admin/debug/diagnostics', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const config = await loadAuthoritativeAiConfig(user.idToken);
+      const checks: Array<{
+        provider: 'groq' | 'gemini' | 'cloudflare';
+        mode: 'text' | 'json_schema';
+        configured: boolean;
+        ok: boolean;
+        requestedModel: string;
+        resolvedModel: string;
+        latencyMs: number;
+        detail: string;
+        availableModels?: string[];
+      }> = [];
+
+      // 1. Probe Groq (Text + JSON mode)
+      if (isGroqConfigured()) {
+        const groqKey = getGroqApiKey();
+        const availableGroq = await fetchAvailableGroqChatModels(groqKey, undefined, true);
+        const targetGroq = config.activeModel.startsWith('groq:')
+          ? config.activeModel
+          : 'groq:openai/gpt-oss-120b';
+        const tStart = Date.now();
+        try {
+          const jsonResp = await callWithTimeout(
+            (signal) =>
+              callGroqChatCompletion({
+                modelId: targetGroq,
+                prompt: 'Kiểm tra JSON mode cho hệ thống Kiểm định: trả về {"status":"OK","subject":"vat_ly"}',
+                jsonMode: true,
+                jsonSchemaHint: '{"status":"OK","subject":"vat_ly"}',
+                maxOutputTokens: 256,
+                signal,
+              }),
+            15_000
+          );
+          const parsed = JSON.parse(jsonResp.text || '{}') as { status?: string };
+          checks.push({
+            provider: 'groq',
+            mode: 'json_schema',
+            configured: true,
+            ok: Boolean(parsed && typeof parsed === 'object'),
+            requestedModel: targetGroq,
+            resolvedModel: jsonResp.resolvedModel || targetGroq,
+            latencyMs: Date.now() - tStart,
+            detail: `JSON Mode thành công (${jsonResp.text.slice(0, 90)})`,
+            availableModels: availableGroq.slice(0, 12),
+          });
+        } catch (err) {
+          checks.push({
+            provider: 'groq',
+            mode: 'json_schema',
+            configured: true,
+            ok: false,
+            requestedModel: targetGroq,
+            resolvedModel: targetGroq,
+            latencyMs: Date.now() - tStart,
+            detail: err instanceof Error ? err.message : String(err),
+            availableModels: availableGroq.slice(0, 12),
+          });
+        }
+      } else {
+        checks.push({
+          provider: 'groq',
+          mode: 'json_schema',
+          configured: false,
+          ok: false,
+          requestedModel: 'groq:openai/gpt-oss-120b',
+          resolvedModel: '-',
+          latencyMs: 0,
+          detail: 'Chưa cấu hình Groq API Key.',
+        });
+      }
+
+      // 2. Probe Gemini (Text + JSON mode)
+      if (isGeminiConfigured()) {
+        const targetGemini =
+          !config.activeModel.startsWith('groq:') && !config.activeModel.startsWith('cf:')
+            ? config.activeModel
+            : 'gemini-2.5-flash';
+        const gStart = Date.now();
+        try {
+          const ai = await createServerAiClient();
+          const gemResp = await callWithTimeout(
+            (signal) =>
+              generateGeminiContentWithFallback({
+                ai,
+                model: targetGemini,
+                contents: 'Trả về JSON đúng chuẩn: {"status":"OK","provider":"gemini"}',
+                thinkingTier: 'minimal',
+                config: {
+                  maxOutputTokens: 256,
+                  abortSignal: signal,
+                  responseMimeType: 'application/json',
+                },
+              }),
+            15_000
+          );
+          const parsed = JSON.parse(gemResp.text || '{}') as { status?: string };
+          checks.push({
+            provider: 'gemini',
+            mode: 'json_schema',
+            configured: true,
+            ok: Boolean(parsed && typeof parsed === 'object'),
+            requestedModel: targetGemini,
+            resolvedModel: gemResp.resolvedModel,
+            latencyMs: Date.now() - gStart,
+            detail: `JSON Mode thành công trên ${gemResp.resolvedModel} (${gemResp.text.slice(0, 90)})`,
+          });
+        } catch (err) {
+          checks.push({
+            provider: 'gemini',
+            mode: 'json_schema',
+            configured: true,
+            ok: false,
+            requestedModel: targetGemini,
+            resolvedModel: targetGemini,
+            latencyMs: Date.now() - gStart,
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
+      } else {
+        checks.push({
+          provider: 'gemini',
+          mode: 'json_schema',
+          configured: false,
+          ok: false,
+          requestedModel: 'gemini-2.5-flash',
+          resolvedModel: '-',
+          latencyMs: 0,
+          detail: 'Chưa cấu hình Gemini API Key.',
+        });
+      }
+
+      // 3. Probe Cloudflare (JSON mode)
+      if (isCloudflareConfigured()) {
+        const targetCf = config.activeModel.startsWith('cf:')
+          ? config.activeModel
+          : 'cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+        const cStart = Date.now();
+        try {
+          const cfResp = await callWithTimeout(
+            (signal) =>
+              callCloudflareChatCompletion({
+                modelId: targetCf,
+                prompt: 'Trả về JSON hợp lệ: {"status":"OK","provider":"cloudflare"}',
+                jsonMode: true,
+                jsonSchemaHint: '{"status":"OK","provider":"cloudflare"}',
+                maxOutputTokens: 256,
+                signal,
+              }),
+            15_000
+          );
+          const parsed = JSON.parse(cfResp.text || '{}') as { status?: string };
+          checks.push({
+            provider: 'cloudflare',
+            mode: 'json_schema',
+            configured: true,
+            ok: Boolean(parsed && typeof parsed === 'object'),
+            requestedModel: targetCf,
+            resolvedModel: cfResp.resolvedModel || targetCf,
+            latencyMs: Date.now() - cStart,
+            detail: `JSON Mode thành công (${cfResp.text.slice(0, 90)})`,
+          });
+        } catch (err) {
+          checks.push({
+            provider: 'cloudflare',
+            mode: 'json_schema',
+            configured: true,
+            ok: false,
+            requestedModel: targetCf,
+            resolvedModel: targetCf,
+            latencyMs: Date.now() - cStart,
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
+      } else {
+        checks.push({
+          provider: 'cloudflare',
+          mode: 'json_schema',
+          configured: false,
+          ok: false,
+          requestedModel: 'cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+          resolvedModel: '-',
+          latencyMs: 0,
+          detail: 'Chưa cấu hình Cloudflare Workers AI.',
+        });
+      }
+
+      res.json({
+        ranAt: new Date().toISOString(),
+        activeModel: config.activeModel,
+        checks,
+        executionLogs: getRecentExecutionLogs().slice(0, 20),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Lỗi khi chạy chẩn đoán AI.',
       });
     }
   });
