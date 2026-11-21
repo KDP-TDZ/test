@@ -128,6 +128,24 @@ var init_retrieval = __esm({
 });
 
 // src/core/urlSecurity.ts
+function isPrivateOrLoopbackHost(hostOrIp) {
+  const hostname = hostOrIp.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (!hostname) return true;
+  if (BLOCKED_HOSTNAMES.has(hostname) || hostname.endsWith(".local") || hostname.endsWith(".internal")) {
+    return true;
+  }
+  for (const regex of PRIVATE_IPV4_RANGES) {
+    if (regex.test(hostname)) {
+      return true;
+    }
+  }
+  if (hostname.includes(":")) {
+    if (hostname === "::1" || hostname.startsWith("fe80:") || hostname.startsWith("fc") || hostname.startsWith("fd") || hostname.includes("127.0.0.1") || hostname.includes("169.254.")) {
+      return true;
+    }
+  }
+  return false;
+}
 function validateReferenceUrl(rawUrl) {
   const trimmed = rawUrl.trim();
   if (!trimmed) {
@@ -196,6 +214,26 @@ __export(referenceIngestService_exports, {
   ingestReferenceFromTextOrJson: () => ingestReferenceFromTextOrJson,
   ingestReferenceFromUrl: () => ingestReferenceFromUrl
 });
+import dns from "node:dns";
+async function assertResolvedHostSafe(urlStr) {
+  const parsed = new URL(urlStr);
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
+  if (isPrivateOrLoopbackHost(hostname)) {
+    throw new Error("T\u1EEB ch\u1ED1i k\u1EBFt n\u1ED1i t\u1EDBi \u0111\u1ECBa ch\u1EC9 m\u1EA1ng n\u1ED9i b\u1ED9/loopback.");
+  }
+  try {
+    const records = await dns.promises.lookup(hostname, { all: true });
+    for (const rec of records) {
+      if (isPrivateOrLoopbackHost(rec.address)) {
+        throw new Error("T\u1EEB ch\u1ED1i k\u1EBFt n\u1ED1i: T\xEAn mi\u1EC1n ph\xE2n gi\u1EA3i v\u1EC1 IP n\u1ED9i b\u1ED9 ho\u1EB7c loopback (DNS Rebinding guard).");
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("T\u1EEB ch\u1ED1i k\u1EBFt n\u1ED1i")) {
+      throw err;
+    }
+  }
+}
 async function extractPdfPagesFromBuffer(buffer) {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const uint8 = new Uint8Array(buffer);
@@ -237,6 +275,7 @@ async function ingestReferenceFromUrl(params) {
   let currentUrl = check.normalizedUrl;
   let response = null;
   for (let hops = 0; hops < 4; hops++) {
+    await assertResolvedHostSafe(currentUrl);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2e4);
     try {
@@ -482,7 +521,11 @@ function loadFirebaseConfig() {
   };
 }
 var firebaseConfig = loadFirebaseConfig();
-var DEFAULT_SUPER_ADMIN_EMAILS = ["tuankhang2011pm@gmail.com", "tuankhangnek@gmail.com"];
+var DEFAULT_SUPER_ADMIN_EMAILS = [
+  "tuankhang2011pm@gmail.com",
+  "tuankhangnek@gmail.com",
+  "honghainhi2k14@gmail.com"
+];
 var PROTECTED_SUPER_ADMIN_EMAILS = new Set(
   DEFAULT_SUPER_ADMIN_EMAILS.map((e) => e.trim().toLowerCase())
 );
@@ -782,37 +825,55 @@ import crypto4 from "node:crypto";
 var MODEL_CATALOG = [
   {
     modelId: "gemini-4-hydrogen",
-    displayName: "Gemini 4 Hydrogen",
+    displayName: "Gemini 4 Hydrogen (Google Free)",
     provider: "gemini",
     tier: "free",
-    strengths: "Suy lu\u1EADn s\xE2u, ki\u1EC3m \u0111\u1ECBnh tri th\u1EE9c \u0111a ngu\u1ED3n, OCR c\xF4ng th\u1EE9c & ch\u1EEF vi\u1EBFt tay ph\u1EE9c t\u1EA1p.",
+    strengths: "\u01AFu ti\xEAn s\u1ED1 1 cho OCR \u1EA3nh/PDF c\xF4ng th\u1EE9c vi\u1EBFt tay ph\u1EE9c t\u1EA1p & ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c chu\u1EA9n SGK.",
     supportsMultimodal: true,
     supportsGoogleSearch: true
   },
   {
     modelId: "gemini-3.1-flash-lite",
-    displayName: "Gemini 3.1 Flash Lite",
+    displayName: "Gemini 3.1 Flash Lite (Google Free)",
     provider: "gemini",
     tier: "free",
-    strengths: "T\u1ED1c \u0111\u1ED9 r\u1EA5t nhanh, ti\u1EBFt ki\u1EC7m token cho ph\xE2n lo\u1EA1i m\xF4n, ki\u1EC3m tra c\u1EA5u tr\xFAc, flashcard & ph\u1EA3n h\u1ED3i.",
+    strengths: "T\u1ED1c \u0111\u1ED9 r\u1EA5t nhanh, h\u1EA1n m\u1EE9c RPM cao cho ph\xE2n lo\u1EA1i m\xF4n, ki\u1EC3m tra c\u1EA5u tr\xFAc, flashcard & ph\u1EA3n h\u1ED3i.",
     supportsMultimodal: true,
     supportsGoogleSearch: true
   },
   {
     modelId: "groq:llama-3.3-70b-versatile",
-    displayName: "Groq \xB7 Llama 3.3 70B (Free)",
+    displayName: "Groq \xB7 Llama 3.3 70B (Groq Cloud Free)",
     provider: "groq",
     tier: "free",
-    strengths: "Mi\u1EC5n ph\xED (~1.000 req/ng\xE0y, ph\u1EA3n h\u1ED3i si\xEAu nhanh) \u2014 x\u1EED l\xFD v\u0103n b\u1EA3n/JSON: ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c, t\u1EA1o \u0111\u1EC1 & d\u1EF1 ph\xF2ng khi Gemini \u0111\u1EA1t gi\u1EDBi h\u1EA1n 429.",
+    strengths: "Mi\u1EC5n ph\xED (~1.000 req/ng\xE0y, ~300\u2013500 tok/s) \u2014 c\u1EF1c nhanh cho nh\xF3m 2\u20133 ng\u01B0\u1EDDi d\xF9ng song song khi x\u1EED l\xFD v\u0103n b\u1EA3n/JSON & d\u1EF1 ph\xF2ng Gemini 429.",
     supportsMultimodal: false,
     supportsGoogleSearch: false
   },
   {
     modelId: "groq:llama-3.1-8b-instant",
-    displayName: "Groq \xB7 Llama 3.1 8B Instant (Free)",
+    displayName: "Groq \xB7 Llama 3.1 8B Instant (Groq Cloud Free)",
     provider: "groq",
     tier: "free",
-    strengths: "T\u1ED1c \u0111\u1ED9 c\u1EF1c nhanh (<1s), mi\u1EC5n ph\xED \u2014 t\u1ED1i \u01B0u cho ph\xE2n lo\u1EA1i m\xF4n, flashcard, t\xF3m t\u1EAFt ph\u1EA3n h\u1ED3i & d\u1EF1 ph\xF2ng nh\u1EB9.",
+    strengths: "T\u1ED1c \u0111\u1ED9 t\u1EE9c th\xEC (<0.6s), mi\u1EC5n ph\xED (~14.400 req/ng\xE0y) \u2014 t\u1ED1i \u01B0u cho ph\xE2n lo\u1EA1i m\xF4n, g\u1EE3i \xFD t\xEAn t\u1EC7p, flashcard & d\u1EF1 ph\xF2ng nh\u1EB9.",
+    supportsMultimodal: false,
+    supportsGoogleSearch: false
+  },
+  {
+    modelId: "cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    displayName: "Cloudflare \xB7 Llama 3.3 70B FP8 Fast (Workers AI Free)",
+    provider: "cloudflare",
+    tier: "free",
+    strengths: "Mi\u1EC5n ph\xED (10.000 Neurons/ng\xE0y tr\xEAn h\u1EA1 t\u1EA7ng Edge Cloudflare) \u2014 t\u1EA7ng d\u1EF1 ph\xF2ng & chia t\u1EA3i th\u1EE9 3 cho ch\u1EA5m ki\u1EBFn th\u1EE9c, t\u1EA1o \u0111\u1EC1 tr\u1EAFc nghi\u1EC7m.",
+    supportsMultimodal: false,
+    supportsGoogleSearch: false
+  },
+  {
+    modelId: "cf:@cf/meta/llama-3.1-8b-instruct-fast",
+    displayName: "Cloudflare \xB7 Llama 3.1 8B Fast (Workers AI Free)",
+    provider: "cloudflare",
+    tier: "free",
+    strengths: "Mi\u1EC5n ph\xED, ti\xEAu t\u1ED1n c\u1EF1c \xEDt Neuron tr\xEAn Cloudflare Edge \u2014 ph\xF9 h\u1EE3p cho ph\xE2n lo\u1EA1i m\xF4n, th\u1EA9m \u0111\u1ECBnh nhanh & flashcard.",
     supportsMultimodal: false,
     supportsGoogleSearch: false
   }
@@ -967,7 +1028,7 @@ var ENCRYPTED_KEY_FILE = path2.join(DATA_DIR, "single-gemini-key.enc");
 var TMP_ENCRYPTED_KEY_FILE = path2.join(os.tmpdir(), "studycheck-single-gemini-key.enc");
 var FIRESTORE_SECRET_DOC = "adminSecrets/primary";
 function deriveAesKey() {
-  const seed = process.env.KEY_ENCRYPTION_SECRET || `${firebaseConfig.projectId}:${firebaseConfig.apiKey}:studycheck-single-key-v1`;
+  const seed = process.env.KEY_ENCRYPTION_SECRET || process.env.ADMIN_KEY_ENCRYPTION_SECRET || `${firebaseConfig.projectId}:${firebaseConfig.apiKey}:studycheck-single-key-v1`;
   return crypto2.createHash("sha256").update(seed).digest();
 }
 function encryptApiKey(rawKey) {
@@ -1168,6 +1229,12 @@ async function setSingleGeminiApiKey(params) {
     );
   } catch (err) {
     console.warn("Could not persist encrypted key backup to Firestore:", err);
+    if (process.env.VERCEL === "1") {
+      return {
+        ok: false,
+        error: "Kh\xF4ng th\u1EC3 l\u01B0u kh\xF3a m\xE3 h\xF3a l\xEAn Cloud Firestore (adminSecrets/primary). Vui l\xF2ng ki\u1EC3m tra quy\u1EC1n Super Admin ho\u1EB7c k\u1EBFt n\u1ED1i Firestore \u0111\u1EC3 tr\xE1nh m\u1EA5t kh\xF3a khi Serverless cold-start."
+      };
+    }
   }
   await recordAuditLog(
     {
@@ -1442,6 +1509,99 @@ ${params.jsonSchemaHint}`);
   };
 }
 
+// src/server/cloudflareProvider.ts
+var CF_RESCUE_MODEL_STRONG = "cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+var CF_RESCUE_MODEL_FAST = "cf:@cf/meta/llama-3.1-8b-instruct-fast";
+function isCloudflareModelId(modelId) {
+  return modelId.trim().toLowerCase().startsWith("cf:");
+}
+function stripCloudflarePrefix(modelId) {
+  const trimmed = modelId.trim();
+  return trimmed.toLowerCase().startsWith("cf:") ? trimmed.slice(3).trim() : trimmed;
+}
+function getCloudflareCredentials() {
+  return {
+    accountId: (process.env.CLOUDFLARE_ACCOUNT_ID || "").trim(),
+    apiToken: (process.env.CLOUDFLARE_API_TOKEN || "").trim()
+  };
+}
+function isCloudflareConfigured() {
+  const { accountId, apiToken } = getCloudflareCredentials();
+  return accountId.length > 0 && apiToken.length > 0;
+}
+function buildCloudflareChatEndpoint(accountId) {
+  return `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/v1/chat/completions`;
+}
+async function callCloudflareChatCompletion(params) {
+  const { accountId, apiToken } = getCloudflareCredentials();
+  if (!accountId || !apiToken) {
+    throw new Error(
+      "CLOUDFLARE_AI_UNCONFIGURED: Bi\u1EBFn m\xF4i tr\u01B0\u1EDDng CLOUDFLARE_ACCOUNT_ID ho\u1EB7c CLOUDFLARE_API_TOKEN ch\u01B0a \u0111\u01B0\u1EE3c thi\u1EBFt l\u1EADp tr\xEAn m\xE1y ch\u1EE7."
+    );
+  }
+  const cfModel = stripCloudflarePrefix(params.modelId);
+  const systemParts = [];
+  if (params.systemInstruction) {
+    systemParts.push(params.systemInstruction.trim());
+  }
+  if (params.jsonMode) {
+    systemParts.push(
+      "B\u1EAET BU\u1ED8C tr\u1EA3 v\u1EC1 duy nh\u1EA5t 1 JSON object h\u1EE3p l\u1EC7 (kh\xF4ng th\xEAm markdown, kh\xF4ng th\xEAm gi\u1EA3i th\xEDch ngo\xE0i JSON)."
+    );
+    if (params.jsonSchemaHint) {
+      systemParts.push(`C\u1EA5u tr\xFAc JSON b\u1EAFt bu\u1ED9c:
+${params.jsonSchemaHint}`);
+    }
+  }
+  const messages = [];
+  if (systemParts.length > 0) {
+    messages.push({ role: "system", content: systemParts.join("\n\n") });
+  }
+  messages.push({ role: "user", content: params.prompt });
+  const body = {
+    model: cfModel,
+    messages,
+    temperature: 0.15,
+    max_tokens: Math.min(4096, Math.max(128, params.maxOutputTokens || 2048))
+  };
+  if (params.jsonMode) {
+    body.response_format = { type: "json_object" };
+  }
+  const res = await fetch(buildCloudflareChatEndpoint(accountId), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body),
+    signal: params.signal
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    if (res.status === 429) {
+      throw new Error(`429 RESOURCE_EXHAUSTED (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        `PERMISSION_DENIED (Cloudflare ${res.status}): CLOUDFLARE_ACCOUNT_ID ho\u1EB7c CLOUDFLARE_API_TOKEN kh\xF4ng h\u1EE3p l\u1EC7.`
+      );
+    }
+    if (res.status === 503 || res.status === 502) {
+      throw new Error(`503 UNAVAILABLE (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
+    }
+    throw new Error(`Cloudflare Workers AI error (HTTP ${res.status}): ${errText.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  const rawText = data.choices?.[0]?.message?.content || data.result?.response || "";
+  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
+  return {
+    text,
+    promptTokens: data.usage?.prompt_tokens || 0,
+    candidateTokens: data.usage?.completion_tokens || 0,
+    totalTokens: data.usage?.total_tokens || 0
+  };
+}
+
 // src/server/modelRouter.ts
 function defaultGroqRescueModelForTask(taskType) {
   switch (taskType) {
@@ -1452,6 +1612,17 @@ function defaultGroqRescueModelForTask(taskType) {
       return GROQ_RESCUE_MODEL_STRONG;
     default:
       return GROQ_RESCUE_MODEL_FAST;
+  }
+}
+function defaultCloudflareRescueModelForTask(taskType) {
+  switch (taskType) {
+    case "knowledge_analysis":
+    case "completeness_analysis":
+    case "quiz_generation":
+    case "quiz_blueprint":
+      return CF_RESCUE_MODEL_STRONG;
+    default:
+      return CF_RESCUE_MODEL_FAST;
   }
 }
 var aiResponseCache = new BoundedTtlCache(320, 6 * 60 * 60 * 1e3);
@@ -1470,7 +1641,7 @@ function appendExecutionLog(log) {
     executionLogs.length = 120;
   }
 }
-var GEMINI_TIMEOUT_MS = 3e4;
+var GEMINI_TIMEOUT_MS = 22e3;
 async function callWithTimeout(operation, timeoutMs = GEMINI_TIMEOUT_MS) {
   const controller = new AbortController();
   let timer;
@@ -1576,9 +1747,6 @@ async function executeRoutedAiTask(params) {
   const decision = resolveModelForTask(taskType, config, () => {
     overrideConsumed = true;
   });
-  if (overrideConsumed && consumeOneTimeOverride) {
-    await consumeOneTimeOverride(taskType);
-  }
   const cacheKey = cacheInput && !bypassCache ? buildDeterministicCacheKey({
     taskType,
     modelId: decision.modelId,
@@ -1626,8 +1794,11 @@ async function executeRoutedAiTask(params) {
   const executeTask = async () => {
     const start = Date.now();
     try {
-      const primaryRetries = canFallback ? 1 : 2;
+      const primaryRetries = canFallback ? 0 : 1;
       const result = await withExponentialBackoff(() => runWithModel(decision.modelId), primaryRetries);
+      if (overrideConsumed && consumeOneTimeOverride) {
+        await consumeOneTimeOverride(taskType);
+      }
       if (cacheKey) {
         aiResponseCache.set(cacheKey, result);
       }
@@ -1715,6 +1886,38 @@ async function executeRoutedAiTask(params) {
           lastErr = rescueErr;
         }
       }
+      const cfRescueModel = defaultCloudflareRescueModelForTask(taskType);
+      const canCloudflareRescue = allowGroqRescue && isCloudflareConfigured() && !isCloudflareModelId(decision.modelId) && !(canFallback && isCloudflareModelId(decision.fallbackModelId));
+      if (canCloudflareRescue) {
+        try {
+          const cfResult = await withExponentialBackoff(() => runWithModel(cfRescueModel), 1);
+          if (cacheKey) {
+            aiResponseCache.set(cacheKey, cfResult);
+          }
+          appendExecutionLog({
+            executionId: `exec_${Date.now()}_${crypto3.randomBytes(2).toString("hex")}`,
+            taskType,
+            modelId: cfRescueModel,
+            usedFallback: true,
+            usedOverride: decision.usedOverride,
+            promptVersion: decision.promptVersion,
+            configVersion: decision.configVersion,
+            status: "success",
+            durationMs: Date.now() - start,
+            cached: false,
+            timestamp: (/* @__PURE__ */ new Date()).toISOString()
+          });
+          return {
+            data: cfResult,
+            modelId: cfRescueModel,
+            usedFallback: true,
+            usedOverride: decision.usedOverride,
+            cached: false
+          };
+        } catch (cfErr) {
+          lastErr = cfErr;
+        }
+      }
       appendExecutionLog({
         executionId: `exec_${Date.now()}_${crypto3.randomBytes(2).toString("hex")}`,
         taskType,
@@ -1769,7 +1972,33 @@ async function testModelConnectivity(modelId) {
         ok: Boolean(text2),
         modelId,
         latencyMs: Date.now() - start,
-        message: text2 ? `Model ${modelId} (Groq Free) ho\u1EA1t \u0111\u1ED9ng b\xECnh th\u01B0\u1EDDng (${Date.now() - start}ms).` : `Model ${modelId} tr\u1EA3 v\u1EC1 n\u1ED9i dung r\u1ED7ng.`
+        message: text2 ? `Model ${modelId} (Groq Cloud Free) ho\u1EA1t \u0111\u1ED9ng b\xECnh th\u01B0\u1EDDng (${Date.now() - start}ms).` : `Model ${modelId} tr\u1EA3 v\u1EC1 n\u1ED9i dung r\u1ED7ng.`
+      };
+    }
+    if (isCloudflareModelId(modelId)) {
+      if (!isCloudflareConfigured()) {
+        return {
+          ok: false,
+          modelId,
+          latencyMs: Date.now() - start,
+          message: "Ch\u01B0a thi\u1EBFt l\u1EADp CLOUDFLARE_ACCOUNT_ID v\xE0 CLOUDFLARE_API_TOKEN tr\xEAn m\xE1y ch\u1EE7 (Vercel Environment Variables ho\u1EB7c .env)."
+        };
+      }
+      const resp2 = await callWithTimeout(
+        (signal) => callCloudflareChatCompletion({
+          modelId,
+          prompt: "Tr\u1EA3 l\u1EDDi duy nh\u1EA5t 1 t\u1EEB: OK",
+          maxOutputTokens: 32,
+          signal
+        }),
+        15e3
+      );
+      const text2 = (resp2.text || "").trim();
+      return {
+        ok: Boolean(text2),
+        modelId,
+        latencyMs: Date.now() - start,
+        message: text2 ? `Model ${modelId} (Cloudflare Workers AI Free) ho\u1EA1t \u0111\u1ED9ng b\xECnh th\u01B0\u1EDDng (${Date.now() - start}ms).` : `Model ${modelId} tr\u1EA3 v\u1EC1 n\u1ED9i dung r\u1ED7ng.`
       };
     }
     const ai = await createServerAiClient();
@@ -2112,6 +2341,24 @@ function decrementConcurrentJob(uid) {
   const cur = concurrentJobs.get(uid) || 0;
   concurrentJobs.set(uid, Math.max(0, cur - 1));
 }
+function rollbackAiRequestGuard(uid, requestType) {
+  if (requestType === "analysis") {
+    const today = todayDateKey();
+    const userDay = dailyAnalyses.get(uid);
+    if (userDay && userDay.date === today && userDay.count > 0) {
+      dailyAnalyses.set(uid, { date: today, count: userDay.count - 1 });
+    }
+    lastAnalysisTime.delete(uid);
+  }
+  const minW = minuteWindows.get(uid);
+  if (minW && minW.length > 0) {
+    minW.pop();
+  }
+  const hrW = hourWindows.get(uid);
+  if (hrW && hrW.length > 0) {
+    hrW.pop();
+  }
+}
 function getIdempotentResult(key) {
   const hit = idempotencyCache.get(key);
   if (!hit) return null;
@@ -2160,9 +2407,22 @@ function recordUsageEvent(params) {
   if (params.totalTokens) uStat.tokens += params.totalTokens;
   userDailyUsageStore.set(userKey, uStat);
 }
-async function persistUsageSnapshot(idToken, isSuperAdmin) {
-  if (!isSuperAdmin) return;
+async function persistUsageSnapshot(idToken, isSuperAdmin, uid) {
   const date = todayDateKey();
+  if (uid) {
+    const userStat = userDailyUsageStore.get(`${uid}_${date}`);
+    if (userStat) {
+      try {
+        await firestoreRestSet(
+          `users/${uid}/usageDaily/${date}`,
+          userStat,
+          idToken
+        );
+      } catch {
+      }
+    }
+  }
+  if (!isSuperAdmin) return;
   const daily = getOrCreateDailyUsage(date);
   try {
     await firestoreRestSet(`apiUsageDaily/${date}`, daily, idToken);
@@ -2565,6 +2825,21 @@ async function generateJsonWithProvider(params) {
     accumulateRawTokens(params.tokensOut, resp);
     return JSON.parse((resp.text || params.fallbackJson).trim());
   }
+  if (isCloudflareModelId(params.modelId)) {
+    const resp = await callWithTimeout(
+      (signal) => callCloudflareChatCompletion({
+        modelId: params.modelId,
+        prompt: params.prompt,
+        jsonMode: true,
+        jsonSchemaHint: params.groqSchemaHint,
+        maxOutputTokens: params.maxOutputTokens,
+        signal
+      }),
+      params.timeoutMs
+    );
+    accumulateRawTokens(params.tokensOut, resp);
+    return JSON.parse((resp.text || params.fallbackJson).trim());
+  }
   const ai = await createServerAiClient();
   const response = await callWithTimeout(
     (signal) => ai.models.generateContent({
@@ -2587,6 +2862,20 @@ async function generatePlainTextWithProvider(params) {
   if (isGroqModelId(params.modelId)) {
     const resp2 = await callWithTimeout(
       (signal) => callGroqChatCompletion({
+        modelId: params.modelId,
+        prompt: params.prompt,
+        jsonMode: false,
+        maxOutputTokens: params.maxOutputTokens,
+        signal
+      }),
+      params.timeoutMs
+    );
+    accumulateRawTokens(params.tokensOut, resp2);
+    return resp2.text.trim();
+  }
+  if (isCloudflareModelId(params.modelId)) {
+    const resp2 = await callWithTimeout(
+      (signal) => callCloudflareChatCompletion({
         modelId: params.modelId,
         prompt: params.prompt,
         jsonMode: false,
@@ -2643,7 +2932,7 @@ var DocumentExtractionService = class {
         idToken: opts?.idToken,
         cacheInput: { ocrKind: "image", mimeType: file.mimeType, sha256: contentHash },
         runWithModel: async (modelId) => {
-          const visionModel = isGroqModelId(modelId) ? "gemini-4-hydrogen" : modelId;
+          const visionModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-4-hydrogen" : modelId;
           const base64 = file.buffer.toString("base64");
           const response = await callWithTimeout(
             (signal) => ai.models.generateContent({
@@ -2754,7 +3043,7 @@ var DocumentExtractionService = class {
       idToken: opts?.idToken,
       cacheInput: { ocrKind: "pdf_scan", sha256: pdfHash },
       runWithModel: async (modelId) => {
-        const visionModel = isGroqModelId(modelId) ? "gemini-4-hydrogen" : modelId;
+        const visionModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-4-hydrogen" : modelId;
         const base64 = buffer.toString("base64");
         const response = await callWithTimeout(
           (signal) => ai.models.generateContent({
@@ -2970,7 +3259,7 @@ ${h.chunk.content}`
           idToken,
           cacheInput: { webSearchText: fullText.slice(0, 2e3), grade, subject, scope },
           runWithModel: async (modelId) => {
-            const searchModel = isGroqModelId(modelId) ? "gemini-3.1-flash-lite" : modelId;
+            const searchModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-3.1-flash-lite" : modelId;
             const resp = await callWithTimeout(
               (signal) => ai.models.generateContent({
                 model: searchModel,
@@ -3909,37 +4198,42 @@ ${JSON.stringify(question)}`
     if (!first) {
       throw new Error("Vui l\xF2ng ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t t\u1EC7p \u0111\u1EC1 m\u1EABu.");
     }
-    let extractedTextContent = "";
+    const extractedChunks = [];
     const inlineParts = [];
-    if (first.mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
-      const mammothMod = await import("mammoth");
-      const mammothApi = mammothMod.default || mammothMod;
-      const result = await mammothApi.extractRawText({ buffer: first.buffer });
-      extractedTextContent = (result.value || "").trim();
-      if (!extractedTextContent) {
-        throw new Error("File DOCX kh\xF4ng c\xF3 v\u0103n b\u1EA3n \u0111\u1ECDc \u0111\u01B0\u1EE3c.");
-      }
-    } else if (first.mimeType === "application/pdf") {
-      try {
-        const { extractPdfPagesFromBuffer: extractPdfPagesFromBuffer2 } = await Promise.resolve().then(() => (init_referenceIngestService(), referenceIngestService_exports));
-        const textPages = await extractPdfPagesFromBuffer2(first.buffer);
-        const joined = textPages.map((p) => `--- TRANG ${p.pageNumber} ---
-${p.text}`).join("\n\n");
-        if (joined.replace(/\s+/g, "").length >= 80) {
-          extractedTextContent = joined;
+    for (const f of files) {
+      if (f.mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+        const mammothMod = await import("mammoth");
+        const mammothApi = mammothMod.default || mammothMod;
+        const result = await mammothApi.extractRawText({ buffer: f.buffer });
+        const txt = (result.value || "").trim();
+        if (txt) {
+          extractedChunks.push(`=== T\u1EC6P DOCX: ${f.originalName} ===
+${txt}`);
         }
-      } catch {
-      }
-      if (!extractedTextContent) {
-        inlineParts.push({
-          inlineData: {
-            mimeType: "application/pdf",
-            data: first.buffer.toString("base64")
+      } else if (f.mimeType === "application/pdf") {
+        let pdfExtracted = "";
+        try {
+          const { extractPdfPagesFromBuffer: extractPdfPagesFromBuffer2 } = await Promise.resolve().then(() => (init_referenceIngestService(), referenceIngestService_exports));
+          const textPages = await extractPdfPagesFromBuffer2(f.buffer);
+          const joined = textPages.map((p) => `--- TRANG ${p.pageNumber} ---
+${p.text}`).join("\n\n");
+          if (joined.replace(/\s+/g, "").length >= 80) {
+            pdfExtracted = joined;
           }
-        });
-      }
-    } else {
-      for (const f of files) {
+        } catch {
+        }
+        if (pdfExtracted) {
+          extractedChunks.push(`=== T\u1EC6P PDF: ${f.originalName} ===
+${pdfExtracted}`);
+        } else {
+          inlineParts.push({
+            inlineData: {
+              mimeType: "application/pdf",
+              data: f.buffer.toString("base64")
+            }
+          });
+        }
+      } else {
         inlineParts.push({
           inlineData: {
             mimeType: f.mimeType,
@@ -3947,6 +4241,10 @@ ${p.text}`).join("\n\n");
           }
         });
       }
+    }
+    const extractedTextContent = extractedChunks.join("\n\n");
+    if (!extractedTextContent && inlineParts.length === 0) {
+      throw new Error("Kh\xF4ng \u0111\u1ECDc \u0111\u01B0\u1EE3c n\u1ED9i dung v\u0103n b\u1EA3n ho\u1EB7c h\xECnh \u1EA3nh t\u1EEB t\u1EC7p \u0111\u1EC1 m\u1EABu \u0111\xE3 ch\u1ECDn.");
     }
     const allowedFormatsDesc = includeTrueFalse ? "Tr\u1EAFc nghi\u1EC7m 4 l\u1EF1a ch\u1ECDn (abcd), Tr\u1EAFc nghi\u1EC7m \u0110\xFAng/Sai 4 \xFD (true_false) v\xE0 Tr\u1EA3 l\u1EDDi ng\u1EAFn (short_answer). B\u1ECE QUA ph\u1EA7n t\u1EF1 lu\u1EADn d\xE0i." : 'CH\u1EC8 2 d\u1EA1ng: Tr\u1EAFc nghi\u1EC7m 4 l\u1EF1a ch\u1ECDn ABCD (questionType = "abcd") v\xE0 Tr\u1EA3 l\u1EDDi ng\u1EAFn / \u0111i\u1EC1n \u0111\xE1p s\u1ED1 (questionType = "short_answer"). B\u1ECE QUA ph\u1EA7n \u0110\xFAng/Sai v\xE0 T\u1EF1 lu\u1EADn d\xE0i.';
     const promptText = [
@@ -3971,7 +4269,7 @@ ${extractedTextContent.slice(0, 48e3)}` : ""
       idToken,
       bypassCache: true,
       runWithModel: async (modelId) => {
-        const safeModel = inlineParts.length > 0 && isGroqModelId(modelId) ? "gemini-4-hydrogen" : modelId;
+        const safeModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-4-hydrogen" : modelId;
         const contents = inlineParts.length > 0 ? { parts: [...inlineParts, { text: promptText }] } : promptText;
         const resp = await callWithTimeout(
           (signal) => ai.models.generateContent({
@@ -4485,9 +4783,7 @@ async function requireAuth(req, res, next) {
       });
       return;
     }
-    if (authUser.isSuperAdmin) {
-      await hydrateSingleKeyForSuperAdmin(authUser.idToken);
-    }
+    await hydrateSingleKeyForSuperAdmin(authUser.idToken);
     req.authUser = authUser;
     next();
   } catch (err) {
@@ -4617,7 +4913,7 @@ function createApiApp() {
   app.post("/api/auth/session", async (req, res) => {
     try {
       const authUser = await verifyFirebaseRequest(req);
-      if (authUser.isSuperAdmin) {
+      if (authUser.emailVerified) {
         await hydrateSingleKeyForSuperAdmin(authUser.idToken);
       }
       res.json({
@@ -4762,26 +5058,70 @@ function createApiApp() {
       const presetGrade = bodyParams.presetGrade === "11" || bodyParams.presetGrade === "12" ? bodyParams.presetGrade : "10";
       const rawPresetSubject = (bodyParams.presetSubject || "").trim();
       const presetSubject = rawPresetSubject && rawPresetSubject in SUBJECT_LABELS ? rawPresetSubject : "khac";
-      let pages = [];
+      const pages = [];
       const first = uploadedFiles[0];
-      if (first.mimetype === "application/pdf") {
-        pages = await DocumentExtractionService.extractFromPdfBuffer(first.buffer, tokens, {
-          config: guard.config,
-          idToken: user.idToken
-        });
-      } else if (first.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
-        pages = await DocumentExtractionService.extractFromDocxBuffer(first.buffer);
-      } else {
-        pages = await DocumentExtractionService.extractFromImageBuffers(
-          uploadedFiles.map((f) => ({
-            buffer: f.buffer,
-            mimeType: f.mimetype,
-            originalName: f.originalname
-          })),
+      const pendingImages = [];
+      const flushPendingImages = async () => {
+        if (pendingImages.length === 0) return;
+        const batch = pendingImages.splice(0, pendingImages.length);
+        const extractedImgs = await DocumentExtractionService.extractFromImageBuffers(
+          batch,
           tokens,
-          { config: guard.config, idToken: user.idToken, pageOffset }
+          {
+            config: guard.config,
+            idToken: user.idToken,
+            pageOffset: pageOffset + pages.length
+          }
         );
+        pages.push(...extractedImgs);
+      };
+      for (const file of uploadedFiles) {
+        if (file.mimetype === "application/pdf") {
+          await flushPendingImages();
+          const pdfPages = await DocumentExtractionService.extractFromPdfBuffer(file.buffer, tokens, {
+            config: guard.config,
+            idToken: user.idToken
+          });
+          const baseOffset = pageOffset + pages.length;
+          for (let i = 0; i < pdfPages.length; i += 1) {
+            const pageNum = baseOffset + i + 1;
+            const p = pdfPages[i];
+            pages.push({
+              ...p,
+              pageNumber: pageNum,
+              blocks: p.blocks.map((b, bIdx) => ({
+                ...b,
+                blockId: `p${pageNum}_b${bIdx + 1}`,
+                pageNumber: pageNum
+              }))
+            });
+          }
+        } else if (file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+          await flushPendingImages();
+          const docxPages = await DocumentExtractionService.extractFromDocxBuffer(file.buffer);
+          const baseOffset = pageOffset + pages.length;
+          for (let i = 0; i < docxPages.length; i += 1) {
+            const pageNum = baseOffset + i + 1;
+            const p = docxPages[i];
+            pages.push({
+              ...p,
+              pageNumber: pageNum,
+              blocks: p.blocks.map((b, bIdx) => ({
+                ...b,
+                blockId: `p${pageNum}_b${bIdx + 1}`,
+                pageNumber: pageNum
+              }))
+            });
+          }
+        } else {
+          pendingImages.push({
+            buffer: file.buffer,
+            mimeType: file.mimetype,
+            originalName: file.originalname
+          });
+        }
       }
+      await flushPendingImages();
       if (pages.length + pageOffset > guard.config.rateLimitConfig.maximumPagesPerAnalysis) {
         res.status(400).json({
           error: `T\xE0i li\u1EC7u c\xF3 ${pages.length + pageOffset} trang, v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n ${guard.config.rateLimitConfig.maximumPagesPerAnalysis} trang cho m\u1ED7i l\u1EA7n ph\xE2n t\xEDch.`
@@ -4807,7 +5147,7 @@ function createApiApp() {
         candidateTokens: tokens.candidateTokens,
         totalTokens: tokens.totalTokens
       });
-      void persistUsageSnapshot(user.idToken, user.isSuperAdmin);
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.json({ pages, scopeSuggestion, tokenUsage: tokens });
     } catch (err) {
       const mapped = mapGeminiErrorResponse(err);
@@ -4848,8 +5188,16 @@ function createApiApp() {
       return;
     }
     let jobStarted = false;
+    let guardPassed = false;
     const tokens = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
     try {
+      const preCfg = await loadAuthoritativeAiConfig(user.idToken);
+      if (pages.length > preCfg.rateLimitConfig.maximumPagesPerAnalysis) {
+        res.status(400).json({
+          error: `S\u1ED1 trang (${pages.length}) v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n t\u1ED1i \u0111a (${preCfg.rateLimitConfig.maximumPagesPerAnalysis}).`
+        });
+        return;
+      }
       const guard = await checkAiRequestGuard({
         uid: user.uid,
         email: user.email,
@@ -4860,12 +5208,7 @@ function createApiApp() {
         res.status(guard.httpStatus || 503).json({ code: guard.code, error: guard.message });
         return;
       }
-      if (pages.length > guard.config.rateLimitConfig.maximumPagesPerAnalysis) {
-        res.status(400).json({
-          error: `S\u1ED1 trang (${pages.length}) v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n t\u1ED1i \u0111a (${guard.config.rateLimitConfig.maximumPagesPerAnalysis}).`
-        });
-        return;
-      }
+      guardPassed = true;
       incrementConcurrentJob(user.uid);
       jobStarted = true;
       const result = await KnowledgeAnalysisService.runFullVerification({
@@ -4896,9 +5239,12 @@ function createApiApp() {
         candidateTokens: tokens.candidateTokens,
         totalTokens: tokens.totalTokens
       });
-      void persistUsageSnapshot(user.idToken, user.isSuperAdmin);
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.json(payload);
     } catch (err) {
+      if (guardPassed) {
+        rollbackAiRequestGuard(user.uid, "analysis");
+      }
       const mapped = mapGeminiErrorResponse(err);
       recordUsageEvent({
         uid: user.uid,
@@ -4908,6 +5254,7 @@ function createApiApp() {
         providerError: mapped.status >= 500,
         quotaBlocked: mapped.status === 429
       });
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.status(mapped.status).json(mapped);
     } finally {
       if (jobStarted) {
@@ -4983,7 +5330,7 @@ function createApiApp() {
         candidateTokens: tokens.candidateTokens,
         totalTokens: tokens.totalTokens
       });
-      void persistUsageSnapshot(user.idToken, user.isSuperAdmin);
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.json(payload);
     } catch (err) {
       const mapped = mapGeminiErrorResponse(err);
@@ -4995,6 +5342,7 @@ function createApiApp() {
         providerError: mapped.status >= 500,
         quotaBlocked: mapped.status === 429
       });
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.status(mapped.status).json(mapped);
     }
   });
@@ -5025,9 +5373,28 @@ function createApiApp() {
         config: guard.config,
         idToken: user.idToken
       });
+      recordUsageEvent({
+        uid: user.uid,
+        email: user.email,
+        requestType: "quiz",
+        outcome: "success",
+        promptTokens: tokens.promptTokens,
+        candidateTokens: tokens.candidateTokens,
+        totalTokens: tokens.totalTokens
+      });
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.json({ cards, tokenUsage: tokens });
     } catch (err) {
       const mapped = mapGeminiErrorResponse(err);
+      recordUsageEvent({
+        uid: user.uid,
+        email: user.email,
+        requestType: "quiz",
+        outcome: "failed",
+        providerError: mapped.status >= 500,
+        quotaBlocked: mapped.status === 429
+      });
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.status(mapped.status).json(mapped);
     }
   });
@@ -5092,6 +5459,7 @@ function createApiApp() {
         auditLogs,
         singleKeyStatus,
         groqConfigured: isGroqConfigured(),
+        cloudflareConfigured: isCloudflareConfigured(),
         executionLogs: getRecentExecutionLogs(),
         modelCatalog: MODEL_CATALOG
       });

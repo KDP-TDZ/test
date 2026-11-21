@@ -2,8 +2,9 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
+  --font-serif: "Playfair Display", Georgia, Cambria, "Times New Roman", Times, serif;
   --font-display: "Lexend", ui-sans-serif, system-ui, sans-serif;
-  --font-sans: "Be Vietnam Pro", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", "Be Vietnam Pro", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Be Vietnam Pro", ui-sans-serif, system-ui, sans-serif;
 }
 
