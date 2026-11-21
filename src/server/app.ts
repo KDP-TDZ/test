@@ -271,15 +271,6 @@ function mapGeminiErrorResponse(err: unknown): {
       debug,
     };
   }
-  if (msg.includes('API_KEY_INVALID') || msg.includes('PERMISSION_DENIED') || msg.includes('403') || msg.includes('401')) {
-    return {
-      status: 502,
-      code: 'PROVIDER_AUTH_ERROR',
-      error: `Khóa API AI hiện tại không hợp lệ hoặc không có quyền truy cập model. Chi tiết: ${msg.slice(0, 220)}`,
-      technicalDetail: msg,
-      debug,
-    };
-  }
   if (msg.includes('NOT_FOUND') || msg.includes('404')) {
     const activeProvidersList =
       [
@@ -289,10 +280,23 @@ function mapGeminiErrorResponse(err: unknown): {
       ]
         .filter(Boolean)
         .join(', ') || 'Chưa có khóa nào';
+    const hasSecondaryAuthErr =
+      msg.includes('PERMISSION_DENIED') || msg.includes('API_KEY_INVALID') || msg.includes('401') || msg.includes('403');
     return {
       status: 502,
       code: 'MODEL_UNAVAILABLE',
-      error: `Không tìm thấy model AI khả dụng trên khóa hiện tại (Provider đã cấu hình: ${activeProvidersList}). Chi tiết kỹ thuật: ${msg.slice(0, 280)}`,
+      error: hasSecondaryAuthErr
+        ? `Model AI mặc định không khả dụng và nhà cung cấp dự phòng gặp lỗi xác thực/quyền truy cập (Provider: ${activeProvidersList}). Chi tiết: ${msg.slice(0, 480)}`
+        : `Không tìm thấy model AI khả dụng trên khóa hiện tại (Provider đã cấu hình: ${activeProvidersList}). Chi tiết kỹ thuật: ${msg.slice(0, 480)}`,
+      technicalDetail: msg,
+      debug,
+    };
+  }
+  if (msg.includes('API_KEY_INVALID') || msg.includes('PERMISSION_DENIED') || msg.includes('403') || msg.includes('401')) {
+    return {
+      status: 502,
+      code: 'PROVIDER_AUTH_ERROR',
+      error: `Khóa API AI hiện tại không hợp lệ hoặc không có quyền truy cập model. Chi tiết: ${msg.slice(0, 480)}`,
       technicalDetail: msg,
       debug,
     };

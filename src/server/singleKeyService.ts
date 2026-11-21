@@ -16,6 +16,7 @@ import {
   firestoreRestSet,
 } from './firebaseServer.js';
 import { recordAuditLog } from './aiGuardService.js';
+import { isGroqVisionModelId } from './groqProvider.js';
 
 interface StoredEncryptedSecret {
   secretId: string;
@@ -1135,9 +1136,10 @@ export async function testGroqApiKey(params: {
         'openai/gpt-oss-20b',
         'llama-3.3-70b-versatile',
         'llama-3.1-8b-instant',
+        'qwen/qwen3.8-27b',
         'qwen/qwen3-32b',
-        'meta-llama/llama-4-scout-17b-16e-instruct',
       ];
+      const availableVisionModels = availableModels.filter((m) => isGroqVisionModelId(m));
       const chosenModel =
         preferred.find((p) => availableModels.some((m) => m.toLowerCase() === p)) ||
         availableModels[0] ||
@@ -1160,7 +1162,11 @@ export async function testGroqApiKey(params: {
 
       if (pingRes.ok) {
         resultStatus = 'Connected';
-        resultMessage = `Kết nối Groq Cloud thành công (model ${chosenModel} phản hồi tốt; ${availableModels.length} model văn bản khả dụng).`;
+        const visionStatusText =
+          availableVisionModels.length > 0
+            ? `Vision OCR sẵn sàng: ${availableVisionModels.slice(0, 2).join(', ')}`
+            : 'Chưa thấy model Vision OCR trong danh sách Groq của key này — nên thêm Gemini API Key làm dự phòng đọc ảnh';
+        resultMessage = `Kết nối Groq Cloud thành công (model ${chosenModel} phản hồi tốt; ${availableModels.length} model khả dụng; ${visionStatusText}).`;
       } else {
         const errText = await pingRes.text().catch(() => '');
         if (pingRes.status === 401 || pingRes.status === 403) {

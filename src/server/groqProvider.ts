@@ -6,18 +6,20 @@ export const GROQ_MODELS_ENDPOINT = 'https://api.groq.com/openai/v1/models';
 
 export const GROQ_RESCUE_MODEL_STRONG = 'groq:openai/gpt-oss-120b';
 export const GROQ_RESCUE_MODEL_FAST = 'groq:openai/gpt-oss-20b';
-export const GROQ_VISION_MODEL = 'groq:meta-llama/llama-4-scout-17b-16e-instruct';
+export const GROQ_VISION_MODEL = 'groq:qwen/qwen3.8-27b';
 
 export const GROQ_PREFERRED_TEXT_MODELS = [
   'openai/gpt-oss-120b',
   'openai/gpt-oss-20b',
   'llama-3.3-70b-versatile',
   'llama-3.1-8b-instant',
+  'qwen/qwen3.8-27b',
   'qwen/qwen3-32b',
-  'meta-llama/llama-4-scout-17b-16e-instruct',
 ] as const;
 
 export const GROQ_VISION_MODELS = [
+  'qwen/qwen3.8-27b',
+  'qwen/qwen3.6-27b',
   'meta-llama/llama-4-scout-17b-16e-instruct',
   'meta-llama/llama-4-maverick-17b-128e-instruct',
 ] as const;
@@ -26,6 +28,11 @@ export function isGroqVisionModelId(modelId: string): boolean {
   const raw = stripGroqPrefix(modelId).toLowerCase();
   return (
     GROQ_VISION_MODELS.some((m) => m.toLowerCase() === raw) ||
+    raw.includes('qwen3.8') ||
+    raw.includes('qwen3.6') ||
+    raw.includes('qwen3.5') ||
+    raw.includes('-vl') ||
+    raw.includes('vl-') ||
     raw.includes('llama-4-scout') ||
     raw.includes('llama-4-maverick') ||
     raw.includes('vision') ||
@@ -39,6 +46,8 @@ const LEGACY_GROQ_MODEL_ALIASES: Record<string, string> = {
   'llama3-8b-8192': 'openai/gpt-oss-20b',
   'mixtral-8x7b-32768': 'openai/gpt-oss-120b',
   'gemma2-9b-it': 'openai/gpt-oss-20b',
+  'meta-llama/llama-4-scout-17b-16e-instruct': 'qwen/qwen3.8-27b',
+  'meta-llama/llama-4-maverick-17b-128e-instruct': 'qwen/qwen3.8-27b',
 };
 
 const availableModelsCache = new Map<string, { expiresAt: number; models: string[] }>();
@@ -53,7 +62,7 @@ export function stripGroqPrefix(modelId: string): string {
 }
 
 /**
- * Normalizes retired/legacy Groq model IDs (e.g. `groq:llama3-70b-8192`)
+ * Normalizes retired/legacy Groq model IDs (e.g. `groq:llama3-70b-8192`, `groq:meta-llama/llama-4-scout-17b-16e-instruct`)
  * to currently active Groq production models so saved Firestore configs never hit HTTP 404.
  */
 export function normalizeGroqModelId(modelId: string): string {
@@ -144,7 +153,7 @@ export function pickBestAvailableGroqModel(
 }
 
 export function extractJsonStringFromModelOutput(raw: string): string {
-  const trimmed = (raw || '').trim();
+  const trimmed = (raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   if (!trimmed) return '{}';
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenced && fenced[1]) {
@@ -223,7 +232,7 @@ async function executeGroqRequest(params: {
     };
 
     const msg = data.choices?.[0]?.message;
-    const rawText = msg?.content || msg?.reasoning || '';
+    const rawText = (msg?.content || msg?.reasoning || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
     const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
 
     return {
@@ -427,7 +436,7 @@ export async function callGroqChatCompletion(params: {
         ? ` Các model khả dụng trên tài khoản Groq của bạn: ${availableModels.slice(0, 6).join(', ')}.`
         : ' Vui lòng kiểm tra mục Model Access trên Groq Console.';
     const visionNote = hasImages
-      ? ' Lưu ý: tác vụ đọc ảnh OCR trên Groq yêu cầu model Vision (ví dụ meta-llama/llama-4-scout-17b-16e-instruct).'
+      ? ' Lưu ý: tác vụ đọc ảnh OCR trên Groq yêu cầu model Vision đang hoạt động (ví dụ qwen/qwen3.8-27b).'
       : '';
     throw new Error(
       `NOT_FOUND (Groq ${status}): Đã thử các model [${triedModels.join(', ')}] nhưng đều không khả dụng trên tài khoản Groq này.${visionNote}${sampleHint} Chi tiết: ${errText.slice(0, 180)}`

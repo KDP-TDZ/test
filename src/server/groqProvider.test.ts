@@ -30,6 +30,7 @@ test('isGroqModelId, isCloudflareModelId, and prefix strippers handle groq:*, cf
   assert.equal(isGroqModelId('gemini-4-hydrogen'), false);
   assert.equal(stripGroqPrefix('groq:openai/gpt-oss-120b'), 'openai/gpt-oss-120b');
   assert.equal(stripGroqPrefix('gemini-4-hydrogen'), 'gemini-4-hydrogen');
+  assert.equal(isGroqVisionModelId('groq:qwen/qwen3.8-27b'), true);
   assert.equal(isGroqVisionModelId('groq:meta-llama/llama-4-scout-17b-16e-instruct'), true);
   assert.equal(isGroqVisionModelId('groq:openai/gpt-oss-120b'), false);
 
@@ -46,6 +47,10 @@ test('isGroqModelId, isCloudflareModelId, and prefix strippers handle groq:*, cf
 test('normalizeGroqModelId upgrades retired/legacy Groq IDs and preserves active models', () => {
   assert.equal(normalizeGroqModelId('groq:llama3-70b-8192'), 'groq:openai/gpt-oss-120b');
   assert.equal(normalizeGroqModelId('groq:llama3-8b-8192'), 'groq:openai/gpt-oss-20b');
+  assert.equal(
+    normalizeGroqModelId('groq:meta-llama/llama-4-scout-17b-16e-instruct'),
+    'groq:qwen/qwen3.8-27b'
+  );
   assert.equal(normalizeGroqModelId('groq:llama-3.3-70b-versatile'), 'groq:llama-3.3-70b-versatile');
   assert.equal(normalizeGroqModelId('groq:llama-3.1-8b-instant'), 'groq:llama-3.1-8b-instant');
   assert.equal(normalizeGroqModelId('groq:openai/gpt-oss-120b'), 'groq:openai/gpt-oss-120b');
@@ -81,21 +86,21 @@ test('extractJsonStringFromModelOutput strips markdown fences and surrounding pr
   assert.equal(extractJsonStringFromModelOutput(''), '{}');
 });
 
-test('MODEL_CATALOG prioritizes Groq (including Llama 4 Scout Vision) and unifies all 11 default tasks', () => {
+test('MODEL_CATALOG prioritizes Groq (including Qwen 3.8 27B Vision) and unifies all 11 default tasks', () => {
   assert.ok(MODEL_CATALOG.every((m) => m.tier === 'free'));
   assert.equal(MODEL_CATALOG[0].provider, 'groq');
   const ids = MODEL_CATALOG.map((m) => m.modelId);
   assert.ok(ids.includes('gemini-4-hydrogen'));
   assert.ok(ids.includes('gemini-3.1-flash-lite'));
   assert.ok(ids.includes('groq:openai/gpt-oss-120b'));
-  assert.ok(ids.includes('groq:meta-llama/llama-4-scout-17b-16e-instruct'));
+  assert.ok(ids.includes('groq:qwen/qwen3.8-27b'));
   assert.ok(ids.includes('groq:openai/gpt-oss-20b'));
   assert.ok(ids.includes('cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast'));
   assert.ok(ids.includes('cf:@cf/meta/llama-3.1-8b-instruct-fast'));
 
-  // Groq Llama 4 Scout is multimodal; Cloudflare & GPT-OSS models remain text-only
-  const scout = MODEL_CATALOG.find((m) => m.modelId === 'groq:meta-llama/llama-4-scout-17b-16e-instruct');
-  assert.equal(scout?.supportsMultimodal, true);
+  // Groq Qwen 3.8 27B is multimodal; Cloudflare & GPT-OSS models remain text-only
+  const visionModel = MODEL_CATALOG.find((m) => m.modelId === 'groq:qwen/qwen3.8-27b');
+  assert.equal(visionModel?.supportsMultimodal, true);
   for (const m of MODEL_CATALOG.filter((item) => item.provider === 'cloudflare')) {
     assert.equal(m.supportsMultimodal, false);
   }
@@ -103,7 +108,7 @@ test('MODEL_CATALOG prioritizes Groq (including Llama 4 Scout Vision) and unifie
   // All 11 default tasks share 1 unified Groq primary model and a Groq fallback model (zero Gemini key required)
   for (const cfg of Object.values(DEFAULT_TASK_MODELS)) {
     assert.equal(cfg.defaultModel, 'groq:openai/gpt-oss-120b');
-    assert.equal(cfg.fallbackModel, 'groq:meta-llama/llama-4-scout-17b-16e-instruct');
+    assert.equal(cfg.fallbackModel, 'groq:qwen/qwen3.8-27b');
     assert.equal(cfg.promptVersion, 'v3.2');
     assert.equal(cfg.enableFallback, true);
   }

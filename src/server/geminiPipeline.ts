@@ -102,7 +102,7 @@ function accumulateRawTokens(
 }
 
 function repairJsonLikeText(rawText: string): string {
-  const trimmed = (rawText || '').trim();
+  const trimmed = (rawText || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   if (!trimmed) return '{}';
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   let candidate = fenced && fenced[1] ? fenced[1].trim() : trimmed;
@@ -251,6 +251,7 @@ function parseOcrResponsePayload(rawText: string): ParsedOcrPayload {
 
   // Plain-text fallback when a multimodal vision model returns direct OCR text instead of JSON
   const cleanedPlain = trimmed
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/^```[a-zA-Z]*\s*/i, '')
     .replace(/```\s*$/i, '')
     .trim();
@@ -648,7 +649,7 @@ export class DocumentExtractionService {
               } catch (err) {
                 if (!firstVisionError) firstVisionError = err;
                 const msg = err instanceof Error ? err.message : String(err);
-                errorSummary.push(`${provider.name}: ${msg.slice(0, 180)}`);
+                errorSummary.push(`${provider.name}: ${msg.slice(0, 320)}`);
               }
             }
 

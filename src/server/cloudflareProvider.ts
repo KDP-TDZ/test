@@ -3,22 +3,33 @@ import { resolveActiveCloudflareCredentials } from './singleKeyService.js';
 
 export const CF_RESCUE_MODEL_STRONG = 'cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 export const CF_RESCUE_MODEL_FAST = 'cf:@cf/meta/llama-3.1-8b-instruct-fast';
-export const CF_VISION_MODEL = 'cf:@cf/meta/llama-3.2-11b-vision-instruct';
+export const CF_VISION_MODEL = 'cf:@cf/qwen/qwen3.8-27b';
 export const CF_VISION_MODELS = [
+  '@cf/qwen/qwen3.8-27b',
+  '@cf/mistralai/mistral-small-3.1-24b-instruct',
   '@cf/meta/llama-3.2-11b-vision-instruct',
-  '@cf/llava-hf/llava-1.5-7b-hf',
+  '@cf/meta/llama-4-scout-17b-16e-instruct',
 ] as const;
 
 const CF_FALLBACK_ON_404: Record<string, string> = {
   '@cf/meta/llama-3.1-8b-instruct-fast': '@cf/meta/llama-3.1-8b-instruct-fp8-fast',
   '@cf/meta/llama-3.1-8b-instruct-fp8-fast': '@cf/meta/llama-3.1-8b-instruct-fast',
-  '@cf/meta/llama-3.2-11b-vision-instruct': '@cf/llava-hf/llava-1.5-7b-hf',
-  '@cf/llava-hf/llava-1.5-7b-hf': '@cf/meta/llama-3.2-11b-vision-instruct',
+  '@cf/qwen/qwen3.8-27b': '@cf/mistralai/mistral-small-3.1-24b-instruct',
+  '@cf/mistralai/mistral-small-3.1-24b-instruct': '@cf/meta/llama-3.2-11b-vision-instruct',
+  '@cf/meta/llama-3.2-11b-vision-instruct': '@cf/qwen/qwen3.8-27b',
 };
 
 export function isCloudflareVisionModelId(modelId: string): boolean {
   const raw = stripCloudflarePrefix(modelId).toLowerCase();
-  return raw.includes('vision') || raw.includes('llava');
+  return (
+    raw.includes('vision') ||
+    raw.includes('llava') ||
+    raw.includes('qwen3.8') ||
+    raw.includes('qwen3.6') ||
+    raw.includes('mistral-small-3.1') ||
+    raw.includes('llama-4-scout') ||
+    raw.includes('moondream')
+  );
 }
 
 export function isCloudflareModelId(modelId: string): boolean {
@@ -207,7 +218,9 @@ export async function callCloudflareChatCompletion(params: {
   }
 
   if (
-    (firstAttempt.status === 404 || (hasImages && (firstAttempt.status === 400 || firstAttempt.status === 503))) &&
+    (firstAttempt.status === 404 ||
+      (hasImages &&
+        (firstAttempt.status === 400 || firstAttempt.status === 403 || firstAttempt.status === 503))) &&
     fallbackCandidates.length > 0
   ) {
     for (const candidate of fallbackCandidates) {
@@ -238,7 +251,7 @@ export async function callCloudflareChatCompletion(params: {
   }
   if (lastStatus === 401 || lastStatus === 403) {
     throw new Error(
-      `PERMISSION_DENIED (Cloudflare ${lastStatus}): Cloudflare Account ID hoặc API Token không hợp lệ.`
+      `PERMISSION_DENIED (Cloudflare ${lastStatus}): Cloudflare Account ID hoặc API Token không có quyền Workers AI Run/Edit. Chi tiết: ${lastErrText.slice(0, 140)}`
     );
   }
   if (lastStatus === 404) {

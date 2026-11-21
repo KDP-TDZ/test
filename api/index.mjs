@@ -371,16 +371,16 @@ var init_modelDefaults = __esm({
         displayName: "Groq \xB7 GPT-OSS 120B (\u01AFu ti\xEAn #1 \xB7 Si\xEAu nhanh Free)",
         provider: "groq",
         tier: "free",
-        strengths: "\u01AFu ti\xEAn s\u1ED1 1 cho to\xE0n b\u1ED9 h\u1EC7 th\u1ED1ng (~500 tok/s, mi\u1EC5n ph\xED) \u2014 ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c, t\u1EA1o \u0111\u1EC1, t\u1ED5ng h\u1EE3p SGK; t\u1EF1 g\u1ECDi Llama 4 Scout Vision khi \u0111\u1ECDc \u1EA3nh OCR.",
+        strengths: "\u01AFu ti\xEAn s\u1ED1 1 cho to\xE0n b\u1ED9 h\u1EC7 th\u1ED1ng (~500 tok/s, mi\u1EC5n ph\xED) \u2014 ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c, t\u1EA1o \u0111\u1EC1, t\u1ED5ng h\u1EE3p SGK; t\u1EF1 g\u1ECDi Qwen 3.8 27B Vision khi \u0111\u1ECDc \u1EA3nh OCR.",
         supportsMultimodal: false,
         supportsGoogleSearch: false
       },
       {
-        modelId: "groq:meta-llama/llama-4-scout-17b-16e-instruct",
-        displayName: "Groq \xB7 Llama 4 Scout 17B Vision (\u0110a ph\u01B0\u01A1ng th\u1EE9c Free)",
+        modelId: "groq:qwen/qwen3.8-27b",
+        displayName: "Groq \xB7 Qwen 3.8 27B Vision (\u0110a ph\u01B0\u01A1ng th\u1EE9c Free)",
         provider: "groq",
         tier: "free",
-        strengths: "Model \u0111a ph\u01B0\u01A1ng th\u1EE9c c\u1EE7a Groq (~460 tok/s, mi\u1EC5n ph\xED) \u2014 \u0111\u1ECDc tr\u1EF1c ti\u1EBFp \u1EA3nh ch\u1EE5p v\u1EDF/PDF scan & x\u1EED l\xFD m\u1ECDi t\xE1c v\u1EE5 v\u0103n b\u1EA3n tr\xEAn c\xF9ng 1 AI.",
+        strengths: "Model \u0111a ph\u01B0\u01A1ng th\u1EE9c m\u1EDBi nh\u1EA5t c\u1EE7a Groq (~450 tok/s, mi\u1EC5n ph\xED) \u2014 \u0111\u1ECDc tr\u1EF1c ti\u1EBFp \u1EA3nh ch\u1EE5p v\u1EDF/PDF scan & x\u1EED l\xFD m\u1ECDi t\xE1c v\u1EE5 v\u0103n b\u1EA3n tr\xEAn c\xF9ng 1 AI.",
         supportsMultimodal: true,
         supportsGoogleSearch: false
       },
@@ -431,7 +431,7 @@ var init_modelDefaults = __esm({
       }
     ];
     UNIFIED_PRIMARY_MODEL = "groq:openai/gpt-oss-120b";
-    UNIFIED_FALLBACK_MODEL = "groq:meta-llama/llama-4-scout-17b-16e-instruct";
+    UNIFIED_FALLBACK_MODEL = "groq:qwen/qwen3.8-27b";
     DEFAULT_TASK_MODELS = {
       subject_classification: {
         defaultModel: UNIFIED_PRIMARY_MODEL,
@@ -577,7 +577,7 @@ var init_cache = __esm({
 // src/server/cloudflareProvider.ts
 function isCloudflareVisionModelId(modelId) {
   const raw = stripCloudflarePrefix(modelId).toLowerCase();
-  return raw.includes("vision") || raw.includes("llava");
+  return raw.includes("vision") || raw.includes("llava") || raw.includes("qwen3.8") || raw.includes("qwen3.6") || raw.includes("mistral-small-3.1") || raw.includes("llama-4-scout") || raw.includes("moondream");
 }
 function isCloudflareModelId(modelId) {
   return modelId.trim().toLowerCase().startsWith("cf:");
@@ -702,7 +702,7 @@ ${params.prompt}` : params.prompt;
   } else if (CF_FALLBACK_ON_404[cfModel]) {
     fallbackCandidates.push(CF_FALLBACK_ON_404[cfModel]);
   }
-  if ((firstAttempt.status === 404 || hasImages && (firstAttempt.status === 400 || firstAttempt.status === 503)) && fallbackCandidates.length > 0) {
+  if ((firstAttempt.status === 404 || hasImages && (firstAttempt.status === 400 || firstAttempt.status === 403 || firstAttempt.status === 503)) && fallbackCandidates.length > 0) {
     for (const candidate of fallbackCandidates) {
       if (triedCfModels.has(candidate)) continue;
       triedCfModels.add(candidate);
@@ -730,7 +730,7 @@ ${params.prompt}` : params.prompt;
   }
   if (lastStatus === 401 || lastStatus === 403) {
     throw new Error(
-      `PERMISSION_DENIED (Cloudflare ${lastStatus}): Cloudflare Account ID ho\u1EB7c API Token kh\xF4ng h\u1EE3p l\u1EC7.`
+      `PERMISSION_DENIED (Cloudflare ${lastStatus}): Cloudflare Account ID ho\u1EB7c API Token kh\xF4ng c\xF3 quy\u1EC1n Workers AI Run/Edit. Chi ti\u1EBFt: ${lastErrText.slice(0, 140)}`
     );
   }
   if (lastStatus === 404) {
@@ -750,16 +750,19 @@ var init_cloudflareProvider = __esm({
     init_singleKeyService();
     CF_RESCUE_MODEL_STRONG = "cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast";
     CF_RESCUE_MODEL_FAST = "cf:@cf/meta/llama-3.1-8b-instruct-fast";
-    CF_VISION_MODEL = "cf:@cf/meta/llama-3.2-11b-vision-instruct";
+    CF_VISION_MODEL = "cf:@cf/qwen/qwen3.8-27b";
     CF_VISION_MODELS = [
+      "@cf/qwen/qwen3.8-27b",
+      "@cf/mistralai/mistral-small-3.1-24b-instruct",
       "@cf/meta/llama-3.2-11b-vision-instruct",
-      "@cf/llava-hf/llava-1.5-7b-hf"
+      "@cf/meta/llama-4-scout-17b-16e-instruct"
     ];
     CF_FALLBACK_ON_404 = {
       "@cf/meta/llama-3.1-8b-instruct-fast": "@cf/meta/llama-3.1-8b-instruct-fp8-fast",
       "@cf/meta/llama-3.1-8b-instruct-fp8-fast": "@cf/meta/llama-3.1-8b-instruct-fast",
-      "@cf/meta/llama-3.2-11b-vision-instruct": "@cf/llava-hf/llava-1.5-7b-hf",
-      "@cf/llava-hf/llava-1.5-7b-hf": "@cf/meta/llama-3.2-11b-vision-instruct"
+      "@cf/qwen/qwen3.8-27b": "@cf/mistralai/mistral-small-3.1-24b-instruct",
+      "@cf/mistralai/mistral-small-3.1-24b-instruct": "@cf/meta/llama-3.2-11b-vision-instruct",
+      "@cf/meta/llama-3.2-11b-vision-instruct": "@cf/qwen/qwen3.8-27b"
     };
   }
 });
@@ -1084,7 +1087,7 @@ function pickConfiguredProviderModel(taskType, preferredModel, activeModel, excl
   if (isGroqConfigured()) {
     const groqPrimary = defaultGroqRescueModelForTask(taskType);
     if (groqPrimary !== excludeModel) return groqPrimary;
-    return groqPrimary === GROQ_RESCUE_MODEL_STRONG ? GROQ_RESCUE_MODEL_FAST : "groq:meta-llama/llama-4-scout-17b-16e-instruct";
+    return groqPrimary === GROQ_RESCUE_MODEL_STRONG ? GROQ_RESCUE_MODEL_FAST : GROQ_VISION_MODEL;
   }
   if (isGeminiConfigured()) {
     const geminiPrimary = "gemini-2.5-flash";
@@ -1108,7 +1111,7 @@ function resolveModelForTask(taskType, config, consumeOverride) {
     usedOverride = true;
     consumeOverride?.();
   }
-  let fallbackModelId = (taskCfg.fallbackModel || "groq:meta-llama/llama-4-scout-17b-16e-instruct").trim();
+  let fallbackModelId = (taskCfg.fallbackModel || GROQ_VISION_MODEL).trim();
   if (!isModelProviderConfigured(modelId)) {
     modelId = pickConfiguredProviderModel(taskType, modelId, activeFallbackDefault);
   }
@@ -1386,17 +1389,18 @@ async function testModelConnectivity(modelId) {
   const start = Date.now();
   try {
     if (isGroqModelId(modelId)) {
+      const normalizedTarget = normalizeGroqModelId(modelId);
       if (!isGroqConfigured()) {
         return {
           ok: false,
-          modelId,
+          modelId: normalizedTarget,
           latencyMs: Date.now() - start,
           message: 'Ch\u01B0a c\u1EA5u h\xECnh Groq API Key. Super Admin c\xF3 th\u1EC3 th\xEAm tr\u1EF1c ti\u1EBFp t\u1EA1i tab "API Key & B\u1EA3o m\u1EADt" trong web (kh\xF4ng c\u1EA7n s\u1EEDa bi\u1EBFn m\xF4i tr\u01B0\u1EDDng Vercel).'
         };
       }
       const resp2 = await callWithTimeout(
         (signal) => callGroqChatCompletion({
-          modelId,
+          modelId: normalizedTarget,
           prompt: "Tr\u1EA3 l\u1EDDi duy nh\u1EA5t 1 t\u1EEB: OK",
           maxOutputTokens: 256,
           signal
@@ -1404,12 +1408,14 @@ async function testModelConnectivity(modelId) {
         15e3
       );
       const text2 = (resp2.text || "").trim();
-      const resolvedLabel2 = resp2.resolvedModel && resp2.resolvedModel !== modelId ? `${modelId} \u2192 t\u1EF1 \u0111\u1ED9ng ch\u1EA1y b\u1EB1ng ${resp2.resolvedModel}` : modelId;
+      const effectiveModel = resp2.resolvedModel || normalizedTarget;
+      const resolvedLabel2 = effectiveModel !== modelId ? `${modelId} \u2192 t\u1EF1 \u0111\u1ED9ng ch\u1EA1y b\u1EB1ng ${effectiveModel}` : modelId;
+      const visionHint = isGroqVisionModelId(effectiveModel) ? " (h\u1ED7 tr\u1EE3 tr\u1EF1c ti\u1EBFp OCR \u1EA3nh)" : ` (v\u0103n b\u1EA3n OK; t\xE1c v\u1EE5 OCR \u1EA3nh s\u1EBD d\xF9ng ${GROQ_VISION_MODEL})`;
       return {
         ok: Boolean(text2),
-        modelId: resp2.resolvedModel || modelId,
+        modelId: effectiveModel,
         latencyMs: Date.now() - start,
-        message: text2 ? `Model ${resolvedLabel2} (Groq Cloud Free) ho\u1EA1t \u0111\u1ED9ng b\xECnh th\u01B0\u1EDDng (${Date.now() - start}ms).` : `Model ${modelId} tr\u1EA3 v\u1EC1 n\u1ED9i dung r\u1ED7ng.`
+        message: text2 ? `Model ${resolvedLabel2} (Groq Cloud Free) ho\u1EA1t \u0111\u1ED9ng b\xECnh th\u01B0\u1EDDng (${Date.now() - start}ms)${visionHint}.` : `Model ${modelId} tr\u1EA3 v\u1EC1 n\u1ED9i dung r\u1ED7ng.`
       };
     }
     if (isCloudflareModelId(modelId)) {
@@ -2371,9 +2377,10 @@ async function testGroqApiKey(params) {
         "openai/gpt-oss-20b",
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
-        "qwen/qwen3-32b",
-        "meta-llama/llama-4-scout-17b-16e-instruct"
+        "qwen/qwen3.8-27b",
+        "qwen/qwen3-32b"
       ];
+      const availableVisionModels = availableModels.filter((m) => isGroqVisionModelId(m));
       const chosenModel = preferred.find((p) => availableModels.some((m) => m.toLowerCase() === p)) || availableModels[0] || "openai/gpt-oss-120b";
       const pingRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
@@ -2391,7 +2398,8 @@ async function testGroqApiKey(params) {
       });
       if (pingRes.ok) {
         resultStatus = "Connected";
-        resultMessage = `K\u1EBFt n\u1ED1i Groq Cloud th\xE0nh c\xF4ng (model ${chosenModel} ph\u1EA3n h\u1ED3i t\u1ED1t; ${availableModels.length} model v\u0103n b\u1EA3n kh\u1EA3 d\u1EE5ng).`;
+        const visionStatusText = availableVisionModels.length > 0 ? `Vision OCR s\u1EB5n s\xE0ng: ${availableVisionModels.slice(0, 2).join(", ")}` : "Ch\u01B0a th\u1EA5y model Vision OCR trong danh s\xE1ch Groq c\u1EE7a key n\xE0y \u2014 n\xEAn th\xEAm Gemini API Key l\xE0m d\u1EF1 ph\xF2ng \u0111\u1ECDc \u1EA3nh";
+        resultMessage = `K\u1EBFt n\u1ED1i Groq Cloud th\xE0nh c\xF4ng (model ${chosenModel} ph\u1EA3n h\u1ED3i t\u1ED1t; ${availableModels.length} model kh\u1EA3 d\u1EE5ng; ${visionStatusText}).`;
       } else {
         const errText = await pingRes.text().catch(() => "");
         if (pingRes.status === 401 || pingRes.status === 403) {
@@ -2664,6 +2672,7 @@ var init_singleKeyService = __esm({
   "src/server/singleKeyService.ts"() {
     init_firebaseServer();
     init_aiGuardService();
+    init_groqProvider();
     DATA_DIR = path2.resolve(process.cwd(), ".data");
     ENCRYPTED_KEY_FILE = path2.join(DATA_DIR, "single-gemini-key.enc");
     TMP_ENCRYPTED_KEY_FILE = path2.join(os.tmpdir(), "studycheck-single-gemini-key.enc");
@@ -2685,7 +2694,7 @@ var init_singleKeyService = __esm({
 import crypto4 from "node:crypto";
 function isGroqVisionModelId(modelId) {
   const raw = stripGroqPrefix(modelId).toLowerCase();
-  return GROQ_VISION_MODELS.some((m) => m.toLowerCase() === raw) || raw.includes("llama-4-scout") || raw.includes("llama-4-maverick") || raw.includes("vision") || raw.includes("llava") || raw.includes("pixtral");
+  return GROQ_VISION_MODELS.some((m) => m.toLowerCase() === raw) || raw.includes("qwen3.8") || raw.includes("qwen3.6") || raw.includes("qwen3.5") || raw.includes("-vl") || raw.includes("vl-") || raw.includes("llama-4-scout") || raw.includes("llama-4-maverick") || raw.includes("vision") || raw.includes("llava") || raw.includes("pixtral");
 }
 function isGroqModelId(modelId) {
   return modelId.trim().toLowerCase().startsWith("groq:");
@@ -2753,7 +2762,7 @@ async function fetchAvailableGroqChatModels(apiKey, signal, forceRefresh = false
   }
 }
 function extractJsonStringFromModelOutput(raw) {
-  const trimmed = (raw || "").trim();
+  const trimmed = (raw || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   if (!trimmed) return "{}";
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenced && fenced[1]) {
@@ -2798,7 +2807,7 @@ async function executeGroqRequest(params) {
     }
     const data = await res.json();
     const msg = data.choices?.[0]?.message;
-    const rawText = msg?.content || msg?.reasoning || "";
+    const rawText = (msg?.content || msg?.reasoning || "").replace(/<think>[\s\S]*?<\/think>/gi, "");
     const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
     return {
       ok: true,
@@ -2951,7 +2960,7 @@ ${params.prompt}` : params.prompt;
   if (isModelNotFoundResponse(status, errText)) {
     const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
     const sampleHint = availableModels.length > 0 ? ` C\xE1c model kh\u1EA3 d\u1EE5ng tr\xEAn t\xE0i kho\u1EA3n Groq c\u1EE7a b\u1EA1n: ${availableModels.slice(0, 6).join(", ")}.` : " Vui l\xF2ng ki\u1EC3m tra m\u1EE5c Model Access tr\xEAn Groq Console.";
-    const visionNote = hasImages ? " L\u01B0u \xFD: t\xE1c v\u1EE5 \u0111\u1ECDc \u1EA3nh OCR tr\xEAn Groq y\xEAu c\u1EA7u model Vision (v\xED d\u1EE5 meta-llama/llama-4-scout-17b-16e-instruct)." : "";
+    const visionNote = hasImages ? " L\u01B0u \xFD: t\xE1c v\u1EE5 \u0111\u1ECDc \u1EA3nh OCR tr\xEAn Groq y\xEAu c\u1EA7u model Vision \u0111ang ho\u1EA1t \u0111\u1ED9ng (v\xED d\u1EE5 qwen/qwen3.8-27b)." : "";
     throw new Error(
       `NOT_FOUND (Groq ${status}): \u0110\xE3 th\u1EED c\xE1c model [${triedModels.join(", ")}] nh\u01B0ng \u0111\u1EC1u kh\xF4ng kh\u1EA3 d\u1EE5ng tr\xEAn t\xE0i kho\u1EA3n Groq n\xE0y.${visionNote}${sampleHint} Chi ti\u1EBFt: ${errText.slice(0, 180)}`
     );
@@ -2969,16 +2978,18 @@ var init_groqProvider = __esm({
     GROQ_MODELS_ENDPOINT = "https://api.groq.com/openai/v1/models";
     GROQ_RESCUE_MODEL_STRONG = "groq:openai/gpt-oss-120b";
     GROQ_RESCUE_MODEL_FAST = "groq:openai/gpt-oss-20b";
-    GROQ_VISION_MODEL = "groq:meta-llama/llama-4-scout-17b-16e-instruct";
+    GROQ_VISION_MODEL = "groq:qwen/qwen3.8-27b";
     GROQ_PREFERRED_TEXT_MODELS = [
       "openai/gpt-oss-120b",
       "openai/gpt-oss-20b",
       "llama-3.3-70b-versatile",
       "llama-3.1-8b-instant",
-      "qwen/qwen3-32b",
-      "meta-llama/llama-4-scout-17b-16e-instruct"
+      "qwen/qwen3.8-27b",
+      "qwen/qwen3-32b"
     ];
     GROQ_VISION_MODELS = [
+      "qwen/qwen3.8-27b",
+      "qwen/qwen3.6-27b",
       "meta-llama/llama-4-scout-17b-16e-instruct",
       "meta-llama/llama-4-maverick-17b-128e-instruct"
     ];
@@ -2986,7 +2997,9 @@ var init_groqProvider = __esm({
       "llama3-70b-8192": "openai/gpt-oss-120b",
       "llama3-8b-8192": "openai/gpt-oss-20b",
       "mixtral-8x7b-32768": "openai/gpt-oss-120b",
-      "gemma2-9b-it": "openai/gpt-oss-20b"
+      "gemma2-9b-it": "openai/gpt-oss-20b",
+      "meta-llama/llama-4-scout-17b-16e-instruct": "qwen/qwen3.8-27b",
+      "meta-llama/llama-4-maverick-17b-128e-instruct": "qwen/qwen3.8-27b"
     };
     availableModelsCache = /* @__PURE__ */ new Map();
   }
@@ -4366,7 +4379,7 @@ function accumulateRawTokens(acc, usage) {
   acc.totalTokens += usage.totalTokens || 0;
 }
 function repairJsonLikeText(rawText) {
-  const trimmed = (rawText || "").trim();
+  const trimmed = (rawText || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   if (!trimmed) return "{}";
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   let candidate = fenced && fenced[1] ? fenced[1].trim() : trimmed;
@@ -4469,7 +4482,7 @@ function parseOcrResponsePayload(rawText) {
       return { rawText: recoveredText, ocrConfidence: 0.8 };
     }
   }
-  const cleanedPlain = trimmed.replace(/^```[a-zA-Z]*\s*/i, "").replace(/```\s*$/i, "").trim();
+  const cleanedPlain = trimmed.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^```[a-zA-Z]*\s*/i, "").replace(/```\s*$/i, "").trim();
   if (!cleanedPlain || cleanedPlain === "{}") {
     throw new Error("M\xF4 h\xECnh AI tr\u1EA3 v\u1EC1 d\u1EEF li\u1EC7u OCR r\u1ED7ng.");
   }
@@ -4763,7 +4776,7 @@ ${jsonHint}`
               } catch (err) {
                 if (!firstVisionError) firstVisionError = err;
                 const msg = err instanceof Error ? err.message : String(err);
-                errorSummary.push(`${provider.name}: ${msg.slice(0, 180)}`);
+                errorSummary.push(`${provider.name}: ${msg.slice(0, 320)}`);
               }
             }
             if (errorSummary.length > 1) {
@@ -6976,25 +6989,26 @@ function mapGeminiErrorResponse(err) {
       debug
     };
   }
-  if (msg.includes("API_KEY_INVALID") || msg.includes("PERMISSION_DENIED") || msg.includes("403") || msg.includes("401")) {
-    return {
-      status: 502,
-      code: "PROVIDER_AUTH_ERROR",
-      error: `Kh\xF3a API AI hi\u1EC7n t\u1EA1i kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp model. Chi ti\u1EBFt: ${msg.slice(0, 220)}`,
-      technicalDetail: msg,
-      debug
-    };
-  }
   if (msg.includes("NOT_FOUND") || msg.includes("404")) {
     const activeProvidersList = [
       configuredProviders.groq ? "Groq" : "",
       configuredProviders.gemini ? "Gemini" : "",
       configuredProviders.cloudflare ? "Cloudflare" : ""
     ].filter(Boolean).join(", ") || "Ch\u01B0a c\xF3 kh\xF3a n\xE0o";
+    const hasSecondaryAuthErr = msg.includes("PERMISSION_DENIED") || msg.includes("API_KEY_INVALID") || msg.includes("401") || msg.includes("403");
     return {
       status: 502,
       code: "MODEL_UNAVAILABLE",
-      error: `Kh\xF4ng t\xECm th\u1EA5y model AI kh\u1EA3 d\u1EE5ng tr\xEAn kh\xF3a hi\u1EC7n t\u1EA1i (Provider \u0111\xE3 c\u1EA5u h\xECnh: ${activeProvidersList}). Chi ti\u1EBFt k\u1EF9 thu\u1EADt: ${msg.slice(0, 280)}`,
+      error: hasSecondaryAuthErr ? `Model AI m\u1EB7c \u0111\u1ECBnh kh\xF4ng kh\u1EA3 d\u1EE5ng v\xE0 nh\xE0 cung c\u1EA5p d\u1EF1 ph\xF2ng g\u1EB7p l\u1ED7i x\xE1c th\u1EF1c/quy\u1EC1n truy c\u1EADp (Provider: ${activeProvidersList}). Chi ti\u1EBFt: ${msg.slice(0, 480)}` : `Kh\xF4ng t\xECm th\u1EA5y model AI kh\u1EA3 d\u1EE5ng tr\xEAn kh\xF3a hi\u1EC7n t\u1EA1i (Provider \u0111\xE3 c\u1EA5u h\xECnh: ${activeProvidersList}). Chi ti\u1EBFt k\u1EF9 thu\u1EADt: ${msg.slice(0, 480)}`,
+      technicalDetail: msg,
+      debug
+    };
+  }
+  if (msg.includes("API_KEY_INVALID") || msg.includes("PERMISSION_DENIED") || msg.includes("403") || msg.includes("401")) {
+    return {
+      status: 502,
+      code: "PROVIDER_AUTH_ERROR",
+      error: `Kh\xF3a API AI hi\u1EC7n t\u1EA1i kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp model. Chi ti\u1EBFt: ${msg.slice(0, 480)}`,
       technicalDetail: msg,
       debug
     };

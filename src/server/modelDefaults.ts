@@ -17,17 +17,17 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     provider: 'groq',
     tier: 'free',
     strengths:
-      'Ưu tiên số 1 cho toàn bộ hệ thống (~500 tok/s, miễn phí) — kiểm định kiến thức, tạo đề, tổng hợp SGK; tự gọi Llama 4 Scout Vision khi đọc ảnh OCR.',
+      'Ưu tiên số 1 cho toàn bộ hệ thống (~500 tok/s, miễn phí) — kiểm định kiến thức, tạo đề, tổng hợp SGK; tự gọi Qwen 3.8 27B Vision khi đọc ảnh OCR.',
     supportsMultimodal: false,
     supportsGoogleSearch: false,
   },
   {
-    modelId: 'groq:meta-llama/llama-4-scout-17b-16e-instruct',
-    displayName: 'Groq · Llama 4 Scout 17B Vision (Đa phương thức Free)',
+    modelId: 'groq:qwen/qwen3.8-27b',
+    displayName: 'Groq · Qwen 3.8 27B Vision (Đa phương thức Free)',
     provider: 'groq',
     tier: 'free',
     strengths:
-      'Model đa phương thức của Groq (~460 tok/s, miễn phí) — đọc trực tiếp ảnh chụp vở/PDF scan & xử lý mọi tác vụ văn bản trên cùng 1 AI.',
+      'Model đa phương thức mới nhất của Groq (~450 tok/s, miễn phí) — đọc trực tiếp ảnh chụp vở/PDF scan & xử lý mọi tác vụ văn bản trên cùng 1 AI.',
     supportsMultimodal: true,
     supportsGoogleSearch: false,
   },
@@ -84,7 +84,7 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
 ];
 
 export const UNIFIED_PRIMARY_MODEL = 'groq:openai/gpt-oss-120b';
-export const UNIFIED_FALLBACK_MODEL = 'groq:meta-llama/llama-4-scout-17b-16e-instruct';
+export const UNIFIED_FALLBACK_MODEL = 'groq:qwen/qwen3.8-27b';
 
 export const DEFAULT_TASK_MODELS: Record<AiTaskType, TaskModelConfig> = {
   subject_classification: {

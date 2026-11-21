@@ -128,16 +128,16 @@ const FALLBACK_MODEL_CATALOG: ModelCatalogItem[] = [
     provider: 'groq',
     tier: 'free',
     strengths:
-      'Ưu tiên số 1 cho toàn bộ hệ thống (~500 tok/s, miễn phí) — kiểm định kiến thức, tạo đề, tổng hợp SGK; tự gọi Llama 4 Scout Vision khi đọc ảnh OCR.',
+      'Ưu tiên số 1 cho toàn bộ hệ thống (~500 tok/s, miễn phí) — kiểm định kiến thức, tạo đề, tổng hợp SGK; tự gọi Qwen 3.8 27B Vision khi đọc ảnh OCR.',
     supportsMultimodal: false,
   },
   {
-    modelId: 'groq:meta-llama/llama-4-scout-17b-16e-instruct',
-    displayName: 'Groq · Llama 4 Scout 17B Vision (Đa phương thức Free)',
+    modelId: 'groq:qwen/qwen3.8-27b',
+    displayName: 'Groq · Qwen 3.8 27B Vision (Đa phương thức Free)',
     provider: 'groq',
     tier: 'free',
     strengths:
-      'Model đa phương thức của Groq (~460 tok/s, miễn phí) — đọc trực tiếp ảnh chụp vở/PDF scan & xử lý mọi tác vụ văn bản trên cùng 1 AI.',
+      'Model đa phương thức mới nhất của Groq (~450 tok/s, miễn phí) — đọc trực tiếp ảnh chụp vở/PDF scan & xử lý mọi tác vụ văn bản trên cùng 1 AI.',
     supportsMultimodal: true,
   },
   {
@@ -252,7 +252,7 @@ export const AdminControlCenter: React.FC = () => {
   const [disabledReason, setDisabledReason] = useState('');
   const [activeModel, setActiveModel] = useState('groq:openai/gpt-oss-120b');
   const [unifiedFallbackModel, setUnifiedFallbackModel] = useState(
-    'groq:meta-llama/llama-4-scout-17b-16e-instruct'
+    'groq:qwen/qwen3.8-27b'
   );
   const [unifiedEnableFallback, setUnifiedEnableFallback] = useState(true);
   const [savingConfig, setSavingConfig] = useState(false);
@@ -2292,27 +2292,27 @@ export const AdminControlCenter: React.FC = () => {
                       onClick={() =>
                         handleApplyUnifiedAi(
                           'groq:openai/gpt-oss-120b',
-                          'groq:meta-llama/llama-4-scout-17b-16e-instruct',
+                          'groq:qwen/qwen3.8-27b',
                           true
                         )
                       }
                       className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-[11px] font-semibold hover:bg-emerald-700 transition-colors cursor-pointer"
                     >
-                      100% Groq · GPT-OSS 120B + Llama 4 Scout Vision (Không cần Gemini Key)
+                      100% Groq · GPT-OSS 120B + Qwen 3.8 Vision (Không cần Gemini Key)
                     </button>
                     <button
                       type="button"
                       disabled={savingConfig}
                       onClick={() =>
                         handleApplyUnifiedAi(
-                          'groq:meta-llama/llama-4-scout-17b-16e-instruct',
+                          'groq:qwen/qwen3.8-27b',
                           'groq:openai/gpt-oss-120b',
                           true
                         )
                       }
                       className="px-3 py-1.5 rounded-xl glass-control text-[11px] font-semibold cursor-pointer"
                     >
-                      Groq Vision · Llama 4 Scout 17B (1 model cho cả ảnh &amp; chữ)
+                      Groq Vision · Qwen 3.8 27B (1 model cho cả ảnh &amp; chữ)
                     </button>
                     <button
                       type="button"
@@ -2328,7 +2328,7 @@ export const AdminControlCenter: React.FC = () => {
 
                   <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
                     Khi ưu tiên <strong>Groq</strong>, mọi tác vụ văn bản/JSON (kiểm định 4 lớp, tổng hợp SGK, tạo đề, flashcard) chạy siêu nhanh (~500–1.000 token/s); riêng tác vụ <strong>đọc ảnh OCR</strong> sẽ tự chạy qua{' '}
-                    <code className="font-mono text-[11px]">meta-llama/llama-4-scout-17b-16e-instruct</code> trên chính Groq Key của bạn (chỉ tự chuyển sang Gemini dự phòng nếu chưa nhập Groq Key hoặc Groq gặp lỗi).
+                    <code className="font-mono text-[11px]">qwen/qwen3.8-27b</code> trên chính Groq Key của bạn (tự chuyển sang Gemini/Cloudflare dự phòng nếu có cấu hình key).
                   </p>
                 </div>
 

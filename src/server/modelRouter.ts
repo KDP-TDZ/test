@@ -12,8 +12,11 @@ import {
   callGroqChatCompletion,
   GROQ_RESCUE_MODEL_FAST,
   GROQ_RESCUE_MODEL_STRONG,
+  GROQ_VISION_MODEL,
   isGroqConfigured,
   isGroqModelId,
+  isGroqVisionModelId,
+  normalizeGroqModelId,
 } from './groqProvider.js';
 import {
   callCloudflareChatCompletion,
@@ -460,7 +463,7 @@ function pickConfiguredProviderModel(
     if (groqPrimary !== excludeModel) return groqPrimary;
     return groqPrimary === GROQ_RESCUE_MODEL_STRONG
       ? GROQ_RESCUE_MODEL_FAST
-      : 'groq:meta-llama/llama-4-scout-17b-16e-instruct';
+      : GROQ_VISION_MODEL;
   }
   if (isGeminiConfigured()) {
     const geminiPrimary = 'gemini-2.5-flash';
@@ -493,7 +496,7 @@ export function resolveModelForTask(
   }
 
   let fallbackModelId = (
-    taskCfg.fallbackModel || 'groq:meta-llama/llama-4-scout-17b-16e-instruct'
+    taskCfg.fallbackModel || GROQ_VISION_MODEL
   ).trim();
 
   // Bidirectionally route to whichever provider key (Groq / Gemini / Cloudflare) is actually configured
@@ -845,10 +848,11 @@ export async function testModelConnectivity(modelId: string): Promise<{
   const start = Date.now();
   try {
     if (isGroqModelId(modelId)) {
+      const normalizedTarget = normalizeGroqModelId(modelId);
       if (!isGroqConfigured()) {
         return {
           ok: false,
-          modelId,
+          modelId: normalizedTarget,
           latencyMs: Date.now() - start,
           message:
             'Chưa cấu hình Groq API Key. Super Admin có thể thêm trực tiếp tại tab "API Key & Bảo mật" trong web (không cần sửa biến môi trường Vercel).',
@@ -857,7 +861,7 @@ export async function testModelConnectivity(modelId: string): Promise<{
       const resp = await callWithTimeout(
         (signal) =>
           callGroqChatCompletion({
-            modelId,
+            modelId: normalizedTarget,
             prompt: 'Trả lời duy nhất 1 từ: OK',
             maxOutputTokens: 256,
             signal,
@@ -865,16 +869,18 @@ export async function testModelConnectivity(modelId: string): Promise<{
         15_000
       );
       const text = (resp.text || '').trim();
+      const effectiveModel = resp.resolvedModel || normalizedTarget;
       const resolvedLabel =
-        resp.resolvedModel && resp.resolvedModel !== modelId
-          ? `${modelId} → tự động chạy bằng ${resp.resolvedModel}`
-          : modelId;
+        effectiveModel !== modelId ? `${modelId} → tự động chạy bằng ${effectiveModel}` : modelId;
+      const visionHint = isGroqVisionModelId(effectiveModel)
+        ? ' (hỗ trợ trực tiếp OCR ảnh)'
+        : ` (văn bản OK; tác vụ OCR ảnh sẽ dùng ${GROQ_VISION_MODEL})`;
       return {
         ok: Boolean(text),
-        modelId: resp.resolvedModel || modelId,
+        modelId: effectiveModel,
         latencyMs: Date.now() - start,
         message: text
-          ? `Model ${resolvedLabel} (Groq Cloud Free) hoạt động bình thường (${Date.now() - start}ms).`
+          ? `Model ${resolvedLabel} (Groq Cloud Free) hoạt động bình thường (${Date.now() - start}ms)${visionHint}.`
           : `Model ${modelId} trả về nội dung rỗng.`,
       };
     }
