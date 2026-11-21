@@ -7,7 +7,7 @@ import type {
   SystemAiConfig,
   TaskModelConfig,
 } from '../core/types.js';
-import { resolveActiveGeminiApiKey } from './singleKeyService.js';
+import { isGeminiConfigured, resolveActiveGeminiApiKey } from './singleKeyService.js';
 import {
   callGroqChatCompletion,
   GROQ_RESCUE_MODEL_FAST,
@@ -183,6 +183,12 @@ export interface ResolvedModelDecision {
   configVersion: number;
 }
 
+export function isModelProviderConfigured(modelId: string): boolean {
+  if (isGroqModelId(modelId)) return isGroqConfigured();
+  if (isCloudflareModelId(modelId)) return isCloudflareConfigured();
+  return isGeminiConfigured();
+}
+
 export function resolveModelForTask(
   taskType: AiTaskType,
   config: SystemAiConfig,
@@ -200,13 +206,35 @@ export function resolveModelForTask(
     consumeOverride?.();
   }
 
+  let fallbackModelId = (
+    taskCfg.fallbackModel || 'groq:meta-llama/llama-4-scout-17b-16e-instruct'
+  ).trim();
+
+  // If primary or fallback points to Gemini when Gemini API key is NOT configured and Groq IS configured,
+  // automatically route to Groq so a missing Gemini key never blocks Groq-unified tasks.
+  const isPrimaryGemini = !isGroqModelId(modelId) && !isCloudflareModelId(modelId);
+  if (isPrimaryGemini && !isGeminiConfigured() && isGroqConfigured()) {
+    modelId = isGroqModelId(activeFallbackDefault)
+      ? activeFallbackDefault
+      : 'groq:openai/gpt-oss-120b';
+  }
+
+  const isFallbackGemini =
+    !isGroqModelId(fallbackModelId) && !isCloudflareModelId(fallbackModelId);
+  if (isFallbackGemini && !isGeminiConfigured() && isGroqConfigured()) {
+    fallbackModelId =
+      modelId === 'groq:meta-llama/llama-4-scout-17b-16e-instruct'
+        ? 'groq:openai/gpt-oss-20b'
+        : 'groq:meta-llama/llama-4-scout-17b-16e-instruct';
+  }
+
   return {
     taskType,
     modelId,
-    fallbackModelId: (taskCfg.fallbackModel || 'gemini-3.1-flash-lite').trim(),
+    fallbackModelId,
     enableFallback: Boolean(taskCfg.enableFallback),
     usedOverride,
-    promptVersion: taskCfg.promptVersion || 'v3.1',
+    promptVersion: taskCfg.promptVersion || 'v3.2',
     configVersion: config.configVersion || 1,
   };
 }
@@ -289,11 +317,10 @@ export async function executeRoutedAiTask<T>(params: {
   const canFallback =
     decision.enableFallback &&
     Boolean(decision.fallbackModelId) &&
-    decision.fallbackModelId !== decision.modelId;
+    decision.fallbackModelId !== decision.modelId &&
+    isModelProviderConfigured(decision.fallbackModelId);
 
-  const primaryUnconfigured =
-    (isGroqModelId(decision.modelId) && !isGroqConfigured()) ||
-    (isCloudflareModelId(decision.modelId) && !isCloudflareConfigured());
+  const primaryUnconfigured = !isModelProviderConfigured(decision.modelId);
 
   const executeTask = async (): Promise<{
     data: T;
@@ -308,7 +335,9 @@ export async function executeRoutedAiTask<T>(params: {
         throw new Error(
           isGroqModelId(decision.modelId)
             ? 'GROQ_API_KEY_UNCONFIGURED'
-            : 'CLOUDFLARE_CREDENTIALS_UNCONFIGURED'
+            : isCloudflareModelId(decision.modelId)
+              ? 'CLOUDFLARE_CREDENTIALS_UNCONFIGURED'
+              : 'GEMINI_API_KEY_UNCONFIGURED'
         );
       }
       // When fallback is active, retry primary 0 times so 429/503 transitions immediately to fallback within Vercel's 60s budget

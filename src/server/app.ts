@@ -192,11 +192,31 @@ function mapGeminiErrorResponse(err: unknown): { status: number; code: string; e
       error: 'AI phản hồi quá 45 giây nên hệ thống đã tự động ngắt để bảo vệ kết nối. Vui lòng thử lại.',
     };
   }
+  if (msg.includes('GROQ_API_KEY_UNCONFIGURED') || msg.includes('Chưa cấu hình Groq API Key')) {
+    return {
+      status: 503,
+      code: 'GROQ_KEY_MISSING',
+      error:
+        'Hệ thống chưa có Groq API Key. Quản trị viên vui lòng vào Quản trị hệ thống → API Key & Bảo mật để dán Groq API Key (gsk_...).',
+    };
+  }
+  if (
+    msg.includes('CLOUDFLARE_CREDENTIALS_UNCONFIGURED') ||
+    msg.includes('Chưa cấu hình Cloudflare')
+  ) {
+    return {
+      status: 503,
+      code: 'CLOUDFLARE_KEY_MISSING',
+      error:
+        'Hệ thống chưa cấu hình Cloudflare Workers AI. Quản trị viên vui lòng vào Quản trị hệ thống → API Key & Bảo mật để thêm Account ID & Token.',
+    };
+  }
   if (msg.includes('GEMINI_API_KEY_UNCONFIGURED')) {
     return {
       status: 503,
       code: 'GEMINI_KEY_MISSING',
-      error: 'Hệ thống chưa có Gemini API key. Quản trị viên vui lòng vào Quản trị hệ thống → API Key duy nhất để thêm key.',
+      error:
+        'Chưa cấu hình khóa API cho AI đang chọn (ưu tiên thêm Groq API Key tại Quản trị hệ thống → API Key & Bảo mật).',
     };
   }
   if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {

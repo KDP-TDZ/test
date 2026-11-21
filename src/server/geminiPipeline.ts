@@ -59,6 +59,7 @@ import {
   callCloudflareChatCompletion,
   isCloudflareModelId,
 } from './cloudflareProvider.js';
+import { isGeminiConfigured } from './singleKeyService.js';
 
 export interface TokenTelemetry {
   promptTokens: number;
@@ -297,7 +298,6 @@ export class DocumentExtractionService {
     tokensOut: TokenTelemetry,
     opts?: { config?: SystemAiConfig; idToken?: string; pageOffset?: number }
   ): Promise<ExtractedPage[]> {
-    const ai = await createServerAiClient();
     const pageOffset = Math.max(0, Number(opts?.pageOffset) || 0);
 
     const results = await Promise.all(
@@ -353,6 +353,7 @@ export class DocumentExtractionService {
               return JSON.parse((resp.text || '{"rawText":"","ocrConfidence":0.85}').trim());
             }
 
+            const ai = await createServerAiClient();
             const visionModel = isCloudflareModelId(modelId) ? 'gemini-3.1-flash-lite' : modelId;
             const response = await callWithTimeout(
               (signal) =>
@@ -507,7 +508,6 @@ export class DocumentExtractionService {
       // Fall back to Gemini multimodal PDF OCR for scanned PDFs
     }
 
-    const ai = await createServerAiClient();
     const pdfHash = crypto.createHash('sha256').update(buffer).digest('hex');
     const { data: parsed } = await runTaskWithRouter<{
       pages: Array<{
@@ -527,6 +527,7 @@ export class DocumentExtractionService {
       idToken: opts?.idToken,
       cacheInput: { ocrKind: 'pdf_scan_v2', sha256: pdfHash },
       runWithModel: async (modelId) => {
+        const ai = await createServerAiClient();
         const visionModel =
           isGroqModelId(modelId) || isCloudflareModelId(modelId)
             ? 'gemini-3.1-flash-lite'
@@ -803,7 +804,7 @@ export class KnowledgeAnalysisService {
     let usedWebGrounding = false;
     let webGroundingNotice: string | undefined;
 
-    if (enableWebGrounding === true) {
+    if (enableWebGrounding === true && isGeminiConfigured()) {
       try {
         const ai = await createServerAiClient();
         const searchPrompt = [
@@ -2202,7 +2203,6 @@ export class ExamPipelineService {
       cognitiveLevel?: string;
     };
 
-    const ai = await createServerAiClient();
     const { data: parsed } = await runTaskWithRouter<{
       detectedTitle?: string;
       questions: RawCopiedQuestion[];
@@ -2238,6 +2238,7 @@ export class ExamPipelineService {
           };
         }
 
+        const ai = await createServerAiClient();
         const safeModel =
           isGroqModelId(modelId) || isCloudflareModelId(modelId)
             ? 'gemini-3.1-flash-lite'
@@ -2671,7 +2672,9 @@ export class TextbookSynthesisService {
     const selectedOutlineModel =
       config?.taskModels?.curriculum_extraction?.defaultModel || config?.activeModel || '';
     const shouldSearchWithGemini =
-      !isGroqModelId(selectedOutlineModel) && !isCloudflareModelId(selectedOutlineModel);
+      isGeminiConfigured() &&
+      !isGroqModelId(selectedOutlineModel) &&
+      !isCloudflareModelId(selectedOutlineModel);
 
     if (shouldSearchWithGemini && (!customTocHint || customTocHint.trim().length < 20)) {
       try {

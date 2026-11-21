@@ -251,7 +251,9 @@ export const AdminControlCenter: React.FC = () => {
   const [maintenanceMessage, setMaintenanceMessage] = useState('');
   const [disabledReason, setDisabledReason] = useState('');
   const [activeModel, setActiveModel] = useState('groq:openai/gpt-oss-120b');
-  const [unifiedFallbackModel, setUnifiedFallbackModel] = useState('gemini-3.1-flash-lite');
+  const [unifiedFallbackModel, setUnifiedFallbackModel] = useState(
+    'groq:meta-llama/llama-4-scout-17b-16e-instruct'
+  );
   const [unifiedEnableFallback, setUnifiedEnableFallback] = useState(true);
   const [savingConfig, setSavingConfig] = useState(false);
 
@@ -530,13 +532,12 @@ export const AdminControlCenter: React.FC = () => {
   ) => {
     const nextTaskModels = {} as Record<AiTaskType, TaskModelConfig>;
     for (const taskKey of Object.keys(AI_TASK_LABELS) as AiTaskType[]) {
-      const existing = taskModelsDraft?.[taskKey];
       nextTaskModels[taskKey] = {
         defaultModel: primaryModelId,
         fallbackModel: fallbackModelId,
         enableFallback: enableFb,
         oneTimeOverrideModel: null,
-        promptVersion: existing?.promptVersion || 'v3.1',
+        promptVersion: 'v3.2',
       };
     }
     setActiveModel(primaryModelId);
@@ -2274,11 +2275,15 @@ export const AdminControlCenter: React.FC = () => {
                       type="button"
                       disabled={savingConfig}
                       onClick={() =>
-                        handleApplyUnifiedAi('groq:openai/gpt-oss-120b', 'gemini-3.1-flash-lite', true)
+                        handleApplyUnifiedAi(
+                          'groq:openai/gpt-oss-120b',
+                          'groq:meta-llama/llama-4-scout-17b-16e-instruct',
+                          true
+                        )
                       }
                       className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-[11px] font-semibold hover:bg-emerald-700 transition-colors cursor-pointer"
                     >
-                      Ưu tiên Groq · GPT-OSS 120B (Tự gọi Llama 4 Vision đọc ảnh)
+                      100% Groq · GPT-OSS 120B + Llama 4 Scout Vision (Không cần Gemini Key)
                     </button>
                     <button
                       type="button"
@@ -2286,7 +2291,7 @@ export const AdminControlCenter: React.FC = () => {
                       onClick={() =>
                         handleApplyUnifiedAi(
                           'groq:meta-llama/llama-4-scout-17b-16e-instruct',
-                          'gemini-3.1-flash-lite',
+                          'groq:openai/gpt-oss-120b',
                           true
                         )
                       }

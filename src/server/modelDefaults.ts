@@ -83,8 +83,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
   },
 ];
 
-const UNIFIED_PRIMARY_MODEL = 'groq:openai/gpt-oss-120b';
-const UNIFIED_FALLBACK_MODEL = 'gemini-3.1-flash-lite';
+export const UNIFIED_PRIMARY_MODEL = 'groq:openai/gpt-oss-120b';
+export const UNIFIED_FALLBACK_MODEL = 'groq:meta-llama/llama-4-scout-17b-16e-instruct';
 
 export const DEFAULT_TASK_MODELS: Record<AiTaskType, TaskModelConfig> = {
   subject_classification: {
@@ -92,76 +92,76 @@ export const DEFAULT_TASK_MODELS: Record<AiTaskType, TaskModelConfig> = {
     fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v3.1',
+    promptVersion: 'v3.2',
   },
   curriculum_extraction: {
     defaultModel: UNIFIED_PRIMARY_MODEL,
     fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v3.1',
+    promptVersion: 'v3.2',
   },
   knowledge_analysis: {
     defaultModel: UNIFIED_PRIMARY_MODEL,
     fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v3.1',
+    promptVersion: 'v3.2',
   },
   completeness_analysis: {
     defaultModel: UNIFIED_PRIMARY_MODEL,
     fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v3.1',
+    promptVersion: 'v3.2',
   },
   claim_validation: {
     defaultModel: UNIFIED_PRIMARY_MODEL,
     fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v3.1',
+    promptVersion: 'v3.2',
   },
   quiz_blueprint: {
     defaultModel: UNIFIED_PRIMARY_MODEL,
     fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v3.1',
+    promptVersion: 'v3.2',
   },
   quiz_generation: {
     defaultModel: UNIFIED_PRIMARY_MODEL,
     fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v3.1',
+    promptVersion: 'v3.2',
   },
   quiz_validation: {
     defaultModel: UNIFIED_PRIMARY_MODEL,
     fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v3.1',
+    promptVersion: 'v3.2',
   },
   answer_explanation: {
     defaultModel: UNIFIED_PRIMARY_MODEL,
     fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v3.1',
+    promptVersion: 'v3.2',
   },
   flashcard_generation: {
     defaultModel: UNIFIED_PRIMARY_MODEL,
     fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v3.1',
+    promptVersion: 'v3.2',
   },
   feedback_analysis: {
     defaultModel: UNIFIED_PRIMARY_MODEL,
     fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v3.1',
+    promptVersion: 'v3.2',
   },
 };

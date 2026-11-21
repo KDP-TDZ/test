@@ -98,9 +98,11 @@ test('MODEL_CATALOG prioritizes Groq (including Llama 4 Scout Vision) and unifie
     assert.equal(m.supportsMultimodal, false);
   }
 
-  // All 11 default tasks share 1 unified Groq primary model
+  // All 11 default tasks share 1 unified Groq primary model and a Groq fallback model (zero Gemini key required)
   for (const cfg of Object.values(DEFAULT_TASK_MODELS)) {
     assert.equal(cfg.defaultModel, 'groq:openai/gpt-oss-120b');
+    assert.equal(cfg.fallbackModel, 'groq:meta-llama/llama-4-scout-17b-16e-instruct');
+    assert.equal(cfg.promptVersion, 'v3.2');
     assert.equal(cfg.enableFallback, true);
   }
 });

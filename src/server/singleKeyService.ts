@@ -1389,6 +1389,10 @@ export async function testCloudflareCredentials(params: {
  * Resolves the ONE single Gemini API key used across ALL AI tasks
  * (OCR, subject detection, verification analysis + web grounding, and quiz generation).
  */
+export function isGeminiConfigured(): boolean {
+  return Boolean(cachedSingleKey?.rawKey || getEnvFallbackKey());
+}
+
 export async function resolveActiveGeminiApiKey(): Promise<string> {
   if (cachedSingleKey?.rawKey) {
     return cachedSingleKey.rawKey;

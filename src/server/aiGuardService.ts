@@ -93,14 +93,28 @@ function getOrCreateDailyUsage(date = todayDateKey()): ApiUsageDaily {
 
 function mergeTaskModels(
   base: Record<AiTaskType, TaskModelConfig>,
-  patch?: Partial<Record<AiTaskType, Partial<TaskModelConfig>>>
+  patch?: Partial<Record<AiTaskType, Partial<TaskModelConfig>>>,
+  upgradeLegacyPreV32 = false
 ): Record<AiTaskType, TaskModelConfig> {
   const merged = {} as Record<AiTaskType, TaskModelConfig>;
   for (const taskKey of Object.keys(DEFAULT_TASK_MODELS) as AiTaskType[]) {
+    const incomingPatch = patch?.[taskKey];
+    const isLegacyPreV32 =
+      upgradeLegacyPreV32 &&
+      (!incomingPatch?.promptVersion || incomingPatch.promptVersion !== 'v3.2');
+
+    if (isLegacyPreV32) {
+      merged[taskKey] = {
+        ...DEFAULT_TASK_MODELS[taskKey],
+      };
+      continue;
+    }
+
     const combined: TaskModelConfig = {
       ...DEFAULT_TASK_MODELS[taskKey],
       ...(base?.[taskKey] || {}),
-      ...(patch?.[taskKey] || {}),
+      ...(incomingPatch || {}),
+      promptVersion: 'v3.2',
     };
     merged[taskKey] = {
       ...combined,
@@ -131,12 +145,31 @@ export async function loadAuthoritativeAiConfig(
       const remote = await firestoreRestGet<SystemAiConfig>('systemConfig/aiService', idToken);
       lastRemoteConfigSyncAt = now;
       if (remote && typeof remote.enabled === 'boolean') {
+        const remoteTasks = remote.taskModels || ({} as Record<AiTaskType, TaskModelConfig>);
+        const hasLegacyPreV32Tasks = (Object.keys(DEFAULT_TASK_MODELS) as AiTaskType[]).some(
+          (k) => !remoteTasks[k]?.promptVersion || remoteTasks[k]?.promptVersion !== 'v3.2'
+        );
+        const migratedTaskModels = mergeTaskModels(
+          authoritativeAiConfig.taskModels,
+          remote.taskModels,
+          true
+        );
+        const resolvedActiveModel = hasLegacyPreV32Tasks
+          ? 'groq:openai/gpt-oss-120b'
+          : normalizeGroqModelId(remote.activeModel || 'groq:openai/gpt-oss-120b');
+
         authoritativeAiConfig = {
           ...authoritativeAiConfig,
           ...remote,
-          configVersion: typeof remote.configVersion === 'number' ? remote.configVersion : authoritativeAiConfig.configVersion,
-          allowedOrigins: Array.isArray(remote.allowedOrigins) ? remote.allowedOrigins : authoritativeAiConfig.allowedOrigins,
-          taskModels: mergeTaskModels(authoritativeAiConfig.taskModels, remote.taskModels),
+          activeModel: resolvedActiveModel,
+          configVersion:
+            typeof remote.configVersion === 'number'
+              ? remote.configVersion
+              : authoritativeAiConfig.configVersion,
+          allowedOrigins: Array.isArray(remote.allowedOrigins)
+            ? remote.allowedOrigins
+            : authoritativeAiConfig.allowedOrigins,
+          taskModels: migratedTaskModels,
           rateLimitConfig: {
             ...DEFAULT_RATE_LIMITS,
             ...(remote.rateLimitConfig || {}),
