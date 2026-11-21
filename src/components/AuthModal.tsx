@@ -13,6 +13,10 @@ interface AuthModalProps {
 function mapFirebaseAuthError(err: unknown): string {
   const code = (err as { code?: string })?.code || '';
   const msg = err instanceof Error ? err.message : String(err);
+  if (code === 'auth/unauthorized-domain' || msg.includes('auth/unauthorized-domain')) {
+    const host = typeof window !== 'undefined' ? window.location.hostname : '';
+    return `Tên miền hiện tại (${host || 'domain này'}) chưa có trong Authorized domains của Firebase Authentication (auth/unauthorized-domain). Quản trị viên vui lòng thêm "${host}" vào Firebase Console → Authentication → Settings → Authorized domains (hoặc đăng nhập tạm bằng Email & Mật khẩu bên dưới).`;
+  }
   if (code === 'auth/operation-not-allowed') {
     return 'Phương thức đăng nhập Email/Mật khẩu chưa được bật trong Firebase Console. Bạn có thể đăng nhập nhanh bằng Google bên trên hoặc bật Email/Password trong Firebase Authentication.';
   }
