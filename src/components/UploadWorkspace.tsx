@@ -47,12 +47,13 @@ import {
 } from '../services/firestoreService';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
+import { OcrReviewPanel } from './OcrReviewPanel';
 
 interface UploadWorkspaceProps {
   onAnalysisCompleted: (analysis: AnalysisRecord, localFile: File | null) => void;
 }
 
-type WizardStep = 'select' | 'processing';
+type WizardStep = 'select' | 'review_ocr' | 'processing';
 
 interface OcrDraftCache {
   documentId: string;
@@ -103,6 +104,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
   const [autoSuggestNote, setAutoSuggestNote] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [sgkPrefetchStatus, setSgkPrefetchStatus] = useState<'idle' | 'loading' | 'ready'>('idle');
+  const [reviewOcrBeforeGrading, setReviewOcrBeforeGrading] = useState(false);
 
   const suggestAbortRef = useRef<AbortController | null>(null);
   const filenameSuggestionCacheRef = useRef<
@@ -913,6 +915,15 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         updatedAt: new Date().toISOString(),
       }).catch(() => {});
 
+      const hasLowConfidenceOcr = pages.some(
+        (p) => p.ocrAverageConfidence < 0.72 || p.blocks.some((b) => b.confidence < 0.65)
+      );
+      if (reviewOcrBeforeGrading || hasLowConfidenceOcr) {
+        setProgressDetail(null);
+        setStep('review_ocr');
+        return;
+      }
+
       // Immediately continue into automatic verification & grading without any manual scope/option screen
       await runVerificationOnDraft(readyDraft, files[0] || null, prefetchedRefPromise);
     } catch (err) {
@@ -979,13 +990,20 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
               {new Date(ocrDraft.savedAt).toLocaleString('vi-VN')} (Bấm để chấm thẳng không cần đọc lại OCR)
             </p>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={() => persistOcrDraft(null)}
               className="glass-control px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-600 dark:text-slate-200 cursor-pointer"
             >
               Bỏ nháp
+            </button>
+            <button
+              type="button"
+              onClick={() => setStep('review_ocr')}
+              className="glass-control px-3.5 py-1.5 rounded-xl text-xs font-semibold text-sky-700 dark:text-sky-300 cursor-pointer"
+            >
+              Xem / sửa OCR
             </button>
             <WaterRippleButton size="sm" disabled={!aiEnabled} onClick={handleGradeSavedDraftNow}>
               <CheckCircle2 className="w-3.5 h-3.5" />
@@ -1329,14 +1347,24 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                 ))}
               </div>
 
-              <div className="pt-2 flex justify-end">
+              <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <label className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={reviewOcrBeforeGrading}
+                    onChange={(e) => setReviewOcrBeforeGrading(e.target.checked)}
+                    className="h-4 w-4 accent-sky-600 rounded"
+                  />
+                  <span>Rà soát & chỉnh sửa văn bản OCR trước khi AI chấm điểm</span>
+                </label>
+
                 <WaterRippleButton
                   size="lg"
                   disabled={!aiEnabled}
                   onClick={handleStartOneClickGrading}
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  Kiểm định & Chấm điểm ngay
+                  {reviewOcrBeforeGrading ? 'Trích xuất OCR & Rà soát' : 'Kiểm định & Chấm điểm ngay'}
                 </WaterRippleButton>
               </div>
             </div>
@@ -1370,6 +1398,28 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
             </div>
           )}
         </GlassSurface>
+      )}
+
+      {/* STEP 1.5: Optional / Low-Confidence OCR Review & Edit */}
+      {step === 'review_ocr' && ocrDraft && (
+        <div className="upload-step-panel">
+          <OcrReviewPanel
+            pages={ocrDraft.pages}
+            previewFiles={files}
+            mimeType={ocrDraft.mimeType}
+            onChangePages={(updatedPages) => {
+              persistOcrDraft({
+                ...ocrDraft,
+                pages: updatedPages,
+                savedAt: new Date().toISOString(),
+              });
+            }}
+            onConfirmOcr={() => {
+              void handleGradeSavedDraftNow();
+            }}
+            onBack={() => setStep('select')}
+          />
+        </div>
       )}
 
       {/* STEP 2: Automatic End-to-End OCR & Grading Progress */}

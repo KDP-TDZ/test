@@ -45,6 +45,7 @@ const FIRESTORE_SECRET_DOC = 'adminSecrets/primary';
 function deriveAesKey(): Buffer {
   const seed =
     process.env.KEY_ENCRYPTION_SECRET ||
+    process.env.ADMIN_KEY_ENCRYPTION_SECRET ||
     `${firebaseConfig.projectId}:${firebaseConfig.apiKey}:studycheck-single-key-v1`;
   return crypto.createHash('sha256').update(seed).digest();
 }
@@ -187,6 +188,8 @@ export async function hydrateSingleKeyForSuperAdmin(idToken: string): Promise<vo
   }
 }
 
+export const hydrateSingleKeyFromFirestore = hydrateSingleKeyForSuperAdmin;
+
 export async function getSingleKeyStatus(idToken?: string): Promise<SingleApiKeyStatus> {
   if (idToken && !cachedSingleKey) {
     await hydrateSingleKeyForSuperAdmin(idToken);
@@ -283,6 +286,13 @@ export async function setSingleGeminiApiKey(params: {
     );
   } catch (err) {
     console.warn('Could not persist encrypted key backup to Firestore:', err);
+    if (process.env.VERCEL === '1') {
+      return {
+        ok: false,
+        error:
+          'Không thể lưu khóa mã hóa lên Cloud Firestore (adminSecrets/primary). Vui lòng kiểm tra quyền Super Admin hoặc kết nối Firestore để tránh mất khóa khi Serverless cold-start.',
+      };
+    }
   }
 
   await recordAuditLog(

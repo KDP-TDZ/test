@@ -1,6 +1,28 @@
-import { validateReferenceUrl } from '../core/urlSecurity.js';
+import dns from 'node:dns';
+import { isPrivateOrLoopbackHost, validateReferenceUrl } from '../core/urlSecurity.js';
 import { buildChunksFromPages } from '../core/retrieval.js';
 import type { GradeLevel, ReferenceChunk, SubjectId } from '../core/types.js';
+
+async function assertResolvedHostSafe(urlStr: string): Promise<void> {
+  const parsed = new URL(urlStr);
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (isPrivateOrLoopbackHost(hostname)) {
+    throw new Error('Từ chối kết nối tới địa chỉ mạng nội bộ/loopback.');
+  }
+  try {
+    const records = await dns.promises.lookup(hostname, { all: true });
+    for (const rec of records) {
+      if (isPrivateOrLoopbackHost(rec.address)) {
+        throw new Error('Từ chối kết nối: Tên miền phân giải về IP nội bộ hoặc loopback (DNS Rebinding guard).');
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith('Từ chối kết nối')) {
+      throw err;
+    }
+    // If DNS lookup fails in restricted environment, fetch itself will fail or validateReferenceUrl already checked hostname
+  }
+}
 
 const MAX_REMOTE_PDF_BYTES = 35 * 1024 * 1024; // 35MB
 
@@ -71,6 +93,7 @@ export async function ingestReferenceFromUrl(params: {
   let response: Response | null = null;
 
   for (let hops = 0; hops < 4; hops++) {
+    await assertResolvedHostSafe(currentUrl);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20_000);
     try {

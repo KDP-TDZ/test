@@ -1,0 +1,264 @@
+================================================================================
+BÁO CÁO KIỂM TOÁN KỸ THUẬT GIAI ĐOẠN 1 — STUDYCHECK AI
+Phạm vi: Hệ thống lõi, Backend, Serverless, Bảo mật, Firestore & AI Pipeline
+Bối cảnh: Ứng dụng nhóm nhỏ 2–3 người dùng (1 Super Admin + 1–2 Học sinh THPT)
+================================================================================
+
+I. CHI TIẾT 15 LỖI PHÁT HIỆN Ở GIAI ĐOẠN 1
+--------------------------------------------------------------------------------
+
+1. [CRITICAL] Bẫy Cold-Start Serverless: Học sinh ăn lỗi 503 GEMINI_KEY_MISSING khi Super Admin không online
+- Vị trí:
+  + src/server/app.ts — hàm requireAuth (dòng 139–141)
+  + src/server/singleKeyService.ts — hàm hydrateSingleKeyForSuperAdmin (dòng 167–188) & resolveActiveGeminiApiKey (dòng 491–502)
+  + firestore.rules — match /adminSecrets/{secretId} (dòng 567–571)
+- Kịch bản tái hiện (Repro):
+  1. Super Admin đăng nhập vào bảng Quản trị, nhập Gemini API Key qua giao diện web và bấm Lưu (không cài cứng GEMINI_API_KEY trong Vercel Env, hoặc chỉ dùng tính năng "API Key duy nhất" trong UI). Key được mã hóa lưu vào Firestore adminSecrets/primary và /tmp.
+  2. Sau 15 phút không có request, Vercel Serverless thu hồi container (hoặc Render free spin-down).
+  3. Sáng hôm sau, 1 trong 2 học sinh vào web tải ảnh vở ghi lên chấm bài trong khi Super Admin đang offline.
+- Hậu quả thực tế:
+  + Trong requireAuth, lệnh hydrateSingleKeyForSuperAdmin(authUser.idToken) chỉ được gọi khi if (authUser.isSuperAdmin).
+  + Kể cả nếu sửa code cho gọi với idToken của học sinh thì firestoreRestGet('adminSecrets/primary', studentIdToken) cũng bị firestore.rules dòng 568 (allow get, list: if isSuperAdmin();) chặn 403 PERMISSION_DENIED.
+  + Kết quả: cachedSingleKey vẫn là null, resolveActiveGeminiApiKey() ném lỗi GEMINI_API_KEY_UNCONFIGURED, học sinh nhận lỗi 503 "Hệ thống chưa có Gemini API key" dù Admin đã lưu key từ hôm trước.
+- Cách sửa tối giản:
+  + Cách 1 (Ưu tiên khi có Firebase Admin SDK / Service Account hoặc server env): Bắt buộc ưu tiên cấu hình GEMINI_API_KEY trong biến môi trường server, hoặc dùng firebase-admin (bypass rules) đọc adminSecrets/primary ở backend khi cachedSingleKey === null.
+  + Cách 2 (Nếu chạy Vercel không có Service Account, chỉ dùng Firestore REST): Cho phép allow get: if isVerifiedUser(); trên document cố định adminSecrets/primary (vì dữ liệu bên trong đã mã hóa AES-256-GCM) NHƯNG BẮT BUỘC phải sửa đồng thời Lỗi #2 bên dưới (bắt buộc KEY_ENCRYPTION_SECRET riêng trên server) để học sinh đọc được bản mã cũng không bao giờ giải mã được. Khi đó requireAuth có thể hydrate key bằng bất kỳ idToken đã xác minh nào.
+
+--------------------------------------------------------------------------------
+
+2. [CRITICAL] Khóa mã hóa AES-256-GCM (deriveAesKey) fallback về thông tin công khai trên Frontend
+- Vị trí:
+  + src/server/singleKeyService.ts — hàm deriveAesKey (dòng 45–50)
+  + firebase-applet-config.json (dòng 2–4)
+- Kịch bản tái hiện (Repro):
+  1. Khi deploy lên Vercel/Render mà Admin quên đặt biến môi trường KEY_ENCRYPTION_SECRET (trong .env.example biến này đang để trống và trong TONG_KET_HE_THONG_STUDYCHECK_AI.txt mục 8 hoàn toàn không nhắc tới biến này).
+  2. Hàm deriveAesKey() tự động fallback về chuỗi cố định: `${firebaseConfig.projectId}:${firebaseConfig.apiKey}:studycheck-single-key-v1`.
+- Hậu quả thực tế:
+  + Cả projectId và apiKey của Firebase đều nằm công khai trong bundle JavaScript phía client (firebase-applet-config.json).
+  + Việc mã hóa AES-256-GCM trong adminSecrets/primary trở nên vô nghĩa vì khóa giải mã là hằng số công khai. Nếu kết hợp với việc mở quyền đọc Firestore hoặc lộ bản ghi adminSecrets/primary, bất kỳ ai cũng giải mã được rawKey chỉ bằng vài dòng Node.js.
+- Cách sửa tối giản:
+  + Trong setSingleGeminiApiKey và deriveAesKey: Nếu process.env.KEY_ENCRYPTION_SECRET trống hoặc ngắn hơn 16 ký tự, từ chối lưu/giải mã key từ Firestore và trả thông báo rõ cho Admin: "Cần thiết lập biến môi trường KEY_ENCRYPTION_SECRET trên máy chủ trước khi lưu API key qua giao diện".
+
+--------------------------------------------------------------------------------
+
+3. [CRITICAL] Lệnh lưu API Key và Cấu hình AI nuốt lỗi firestoreRestSet, báo thành công giả dù Firestore từ chối 403
+- Vị trí:
+  + src/server/singleKeyService.ts — hàm setSingleGeminiApiKey (dòng 278–286)
+  + src/server/aiGuardService.ts — hàm updateAuthoritativeAiConfig (dòng 258–262) & setOneTimeTaskOverride (dòng 202–206)
+- Kịch bản tái hiện (Repro):
+  1. Super Admin mở tab Quản trị hệ thống, nhập Gemini API Key mới hoặc chỉnh cấu hình Model Router rồi bấm Lưu.
+  2. Quyền Super Admin của tài khoản này chỉ được cấp qua biến môi trường process.env.SUPER_ADMIN_EMAIL (chưa nằm trong danh sách hardcode của firestore.rules dòng 42–43 và chưa có trong collection /admins/{uid}).
+- Hậu quả thực tế:
+  + Lệnh firestoreRestSet('adminSecrets/primary', ...) và firestoreRestSet('systemConfig/aiService', ...) bị Firestore từ chối 403 PERMISSION_DENIED.
+  + Tuy nhiên khối try { await firestoreRestSet(...) } catch (err) { console.warn(...) } nuốt toàn bộ lỗi và vẫn trả về HTTP 200 { ok: true } cho Admin.
+  + Admin tưởng đã lưu bền vững lên database, nhưng thực chất chỉ lưu trong RAM của container hiện tại và mất sạch ngay khi container tắt.
+- Cách sửa tối giản:
+  + Không nuốt lỗi firestoreRestSet trong setSingleGeminiApiKey và updateAuthoritativeAiConfig: nếu ghi Firestore thất bại, trả cảnh báo rõ trong response hoặc trả lỗi 500/403 để Admin biết ngay.
+
+--------------------------------------------------------------------------------
+
+4. [HIGH] Thiếu tệp firestore.indexes.json làm 5 truy vấn where + orderBy chết với lỗi failed-precondition
+- Vị trí:
+  + Toàn bộ dự án không có file firestore.indexes.json.
+  + src/services/firestoreService.ts:
+    1) listUserAnalyses (dòng 180–192): where('ownerUid', '==', uid) + orderBy('createdAt', 'desc')
+    2) listUserQuizSets (dòng 298–303): where('ownerUid', '==', uid) + orderBy('createdAt', 'desc')
+    3) listPracticeItems (dòng 314–318): where('ownerUid', '==', uid) + orderBy('lastAttemptAt', 'desc')
+    4) listUserFlashcards (dòng 776–781): where('ownerUid', '==', uid) + orderBy('updatedAt', 'desc')
+    5) listUserExamAttempts (dòng 906–911): where('uid', '==', uid) + orderBy('submittedAt', 'desc')
+    6) listUserAiJobs (dòng 1078–1083): where('ownerUid', '==', uid) + orderBy('updatedAt', 'desc')
+- Kịch bản tái hiện (Repro):
+  1. Học sinh đăng nhập trên một database Firestore chưa tạo tay đủ 6 composite index.
+  2. Mở Dashboard (loadStudentData trong App.tsx dòng 142 gọi Promise.all([listUserAnalyses, listPracticeItems, ...])), hoặc mở tab Flashcard / Lịch sử đề thi.
+- Hậu quả thực tế:
+  + Cloud Firestore bắt buộc phải có Composite Index cho mọi truy vấn kết hợp where(fieldA, '==', ...) và orderBy(fieldB, 'desc') trên 2 trường khác nhau.
+  + Riêng listLeaderboard (dòng 1009–1019) đã có try/catch fallback sang sort phía client, nhưng 5 hàm chính ở trên KHÔNG có fallback. Khi 1 hàm ném lỗi failed-precondition trong Promise.all của loadStudentData, toàn bộ dữ liệu Dashboard của học sinh rơi vào catch và hiển thị trống rỗng!
+- Cách sửa tối giản:
+  + Với quy mô 2–3 người dùng: Bọc try/catch fallback sang query where('ownerUid', '==', uid) không kèm orderBy rồi .sort(...) bằng JavaScript trên client cho cả 5 hàm trên (giống hệt listLeaderboard), đồng thời bổ sung file firestore.indexes.json.
+
+--------------------------------------------------------------------------------
+
+5. [HIGH] Mâu thuẫn danh sách Email Super Admin giữa firestore.rules, Code và Cấu hình Deploy
+- Vị trí:
+  + firestore.rules (dòng 42–43): hardcode 'tuankhang2011pm@gmail.com' và 'tuankhangnek@gmail.com'.
+  + src/server/firebaseServer.ts (dòng 73, 79–87): đọc thêm process.env.SUPER_ADMIN_EMAIL và process.env.SUPER_ADMIN_EMAILS.
+  + src/context/AuthContext.tsx (dòng 20–23): chỉ hardcode 2 email 'tuankhang2011pm@gmail.com' và 'tuankhangnek@gmail.com'.
+  + TONG_KET_HE_THONG_STUDYCHECK_AI.txt (dòng 14): ghi Super Admin là duongvantiendat2009@gmail.com.
+- Kịch bản tái hiện (Repro):
+  1. Người triển khai đặt biến môi trường SUPER_ADMIN_EMAIL là email khác ngoài 2 email hardcode trong firestore.rules.
+  2. Đăng nhập vào ứng dụng và mở Trung tâm Quản trị.
+- Hậu quả thực tế:
+  + Backend Express (/api/auth/session) trả về isSuperAdmin = true nên Frontend mở khóa giao diện AdminControlCenter.
+  + Nhưng mọi thao tác đọc/ghi Firestore trực tiếp của Admin (nạp SGK, lưu đề thi, đọc danh sách học sinh, duyệt feedback, cấp quyền Admin) đều bị firestore.rules chặn 403 PERMISSION_DENIED vì firestore.rules không đọc được process.env và user này cũng chưa có trong /admins/{uid} (tạo deadlock không ai tự thêm mình vào /admins/{uid} được).
+- Cách sửa tối giản:
+  + Trong /api/auth/session, khi phát hiện user khớp SUPER_ADMIN_EMAIL / SUPER_ADMIN_UID và có adminAuth, tự động gán Custom Claim superAdmin: true (vì firestore.rules dòng 40 đã chấp nhận request.auth.token.superAdmin == true), đồng thời đồng bộ đúng email chủ sở hữu vào firestore.rules.
+
+--------------------------------------------------------------------------------
+
+6. [HIGH] Lộ toàn bộ Đáp án & Lời giải đề thi xuống Trình duyệt trước khi nộp bài + Ghi điểm thi & Leaderboard không nguyên tử
+- Vị trí:
+  + firestore.rules — match /exams/{examId} (dòng 504–506) & match /leaderboard/{uid} (dòng 522–528)
+  + src/services/firestoreService.ts — hàm listExams (dòng 870–882) & submitExamAttemptAndSyncLeaderboard (dòng 919–991)
+  + src/components/ExamCenterView.tsx — state printIncludeKey (dòng 91)
+- Kịch bản tái hiện (Repro):
+  1. Học sinh mở Trung tâm Đề kiểm tra, bấm nút "In đề / Mã đề" ngay trên thẻ đề thi rồi tích chọn "Kèm đáp án", hoặc mở F12 -> Network xem document exams/{examId}.
+  2. Khi nộp bài thi, mạng chập chờn đúng lúc lệnh setDoc(examAttempts) vừa xong nhưng lệnh setDoc(leaderboard) chưa chạy.
+- Hậu quả thực tế:
+  + Toàn bộ correctAnswer, trueFalseStatements[].isTrue, shortAnswerAccepted và explanation nằm sẵn ở client trước khi làm bài.
+  + Học sinh có thể tự gọi SDK Firestore ghi điểm tùy ý vào leaderboard/{uid} (miễn <= 100000).
+  + Hai lệnh setDoc(doc(db, 'examAttempts', attemptId), ...) và setDoc(lbRef, ...) ở dòng 980–981 chạy tuần tự rời rạc (không dùng writeBatch / runTransaction): nếu lệnh 2 lỗi, lượt thi đã được ghi nhận nhưng điểm Đua Top bị mất.
+- Cách sửa tối giản:
+  + Gộp 2 lệnh ghi examAttempts và leaderboard trong submitExamAttemptAndSyncLeaderboard vào chung 1 writeBatch(db).
+  + Trên ExamCenterView, khóa/ẩn checkbox "In kèm đáp án" đối với học sinh nếu học sinh chưa có lượt nộp bài nào cho đề thi đó.
+
+--------------------------------------------------------------------------------
+
+7. [HIGH] Upload nhiều file vào /api/ai/extract hoặc /api/admin/exams/import-sample âm thầm bỏ qua từ file thứ 2 nếu file đầu là PDF/DOCX
+- Vị trí:
+  + src/server/app.ts — route POST /api/ai/extract (dòng 469–490)
+  + src/server/geminiPipeline.ts — hàm ExamPipelineService.extractQuestionsFromSampleExam (dòng 1998–2042)
+- Kịch bản tái hiện (Repro):
+  1. Học sinh hoặc Admin chọn tải lên cùng lúc 2 file PDF (hoặc 1 file PDF + 2 ảnh chụp vở).
+  2. Gửi request lên /api/ai/extract hoặc /api/admin/exams/import-sample.
+- Hậu quả thực tế:
+  + Code chỉ kiểm tra const first = uploadedFiles[0]; nếu first.mimetype là PDF hoặc DOCX thì chỉ trích xuất duy nhất file first và bỏ qua hoàn toàn uploadedFiles[1..n] mà không báo lỗi.
+  + Người dùng tưởng toàn bộ các file đã được chấm nhưng thực tế chỉ có file đầu tiên được xử lý.
+- Cách sửa tối giản:
+  + Lặp qua toàn bộ uploadedFiles trong /api/ai/extract và extractQuestionsFromSampleExam để trích xuất và nối tất cả các trang theo thứ tự, hoặc chặn/cảnh báo rõ nếu chọn trộn lẫn PDF/DOCX với nhiều file khác trong cùng 1 lượt.
+
+--------------------------------------------------------------------------------
+
+8. [HIGH] Cộng dồn Timeout trong modelRouter.ts & runFullVerification vượt ngưỡng 60s của Vercel Serverless gây chết 504
+- Vị trí:
+  + src/server/modelRouter.ts — GEMINI_TIMEOUT_MS = 30_000 (dòng 82), withExponentialBackoff (dòng 119–140), executeRoutedAiTask (dòng 305–444)
+  + src/server/geminiPipeline.ts — KnowledgeAnalysisService.runFullVerification (dòng 697–869, timeoutMs: 45_000)
+  + vercel.json (dòng 1–10)
+- Kịch bản tái hiện (Repro):
+  1. Học sinh bật Web Grounding và bấm chấm bài khi Gemini phản hồi chậm hoặc gặp lỗi 429/503.
+  2. Pipeline chạy tuần tự: Web Grounding (tối đa 2 lần retry primary + fallback) -> Knowledge Analysis (timeout 45s x retry primary + fallback + Groq rescue + Cloudflare rescue).
+- Hậu quả thực tế:
+  + Tổng thời gian chờ tích lũy có thể vượt quá 150–180 giây, trong khi Vercel Serverless cắt kết nối ở 10s–60s (và vercel.json hiện chưa khai báo maxDuration: 60 cho api/index.mjs).
+  + Kết quả: Vercel cắt ngang trả về lỗi 504 FUNCTION_INVOCATION_TIMEOUT trước khi tầng dự phòng Groq/Cloudflare kịp hoàn tất.
+- Cách sửa tối giản:
+  + Khai báo "functions": { "api/**/*.mjs": { "maxDuration": 60 } } trong vercel.json.
+  + Khi canFallback === true, đặt số lần retry ở model chính bằng 0 (chuyển thẳng sang fallback/Groq ngay khi gặp 429/503/timeout) và hạ timeout mỗi hop xuống 18–22 giây.
+
+--------------------------------------------------------------------------------
+
+9. [HIGH] Mất toàn bộ Thống kê Token/Request (apiUsageDaily) của Học sinh trên Serverless
+- Vị trí:
+  + src/server/aiGuardService.ts — hàm persistUsageSnapshot (dòng 472–481)
+  + src/server/app.ts — dòng 522, 632, 741, 758
+- Kịch bản tái hiện (Repro):
+  1. Trong ngày, 2 học sinh sử dụng tính năng OCR, chấm bài, tạo quiz và tạo flashcard.
+  2. Cuối ngày, Super Admin mở Trung tâm Quản trị -> Tổng quan để xem thống kê lưu lượng và token.
+- Hậu quả thực tế:
+  + Hàm persistUsageSnapshot có dòng chặn ngay đầu: if (!isSuperAdmin) return; vì apiUsageDaily/{date} trong firestore.rules chỉ cho phép Super Admin ghi.
+  + Do đó, 100% lượt dùng của học sinh chỉ nằm trong RAM của container. Khi container serverless tắt hoặc scale sang instance khác, toàn bộ thống kê token/request của học sinh mất sạch (Admin thấy 0 request). Ngoài ra route /api/ai/flashcards (dòng 758) quên gọi recordUsageEvent.
+- Cách sửa tối giản:
+  + Mở rule users/{uid}/usageDaily/{date} cho phép isOwner(uid) ghi thống kê ngày của chính mình, và trong persistUsageSnapshot lưu vào users/${uid}/usageDaily/${date} bằng idToken của học sinh (kèm bổ sung recordUsageEvent cho route flashcards).
+
+--------------------------------------------------------------------------------
+
+10. [MEDIUM] oneTimeOverrideModel bị tiêu thụ mất khi AI thất bại & Không xóa được trên Firestore khi Học sinh kích hoạt
+- Vị trí:
+  + src/server/modelRouter.ts — hàm executeRoutedAiTask (dòng 235–243)
+  + src/server/aiGuardService.ts — hàm consumeOneTimeModelOverride (dòng 148–177)
+- Kịch bản tái hiện (Repro):
+  1. Super Admin đặt One-Time Model Override cho tác vụ knowledge_analysis.
+  2. Học sinh là người thực hiện lượt chấm bài kế tiếp.
+- Hậu quả thực tế:
+  + consumeOneTimeOverride được gọi trước khi gọi AI (dòng 241): nếu request lỗi, lượt override bị mất oan.
+  + Khi học sinh kích hoạt, consumeOneTimeModelOverride dùng idToken của học sinh để ghi đè systemConfig/aiService nhằm xóa cờ override. Nhưng firestore.rules chặn học sinh ghi systemConfig/aiService (403). Sau 60 giây (CONFIG_SYNC_TTL_MS) hoặc ở container mới, loadAuthoritativeAiConfig lại đọc cờ override cũ từ Firestore về, biến "Override 1 lần" thành "Override lặp lại mãi mãi".
+- Cách sửa tối giản:
+  + Chỉ gọi consumeOneTimeOverride sau khi AI chạy thành công, và lưu dấu định danh lượt override đã dùng (예: `${taskType}:${config.updatedAt}`) để không nạp lại override cũ khi đồng bộ từ Firestore.
+
+--------------------------------------------------------------------------------
+
+11. [MEDIUM] Quên kiểm tra isCloudflareModelId ở nhánh Multimodal và gọi thẳng Gemini SDK trong extractQuestionsFromSampleExam
+- Vị trí:
+  + src/server/geminiPipeline.ts — dòng 257, 404, 712, 2095–2103
+- Kịch bản tái hiện (Repro):
+  1. Admin cấu hình model mặc định hoặc dự phòng của curriculum_extraction / claim_validation sang Cloudflare (cf:@cf/meta/...) hoặc Groq (groq:llama-...).
+  2. Admin dùng tính năng "Nhập đề từ file mẫu" với file DOCX hoặc PDF có văn bản.
+- Hậu quả thực tế:
+  + Ở dòng 257, 404, 712, 2096: code chỉ kiểm tra isGroqModelId(modelId) mà quên kiểm tra isCloudflareModelId(modelId), khiến modelId mang tiền tố "cf:..." bị truyền thẳng vào Google Gemini SDK và văng lỗi 404 Model Not Found.
+  + Ở dòng 2095 (extractQuestionsFromSampleExam): dù file DOCX/PDF đã trích xuất xong thành văn bản thuần (inlineParts.length === 0), hàm vẫn gọi thẳng ai.models.generateContent của Gemini thay vì generateJsonWithProvider, nên nếu chọn Groq hoặc Cloudflare sẽ lỗi 404 ngay lập tức.
+- Cách sửa tối giản:
+  + Kiểm tra (isGroqModelId(modelId) || isCloudflareModelId(modelId)) khi ép về model multimodal, và dùng generateJsonWithProvider khi inlineParts.length === 0 trong extractQuestionsFromSampleExam.
+
+--------------------------------------------------------------------------------
+
+12. [MEDIUM] checkAiRequestGuard trừ lượt analysesPerDay và bật cooldownSeconds trước khi validate file và không rollback khi AI lỗi
+- Vị trí:
+  + src/server/aiGuardService.ts — hàm checkAiRequestGuard (dòng 388–395)
+  + src/server/app.ts — /api/ai/extract (dòng 410–452) & /api/ai/analyze (dòng 582–650)
+- Kịch bản tái hiện (Repro):
+  1. Học sinh bấm chấm bài nhưng gặp lỗi 429/503/timeout từ nhà cung cấp AI, hoặc chọn nhầm file vượt số trang.
+  2. Học sinh bấm "Thử lại" ngay.
+- Hậu quả thực tế:
+  + Lượt phân tích trong ngày (dailyAnalyses) đã bị cộng và đồng hồ cooldownSeconds đã bị khóa ngay từ đầu hàm checkAiRequestGuard, khiến học sinh bị mất lượt oan và bị chặn 429 COOLDOWN_ACTIVE khi bấm thử lại sau lỗi server.
+- Cách sửa tối giản:
+  + Validate toàn bộ dữ liệu đầu vào trước khi gọi checkAiRequestGuard, và rollback bộ đếm dailyAnalyses / lastAnalysisTime trong khối catch nếu lượt gọi AI thất bại.
+
+--------------------------------------------------------------------------------
+
+13. [MEDIUM] Lỗ hổng SSRF qua DNS Rebinding & Đọc tràn RAM trong ingestReferenceFromUrl
+- Vị trí:
+  + src/core/urlSecurity.ts — hàm validateReferenceUrl (dòng 32–81)
+  + src/server/referenceIngestService.ts — hàm ingestReferenceFromUrl (dòng 58–125)
+- Kịch bản tái hiện (Repro):
+  1. Gửi URL có tên miền phân giải về IP nội bộ (예: 127.0.0.1.nip.io) hoặc IPv6 mapped ([::ffff:7f00:1]) hoặc server đích trả chunked stream lớn mà không có header Content-Length.
+- Hậu quả thực tế:
+  + validateReferenceUrl chỉ kiểm tra regex trên chuỗi hostname chứ không phân giải DNS, và await response.arrayBuffer() tải toàn bộ body vào bộ nhớ trước khi kiểm tra giới hạn 35MB.
+- Cách sửa tối giản:
+  + Phân giải DNS bằng dns.promises.lookup ở backend để chặn IP private/loopback thực tế trước khi fetch, và đọc response body theo stream có giới hạn byte.
+
+--------------------------------------------------------------------------------
+
+14. [MEDIUM] Chấm điểm câu Đúng/Sai (gradeExamSubmission) cắt nửa điểm của học sinh nếu câu hỏi có ít hơn 4 mệnh đề
+- Vị trí:
+  + src/core/examScoring.ts — hàm gradeExamSubmission (dòng 55–89)
+- Kịch bản tái hiện (Repro):
+  1. Đề thi có 1 câu Đúng/Sai chỉ gồm 2 hoặc 3 mệnh đề (do Admin nhập hoặc sửa tay).
+  2. Học sinh trả lời đúng tuyệt đối cả 3/3 mệnh đề.
+- Hậu quả thực tế:
+  + Biến isFullCorrect = true (vì matchCount === statements.length), nhưng công thức tính điểm cứng matchCount === 3 ? 0.5 : ... chỉ cho học sinh 50% số điểm của câu đó.
+- Cách sửa tối giản:
+  + Chỉ áp dụng thang điểm 0.1 / 0.25 / 0.5 / 1.0 khi statements.length === 4; nếu statements.length !== 4 thì tính ratio = matchCount / statements.length.
+
+--------------------------------------------------------------------------------
+
+15. [LOW] Các route Upload của Admin cho phép 20–25MB trong code nhưng bị chặn cứng 4.5MB trên Vercel Serverless
+- Vị trí:
+  + src/server/app.ts — dòng 92–98 (multer 25MB), dòng 1172 (ingest-pdf), dòng 1357 (import-sample 20MB)
+  + src/components/AdminControlCenter.tsx
+- Kịch bản tái hiện (Repro):
+  1. Admin tải file PDF SGK hoặc đề mẫu nặng 6MB lên qua AdminControlCenter khi chạy trên Vercel.
+- Hậu quả thực tế:
+  + Khác với UploadWorkspace của học sinh (đã chặn cứng PDF/DOCX 4MB và nén ảnh), form upload của Admin chưa chặn ngưỡng 4MB phía client nên bị Vercel Edge cắt ngang với lỗi 413 FUNCTION_PAYLOAD_TOO_LARGE.
+- Cách sửa tối giản:
+  + Áp dụng cùng hàm validateUploadFileSize (<= 4MB cho PDF/DOCX) và nén ảnh cho các form upload trong AdminControlCenter.
+
+
+================================================================================
+II. BẢNG TỔNG HỢP LỖI GIAI ĐOẠN 1
+================================================================================
+STT | Mức độ   | File chính                                         | Tóm tắt lỗi
+----+----------+----------------------------------------------------+-------------------------------------------------------------------------
+01  | CRITICAL | app.ts, singleKeyService.ts, firestore.rules       | Cold-start không hydrate được Gemini key khi Học sinh dùng trước Admin (503).
+02  | CRITICAL | singleKeyService.ts, firebase-applet-config.json   | deriveAesKey() fallback về projectId + apiKey công khai trên client.
+03  | CRITICAL | singleKeyService.ts, aiGuardService.ts             | Nuốt lỗi firestoreRestSet khi lưu key/config, báo thành công giả khi bị 403.
+04  | HIGH     | firestoreService.ts ( thiếu firestore.indexes.json)| 5 query where + orderBy không có index & không có fallback sort phía client.
+05  | HIGH     | firestore.rules, firebaseServer.ts, AuthContext.tsx| Lệch danh sách Super Admin giữa env và firestore.rules gây khóa quyền 403.
+06  | HIGH     | firestore.rules, firestoreService.ts, ExamCenter   | Lộ đáp án đề thi xuống client trước khi nộp; ghi điểm & BXH không atomic.
+07  | HIGH     | app.ts, geminiPipeline.ts                          | Upload nhiều file bỏ qua từ file thứ 2 trở đi nếu file đầu là PDF/DOCX.
+08  | HIGH     | modelRouter.ts, geminiPipeline.ts, vercel.json     | Cộng dồn timeout + retry + fallback vượt 60s Vercel gây chết 504.
+09  | HIGH     | aiGuardService.ts, app.ts                          | persistUsageSnapshot bỏ qua 100% request của học sinh, mất sạch thống kê.
+10  | MEDIUM   | modelRouter.ts, aiGuardService.ts                  | oneTimeOverrideModel mất khi lỗi & học sinh không xóa được cờ trên Firestore.
+11  | MEDIUM   | geminiPipeline.ts                                  | Quên check isCloudflareModelId & gọi thẳng Gemini SDK khi đọc đề mẫu text.
+12  | MEDIUM   | aiGuardService.ts, app.ts                          | Trừ lượt analysesPerDay & khóa cooldown trước khi validate và khi AI lỗi.
+13  | MEDIUM   | urlSecurity.ts, referenceIngestService.ts          | SSRF qua DNS rebinding & đọc toàn bộ arrayBuffer trước khi cắt stream 35MB.
+14  | MEDIUM   | examScoring.ts                                     | Câu Đúng/Sai < 4 ý trả lời đúng 100% vẫn bị cắt điểm theo thang 4 ý.
+15  | LOW      | app.ts, AdminControlCenter.tsx                     | Form upload của Admin chưa chặn ngưỡng 4MB gây lỗi 413 trên Vercel.
+================================================================================

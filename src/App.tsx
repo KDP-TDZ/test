@@ -52,28 +52,42 @@ import { StudentDashboard } from './components/StudentDashboard';
 import { EtherealStudentDashboard } from './components/EtherealStudentDashboard';
 import { UploadWorkspace } from './components/UploadWorkspace';
 
-const AnalysisReportView = React.lazy(() =>
+function lazyWithRetry<T extends React.ComponentType<any>>(
+  factory: () => Promise<{ default: T }>
+): React.LazyExoticComponent<T> {
+  return React.lazy(async () => {
+    try {
+      return await factory();
+    } catch (err) {
+      // Retry once after 600ms for transient 4G / Vite chunk load hiccups
+      await new Promise((r) => setTimeout(r, 600));
+      return await factory();
+    }
+  });
+}
+
+const AnalysisReportView = lazyWithRetry(() =>
   import('./components/AnalysisReportView').then((m) => ({ default: m.AnalysisReportView }))
 );
-const QuizWorkspace = React.lazy(() =>
+const QuizWorkspace = lazyWithRetry(() =>
   import('./components/QuizWorkspace').then((m) => ({ default: m.QuizWorkspace }))
 );
-const PracticeBankView = React.lazy(() =>
+const PracticeBankView = lazyWithRetry(() =>
   import('./components/PracticeBankView').then((m) => ({ default: m.PracticeBankView }))
 );
-const LearningAnalyticsView = React.lazy(() =>
+const LearningAnalyticsView = lazyWithRetry(() =>
   import('./components/LearningAnalyticsView').then((m) => ({ default: m.LearningAnalyticsView }))
 );
-const HistoryView = React.lazy(() =>
+const HistoryView = lazyWithRetry(() =>
   import('./components/HistoryView').then((m) => ({ default: m.HistoryView }))
 );
-const ExamCenterView = React.lazy(() =>
+const ExamCenterView = lazyWithRetry(() =>
   import('./components/ExamCenterView').then((m) => ({ default: m.ExamCenterView }))
 );
-const LeaderboardView = React.lazy(() =>
+const LeaderboardView = lazyWithRetry(() =>
   import('./components/LeaderboardView').then((m) => ({ default: m.LeaderboardView }))
 );
-const AdminControlCenter = React.lazy(() =>
+const AdminControlCenter = lazyWithRetry(() =>
   import('./components/AdminControlCenter').then((m) => ({ default: m.AdminControlCenter }))
 );
 
@@ -293,7 +307,7 @@ const StudyCheckShell: React.FC = () => {
         })
         .catch(() => undefined);
     }
-    if (view === 'practice' && user?.emailVerified) {
+    if ((view === 'practice' || view === 'dashboard') && user?.emailVerified) {
       listPracticeItems(user.uid)
         .then((p) => setPracticeItems(p))
         .catch(() => undefined);
@@ -552,6 +566,22 @@ const StudyCheckShell: React.FC = () => {
             <LogOut className="w-3.5 h-3.5" />
             <span>Đăng xuất</span>
           </button>
+          <div className="pt-2 border-t border-sky-200/50 dark:border-slate-800/80 flex items-center justify-between px-2">
+            <div>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400">Phát triển bởi</p>
+              <p className="text-[11px] font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                {BRAND_CONFIG.authorName}
+              </p>
+            </div>
+            <div className="h-8 w-24 overflow-hidden flex items-center justify-center rounded-lg">
+              <img
+                src={BRAND_CONFIG.signatureImageUrl}
+                alt={`Chữ ký ${BRAND_CONFIG.authorName}`}
+                data-no-privacy-blur="true"
+                className="w-full h-full object-contain scale-[2.3] select-none pointer-events-none mix-blend-multiply dark:invert dark:mix-blend-screen"
+              />
+            </div>
+          </div>
         </div>
       }
     >

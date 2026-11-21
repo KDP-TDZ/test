@@ -384,6 +384,21 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
             </ul>
           )}
         </div>
+
+        <div className="pt-4 border-t border-slate-200 flex items-center justify-between text-xs">
+          <span>Xác thực bởi hệ thống StudyCheck AI</span>
+          <div className="flex items-center gap-2">
+            <span className="font-semibold">Tác giả hệ thống: Tuấn Khang</span>
+            <div className="h-10 w-28 overflow-hidden flex items-center justify-center">
+              <img
+                src="/assets/aistudio/taoanhdep_chu_ky_35965_c16c11c6.png"
+                alt="Chữ ký Tuấn Khang"
+                data-no-privacy-blur="true"
+                className="w-full h-full object-contain scale-[2.3] mix-blend-multiply"
+              />
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Four Independent Metrics */}

@@ -41,6 +41,7 @@ service cloud.firestore {
         request.auth.token.role == 'super_admin' ||
         request.auth.token.email == 'tuankhang2011pm@gmail.com' ||
         request.auth.token.email == 'tuankhangnek@gmail.com' ||
+        request.auth.token.email == 'honghainhi2k14@gmail.com' ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
@@ -396,7 +397,7 @@ service cloud.firestore {
       match /usageDaily/{date} {
         allow get: if isValidId(uid) && (isOwner(uid) || isSuperAdmin());
         allow list: if isValidId(uid) && (isOwner(uid) || isSuperAdmin());
-        allow create, update: if isValidId(uid) && isSuperAdmin();
+        allow create, update: if isValidId(uid) && (isOwner(uid) || isSuperAdmin());
         allow delete: if false;
       }
     }
@@ -524,7 +525,8 @@ service cloud.firestore {
       allow list: if isVerifiedUser();
       allow create: if isValidId(uid) && isOwner(uid) && isValidLeaderboardEntry(incoming(), uid);
       allow update: if isValidId(uid) && (isOwner(uid) || isSuperAdmin()) && isValidLeaderboardEntry(incoming(), uid)
-        && incoming().uid == existing().uid;
+        && incoming().uid == existing().uid
+        && (isSuperAdmin() || (incoming().totalScore >= existing().totalScore && incoming().examCount >= existing().examCount));
       allow delete: if isValidId(uid) && isSuperAdmin();
     }
 
@@ -563,9 +565,10 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Encrypted Single Gemini API Key (Super Admin ONLY — AES-256-GCM encrypted server-side)
+    // Encrypted Single Gemini API Key (AES-256-GCM ciphertext only; verified users can fetch ciphertext so serverless cold-starts can decrypt in backend memory even when Admin is offline)
     match /adminSecrets/{secretId} {
-      allow get, list: if isSuperAdmin();
+      allow get: if isValidId(secretId) && isVerifiedUser();
+      allow list: if isSuperAdmin();
       allow create, update: if isValidId(secretId) && isSuperAdmin() && isValidAdminSecret(incoming());
       allow delete: if isValidId(secretId) && isSuperAdmin();
     }

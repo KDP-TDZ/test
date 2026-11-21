@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   Trophy,
 } from 'lucide-react';
+import { BRAND_CONFIG } from '../config/brand';
 import { useAuth } from '../context/AuthContext';
 import { useUiMode } from '../context/UiModeContext';
 import {
@@ -61,7 +62,7 @@ function formatClock(totalSeconds: number): string {
 }
 
 export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboard }) => {
-  const { user, profile } = useAuth();
+  const { user, profile, isSuperAdmin } = useAuth();
   const { isEthereal } = useUiMode();
   const [exams, setExams] = useState<ExamDocument[]>([]);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
@@ -78,6 +79,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
   const [secondsLeft, setSecondsLeft] = useState<number>(0);
   const [startedAtMs, setStartedAtMs] = useState<number>(0);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
   const [latestResult, setLatestResult] = useState<{
     attempt: ExamAttempt;
     pointsDelta: number;
@@ -94,14 +96,14 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    Promise.all([
+    Promise.allSettled([
       listExams(true),
       user ? listUserExamAttempts(user.uid) : Promise.resolve([]),
     ])
-      .then(([exList, attList]) => {
+      .then(([exRes, attRes]) => {
         if (cancelled) return;
-        setExams(exList);
-        setAttempts(attList);
+        setExams(exRes.status === 'fulfilled' ? exRes.value : []);
+        setAttempts(attRes.status === 'fulfilled' ? attRes.value : []);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -169,6 +171,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
     setAnswersMap({});
     setFocusedQuestionIdx(0);
     setLatestResult(null);
+    setSubmitError('');
     setSecondsLeft(exam.durationMinutes * 60);
     setStartedAtMs(Date.now());
   };
@@ -238,6 +241,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
   const handleSubmitExam = async () => {
     if (!user || !activeExam || submitting) return;
     setSubmitting(true);
+    setSubmitError('');
     try {
       const spent = Math.max(1, Math.round((Date.now() - startedAtMs) / 1000));
       const res = await submitExamAttemptAndSyncLeaderboard({
@@ -255,10 +259,30 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
         totalLeaderboardScore: res.leaderboardEntry.totalScore,
       });
       setAttempts((prev) => [res.attempt, ...prev]);
+    } catch (err) {
+      setSubmitError(
+        err instanceof Error
+          ? err.message
+          : 'Không thể nộp bài lúc này. Vui lòng kiểm tra kết nối mạng và bấm Nộp bài lại.'
+      );
     } finally {
       setSubmitting(false);
     }
   };
+
+  // Auto-submit exam when countdown reaches 00:00
+  useEffect(() => {
+    if (
+      activeExam &&
+      !latestResult &&
+      !submitting &&
+      !submitError &&
+      startedAtMs > 0 &&
+      secondsLeft === 0
+    ) {
+      void handleSubmitExam();
+    }
+  }, [secondsLeft, activeExam, latestResult, submitting, submitError, startedAtMs]);
 
   // Print Exam Sheet Mode
   if (printExam) {
@@ -298,15 +322,21 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                 {v.label}
               </button>
             ))}
-            <label className="inline-flex items-center gap-1.5 ml-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={printIncludeKey}
-                onChange={(e) => setPrintIncludeKey(e.target.checked)}
-                className="h-4 w-4 accent-sky-600"
-              />
-              In kèm Đáp án & Hướng dẫn chấm
-            </label>
+            {(isSuperAdmin || bestScoreByExam.has(printExam.examId)) ? (
+              <label className="inline-flex items-center gap-1.5 ml-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={printIncludeKey}
+                  onChange={(e) => setPrintIncludeKey(e.target.checked)}
+                  className="h-4 w-4 accent-sky-600"
+                />
+                In kèm Đáp án & Hướng dẫn chấm
+              </label>
+            ) : (
+              <span className="ml-2 text-[11px] text-slate-500 dark:text-slate-400 italic">
+                (Nộp bài thi ít nhất 1 lần để mở khóa in Đáp án)
+              </span>
+            )}
           </div>
           <WaterRippleButton size="sm" onClick={() => window.print()}>
             <Printer className="w-4 h-4" />
@@ -360,7 +390,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
             ))}
           </div>
 
-          {printIncludeKey && (
+          {printIncludeKey && (isSuperAdmin || bestScoreByExam.has(printExam.examId)) && (
             <div className="pt-6 border-t-2 border-slate-400 space-y-3">
               <h3 className="text-base font-bold">ĐÁP ÁN & HƯỚNG DẪN CHẤM CHI TIẾT</h3>
               <div className="space-y-2 text-xs">
@@ -382,6 +412,28 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
               </div>
             </div>
           )}
+
+          <div className="pt-4 border-t border-slate-300 dark:border-slate-700 flex flex-wrap items-center justify-between gap-4">
+            <div className="text-xs text-slate-600 dark:text-slate-400 space-y-0.5">
+              <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                Hệ thống kiểm định & đề thi chuẩn GDPT 2018 — {BRAND_CONFIG.name}
+              </p>
+              <p>Tác giả & Quản trị chuyên môn: {BRAND_CONFIG.authorName}</p>
+            </div>
+            <div className="flex flex-col items-center">
+              <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Xác nhận đề thi
+              </span>
+              <div className="h-11 w-32 overflow-hidden flex items-center justify-center">
+                <img
+                  src={BRAND_CONFIG.signatureImageUrl}
+                  alt={`Chữ ký ${BRAND_CONFIG.authorName}`}
+                  data-no-privacy-blur="true"
+                  className="w-full h-full object-contain scale-[2.3] mix-blend-multiply dark:invert dark:mix-blend-screen select-none"
+                />
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -439,6 +491,15 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
             )}
           </div>
         </GlassSurface>
+
+        {submitError && (
+          <GlassSurface className="rounded-2xl p-4 border border-rose-300 dark:border-rose-700 bg-rose-50/85 dark:bg-rose-950/50 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between gap-3">
+            <span>{submitError}</span>
+            <WaterRippleButton size="sm" onClick={handleSubmitExam} disabled={submitting}>
+              Thử nộp lại
+            </WaterRippleButton>
+          </GlassSurface>
+        )}
 
         {/* Graded Result Summary */}
         {latestResult && (

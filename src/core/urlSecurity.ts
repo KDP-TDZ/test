@@ -25,6 +25,36 @@ export interface UrlValidationResult {
   normalizedUrl?: string;
 }
 
+export function isPrivateOrLoopbackHost(hostOrIp: string): boolean {
+  const hostname = hostOrIp.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!hostname) return true;
+  if (
+    BLOCKED_HOSTNAMES.has(hostname) ||
+    hostname.endsWith('.local') ||
+    hostname.endsWith('.internal')
+  ) {
+    return true;
+  }
+  for (const regex of PRIVATE_IPV4_RANGES) {
+    if (regex.test(hostname)) {
+      return true;
+    }
+  }
+  if (hostname.includes(':')) {
+    if (
+      hostname === '::1' ||
+      hostname.startsWith('fe80:') ||
+      hostname.startsWith('fc') ||
+      hostname.startsWith('fd') ||
+      hostname.includes('127.0.0.1') ||
+      hostname.includes('169.254.')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Validates external URLs for Reference Library ingestion against SSRF and insecure protocols.
  * Only HTTPS is allowed; localhost, internal IPs, link-local, and cloud metadata endpoints are blocked.

@@ -26,7 +26,12 @@ export async function authorizedFetch(
   input: RequestInfo | URL,
   init: AuthorizedFetchInit = {}
 ): Promise<Response> {
-  const { retryTransient = true, ...fetchInit } = init;
+  const { retryTransient, ...fetchInit } = init;
+  const method = (fetchInit.method || 'GET').toUpperCase();
+  const shouldRetry =
+    typeof retryTransient === 'boolean'
+      ? retryTransient
+      : method === 'GET' || method === 'HEAD';
   const user = auth.currentUser;
   const headers = new Headers(fetchInit.headers);
   if (user) {
@@ -35,7 +40,7 @@ export async function authorizedFetch(
   }
 
   const url = resolveApiUrl(input);
-  const maxAttempts = retryTransient ? 2 : 1;
+  const maxAttempts = shouldRetry ? 2 : 1;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {

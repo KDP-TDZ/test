@@ -65,6 +65,16 @@ export const PrivacyBlurProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (!canUsePrivacyBlur) return;
 
     const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
       if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'h') {
         e.preventDefault();
         setPrivacyBlurState((prev) => !prev);

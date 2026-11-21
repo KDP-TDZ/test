@@ -406,6 +406,28 @@ export function decrementConcurrentJob(uid: string): void {
   concurrentJobs.set(uid, Math.max(0, cur - 1));
 }
 
+export function rollbackAiRequestGuard(
+  uid: string,
+  requestType: 'ocr' | 'analysis' | 'quiz' | 'detect'
+): void {
+  if (requestType === 'analysis') {
+    const today = todayDateKey();
+    const userDay = dailyAnalyses.get(uid);
+    if (userDay && userDay.date === today && userDay.count > 0) {
+      dailyAnalyses.set(uid, { date: today, count: userDay.count - 1 });
+    }
+    lastAnalysisTime.delete(uid);
+  }
+  const minW = minuteWindows.get(uid);
+  if (minW && minW.length > 0) {
+    minW.pop();
+  }
+  const hrW = hourWindows.get(uid);
+  if (hrW && hrW.length > 0) {
+    hrW.pop();
+  }
+}
+
 export function getIdempotentResult<T>(key: string): T | null {
   const hit = idempotencyCache.get(key);
   if (!hit) return null;
@@ -469,9 +491,27 @@ export function recordUsageEvent(params: {
   userDailyUsageStore.set(userKey, uStat);
 }
 
-export async function persistUsageSnapshot(idToken: string, isSuperAdmin: boolean): Promise<void> {
-  if (!isSuperAdmin) return;
+export async function persistUsageSnapshot(
+  idToken: string,
+  isSuperAdmin: boolean,
+  uid?: string
+): Promise<void> {
   const date = todayDateKey();
+  if (uid) {
+    const userStat = userDailyUsageStore.get(`${uid}_${date}`);
+    if (userStat) {
+      try {
+        await firestoreRestSet(
+          `users/${uid}/usageDaily/${date}`,
+          userStat as unknown as Record<string, unknown>,
+          idToken
+        );
+      } catch {
+        // Non-fatal if Firestore quota/offline
+      }
+    }
+  }
+  if (!isSuperAdmin) return;
   const daily = getOrCreateDailyUsage(date);
   try {
     await firestoreRestSet(`apiUsageDaily/${date}`, daily as unknown as Record<string, unknown>, idToken);

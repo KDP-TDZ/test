@@ -17,10 +17,10 @@ export {
 };
 
 const ADAPTIVE_COMPRESSION_PASSES: Array<{ maxDimension: number; quality: number }> = [
-  { maxDimension: 1600, quality: 0.82 },
+  { maxDimension: 1680, quality: 0.84 },
+  { maxDimension: 1480, quality: 0.78 },
   { maxDimension: 1360, quality: 0.72 },
-  { maxDimension: 1120, quality: 0.62 },
-  { maxDimension: 960, quality: 0.54 },
+  { maxDimension: 1280, quality: 0.68 },
 ];
 
 async function renderScaledJpegBlob(

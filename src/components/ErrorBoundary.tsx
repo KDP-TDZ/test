@@ -32,17 +32,21 @@ export class ErrorBoundary extends React.Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen flex items-center justify-center p-6 bg-[#F4F7FB]">
+        <div className="min-h-screen flex items-center justify-center p-6 bg-[#F4F7FB] dark:bg-[#09111E]">
           <div className="glass-surface rounded-2xl max-w-lg w-full p-8 text-center">
-            <div className="w-12 h-12 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto mb-4">
+            <div className="w-12 h-12 rounded-xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto mb-4">
               <AlertTriangle className="w-6 h-6" />
             </div>
-            <h2 className="text-xl font-bold text-slate-900 mb-2">Đã xảy ra sự cố hiển thị</h2>
-            <p className="text-sm text-slate-600 mb-6 break-words">{this.state.message}</p>
+            <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100 mb-2">
+              Đã xảy ra sự cố hiển thị
+            </h2>
+            <p className="text-sm text-slate-600 dark:text-slate-300 mb-6 break-words">
+              {this.state.message}
+            </p>
             <button
               type="button"
               onClick={() => window.location.reload()}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition-colors cursor-pointer"
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 dark:bg-sky-600 text-white text-sm font-medium hover:bg-slate-800 dark:hover:bg-sky-500 transition-colors cursor-pointer"
             >
               <RotateCcw className="w-4 h-4" />
               Tải lại ứng dụng

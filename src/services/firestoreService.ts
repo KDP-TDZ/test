@@ -11,6 +11,7 @@ import {
   startAfter,
   updateDoc,
   where,
+  writeBatch,
   type QueryDocumentSnapshot,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
@@ -200,7 +201,22 @@ export async function listUserAnalyses(
       hasMore,
     };
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+    // Fallback client-side sort if composite index (ownerUid + createdAt) is still building
+    try {
+      const fallbackSnap = await getDocs(
+        query(collection(db, 'analyses'), where('ownerUid', '==', uid), limit(100))
+      );
+      const sorted = fallbackSnap.docs
+        .map((d) => d.data() as AnalysisRecord)
+        .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+      return {
+        items: sorted.slice(0, pageSize),
+        lastDoc: null,
+        hasMore: false,
+      };
+    } catch (inner) {
+      handleFirestoreError(inner || error, OperationType.LIST, path);
+    }
   }
 }
 
@@ -304,7 +320,17 @@ export async function listUserQuizSets(uid: string): Promise<QuizSet[]> {
     const snap = await getDocs(q);
     return snap.docs.map((d) => d.data() as QuizSet);
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'quizSets'), where('ownerUid', '==', uid), limit(60))
+      );
+      return snap.docs
+        .map((d) => d.data() as QuizSet)
+        .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+        .slice(0, 30);
+    } catch (inner) {
+      handleFirestoreError(inner || error, OperationType.LIST, path);
+    }
   }
 }
 
@@ -319,7 +345,16 @@ export async function listPracticeItems(uid: string): Promise<PracticeItem[]> {
     const snap = await getDocs(q);
     return snap.docs.map((d) => d.data() as PracticeItem);
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'practiceItems'), where('ownerUid', '==', uid), limit(200))
+      );
+      return snap.docs
+        .map((d) => d.data() as PracticeItem)
+        .sort((a, b) => (b.lastAttemptAt || '').localeCompare(a.lastAttemptAt || ''));
+    } catch (inner) {
+      handleFirestoreError(inner || error, OperationType.LIST, path);
+    }
   }
 }
 
@@ -782,7 +817,16 @@ export async function listUserFlashcards(uid: string): Promise<import('../core/t
     const snap = await getDocs(q);
     return snap.docs.map((d) => d.data() as import('../core/types').FlashcardItem);
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'flashcards'), where('ownerUid', '==', uid), limit(150))
+      );
+      return snap.docs
+        .map((d) => d.data() as import('../core/types').FlashcardItem)
+        .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    } catch (inner) {
+      handleFirestoreError(inner || error, OperationType.LIST, path);
+    }
   }
 }
 
@@ -912,7 +956,17 @@ export async function listUserExamAttempts(uid: string): Promise<import('../core
     const snap = await getDocs(q);
     return snap.docs.map((d) => d.data() as import('../core/types').ExamAttempt);
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'examAttempts'), where('uid', '==', uid), limit(100))
+      );
+      return snap.docs
+        .map((d) => d.data() as import('../core/types').ExamAttempt)
+        .sort((a, b) => (b.submittedAt || '').localeCompare(a.submittedAt || ''))
+        .slice(0, 60);
+    } catch (inner) {
+      handleFirestoreError(inner || error, OperationType.LIST, path);
+    }
   }
 }
 
@@ -977,8 +1031,10 @@ export async function submitExamAttemptAndSyncLeaderboard(params: {
   };
 
   try {
-    await setDoc(doc(db, 'examAttempts', attemptId), stripUndefinedDeep(attempt));
-    await setDoc(lbRef, stripUndefinedDeep(lbUpdate.nextEntry));
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'examAttempts', attemptId), stripUndefinedDeep(attempt));
+    batch.set(lbRef, stripUndefinedDeep(lbUpdate.nextEntry));
+    await batch.commit();
     return {
       attempt,
       pointsDelta: lbUpdate.pointsDelta,

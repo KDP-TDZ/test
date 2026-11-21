@@ -40,6 +40,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   const [sortBy, setSortBy] = useState<'newest' | 'accuracy_asc' | 'accuracy_desc'>('newest');
   const [confirmDelete, setConfirmDelete] = useState<AnalysisRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const selectedRecord = useMemo(
     () => analyses.find((a) => a.analysisId === selectedAnalysisId) || null,
@@ -83,6 +84,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   const handleConfirmDelete = async () => {
     if (!confirmDelete) return;
     setDeleting(true);
+    setDeleteError('');
     try {
       await deleteAnalysisRecord(confirmDelete.analysisId);
       if (confirmDelete.storagePath) {
@@ -90,6 +92,12 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       }
       onDeleted(confirmDelete.analysisId);
       setConfirmDelete(null);
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error
+          ? err.message
+          : 'Không thể xóa bản phân tích lúc này. Vui lòng kiểm tra kết nối mạng và thử lại.'
+      );
     } finally {
       setDeleting(false);
     }
@@ -234,10 +242,18 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               Thao tác này sẽ xóa báo cáo “{confirmDelete.documentTitle}” khỏi lịch sử học tập trên
               Firestore.
             </p>
+            {deleteError && (
+              <p className="text-xs text-rose-600 dark:text-rose-400 bg-rose-50/80 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 rounded-xl px-3 py-2">
+                {deleteError}
+              </p>
+            )}
             <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setConfirmDelete(null)}
+                onClick={() => {
+                  setConfirmDelete(null);
+                  setDeleteError('');
+                }}
                 className="glass-control px-3.5 py-2 rounded-xl text-xs font-medium cursor-pointer"
               >
                 Hủy

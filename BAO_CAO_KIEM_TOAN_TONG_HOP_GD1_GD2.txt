@@ -1,0 +1,513 @@
+================================================================================
+BÁO CÁO KIỂM TOÁN TOÀN DIỆN (GIAI ĐOẠN 1 + GIAI ĐOẠN 2) — STUDYCHECK AI
+================================================================================
+Đối tượng phục vụ : Nhóm nhỏ 2–3 người dùng (1 Super Admin + 1–2 Học sinh THPT)
+Kiến trúc hệ thống: React 19 + Vite 8 + Express/Vercel Serverless + Firebase Auth
+                    & Cloud Firestore + Gemini / Groq / Cloudflare Workers AI
+Tổng số lỗi ghi nhận: 29 lỗi (Giai đoạn 1: 15 lỗi | Giai đoạn 2: 14 lỗi)
+  - CRITICAL : 4 lỗi (GD1: 3 | GD2: 1)
+  - HIGH     : 11 lỗi (GD1: 6 | GD2: 5)
+  - MEDIUM   : 11 lỗi (GD1: 5 | GD2: 6)
+  - LOW      : 3 lỗi (GD1: 1 | GD2: 2)
+
+================================================================================
+PHẦN A — GIAI ĐOẠN 1: HỆ THỐNG LÕI, BACKEND, SERVERLESS, BẢO MẬT, DỮ LIỆU & AI
+================================================================================
+
+[GD1-01] [CRITICAL] Bẫy Cold-Start Serverless: Học sinh ăn lỗi 503 GEMINI_KEY_MISSING khi Super Admin không online
+- Vị trí:
+  + src/server/app.ts — hàm requireAuth (dòng 139–141)
+  + src/server/singleKeyService.ts — hàm hydrateSingleKeyForSuperAdmin (dòng 167–188) & resolveActiveGeminiApiKey (dòng 491–502)
+  + firestore.rules — match /adminSecrets/{secretId} (dòng 567–571)
+- Kịch bản tái hiện (Repro):
+  1. Super Admin đăng nhập vào bảng Quản trị, nhập Gemini API Key qua giao diện web và bấm Lưu (không cài cứng GEMINI_API_KEY trong Vercel Env). Key được mã hóa lưu vào Firestore adminSecrets/primary và /tmp.
+  2. Sau 15 phút không có request, Vercel Serverless thu hồi container (hoặc Render free spin-down).
+  3. Sáng hôm sau, 1 trong 2 học sinh vào web tải ảnh vở ghi lên chấm bài trong khi Super Admin đang offline.
+- Hậu quả thực tế:
+  + Trong requireAuth, lệnh hydrateSingleKeyForSuperAdmin(authUser.idToken) chỉ được gọi khi if (authUser.isSuperAdmin).
+  + Kể cả nếu gọi với idToken của học sinh thì firestoreRestGet('adminSecrets/primary', studentIdToken) cũng bị firestore.rules dòng 568 (allow get, list: if isSuperAdmin();) chặn 403 PERMISSION_DENIED.
+  + Kết quả: cachedSingleKey vẫn là null, resolveActiveGeminiApiKey() ném lỗi GEMINI_API_KEY_UNCONFIGURED, học sinh nhận lỗi 503 dù Admin đã lưu key từ hôm trước.
+- Cách sửa tối giản:
+  + Ưu tiên cài GEMINI_API_KEY vào biến môi trường server hoặc dùng firebase-admin đọc adminSecrets/primary khi cachedSingleKey === null.
+  + Nếu chạy thuần Firestore REST trên Vercel không có Service Account: mở allow get: if isVerifiedUser(); cho duy nhất document adminSecrets/primary (đã mã hóa AES-256-GCM) đồng thời bắt buộc thiết lập KEY_ENCRYPTION_SECRET riêng trên server (xem lỗi GD1-02).
+
+--------------------------------------------------------------------------------
+
+[GD1-02] [CRITICAL] Khóa mã hóa AES-256-GCM (deriveAesKey) fallback về thông tin công khai trên Frontend
+- Vị trí:
+  + src/server/singleKeyService.ts — hàm deriveAesKey (dòng 45–50)
+  + firebase-applet-config.json (dòng 2–4)
+- Kịch bản tái hiện (Repro):
+  1. Khi deploy lên Vercel/Render mà Admin quên đặt biến môi trường KEY_ENCRYPTION_SECRET (trong .env.example biến này đang để trống).
+  2. Hàm deriveAesKey() tự động fallback về chuỗi cố định: projectId + apiKey + 'studycheck-single-key-v1'.
+- Hậu quả thực tế:
+  + Cả projectId và apiKey của Firebase đều nằm công khai trong bundle JavaScript phía client.
+  + Việc mã hóa AES-256-GCM trong adminSecrets/primary trở nên vô nghĩa vì khóa giải mã là hằng số công khai.
+- Cách sửa tối giản:
+  + Trong setSingleGeminiApiKey và deriveAesKey: nếu process.env.KEY_ENCRYPTION_SECRET trống hoặc ngắn hơn 16 ký tự, từ chối lưu/giải mã key từ Firestore và trả thông báo rõ cho Admin yêu cầu thiết lập KEY_ENCRYPTION_SECRET trên máy chủ.
+
+--------------------------------------------------------------------------------
+
+[GD1-03] [CRITICAL] Lệnh lưu API Key và Cấu hình AI nuốt lỗi firestoreRestSet, báo thành công giả dù Firestore từ chối 403
+- Vị trí:
+  + src/server/singleKeyService.ts — hàm setSingleGeminiApiKey (dòng 278–286)
+  + src/server/aiGuardService.ts — hàm updateAuthoritativeAiConfig (dòng 258–262) & setOneTimeTaskOverride (dòng 202–206)
+- Kịch bản tái hiện (Repro):
+  1. Super Admin được cấp quyền qua biến môi trường SUPER_ADMIN_EMAIL (chưa nằm trong danh sách hardcode của firestore.rules dòng 42–43 và chưa có trong collection /admins/{uid}).
+  2. Admin nhập Gemini API Key mới hoặc chỉnh cấu hình Model Router rồi bấm Lưu.
+- Hậu quả thực tế:
+  + Lệnh firestoreRestSet('adminSecrets/primary', ...) và firestoreRestSet('systemConfig/aiService', ...) bị Firestore từ chối 403 PERMISSION_DENIED.
+  + Khối try/catch nuốt toàn bộ lỗi (chỉ console.warn) và vẫn trả về HTTP 200 { ok: true }. Key và cấu hình chỉ nằm trong RAM container hiện tại và mất sạch khi container tắt.
+- Cách sửa tối giản:
+  + Không nuốt lỗi firestoreRestSet; trả lỗi rõ ràng hoặc cảnh báo trong response nếu ghi Firestore thất bại.
+
+--------------------------------------------------------------------------------
+
+[GD1-04] [HIGH] Thiếu tệp firestore.indexes.json làm 6 truy vấn where + orderBy chết với lỗi failed-precondition
+- Vị trí:
+  + Toàn bộ dự án không có file firestore.indexes.json.
+  + src/services/firestoreService.ts:
+    1) listUserAnalyses (dòng 180–192): where('ownerUid', '==', uid) + orderBy('createdAt', 'desc')
+    2) listUserQuizSets (dòng 298–303): where('ownerUid', '==', uid) + orderBy('createdAt', 'desc')
+    3) listPracticeItems (dòng 314–318): where('ownerUid', '==', uid) + orderBy('lastAttemptAt', 'desc')
+    4) listUserFlashcards (dòng 776–781): where('ownerUid', '==', uid) + orderBy('updatedAt', 'desc')
+    5) listUserExamAttempts (dòng 906–911): where('uid', '==', uid) + orderBy('submittedAt', 'desc')
+    6) listUserAiJobs (dòng 1078–1083): where('ownerUid', '==', uid) + orderBy('updatedAt', 'desc')
+- Kịch bản tái hiện (Repro):
+  1. Học sinh đăng nhập trên database Firestore chưa tạo tay đủ 6 composite index.
+  2. Mở Dashboard (loadStudentData trong App.tsx gọi Promise.all) hoặc mở tab Flashcard / Lịch sử đề thi.
+- Hậu quả thực tế:
+  + 5/6 hàm trên không có try/catch fallback sort phía client (chỉ listLeaderboard có fallback). Khi 1 hàm lỗi failed-precondition trong Promise.all, toàn bộ dữ liệu Dashboard bị trống rỗng.
+- Cách sửa tối giản:
+  + Với quy mô 2–3 người dùng: bọc try/catch fallback sang query không kèm orderBy rồi sort giảm dần phía client cho cả 6 hàm, đồng thời bổ sung file firestore.indexes.json.
+
+--------------------------------------------------------------------------------
+
+[GD1-05] [HIGH] Mâu thuẫn danh sách Email Super Admin giữa firestore.rules, Code và Cấu hình Deploy
+- Vị trí:
+  + firestore.rules (dòng 42–43): hardcode 'tuankhang2011pm@gmail.com' và 'tuankhangnek@gmail.com'
+  + src/server/firebaseServer.ts (dòng 73, 79–87): đọc thêm process.env.SUPER_ADMIN_EMAIL / SUPER_ADMIN_EMAILS
+  + src/context/AuthContext.tsx (dòng 20–23): chỉ hardcode 2 email trên
+  + TONG_KET_HE_THONG_STUDYCHECK_AI.txt (dòng 14): ghi email khác
+- Kịch bản tái hiện (Repro):
+  1. Người triển khai đặt biến môi trường SUPER_ADMIN_EMAIL là email mới ngoài 2 email hardcode trong firestore.rules.
+  2. Đăng nhập và mở Trung tâm Quản trị.
+- Hậu quả thực tế:
+  + Backend trả về isSuperAdmin = true nên Frontend mở UI Admin, nhưng mọi thao tác đọc/ghi Firestore (nạp SGK, lưu đề thi, duyệt feedback, cấp quyền Admin) bị firestore.rules chặn 403 PERMISSION_DENIED (deadlock).
+- Cách sửa tối giản:
+  + Trong /api/auth/session, tự động gán Custom Claim superAdmin: true nếu khớp SUPER_ADMIN_EMAIL (khi có adminAuth) và đồng bộ đúng email chủ sở hữu vào firestore.rules.
+
+--------------------------------------------------------------------------------
+
+[GD1-06] [HIGH] Lộ toàn bộ Đáp án & Lời giải đề thi xuống Trình duyệt trước khi nộp bài + Ghi điểm thi & Leaderboard không nguyên tử
+- Vị trí:
+  + firestore.rules — match /exams/{examId} (dòng 504–506) & match /leaderboard/{uid} (dòng 522–528)
+  + src/services/firestoreService.ts — listExams (dòng 870–882) & submitExamAttemptAndSyncLeaderboard (dòng 919–991)
+  + src/components/ExamCenterView.tsx — state printIncludeKey (dòng 91)
+- Kịch bản tái hiện (Repro):
+  1. Học sinh bấm "In đề / Mã đề" rồi tích chọn "Kèm đáp án", hoặc xem document exams/{examId} trong Network tab.
+  2. Khi nộp bài thi, lệnh setDoc(examAttempts) thành công nhưng setDoc(leaderboard) bị rớt mạng.
+- Hậu quả thực tế:
+  + Toàn bộ correctAnswer, trueFalseStatements[].isTrue, shortAnswerAccepted và explanation nằm sẵn ở client trước khi thi.
+  + Học sinh có thể tự ghi điểm bất kỳ vào leaderboard/{uid} (miễn <= 100000).
+  + Hai lệnh setDoc rời rạc (không dùng writeBatch): nếu lệnh 2 lỗi, lượt thi đã lưu nhưng điểm Đua Top bị mất.
+- Cách sửa tối giản:
+  + Gộp 2 lệnh ghi examAttempts và leaderboard vào chung 1 writeBatch(db) trong submitExamAttemptAndSyncLeaderboard.
+  + Ẩn/khóa tùy chọn "In kèm đáp án" nếu học sinh chưa có lượt nộp bài nào cho đề thi đó; siết rule ghi leaderboard.
+
+--------------------------------------------------------------------------------
+
+[GD1-07] [HIGH] Upload nhiều file vào /api/ai/extract hoặc /api/admin/exams/import-sample âm thầm bỏ qua từ file thứ 2 nếu file đầu là PDF/DOCX
+- Vị trí:
+  + src/server/app.ts — route POST /api/ai/extract (dòng 469–490)
+  + src/server/geminiPipeline.ts — hàm extractQuestionsFromSampleExam (dòng 1998–2042)
+- Kịch bản tái hiện (Repro):
+  1. Người dùng chọn tải lên cùng lúc 2 file PDF (hoặc 1 file PDF + 2 ảnh chụp vở).
+  2. Gửi request lên /api/ai/extract hoặc /api/admin/exams/import-sample.
+- Hậu quả thực tế:
+  + Code chỉ kiểm tra uploadedFiles[0]; nếu file đầu là PDF hoặc DOCX thì chỉ xử lý file đầu tiên và bỏ qua hoàn toàn các file từ index 1 trở đi mà không báo lỗi.
+- Cách sửa tối giản:
+  + Lặp qua toàn bộ uploadedFiles để trích xuất và ghép nội dung theo thứ tự, hoặc cảnh báo rõ khi trộn nhiều file PDF/DOCX/ảnh.
+
+--------------------------------------------------------------------------------
+
+[GD1-08] [HIGH] Cộng dồn Timeout trong modelRouter.ts & runFullVerification vượt ngưỡng 60s của Vercel Serverless gây chết 504
+- Vị trí:
+  + src/server/modelRouter.ts — GEMINI_TIMEOUT_MS = 30_000 (dòng 82), withExponentialBackoff (dòng 119–140), executeRoutedAiTask (dòng 305–444)
+  + src/server/geminiPipeline.ts — runFullVerification (dòng 697–869, timeoutMs: 45_000)
+  + vercel.json (dòng 1–10)
+- Kịch bản tái hiện (Repro):
+  1. Học sinh bật Web Grounding và bấm chấm bài khi Gemini chậm hoặc trả 429/503.
+  2. Pipeline chạy tuần tự: Web Grounding + retry primary + fallback + Knowledge Analysis (45s x retry + fallback + Groq + Cloudflare).
+- Hậu quả thực tế:
+  + Tổng thời gian chờ tích lũy vượt xa 60s (và vercel.json chưa khai báo maxDuration: 60 cho api/index.mjs), dẫn đến Vercel cắt kết nối trả lỗi 504 FUNCTION_INVOCATION_TIMEOUT.
+- Cách sửa tối giản:
+  + Khai báo "functions": { "api/**/*.mjs": { "maxDuration": 60 } } trong vercel.json.
+  + Khi có fallback, không retry lặp ở model chính mà chuyển thẳng sang fallback/Groq ngay khi gặp 429/503/timeout và hạ timeout mỗi hop xuống 18–22 giây.
+
+--------------------------------------------------------------------------------
+
+[GD1-09] [HIGH] Mất toàn bộ Thống kê Token/Request (apiUsageDaily) của Học sinh trên Serverless
+- Vị trí:
+  + src/server/aiGuardService.ts — hàm persistUsageSnapshot (dòng 472–481)
+  + src/server/app.ts — dòng 522, 632, 741, 758
+- Kịch bản tái hiện (Repro):
+  1. Trong ngày, 2 học sinh dùng OCR, chấm bài, tạo quiz và tạo flashcard.
+  2. Cuối ngày, Super Admin mở tab Quản trị xem thống kê lượt dùng.
+- Hậu quả thực tế:
+  + persistUsageSnapshot có dòng chặn: if (!isSuperAdmin) return; nên 100% lượt dùng của học sinh chỉ nằm trên RAM container và mất sạch khi container tắt. Ngoài ra route /api/ai/flashcards (dòng 758) quên gọi recordUsageEvent.
+- Cách sửa tối giản:
+  + Lưu thống kê ngày của học sinh vào users/{uid}/usageDaily/{date} bằng idToken của học sinh (kèm rule allow write: if isOwner(uid)) và bổ sung recordUsageEvent cho route flashcards.
+
+--------------------------------------------------------------------------------
+
+[GD1-10] [MEDIUM] oneTimeOverrideModel bị tiêu thụ mất khi AI thất bại & Không xóa được trên Firestore khi Học sinh kích hoạt
+- Vị trí:
+  + src/server/modelRouter.ts — hàm executeRoutedAiTask (dòng 235–243)
+  + src/server/aiGuardService.ts — hàm consumeOneTimeModelOverride (dòng 148–177)
+- Kịch bản tái hiện (Repro):
+  1. Admin đặt One-Time Model Override cho tác vụ knowledge_analysis.
+  2. Học sinh chạy lượt chấm bài kế tiếp.
+- Hậu quả thực tế:
+  + Override bị tiêu thụ trước khi AI chạy (lỗi AI vẫn mất override).
+  + Học sinh bị firestore.rules chặn 403 khi cố xóa cờ override trên systemConfig/aiService. Sau 60s đồng bộ lại từ Firestore, cờ override cũ lại tái xuất hiện thành lặp vô hạn.
+- Cách sửa tối giản:
+  + Chỉ tiêu thụ override sau khi AI chạy thành công và lưu dấu ID lượt override đã dùng trên RAM/config để không nạp lại cờ cũ khi đồng bộ.
+
+--------------------------------------------------------------------------------
+
+[GD1-11] [MEDIUM] Quên kiểm tra isCloudflareModelId ở nhánh Multimodal và gọi thẳng Gemini SDK trong extractQuestionsFromSampleExam
+- Vị trí:
+  + src/server/geminiPipeline.ts — dòng 257, 404, 712, 2095–2103
+- Kịch bản tái hiện (Repro):
+  1. Admin cấu hình model mặc định/dự phòng sang Cloudflare (cf:@cf/...) hoặc Groq (groq:...).
+  2. Chạy trích xuất hoặc nhập đề mẫu từ DOCX/PDF văn bản.
+- Hậu quả thực tế:
+  + Model prefix "cf:..." bị truyền thẳng vào Google Gemini SDK gây lỗi 404 Model Not Found. Trong extractQuestionsFromSampleExam, dù inlineParts.length === 0 vẫn gọi thẳng ai.models.generateContent của Gemini thay vì generateJsonWithProvider.
+- Cách sửa tối giản:
+  + Kiểm tra (isGroqModelId(modelId) || isCloudflareModelId(modelId)) ở các nhánh multimodal và dùng generateJsonWithProvider khi inlineParts.length === 0.
+
+--------------------------------------------------------------------------------
+
+[GD1-12] [MEDIUM] checkAiRequestGuard trừ lượt analysesPerDay và bật cooldownSeconds trước khi validate file và không rollback khi AI lỗi
+- Vị trí:
+  + src/server/aiGuardService.ts — hàm checkAiRequestGuard (dòng 388–395)
+  + src/server/app.ts — /api/ai/extract (dòng 410–452) & /api/ai/analyze (dòng 582–650)
+- Kịch bản tái hiện (Repro):
+  1. Học sinh gửi file lỗi/vượt trang hoặc AI provider lỗi 503/timeout.
+  2. Bấm "Thử lại" ngay lập tức.
+- Hậu quả thực tế:
+  + Đã bị trừ mất 1 lượt/ngày và bị khóa cooldown 429 COOLDOWN_ACTIVE dù yêu cầu trước đó chưa hề xử lý thành công.
+- Cách sửa tối giản:
+  + Validate toàn bộ đầu vào trước khi gọi checkAiRequestGuard và rollback bộ đếm dailyAnalyses / cooldown trong khối catch khi AI lỗi.
+
+--------------------------------------------------------------------------------
+
+[GD1-13] [MEDIUM] Lỗ hổng SSRF qua DNS Rebinding & Đọc tràn RAM trong ingestReferenceFromUrl
+- Vị trí:
+  + src/core/urlSecurity.ts — hàm validateReferenceUrl (dòng 32–81)
+  + src/server/referenceIngestService.ts — hàm ingestReferenceFromUrl (dòng 58–125)
+- Kịch bản tái hiện (Repro):
+  1. Nhập URL phân giải DNS về IP nội bộ (ví dụ nip.io) hoặc server trả chunked stream lớn không có Content-Length.
+- Hậu quả thực tế:
+  + validateReferenceUrl chỉ check regex hostname (không lookup DNS thực) và arrayBuffer() tải hết vào RAM trước khi kiểm tra giới hạn 35MB.
+- Cách sửa tối giản:
+  + Lookup DNS bằng dns.promises.lookup ở backend để chặn IP private/loopback và đọc response body theo stream có giới hạn byte.
+
+--------------------------------------------------------------------------------
+
+[GD1-14] [MEDIUM] Chấm điểm câu Đúng/Sai (gradeExamSubmission) cắt nửa điểm của học sinh nếu câu hỏi có ít hơn 4 mệnh đề
+- Vị trí:
+  + src/core/examScoring.ts — hàm gradeExamSubmission (dòng 55–89)
+- Kịch bản tái hiện (Repro):
+  1. Đề thi có câu Đúng/Sai chỉ gồm 2 hoặc 3 mệnh đề.
+  2. Học sinh trả lời đúng 100% (3/3 mệnh đề).
+- Hậu quả thực tế:
+  + Dù đúng hết 3/3 ý, công thức cứng matchCount === 3 ? 0.5 vẫn chỉ cho 50% số điểm.
+- Cách sửa tối giản:
+  + Chỉ áp dụng thang 0.1 / 0.25 / 0.5 / 1.0 khi statements.length === 4; nếu khác 4 thì tính tỷ lệ matchCount / statements.length.
+
+--------------------------------------------------------------------------------
+
+[GD1-15] [LOW] Các route Upload của Admin cho phép 20–25MB trong code nhưng bị chặn cứng 4.5MB trên Vercel Serverless
+- Vị trí:
+  + src/server/app.ts — dòng 92–98 (multer 25MB), dòng 1172 (ingest-pdf), dòng 1357 (import-sample 20MB)
+  + src/components/AdminControlCenter.tsx
+- Kịch bản tái hiện (Repro):
+  1. Admin tải file PDF SGK hoặc đề mẫu nặng 6MB lên qua AdminControlCenter trên Vercel.
+- Hậu quả thực tế:
+  + Form Admin chưa kiểm tra ngưỡng 4MB phía client nên bị Vercel Edge cắt ngang trả 413 FUNCTION_PAYLOAD_TOO_LARGE.
+- Cách sửa tối giản:
+  + Áp dụng cùng hàm kiểm tra kích thước <= 4MB cho PDF/DOCX và nén ảnh tại AdminControlCenter.
+
+
+================================================================================
+PHẦN B — GIAI ĐOẠN 2: FRONTEND, UI/UX, RESPONSIVE, HIỆU NĂNG, SEO & VẬN HÀNH
+================================================================================
+
+[GD2-01] [CRITICAL] Đồng hồ phòng thi đếm ngược về 00:00 nhưng KHÔNG tự động nộp bài
+- Vị trí:
+  + src/components/ExamCenterView.tsx — useEffect đếm ngược (dòng 135–147)
+- Kịch bản tái hiện (Repro):
+  1. Học sinh bấm "Bắt đầu làm bài" một đề thi có thời lượng (15/45/50 phút).
+  2. Để đồng hồ secondsLeft đếm ngược về 00:00.
+- Hậu quả thực tế:
+  + Hàm setInterval chỉ gọi window.clearInterval(timer); return 0; mà KHÔNG gọi handleSubmitExam() và không khóa đáp án. Học sinh hết giờ vẫn đứng ở 00:00 và làm bài tiếp vô thời hạn, làm sai lệch công bằng Bảng xếp hạng Đua Top.
+- Cách sửa tối giản:
+  + Thêm useEffect theo dõi khi activeExam && !submittedAttempt && !submitting && secondsLeft === 0 để tự động gọi void handleSubmitExam().
+
+--------------------------------------------------------------------------------
+
+[GD2-02] [HIGH] Promise.all không bắt lỗi làm trắng danh sách Đề thi & handleSubmitExam nuốt lỗi khi rớt mạng lúc nộp bài
+- Vị trí:
+  + src/components/ExamCenterView.tsx — useEffect tải dữ liệu (dòng 97–108) và handleSubmitExam (dòng 238–261)
+- Kịch bản tái hiện (Repro):
+  1. Mở Trung tâm Đề thi khi listUserExamAttempts(user.uid) bị lỗi (ví dụ thiếu composite index).
+  2. Hoặc bấm "Nộp bài chấm điểm" đúng lúc 4G chập chờn.
+- Hậu quả thực tế:
+  + Promise.all([listExams(true), listUserExamAttempts(user.uid)]) không có .catch() làm biến mất luôn danh sách đề thi dù listExams thành công.
+  + handleSubmitExam chỉ có try ... finally mà không có catch (err) và không có banner báo lỗi trên UI phòng thi: nếu nộp lỗi, nút trở lại bình thường và học sinh tưởng đã nộp xong hoặc không hiểu tại sao chưa có điểm.
+- Cách sửa tối giản:
+  + Dùng Promise.allSettled([listExams(true), listUserExamAttempts(user.uid)]) để giữ nguyên danh sách đề.
+  + Thêm khối catch (err) kèm state error tiếng Việt rõ ràng trong ExamCenterView.
+
+--------------------------------------------------------------------------------
+
+[GD2-03] [HIGH] Lệch trạng thái dữ liệu (practiceItems, badge số câu đến hạn) giữa các màn hình & bỏ sót cộng tiến độ khi làm "Sprint 10 câu"
+- Vị trí:
+  + src/App.tsx — handleNavigate (dòng 273–302) và onPracticeItemSaved (dòng 975–982)
+  + src/components/PracticeBankView.tsx — handleSprintSelect (dòng 315–325) so với handleRetryAnswer (dòng 254–273)
+- Kịch bản tái hiện (Repro):
+  1. Học sinh làm sai/gắn cờ câu hỏi trong QuizWorkspace rồi bấm quay về Tổng quan (dashboard).
+  2. Học sinh vào Ngân hàng luyện tập -> bấm "Làm bộ 10 câu từ câu sai (Sprint 10 phút)" và chọn đáp án.
+- Hậu quả thực tế:
+  + State practiceItems ở App.tsx không được refresh khi lưu câu sai hay chuyển về Dashboard, khiến số câu đến hạn (dueTodayCount) và badge trên Bottom Nav / FloatingDock bị cũ cho tới khi F5.
+  + Trong Sprint 10 câu, handleSprintSelect chỉ cập nhật practiceItems mà quên gọi recordQuizAttemptAndProgress (khác với làm từng câu lẻ), nên toàn bộ lượt ôn Sprint không được tính vào Bản đồ thống kê kiến thức.
+- Cách sửa tối giản:
+  + Gọi refreshPracticeItems khi onPracticeItemSaved hoặc điều hướng về Dashboard.
+  + Bổ sung await recordQuizAttemptAndProgress(...) vào handleSprintSelect.
+
+--------------------------------------------------------------------------------
+
+[GD2-04] [HIGH] Tính năng OcrReviewPanel (Rà soát & sửa chữ OCR mờ dưới 72%) được quảng cáo trên giao diện nhưng bị bỏ qua hoàn toàn (Dead Code)
+- Vị trí:
+  + src/components/OcrReviewPanel.tsx (265 dòng chưa từng được import)
+  + src/components/UploadWorkspace.tsx — handleStartVerification (dòng 895–925)
+  + src/components/LandingPage.tsx (dòng 120, 148–150) & StudentDashboard.tsx (dòng 300)
+- Kịch bản tái hiện (Repro):
+  1. Học sinh tải lên ảnh vở ghi viết tay hơi mờ.
+  2. UploadWorkspace chạy /api/ai/extract xong thì gọi thẳng runVerificationOnDraft (dòng 917) mà không hiện bước OcrReviewPanel.
+- Hậu quả thực tế:
+  + Tính năng đã cam kết với người dùng trên Landing Page bị bỏ qua hoàn toàn; chữ viết tay bị OCR đọc nhầm không có cơ hội sửa trước khi tốn lượt chấm AI.
+- Cách sửa tối giản:
+  + Khi kết quả extract có lowConfidenceRegions.length > 0 hoặc ocrConfidence < 78 (hoặc người dùng bật tùy chọn rà soát), hiển thị OcrReviewPanel để học sinh xác nhận/sửa trước khi gọi /api/ai/verify.
+
+--------------------------------------------------------------------------------
+
+[GD2-05] [HIGH] Chế độ Che chữ riêng tư (PrivacyBlur / Ctrl+H) không che ảnh chụp vở ghi & trang PDF trên Canvas, đồng thời cướp phím Ctrl+H khi đang gõ chữ
+- Vị trí:
+  + src/index.css — quy tắc html[data-privacy-blur="true"] (dòng 981–1070)
+  + src/context/PrivacyBlurContext.tsx — keydown listener Ctrl+H (dòng 64–75)
+- Kịch bản tái hiện (Repro):
+  1. Mở báo cáo kiểm định có ảnh vở ghi hoặc PDF (SplitDocumentViewer / PdfPageCanvas) và bấm Ctrl+H.
+  2. Hoặc đang đứng trong ô nhập liệu textarea/input và bấm Ctrl+H.
+- Hậu quả thực tế:
+  + CSS chỉ làm mờ văn bản HTML, toàn bộ ảnh chụp vở viết tay (<img>) và trang PDF (<canvas>) chứa tên/bài làm học sinh vẫn hiển thị rõ 100%.
+  + Keydown Ctrl+H không kiểm tra isEditableTarget nên chặn thao tác soạn thảo trong textarea/input.
+- Cách sửa tối giản:
+  + Bổ sung filter: blur(10px) !important; cho main img và main canvas khi html[data-privacy-blur="true"].
+  + Bỏ qua phím tắt Ctrl+H khi document.activeElement là INPUT, TEXTAREA, SELECT hoặc isContentEditable.
+
+--------------------------------------------------------------------------------
+
+[GD2-06] [HIGH] Khe hở 12px phía trên NavigationDrawer trên mọi màn hình điện thoại (< 768px)
+- Vị trí:
+  + src/components/LiquidGlass/NavigationDrawer.tsx — dòng 236 & 246 (fixed top-16)
+  + src/App.tsx (dòng 648) & LandingPage.tsx (dòng 324): header mobile cao h-[52px]
+- Kịch bản tái hiện (Repro):
+  1. Mở web trên điện thoại (< 768px) và bấm nút Menu mở NavigationDrawer.
+- Hậu quả thực tế:
+  + Header cao 52px nhưng Drawer bắt đầu từ top-16 (64px), để lộ khe hở ngang 12px giữa đáy Header và đỉnh Drawer, làm lộ nội dung bên dưới và bấm xuyên qua được.
+- Cách sửa tối giản:
+  + Đổi top-16 ở dòng 236 và 246 của NavigationDrawer.tsx thành top-[52px] md:top-16.
+
+--------------------------------------------------------------------------------
+
+[GD2-07] [MEDIUM] Rớt mạng 4G khi tải chunk React.lazy làm sập toàn trang về màn hình trắng sáng chói & không tự tải lại chunk
+- Vị trí:
+  + src/App.tsx (dòng 55–78: 8 khai báo React.lazy)
+  + src/components/ErrorBoundary.tsx (dòng 35–51)
+- Kịch bản tái hiện (Repro):
+  1. Học sinh dùng 4G chuyển tab đúng lúc mạng chập chờn 1 giây hoặc sau khi Vercel vừa deploy bản mới đổi hash JS.
+- Hậu quả thực tế:
+  + Thiếu helper lazyWithRetry để tự thử lại chunk khi rớt mạng.
+  + ErrorBoundary hardcode nền sáng bg-[#F4F7FB] text-slate-900 (gây chói mắt ở Dark Mode) và hiện thông báo lỗi tiếng Anh kỹ thuật ("Failed to fetch dynamically imported module").
+- Cách sửa tối giản:
+  + Bọc React.lazy bằng lazyWithRetry tự retry 1 lần; bổ sung dark:bg-slate-950 dark:text-slate-100 và thông báo tiếng Việt thân thiện trong ErrorBoundary.tsx.
+
+--------------------------------------------------------------------------------
+
+[GD2-08] [MEDIUM] authorizedFetch tự động retry 502/503 cho cả request POST không có idempotencyKey, gây tạo trùng Flashcard & đốt gấp đôi quota AI
+- Vị trí:
+  + src/services/apiClient.ts — hàm authorizedFetch (dòng 43–75)
+  + src/components/AnalysisReportView.tsx — handleGenerateFlashcards (dòng 164–205)
+- Kịch bản tái hiện (Repro):
+  1. Gọi POST /api/ai/flashcards hoặc POST /api/admin/exams/generate khi proxy gặp lỗi 502/503 thoáng qua.
+- Hậu quả thực tế:
+  + retryTransient mặc định là true cho mọi method kể cả POST; client tự gửi lại request thứ 2 làm tạo trùng bộ Flashcard vào Firestore và tốn gấp đôi quota AI.
+- Cách sửa tối giản:
+  + Chỉ bật retryTransient mặc định cho GET/HEAD hoặc request có đính kèm idempotencyKey.
+
+--------------------------------------------------------------------------------
+
+[GD2-09] [MEDIUM] Nén ảnh 4 tầng xuống 960px @ JPEG quality 0.54 làm nhòe chỉ số dưới của công thức Toán/Lý/Hóa viết tay
+- Vị trí:
+  + src/services/imageCompression.ts — COMPRESSION_PASSES (dòng 19–24)
+- Kịch bản tái hiện (Repro):
+  1. Chụp trang vở A4 dọc viết tay nhiều công thức nhỏ; bộ nén hạ xuống Pass 3 (1120px, 0.62) hoặc Pass 4 (960px, 0.54).
+- Hậu quả thực tế:
+  + Chiều ngang trang A4 chỉ còn ~720px với nén JPEG 0.54 gây bệt/nhiễu chỉ số dưới/trên (H2SO4, Fe2+, x^2), làm giảm độ chính xác OCR.
+- Cách sửa tối giản:
+  + Giữ maxDimension tối thiểu 1280px và quality >= 0.68 (do UploadWorkspace đã chia lô tối đa 2.7MB/lô).
+
+--------------------------------------------------------------------------------
+
+[GD2-10] [MEDIUM] Thiếu hộp thoại xác nhận cho các nút xóa nguy hiểm (Xóa thẻ Flashcard, Gỡ Gemini API Key, Thu hồi Admin) & thiếu catch khi xóa Lịch sử
+- Vị trí:
+  + src/components/PracticeBankView.tsx (dòng 374, 875: nút "Xóa thẻ này")
+  + src/components/AdminControlCenter.tsx (dòng 532, 1177: "Gỡ Key Admin"; dòng 895: "Thu hồi quyền")
+  + src/components/HistoryView.tsx (dòng 83–96: handleConfirmDelete thiếu catch)
+- Kịch bản tái hiện (Repro):
+  1. Bấm nhầm 1 chạm vào "Xóa thẻ này" trên điện thoại hoặc "Gỡ Key Admin" / "Thu hồi quyền" trong AdminControlCenter.
+  2. Hoặc xóa lịch sử trong HistoryView khi mất mạng.
+- Hậu quả thực tế:
+  + Dữ liệu bị xóa/thu hồi ngay lập tức không hỏi xác nhận; HistoryView bị unhandled rejection và không báo lỗi khi xóa thất bại.
+- Cách sửa tối giản:
+  + Thêm xác nhận 2 bước cho các nút xóa/thu hồi nhạy cảm và thêm catch hiển thị lỗi tiếng Việt trong HistoryView.tsx.
+
+--------------------------------------------------------------------------------
+
+[GD2-11] [MEDIUM] Hiệu ứng GSAP ScrollTrigger làm tàng hình (autoAlpha: 0) phần dưới Báo cáo khi bấm In/Xuất PDF sớm & lỗi kẹt góc lật 3D Flashcard khi bấm nhanh
+- Vị trí:
+  + src/components/AnalysisReportView.tsx (dòng 100–115: .report-scroll-section)
+  + src/components/PracticeBankView.tsx (dòng 174–199: handleFlipCard)
+- Kịch bản tái hiện (Repro):
+  1. Vừa mở báo cáo chưa cuộn xuống đáy đã bấm "Xuất Phiếu sửa lỗi (In / PDF)".
+  2. Hoặc bấm đúp liên tiếp nhiều lần vào thẻ Flashcard 3D.
+- Hậu quả thực tế:
+  + Phần dưới báo cáo có thể giữ trạng thái autoAlpha: 0 khi chưa scroll tới; thẻ Flashcard bị chồng timeline GSAP làm kẹt nghiêng 90 độ hoặc ngược mặt so với state.
+- Cách sửa tối giản:
+  + Gọi gsap.killTweensOf(cardInnerRef.current) trước khi lật thẻ và ép opacity: 1; visibility: visible; transform: none trong @media print của src/index.css.
+
+--------------------------------------------------------------------------------
+
+[GD2-12] [MEDIUM] Hai thanh cuộn lồng nhau (Nested Scrollbars) trong SplitDocumentViewer khi mở toàn màn hình trên điện thoại & FloatingDock quá dài trên iPad dọc
+- Vị trí:
+  + src/components/SplitDocumentViewer.tsx (dòng 134, 211, 286)
+  + src/components/LiquidGlass/FloatingDock.tsx (dòng 49)
+- Kịch bản tái hiện (Repro):
+  1. Mở rộng toàn màn hình SplitDocumentViewer trên điện thoại/tablet (hoặc bấm ESC để thoát).
+  2. Đăng nhập Super Admin trên iPad dọc (768px–820px) ở chế độ Liquid Glass.
+- Hậu quả thực tế:
+  + Cột bên trong vẫn giữ max-h-[560px] overflow-y-auto lồng trong khung fixed overflow-auto, rất khó vuốt; phím ESC không thoát được; FloatingDock 10 nút chạm sát mép màn hình tablet dọc.
+- Cách sửa tối giản:
+  + Bỏ giới hạn max-h-[560px] khi expanded === true, hỗ trợ phím ESC để đóng, và thêm max-w-[calc(100vw-1.5rem)] overflow-x-auto no-scrollbar cho FloatingDock.
+
+--------------------------------------------------------------------------------
+
+[GD2-13] [LOW] Thiếu bộ thẻ chia sẻ mạng xã hội (og:image, twitter:card, canonical) và thiếu robots.txt
+- Vị trí:
+  + /index.html (dòng 1–28) và thư mục /public/
+- Kịch bản tái hiện (Repro):
+  1. Dán link trang web vào Zalo/Messenger hoặc kiểm tra /robots.txt.
+- Hậu quả thực tế:
+  + Link preview khi chia sẻ không có ảnh thumbnail; chưa có file /public/robots.txt.
+- Cách sửa tối giản:
+  + Bổ sung og:image, twitter:card, link canonical vào index.html và tạo /public/robots.txt.
+
+--------------------------------------------------------------------------------
+
+[GD2-14] [LOW] Sai ngữ nghĩa ARIA role="listbox" chứa <button> trên LandingPage & dùng chỉ số mảng (key={idx}) cho danh sách nhận xét
+- Vị trí:
+  + src/components/LandingPage.tsx (dòng 871–887)
+  + src/components/AnalysisReportView.tsx (dòng 688, 716, 741)
+- Kịch bản tái hiện (Repro):
+  1. Kiểm tra cây Accessibility / chuẩn W3C ARIA trên LandingPage.
+- Hậu quả thực tế:
+  + role="listbox" chứa <button role="option"> không hỗ trợ điều hướng mũi tên theo chuẩn W3C; AnalysisReportView dùng key={idx}.
+- Cách sửa tối giản:
+  + Đổi sang role="group" với aria-pressed trên button và dùng key duy nhất theo nội dung.
+
+
+================================================================================
+PHẦN C — BẢNG CHẤM ĐIỂM "10 TIÊU CHÍ VÀNG WEBSITE CHUYÊN NGHIỆP" (IT EXPRESS)
+================================================================================
+(Đánh giá thực tế cho nhóm 2–3 người dùng: 1 Super Admin + 1–2 Học sinh THPT)
+
+1. Giao diện đẹp, hiện đại & đồng nhất               : 8.5 / 10
+   - Điểm trừ: Khe hở 12px của NavigationDrawer mobile (GD2-06), ErrorBoundary không hỗ trợ Dark Mode (GD2-07), PrivacyBlur chưa che ảnh/canvas bài làm (GD2-05).
+
+2. Thao tác dễ dàng, điều hướng trực quan (UI/UX)     : 7.8 / 10
+   - Điểm trừ: Bước OcrReviewPanel bị bỏ qua (GD2-04), thiếu xác nhận khi xóa thẻ Flashcard / gỡ Key Admin (GD2-10), Ctrl+H cướp phím khi đang gõ ô nhập liệu (GD2-05).
+
+3. Tương thích tốt với thiết bị di động (Responsive)  : 8.0 / 10
+   - Điểm trừ: Khe hở 12px trên Drawer mobile (GD2-06), 2 thanh cuộn lồng nhau trong SplitDocumentViewer (GD2-12), nén ảnh Pass 4 xuống 960px làm nhòe công thức chụp từ điện thoại (GD2-09).
+
+4. Tốc độ tải trang nhanh & ổn định                   : 7.5 / 10
+   - Điểm trừ: Lazy chunk không tự retry khi rớt 4G (GD2-07), authorizedFetch retry cả POST gây gọi đúp AI (GD2-08), cộng dồn timeout AI gây lỗi 504 trên Vercel (GD1-08).
+
+5. Nội dung chất lượng, rõ ràng & đáng tin cậy        : 8.2 / 10
+   - Điểm trừ: Tính năng "Rà soát OCR dưới 72%" đã quảng cáo trên Landing Page nhưng chưa nối vào luồng chạy thật (GD2-04).
+
+6. Cấu trúc chuẩn SEO & hiển thị chia sẻ tốt          : 7.8 / 10
+   - Điểm trừ: Thiếu og:image, twitter:card, canonical và /public/robots.txt (GD2-13), lỗi ARIA listbox (GD2-14).
+
+7. Tính năng hoạt động chính xác, đúng mục tiêu       : 6.5 / 10
+   - Điểm trừ: Hết giờ thi 00:00 không tự nộp bài (GD2-01), thiếu composite index làm sập truy vấn Firestore (GD1-04), Sprint 10 câu không cộng vào thống kê kiến thức (GD2-03), upload nhiều file bỏ qua file sau PDF/DOCX (GD1-07), câu Đúng/Sai < 4 ý bị cắt điểm (GD1-14).
+
+8. Bảo mật thông tin & phân quyền an toàn             : 6.2 / 10
+   - Điểm trừ: Khóa AES fallback về thông tin công khai trên frontend (GD1-02), lộ đáp án đề thi xuống client trước khi nộp bài & tự ghi điểm Leaderboard (GD1-06), lệch danh sách Super Admin với firestore.rules (GD1-05), SSRF qua DNS rebinding (GD1-13), PrivacyBlur không che ảnh vở (GD2-05).
+
+9. Hoạt động ổn định, xử lý lỗi tốt                  : 6.3 / 10
+   - Điểm trừ: Cold-start mất khả năng lấy Gemini Key khi học sinh tự học lúc Admin offline (GD1-01), nuốt lỗi 403 khi lưu Key/Config (GD1-03), ExamCenterView & HistoryView nuốt lỗi mạng (GD2-02, GD2-10), trừ oan lượt/cooldown khi AI lỗi (GD1-12).
+
+10. Dễ dàng quản trị, vận hành & bảo trì              : 7.4 / 10
+   - Điểm trừ: Mất 100% thống kê token/request của học sinh trên Serverless (GD1-09), oneTimeOverrideModel bị kẹt hoặc mất khi học sinh kích hoạt (GD1-10), quên check Cloudflare ở nhánh multimodal (GD1-11), form upload Admin chưa chặn 4MB (GD1-15).
+
+-> ĐIỂM TRUNG BÌNH TOÀN HỆ THỐNG: 7.42 / 10
+
+
+================================================================================
+PHẦN D — TOP 10 LỖI CHÍ MẠNG NHẤT (GỘP GD1 + GD2) CẦN SỬA NGAY TRƯỚC KHI DÙNG
+================================================================================
+
+01. [GD1-01 + GD1-02] Bẫy Cold-Start mất Gemini Key & Khóa AES fallback công khai
+    -> Học sinh không thể chấm bài (lỗi 503) khi Admin offline sau 15 phút container ngủ; nếu không đặt KEY_ENCRYPTION_SECRET trên server thì mã hóa trong Firestore bị giải mã bằng chuỗi công khai.
+
+02. [GD1-03 + GD1-05] Lệch Super Admin & Nuốt lỗi 403 khi lưu Key/Cấu hình AI
+    -> Nếu email Admin đặt qua env khác 2 email hardcode trong firestore.rules, thao tác lưu Key/SGK/Đề thi bị 403 nhưng hệ thống vẫn báo "Lưu thành công" giả trên UI rồi mất sạch khi restart.
+
+03. [GD1-04] Thiếu Composite Index & Thiếu Fallback Sort làm gãy Dashboard/Lịch sử
+    -> 5/6 truy vấn Firestore quan trọng kết hợp where + orderBy sẽ chết với lỗi failed-precondition nếu chưa tạo tay đủ index, khiến Dashboard của học sinh trắng trơn.
+
+04. [GD2-01 + GD2-02] Đồng hồ phòng thi về 00:00 không tự nộp bài & nuốt lỗi mạng
+    -> Hết giờ thi vẫn làm tiếp vô thời hạn; rớt mạng lúc nộp bài không hiện thông báo lỗi; lỗi tải lịch sử thi làm trắng luôn danh sách đề thi.
+
+05. [GD1-06] Lộ Đáp án đề thi xuống client trước khi nộp & Ghi điểm Leaderboard không atomic
+    -> Học sinh có thể xem đáp án trước qua F12 hoặc nút In kèm đáp án; mất đồng bộ điểm giữa examAttempts và leaderboard khi mạng yếu.
+
+06. [GD1-08] Cộng dồn Timeout AI vượt ngưỡng 60s gây lỗi 504 trên Vercel Serverless
+    -> Thiếu maxDuration: 60 và retry lặp lại quá nhiều tầng khiến request chấm bài có Web Grounding bị Vercel cắt ngang 504 trước khi kịp chuyển sang Groq/Cloudflare.
+
+07. [GD1-09 + GD1-12] Mất sạch thống kê lượt dùng của Học sinh & Trừ oan lượt khi AI lỗi
+    -> Admin không bao giờ thấy được số request/token thực tế của 2 học sinh trên Serverless; học sinh bị mất lượt và bị khóa cooldown khi AI server lỗi.
+
+08. [GD2-03] Lệch dữ liệu Dashboard & Bỏ sót tiến độ khi làm "Sprint 10 câu"
+    -> Số câu đến hạn trên thanh điều hướng không cập nhật sau khi làm Quiz; làm Sprint 10 câu không cộng vào Bản đồ thống kê kiến thức.
+
+09. [GD2-04 + GD2-09] Bỏ qua bước sửa chữ OCR (OcrReviewPanel) & Nén ảnh quá thấp (960px)
+    -> Công thức Toán/Lý/Hóa chụp từ điện thoại dễ nhòe chỉ số dưới và học sinh không có bước rà soát sửa chữ mờ trước khi tốn lượt chấm AI.
+
+10. [GD2-05 + GD2-06 + GD2-08] Lỗi UI/UX vận hành hàng ngày (PrivacyBlur, Drawer Mobile, Retry POST)
+    -> Ctrl+H không che ảnh vở ghi/PDF và cướp phím khi đang gõ; menu Drawer trên điện thoại bị hở khe 12px; retry POST khi gặp 502 tạo trùng Flashcard vào Firestore.
+================================================================================

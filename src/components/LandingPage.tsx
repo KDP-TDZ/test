@@ -1112,14 +1112,37 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
       </main>
 
       <footer className="border-t border-sky-200/60 dark:border-slate-800 bg-white/55 dark:bg-slate-900/55 backdrop-blur-xl">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 py-6 sm:py-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#475B78] dark:text-[#B4C7E2]">
-          <p>© {new Date().getFullYear()} {BRAND_CONFIG.name}. Nền tảng kiểm chứng học tập THPT.</p>
-          <div className="flex items-center gap-4">
-            <a href="#workflow" className="hover:text-[#16243E] dark:hover:text-white transition-colors">Quy trình</a>
-            <span aria-hidden="true">·</span>
-            <a href="#specimen" className="hover:text-[#16243E] dark:hover:text-white transition-colors">Minh họa</a>
-            <span aria-hidden="true">·</span>
-            <a href="#faq" className="hover:text-[#16243E] dark:hover:text-white transition-colors">Hỏi đáp</a>
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 py-6 sm:py-8 flex flex-col md:flex-row items-center justify-between gap-5 text-xs text-[#475B78] dark:text-[#B4C7E2]">
+          <div className="space-y-1 text-center md:text-left">
+            <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+              © {new Date().getFullYear()} {BRAND_CONFIG.name}. Nền tảng kiểm chứng học tập THPT.
+            </p>
+            <div className="flex items-center justify-center md:justify-start gap-3">
+              <a href="#workflow" className="hover:text-[#16243E] dark:hover:text-white transition-colors">Quy trình</a>
+              <span aria-hidden="true">·</span>
+              <a href="#specimen" className="hover:text-[#16243E] dark:hover:text-white transition-colors">Minh họa</a>
+              <span aria-hidden="true">·</span>
+              <a href="#faq" className="hover:text-[#16243E] dark:hover:text-white transition-colors">Hỏi đáp</a>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3.5 px-4 py-2 rounded-2xl glass-panel-subtle border border-sky-200/70 dark:border-slate-700/70">
+            <div className="text-right">
+              <p className="text-[10px] uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
+                Thiết kế &amp; Phát triển
+              </p>
+              <p className="text-xs font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                {BRAND_CONFIG.authorName}
+              </p>
+            </div>
+            <div className="h-11 w-32 sm:w-36 overflow-hidden flex items-center justify-center rounded-xl bg-white/70 dark:bg-slate-900/40">
+              <img
+                src={BRAND_CONFIG.signatureImageUrl}
+                alt={`Chữ ký ${BRAND_CONFIG.authorName}`}
+                data-no-privacy-blur="true"
+                className="w-full h-full object-contain scale-[2.3] select-none pointer-events-none mix-blend-multiply dark:invert dark:mix-blend-screen"
+              />
+            </div>
           </div>
         </div>
       </footer>

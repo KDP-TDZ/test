@@ -59,31 +59,49 @@ export function gradeExamSubmission(
         .join(' · ');
 
       const chosen = ans?.trueFalseChoices || {};
+      const normalizeBool = (val: unknown): boolean | undefined => {
+        if (typeof val === 'boolean') return val;
+        if (typeof val === 'string') {
+          const v = val.trim().toLowerCase();
+          if (v === 'true' || v === 'đúng' || v === 'dung' || v === 'đ' || v === 'd' || v === '1') return true;
+          if (v === 'false' || v === 'sai' || v === 's' || v === '0') return false;
+        }
+        return undefined;
+      };
+
       studentDisplay = statements
         .map((s) => {
-          const val = chosen[s.label];
+          const val = normalizeBool(chosen[s.label]);
           return `${s.label}:${val === undefined ? '-' : val ? 'Đ' : 'S'}`;
         })
         .join(' · ');
 
       let matchCount = 0;
       for (const s of statements) {
-        if (chosen[s.label] !== undefined && chosen[s.label] === s.isTrue) {
+        const chosenBool = normalizeBool(chosen[s.label]);
+        const expectedBool = normalizeBool(s.isTrue);
+        if (chosenBool !== undefined && expectedBool !== undefined && chosenBool === expectedBool) {
           matchCount += 1;
         }
       }
 
-      // Standard Vietnamese GDPT 2025 Đúng/Sai rubric: 1->0.1, 2->0.25, 3->0.5, 4->1.0 of question maxScore
-      const ratio =
-        matchCount === 4
-          ? 1.0
-          : matchCount === 3
-            ? 0.5
-            : matchCount === 2
-              ? 0.25
-              : matchCount === 1
-                ? 0.1
-                : 0;
+      // Standard Vietnamese GDPT 2025 Đúng/Sai rubric for 4 statements: 1->0.1, 2->0.25, 3->0.5, 4->1.0 of question maxScore
+      // When an imported/custom question has != 4 statements, scale linearly so all-correct earns 100% of qMax.
+      let ratio = 0;
+      if (statements.length === 4) {
+        ratio =
+          matchCount === 4
+            ? 1.0
+            : matchCount === 3
+              ? 0.5
+              : matchCount === 2
+                ? 0.25
+                : matchCount === 1
+                  ? 0.1
+                  : 0;
+      } else if (statements.length > 0) {
+        ratio = Math.min(1, matchCount / statements.length);
+      }
       qEarned = Math.round(qMax * ratio * 1000) / 1000;
       isFullCorrect = statements.length > 0 && matchCount === statements.length;
     } else {

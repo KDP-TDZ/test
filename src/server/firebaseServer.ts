@@ -70,7 +70,11 @@ function loadFirebaseConfig(): FirebaseAppletConfig {
 
 export const firebaseConfig: FirebaseAppletConfig = loadFirebaseConfig();
 
-const DEFAULT_SUPER_ADMIN_EMAILS = ['tuankhang2011pm@gmail.com', 'tuankhangnek@gmail.com'];
+const DEFAULT_SUPER_ADMIN_EMAILS = [
+  'tuankhang2011pm@gmail.com',
+  'tuankhangnek@gmail.com',
+  'honghainhi2k14@gmail.com',
+];
 
 export const PROTECTED_SUPER_ADMIN_EMAILS = new Set(
   DEFAULT_SUPER_ADMIN_EMAILS.map((e) => e.trim().toLowerCase())

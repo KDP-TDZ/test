@@ -1063,9 +1063,14 @@ html[data-privacy-blur="true"] a[class*="from-[#4338CA]"] svg {
   color: #FFFFFF !important;
 }
 
-/* Blur SVG text elements (e.g. ScoreRing percentage text) */
+/* Blur SVG text elements (e.g. ScoreRing percentage text) and student document images/canvases */
 html[data-privacy-blur="true"] svg text:not([data-privacy-exempt]) {
   filter: blur(7px) !important;
+}
+
+html[data-privacy-blur="true"] main img:not([data-no-privacy-blur]),
+html[data-privacy-blur="true"] main canvas {
+  filter: blur(12px) !important;
 }
 
 /* PrivacyBlurToggle active button & explicit inheritance reset for [data-privacy-exempt] */
@@ -1218,6 +1223,14 @@ html[data-privacy-blur="true"] [data-privacy-exempt="true"] * {
 @media print {
   .no-print {
     display: none !important;
+  }
+  .report-scroll-section,
+  .report-hero-block,
+  .report-metric-card,
+  .exam-card {
+    opacity: 1 !important;
+    visibility: visible !important;
+    transform: none !important;
   }
   .glass-surface,
   .liquid-card-glass,

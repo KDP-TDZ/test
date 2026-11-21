@@ -327,3 +327,63 @@ test('distributeExamQuestionScores distributes totalScore exactly across questio
   assert.equal(distributed[6].orderIndex, 7);
 });
 
+test('gradeExamSubmission awards full 100% score when a 2-statement or 3-statement true_false question is answered completely right', () => {
+  const exam: ExamDocument = {
+    examId: 'ex_tf2',
+    blueprintId: 'bp1',
+    title: 'Đề kiểm tra 2 ý Đúng/Sai',
+    description: 'Kiểm tra thang điểm < 4 ý',
+    grade: '10',
+    subject: 'hoa_hoc',
+    textbookSeries: 'Kết nối tri thức với cuộc sống',
+    examType: 'giua_ky_1',
+    academicYear: '2026-2027',
+    semester: '1',
+    chapters: ['Cấu tạo nguyên tử'],
+    durationMinutes: 15,
+    totalScore: 2,
+    allowRetake: true,
+    published: true,
+    validationStatus: 'passed',
+    questions: [
+      {
+        questionId: 'tf_2st',
+        orderIndex: 1,
+        chapterId: 'Cấu tạo nguyên tử',
+        conceptId: 'Hạt nhân',
+        learningOutcome: 'Xác định hạt trong hạt nhân',
+        cognitiveLevel: 'nhan_biet',
+        questionType: 'true_false',
+        scoreWeight: 2,
+        questionText: 'Xét các mệnh đề sau:',
+        trueFalseStatements: [
+          { label: 'a', text: 'Proton mang điện tích dương', isTrue: true },
+          { label: 'b', text: 'Neutron mang điện tích âm', isTrue: false },
+        ],
+        explanation: 'Neutron không mang điện.',
+        sourceReference: 'SGK Hóa 10',
+        sourceType: 'textbook_reference',
+        validationStatus: 'passed',
+      },
+    ],
+    createdBy: 'admin',
+    createdAt: '2026-11-19T00:00:00Z',
+    updatedAt: '2026-11-19T00:00:00Z',
+  };
+
+  const fullRes = gradeExamSubmission(exam, [
+    { questionId: 'tf_2st', trueFalseChoices: { a: true, b: false } },
+  ]);
+  assert.equal(fullRes.earnedScore, 2);
+  assert.equal(fullRes.percentScore, 100);
+  assert.equal(fullRes.breakdown[0].isFullCorrect, true);
+
+  const halfRes = gradeExamSubmission(exam, [
+    { questionId: 'tf_2st', trueFalseChoices: { a: true, b: true } },
+  ]);
+  assert.equal(halfRes.earnedScore, 1);
+  assert.equal(halfRes.percentScore, 50);
+  assert.equal(halfRes.breakdown[0].isFullCorrect, false);
+});
+
+

@@ -175,19 +175,22 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
     const nextFlipped = !cardFlipped;
     setCardFlipped(nextFlipped);
     if (!cardInnerRef.current) return;
+    gsap.killTweensOf(cardInnerRef.current);
     const mm = gsap.matchMedia();
     mm.add(MOTION_ALLOWED_MEDIA, () => {
       const tl = gsap.timeline();
       tl.to(cardInnerRef.current, {
         scale: 0.97,
-        rotationY: nextFlipped ? 90 : 90,
-        duration: 0.18,
+        rotationY: 90,
+        duration: 0.16,
         ease: 'power2.out',
+        overwrite: 'auto',
       }).to(cardInnerRef.current, {
         scale: 1,
         rotationY: nextFlipped ? 180 : 0,
-        duration: 0.24,
+        duration: 0.22,
         ease: 'power3.inOut',
+        overwrite: 'auto',
       });
     });
     mm.add(REDUCED_MOTION_MEDIA, () => {
@@ -316,7 +319,32 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
     if (!user || sprintAnswers[item.itemId]) return;
     setSprintAnswers((prev) => ({ ...prev, [item.itemId]: choice }));
     const isCorrect = choice === item.correctAnswer;
+    const syntheticQuestion: QuizQuestion = {
+      questionId: item.questionId,
+      questionText: item.questionText,
+      optionA: item.optionA,
+      optionB: item.optionB,
+      optionC: item.optionC,
+      optionD: item.optionD,
+      correctAnswer: item.correctAnswer,
+      explanation: item.explanation,
+      difficulty: item.difficulty,
+      subject: item.subject,
+      grade: item.grade,
+      chapter: item.chapter,
+      concept: item.concept,
+      sourceReference: item.sourceReference,
+      createdAt: item.createdAt,
+    };
     try {
+      await recordQuizAttemptAndProgress({
+        uid: user.uid,
+        question: syntheticQuestion,
+        quizSetId: 'practice_sprint10',
+        selectedAnswer: choice,
+        sessionId,
+        idempotencyAttemptId: `${sessionId}_sprint_${item.itemId}_${Date.now()}`,
+      });
       const updated = await recordPracticeRetryWithSchedule(item, isCorrect);
       onItemsChange(items.map((x) => (x.itemId === item.itemId ? updated : x)));
     } catch {

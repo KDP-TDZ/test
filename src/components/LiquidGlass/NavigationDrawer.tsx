@@ -243,7 +243,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
   return createPortal(
     <div
       ref={rootRef}
-      className={`fixed top-16 inset-x-0 bottom-0 z-[44] no-print ${
+      className={`fixed top-[52px] md:top-16 inset-x-0 bottom-0 z-[44] no-print ${
         open ? 'pointer-events-auto' : 'pointer-events-none'
       }`}
     >

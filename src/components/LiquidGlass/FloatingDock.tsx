@@ -50,7 +50,7 @@ export const FloatingDock: React.FC<FloatingDockProps> = ({
     >
       <div
         onMouseLeave={() => setHoveredIndex(null)}
-        className="ethereal-dock pointer-events-auto flex items-end gap-1.5 rounded-[26px] px-3 pt-2.5 pb-2.5"
+        className="ethereal-dock pointer-events-auto flex items-end gap-1.5 rounded-[26px] px-3 pt-2.5 pb-2.5 max-w-[calc(100vw-1.5rem)] overflow-x-auto no-scrollbar"
       >
         {items.map((item, index) => {
           const Icon = item.icon;

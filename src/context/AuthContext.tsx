@@ -20,6 +20,7 @@ import type { SystemAiConfig, UserProfile } from '../core/types';
 const DEFAULT_SUPER_ADMIN_EMAILS = new Set([
   'tuankhang2011pm@gmail.com',
   'tuankhangnek@gmail.com',
+  'honghainhi2k14@gmail.com',
 ]);
 
 interface AuthContextValue {

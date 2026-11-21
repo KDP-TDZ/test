@@ -254,7 +254,8 @@ export class DocumentExtractionService {
         idToken: opts?.idToken,
         cacheInput: { ocrKind: 'image', mimeType: file.mimeType, sha256: contentHash },
         runWithModel: async (modelId) => {
-          const visionModel = isGroqModelId(modelId) ? 'gemini-4-hydrogen' : modelId;
+          const visionModel =
+            isGroqModelId(modelId) || isCloudflareModelId(modelId) ? 'gemini-4-hydrogen' : modelId;
           const base64 = file.buffer.toString('base64');
           const response = await callWithTimeout((signal) =>
             ai.models.generateContent({
@@ -401,7 +402,8 @@ export class DocumentExtractionService {
       idToken: opts?.idToken,
       cacheInput: { ocrKind: 'pdf_scan', sha256: pdfHash },
       runWithModel: async (modelId) => {
-        const visionModel = isGroqModelId(modelId) ? 'gemini-4-hydrogen' : modelId;
+        const visionModel =
+          isGroqModelId(modelId) || isCloudflareModelId(modelId) ? 'gemini-4-hydrogen' : modelId;
         const base64 = buffer.toString('base64');
         const response = await callWithTimeout((signal) =>
           ai.models.generateContent({
@@ -709,7 +711,10 @@ export class KnowledgeAnalysisService {
           idToken,
           cacheInput: { webSearchText: fullText.slice(0, 2000), grade, subject, scope },
           runWithModel: async (modelId) => {
-            const searchModel = isGroqModelId(modelId) ? 'gemini-3.1-flash-lite' : modelId;
+            const searchModel =
+              isGroqModelId(modelId) || isCloudflareModelId(modelId)
+                ? 'gemini-3.1-flash-lite'
+                : modelId;
             const resp = await callWithTimeout((signal) =>
               ai.models.generateContent({
                 model: searchModel,
@@ -2000,38 +2005,41 @@ export class ExamPipelineService {
       throw new Error('Vui lòng chọn ít nhất một tệp đề mẫu.');
     }
 
-    let extractedTextContent = '';
+    const extractedChunks: string[] = [];
     const inlineParts: Array<{ inlineData: { mimeType: string; data: string } }> = [];
 
-    if (first.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-      const mammothMod = await import('mammoth');
-      const mammothApi = mammothMod.default || mammothMod;
-      const result = await mammothApi.extractRawText({ buffer: first.buffer });
-      extractedTextContent = (result.value || '').trim();
-      if (!extractedTextContent) {
-        throw new Error('File DOCX không có văn bản đọc được.');
-      }
-    } else if (first.mimeType === 'application/pdf') {
-      try {
-        const { extractPdfPagesFromBuffer } = await import('./referenceIngestService.js');
-        const textPages = await extractPdfPagesFromBuffer(first.buffer);
-        const joined = textPages.map((p) => `--- TRANG ${p.pageNumber} ---\n${p.text}`).join('\n\n');
-        if (joined.replace(/\s+/g, '').length >= 80) {
-          extractedTextContent = joined;
+    for (const f of files) {
+      if (f.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+        const mammothMod = await import('mammoth');
+        const mammothApi = mammothMod.default || mammothMod;
+        const result = await mammothApi.extractRawText({ buffer: f.buffer });
+        const txt = (result.value || '').trim();
+        if (txt) {
+          extractedChunks.push(`=== TỆP DOCX: ${f.originalName} ===\n${txt}`);
         }
-      } catch {
-        // Fall back to multimodal PDF below
-      }
-      if (!extractedTextContent) {
-        inlineParts.push({
-          inlineData: {
-            mimeType: 'application/pdf',
-            data: first.buffer.toString('base64'),
-          },
-        });
-      }
-    } else {
-      for (const f of files) {
+      } else if (f.mimeType === 'application/pdf') {
+        let pdfExtracted = '';
+        try {
+          const { extractPdfPagesFromBuffer } = await import('./referenceIngestService.js');
+          const textPages = await extractPdfPagesFromBuffer(f.buffer);
+          const joined = textPages.map((p) => `--- TRANG ${p.pageNumber} ---\n${p.text}`).join('\n\n');
+          if (joined.replace(/\s+/g, '').length >= 80) {
+            pdfExtracted = joined;
+          }
+        } catch {
+          // Fall back to multimodal PDF below
+        }
+        if (pdfExtracted) {
+          extractedChunks.push(`=== TỆP PDF: ${f.originalName} ===\n${pdfExtracted}`);
+        } else {
+          inlineParts.push({
+            inlineData: {
+              mimeType: 'application/pdf',
+              data: f.buffer.toString('base64'),
+            },
+          });
+        }
+      } else {
         inlineParts.push({
           inlineData: {
             mimeType: f.mimeType,
@@ -2039,6 +2047,11 @@ export class ExamPipelineService {
           },
         });
       }
+    }
+
+    const extractedTextContent = extractedChunks.join('\n\n');
+    if (!extractedTextContent && inlineParts.length === 0) {
+      throw new Error('Không đọc được nội dung văn bản hoặc hình ảnh từ tệp đề mẫu đã chọn.');
     }
 
     const allowedFormatsDesc = includeTrueFalse
@@ -2093,7 +2106,7 @@ export class ExamPipelineService {
       bypassCache: true,
       runWithModel: async (modelId) => {
         const safeModel =
-          inlineParts.length > 0 && isGroqModelId(modelId) ? 'gemini-4-hydrogen' : modelId;
+          isGroqModelId(modelId) || isCloudflareModelId(modelId) ? 'gemini-4-hydrogen' : modelId;
         const contents =
           inlineParts.length > 0
             ? { parts: [...inlineParts, { text: promptText }] }

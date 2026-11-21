@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   BookOpen,
@@ -71,6 +71,18 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
   const [viewMode, setViewMode] = useState<'split' | 'original' | 'annotations'>('split');
   const [mobileTab, setMobileTab] = useState<'student' | 'reference' | 'explanation'>('student');
   const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setExpanded(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [expanded]);
 
   const [selectedClaimId, setSelectedClaimId] = useState<string | null>(
     analysis.claims[0]?.claimId || null
@@ -334,7 +346,11 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
               </div>
             )}
 
-            <div className="space-y-3 max-h-[560px] overflow-y-auto pr-1">
+            <div
+              className={`space-y-3 ${
+                expanded ? 'max-h-[calc(100dvh-14rem)]' : 'max-h-[560px]'
+              } overflow-y-auto pr-1`}
+            >
               {currentPage?.blocks.map((block) => {
                 const ann = showAnnotations
                   ? matchAnnotationForBlock(block.blockId, block.extractedText)
@@ -415,7 +431,9 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
               viewMode === 'annotations' ? 'lg:col-span-12' : 'lg:col-span-6'
             } ${
               mobileTab === 'reference' || mobileTab === 'explanation' ? 'block' : 'hidden lg:block'
-            } space-y-5 max-h-[760px] overflow-y-auto pr-1`}
+            } space-y-5 ${
+              expanded ? 'max-h-[calc(100dvh-13rem)]' : 'max-h-[760px]'
+            } overflow-y-auto pr-1`}
           >
             <div
               className={`glass-surface rounded-3xl p-5 sm:p-6 ${

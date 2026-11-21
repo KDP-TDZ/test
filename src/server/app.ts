@@ -23,6 +23,7 @@ import {
   persistUsageSnapshot,
   recordAuditLog,
   recordUsageEvent,
+  rollbackAiRequestGuard,
   setIdempotentResult,
   setOneTimeTaskOverride,
   updateAuthoritativeAiConfig,
@@ -137,9 +138,7 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
       });
       return;
     }
-    if (authUser.isSuperAdmin) {
-      await hydrateSingleKeyForSuperAdmin(authUser.idToken);
-    }
+    await hydrateSingleKeyForSuperAdmin(authUser.idToken);
     req.authUser = authUser;
     next();
   } catch (err) {
@@ -282,7 +281,7 @@ export function createApiApp(): express.Express {
   app.post('/api/auth/session', async (req, res) => {
     try {
       const authUser = await verifyFirebaseRequest(req);
-      if (authUser.isSuperAdmin) {
+      if (authUser.emailVerified) {
         await hydrateSingleKeyForSuperAdmin(authUser.idToken);
       }
       res.json({
@@ -465,29 +464,74 @@ export function createApiApp(): express.Express {
           ? (rawPresetSubject as SubjectId)
           : 'khac';
 
-      let pages: ExtractedPage[] = [];
+      const pages: ExtractedPage[] = [];
       const first = uploadedFiles[0];
+      const pendingImages: Array<{ buffer: Buffer; mimeType: string; originalName: string }> = [];
 
-      if (first.mimetype === 'application/pdf') {
-        pages = await DocumentExtractionService.extractFromPdfBuffer(first.buffer, tokens, {
-          config: guard.config,
-          idToken: user.idToken,
-        });
-      } else if (
-        first.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-      ) {
-        pages = await DocumentExtractionService.extractFromDocxBuffer(first.buffer);
-      } else {
-        pages = await DocumentExtractionService.extractFromImageBuffers(
-          uploadedFiles.map((f) => ({
-            buffer: f.buffer,
-            mimeType: f.mimetype,
-            originalName: f.originalname,
-          })),
+      const flushPendingImages = async (): Promise<void> => {
+        if (pendingImages.length === 0) return;
+        const batch = pendingImages.splice(0, pendingImages.length);
+        const extractedImgs = await DocumentExtractionService.extractFromImageBuffers(
+          batch,
           tokens,
-          { config: guard.config, idToken: user.idToken, pageOffset }
+          {
+            config: guard.config,
+            idToken: user.idToken,
+            pageOffset: pageOffset + pages.length,
+          }
         );
+        pages.push(...extractedImgs);
+      };
+
+      for (const file of uploadedFiles) {
+        if (file.mimetype === 'application/pdf') {
+          await flushPendingImages();
+          const pdfPages = await DocumentExtractionService.extractFromPdfBuffer(file.buffer, tokens, {
+            config: guard.config,
+            idToken: user.idToken,
+          });
+          const baseOffset = pageOffset + pages.length;
+          for (let i = 0; i < pdfPages.length; i += 1) {
+            const pageNum = baseOffset + i + 1;
+            const p = pdfPages[i];
+            pages.push({
+              ...p,
+              pageNumber: pageNum,
+              blocks: p.blocks.map((b, bIdx) => ({
+                ...b,
+                blockId: `p${pageNum}_b${bIdx + 1}`,
+                pageNumber: pageNum,
+              })),
+            });
+          }
+        } else if (
+          file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        ) {
+          await flushPendingImages();
+          const docxPages = await DocumentExtractionService.extractFromDocxBuffer(file.buffer);
+          const baseOffset = pageOffset + pages.length;
+          for (let i = 0; i < docxPages.length; i += 1) {
+            const pageNum = baseOffset + i + 1;
+            const p = docxPages[i];
+            pages.push({
+              ...p,
+              pageNumber: pageNum,
+              blocks: p.blocks.map((b, bIdx) => ({
+                ...b,
+                blockId: `p${pageNum}_b${bIdx + 1}`,
+                pageNumber: pageNum,
+              })),
+            });
+          }
+        } else {
+          pendingImages.push({
+            buffer: file.buffer,
+            mimeType: file.mimetype,
+            originalName: file.originalname,
+          });
+        }
       }
+      await flushPendingImages();
 
       if (pages.length + pageOffset > guard.config.rateLimitConfig.maximumPagesPerAnalysis) {
         res.status(400).json({
@@ -519,7 +563,7 @@ export function createApiApp(): express.Express {
         candidateTokens: tokens.candidateTokens,
         totalTokens: tokens.totalTokens,
       });
-      void persistUsageSnapshot(user.idToken, user.isSuperAdmin);
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
 
       res.json({ pages, scopeSuggestion, tokenUsage: tokens });
     } catch (err) {
@@ -576,9 +620,18 @@ export function createApiApp(): express.Express {
     }
 
     let jobStarted = false;
+    let guardPassed = false;
     const tokens: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
 
     try {
+      const preCfg = await loadAuthoritativeAiConfig(user.idToken);
+      if (pages.length > preCfg.rateLimitConfig.maximumPagesPerAnalysis) {
+        res.status(400).json({
+          error: `Số trang (${pages.length}) vượt quá giới hạn tối đa (${preCfg.rateLimitConfig.maximumPagesPerAnalysis}).`,
+        });
+        return;
+      }
+
       const guard = await checkAiRequestGuard({
         uid: user.uid,
         email: user.email,
@@ -589,13 +642,7 @@ export function createApiApp(): express.Express {
         res.status(guard.httpStatus || 503).json({ code: guard.code, error: guard.message });
         return;
       }
-
-      if (pages.length > guard.config.rateLimitConfig.maximumPagesPerAnalysis) {
-        res.status(400).json({
-          error: `Số trang (${pages.length}) vượt quá giới hạn tối đa (${guard.config.rateLimitConfig.maximumPagesPerAnalysis}).`,
-        });
-        return;
-      }
+      guardPassed = true;
 
       incrementConcurrentJob(user.uid);
       jobStarted = true;
@@ -629,10 +676,13 @@ export function createApiApp(): express.Express {
         candidateTokens: tokens.candidateTokens,
         totalTokens: tokens.totalTokens,
       });
-      void persistUsageSnapshot(user.idToken, user.isSuperAdmin);
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
 
       res.json(payload);
     } catch (err) {
+      if (guardPassed) {
+        rollbackAiRequestGuard(user.uid, 'analysis');
+      }
       const mapped = mapGeminiErrorResponse(err);
       recordUsageEvent({
         uid: user.uid,
@@ -642,6 +692,7 @@ export function createApiApp(): express.Express {
         providerError: mapped.status >= 500,
         quotaBlocked: mapped.status === 429,
       });
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.status(mapped.status).json(mapped);
     } finally {
       if (jobStarted) {
@@ -738,7 +789,7 @@ export function createApiApp(): express.Express {
         candidateTokens: tokens.candidateTokens,
         totalTokens: tokens.totalTokens,
       });
-      void persistUsageSnapshot(user.idToken, user.isSuperAdmin);
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
 
       res.json(payload);
     } catch (err) {
@@ -751,6 +802,7 @@ export function createApiApp(): express.Express {
         providerError: mapped.status >= 500,
         quotaBlocked: mapped.status === 429,
       });
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.status(mapped.status).json(mapped);
     }
   });
@@ -791,9 +843,28 @@ export function createApiApp(): express.Express {
         config: guard.config,
         idToken: user.idToken,
       });
+      recordUsageEvent({
+        uid: user.uid,
+        email: user.email,
+        requestType: 'quiz',
+        outcome: 'success',
+        promptTokens: tokens.promptTokens,
+        candidateTokens: tokens.candidateTokens,
+        totalTokens: tokens.totalTokens,
+      });
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.json({ cards, tokenUsage: tokens });
     } catch (err) {
       const mapped = mapGeminiErrorResponse(err);
+      recordUsageEvent({
+        uid: user.uid,
+        email: user.email,
+        requestType: 'quiz',
+        outcome: 'failed',
+        providerError: mapped.status >= 500,
+        quotaBlocked: mapped.status === 429,
+      });
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.status(mapped.status).json(mapped);
     }
   });

@@ -79,7 +79,7 @@ function appendExecutionLog(log: AiExecutionLog): void {
   }
 }
 
-export const GEMINI_TIMEOUT_MS = 30_000;
+export const GEMINI_TIMEOUT_MS = 22_000;
 
 export async function callWithTimeout<T>(
   operation: (signal: AbortSignal) => Promise<T>,
@@ -237,10 +237,6 @@ export async function executeRoutedAiTask<T>(params: {
     overrideConsumed = true;
   });
 
-  if (overrideConsumed && consumeOneTimeOverride) {
-    await consumeOneTimeOverride(taskType);
-  }
-
   const cacheKey =
     cacheInput && !bypassCache
       ? buildDeterministicCacheKey({
@@ -304,9 +300,12 @@ export async function executeRoutedAiTask<T>(params: {
   }> => {
     const start = Date.now();
     try {
-      // When fallback is active, retry primary at most once so 429/503 transitions quickly to fallback
-      const primaryRetries = canFallback ? 1 : 2;
+      // When fallback is active, retry primary 0 times so 429/503 transitions immediately to fallback within Vercel's 60s budget
+      const primaryRetries = canFallback ? 0 : 1;
       const result = await withExponentialBackoff(() => runWithModel(decision.modelId), primaryRetries);
+      if (overrideConsumed && consumeOneTimeOverride) {
+        await consumeOneTimeOverride(taskType);
+      }
       if (cacheKey) {
         aiResponseCache.set(cacheKey, result);
       }
