@@ -45,7 +45,7 @@ let authoritativeAiConfig: SystemAiConfig = {
   updatedAt: new Date().toISOString(),
   updatedBy: SUPER_ADMIN_EMAIL,
   rateLimitConfig: { ...DEFAULT_RATE_LIMITS },
-  activeModel: 'gemini-4-hydrogen',
+  activeModel: 'groq:openai/gpt-oss-120b',
   configVersion: 1,
   allowedOrigins: [],
   taskModels: cloneDefaultTaskModels(),
@@ -151,7 +151,7 @@ export async function loadAuthoritativeAiConfig(
 }
 
 export function getActiveModel(): string {
-  return (authoritativeAiConfig.activeModel || 'gemini-4-hydrogen').trim();
+  return (authoritativeAiConfig.activeModel || 'groq:openai/gpt-oss-120b').trim();
 }
 
 export async function consumeOneTimeModelOverride(

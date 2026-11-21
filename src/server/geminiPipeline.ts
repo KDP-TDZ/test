@@ -54,7 +54,7 @@ import {
   executeRoutedAiTask,
   thinkingConfigForModel,
 } from './modelRouter.js';
-import { callGroqChatCompletion, isGroqModelId } from './groqProvider.js';
+import { callGroqChatCompletion, GROQ_VISION_MODEL, isGroqModelId } from './groqProvider.js';
 import {
   callCloudflareChatCompletion,
   isCloudflareModelId,
@@ -213,6 +213,7 @@ async function runTaskWithRouter<T>(params: {
   cacheInput?: Record<string, unknown>;
   bypassCache?: boolean;
   allowGroqRescue?: boolean;
+  groqRescueModelId?: string;
   runWithModel: (modelId: string) => Promise<T>;
 }): Promise<{ data: T; modelId: string }> {
   const cfg = params.config || getAuthoritativeAiConfigSnapshot();
@@ -223,9 +224,71 @@ async function runTaskWithRouter<T>(params: {
     cacheInput: params.cacheInput,
     bypassCache: params.bypassCache,
     allowGroqRescue: params.allowGroqRescue,
+    groqRescueModelId: params.groqRescueModelId,
     runWithModel: params.runWithModel,
   });
   return { data: res.data, modelId: res.modelId };
+}
+
+export interface InlineScopeSuggestion {
+  suggestedGrade: GradeLevel;
+  suggestedSubject: SubjectId;
+  suggestedChapters: string[];
+  suggestedTitle: string;
+}
+
+const OCR_FAST_TIMEOUT_MS = 14_000;
+
+function buildExtractedBlocksFromRawText(
+  rawText: string,
+  pageNumber: number,
+  confidence: number
+): ExtractedTextBlock[] {
+  const safeConf = Math.max(0.1, Math.min(1, Number(confidence) || 0.92));
+  const lines = (rawText || '')
+    .split(/\r?\n+/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  return lines.map((line, idx) => {
+    let textType: ExtractedTextBlock['textType'] = 'paragraph';
+    if (idx === 0 && line.length < 95) {
+      textType = 'heading';
+    } else if (/^([-*+•]|\d+[.)]|[a-zA-Z][.)])\s+/.test(line)) {
+      textType = 'list';
+    } else if (/[=≈≠≤≥±×÷]|(\b[a-zA-Z]\s*=\s*[a-zA-Z0-9])/i.test(line) && line.length < 120) {
+      textType = 'formula';
+    }
+
+    return {
+      blockId: `p${pageNumber}_b${idx + 1}`,
+      pageNumber,
+      extractedText: line,
+      textType,
+      confidence: safeConf,
+      readingOrder: idx + 1,
+      ...(textType === 'formula' ? { formulaText: line } : {}),
+      boundingBox: null,
+    };
+  });
+}
+
+const recentInlineScopeByTextHash = new Map<string, InlineScopeSuggestion>();
+let lastExtractedInlineScope: { textPrefix: string; suggestion: InlineScopeSuggestion } | null = null;
+
+export function getInlineScopeSuggestionForText(text: string): InlineScopeSuggestion | null {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return null;
+  const hash = crypto.createHash('sha256').update(trimmed.slice(0, 1200)).digest('hex');
+  const direct = recentInlineScopeByTextHash.get(hash);
+  if (direct) return direct;
+  if (
+    lastExtractedInlineScope &&
+    trimmed.includes(lastExtractedInlineScope.textPrefix)
+  ) {
+    return lastExtractedInlineScope.suggestion;
+  }
+  return null;
 }
 
 export class DocumentExtractionService {
@@ -235,120 +298,177 @@ export class DocumentExtractionService {
     opts?: { config?: SystemAiConfig; idToken?: string; pageOffset?: number }
   ): Promise<ExtractedPage[]> {
     const ai = await createServerAiClient();
-    const validTypes = new Set(['paragraph', 'heading', 'formula', 'table', 'list', 'handwriting']);
     const pageOffset = Math.max(0, Number(opts?.pageOffset) || 0);
-    const pages: ExtractedPage[] = [];
 
-    for (let idx = 0; idx < files.length; idx += 1) {
-      const file = files[idx];
-      const pageNum = pageOffset + idx + 1;
-      const contentHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+    const results = await Promise.all(
+      files.map(async (file, idx) => {
+        const pageNum = pageOffset + idx + 1;
+        const contentHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
 
-      const { data: parsed } = await runTaskWithRouter<{
-        blocks: Array<{
-          extractedText: string;
-          textType: string;
-          confidence: number;
-          formulaText?: string;
-        }>;
-      }>({
-        taskType: 'curriculum_extraction',
-        config: opts?.config,
-        idToken: opts?.idToken,
-        cacheInput: { ocrKind: 'image', mimeType: file.mimeType, sha256: contentHash },
-        runWithModel: async (modelId) => {
-          const visionModel =
-            isGroqModelId(modelId) || isCloudflareModelId(modelId) ? 'gemini-4-hydrogen' : modelId;
-          const base64 = file.buffer.toString('base64');
-          const response = await callWithTimeout((signal) =>
-            ai.models.generateContent({
-              model: visionModel,
-              contents: {
-                parts: [
-                  {
-                    inlineData: {
-                      mimeType: file.mimeType,
-                      data: base64,
-                    },
-                  },
-                  {
-                    text: [
-                      'Trích xuất toàn bộ văn bản, công thức, bảng biểu và chữ viết tay từ trang tài liệu này.',
-                      '- Giữ nguyên chính tả và nội dung gốc của học sinh, KHÔNG tự sửa lỗi kiến thức, KHÔNG thêm bình luận.',
-                      '- Chia thành các khối theo thứ tự đọc và ghi nhận textType + confidence (0.0-1.0). Nếu chữ mờ/khó đọc đặt confidence < 0.65.',
-                    ].join('\n'),
-                  },
-                ],
-              },
-              config: {
-                thinkingConfig: thinkingConfigForModel(visionModel, 'minimal'),
-                maxOutputTokens: 2048,
-                abortSignal: signal,
-                responseMimeType: 'application/json',
-                responseSchema: {
-                  type: Type.OBJECT,
-                  properties: {
-                    blocks: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          extractedText: { type: Type.STRING },
-                          textType: {
-                            type: Type.STRING,
-                            description: 'paragraph | heading | formula | table | list | handwriting',
-                          },
-                          confidence: { type: Type.NUMBER },
-                          formulaText: { type: Type.STRING },
+        const { data: parsed } = await runTaskWithRouter<{
+          rawText?: string;
+          ocrConfidence?: number;
+          suggestedGrade?: string;
+          suggestedSubject?: string;
+          suggestedChapters?: string[];
+          suggestedTitle?: string;
+          blocks?: Array<{
+            extractedText: string;
+            textType: string;
+            confidence: number;
+            formulaText?: string;
+          }>;
+        }>({
+          taskType: 'curriculum_extraction',
+          config: opts?.config,
+          idToken: opts?.idToken,
+          allowGroqRescue: true,
+          groqRescueModelId: GROQ_VISION_MODEL,
+          cacheInput: { ocrKind: 'image_fast_v3', mimeType: file.mimeType, sha256: contentHash },
+          runWithModel: async (modelId) => {
+            const base64 = file.buffer.toString('base64');
+            const ocrPrompt = [
+              'Đọc OCR toàn bộ văn bản, công thức và chữ viết tay trong trang ảnh này.',
+              '- Giữ nguyên 100% chính tả và công thức gốc của học sinh theo từng dòng xuống hàng (\\n), KHÔNG tự sửa lỗi kiến thức, KHÔNG bình luận.',
+              '- Chấm độ rõ nét chữ viết ocrConfidence (0.0-1.0; nếu mờ/khó đọc đặt < 0.65).',
+              '- Nhận diện luôn lớp ("10"|"11"|"12"), môn học THPT, tên chương và tiêu đề bài ghi.',
+            ].join('\n');
+
+            if (isGroqModelId(modelId)) {
+              const resp = await callWithTimeout(
+                (signal) =>
+                  callGroqChatCompletion({
+                    modelId,
+                    prompt: ocrPrompt,
+                    images: [{ mimeType: file.mimeType, base64 }],
+                    jsonMode: true,
+                    jsonSchemaHint:
+                      '{"rawText":"...","ocrConfidence":0.95,"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
+                    maxOutputTokens: 1536,
+                    signal,
+                  }),
+                OCR_FAST_TIMEOUT_MS
+              );
+              accumulateRawTokens(tokensOut, resp);
+              return JSON.parse((resp.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+            }
+
+            const visionModel = isCloudflareModelId(modelId) ? 'gemini-3.1-flash-lite' : modelId;
+            const response = await callWithTimeout(
+              (signal) =>
+                ai.models.generateContent({
+                  model: visionModel,
+                  contents: {
+                    parts: [
+                      {
+                        inlineData: {
+                          mimeType: file.mimeType,
+                          data: base64,
                         },
-                        required: ['extractedText', 'textType', 'confidence'],
                       },
+                      {
+                        text: ocrPrompt,
+                      },
+                    ],
+                  },
+                  config: {
+                    thinkingConfig: thinkingConfigForModel(visionModel, 'minimal'),
+                    maxOutputTokens: 1536,
+                    abortSignal: signal,
+                    responseMimeType: 'application/json',
+                    responseSchema: {
+                      type: Type.OBJECT,
+                      properties: {
+                        rawText: { type: Type.STRING },
+                        ocrConfidence: { type: Type.NUMBER },
+                        suggestedGrade: { type: Type.STRING, description: '10 | 11 | 12' },
+                        suggestedSubject: {
+                          type: Type.STRING,
+                          description:
+                            'toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac',
+                        },
+                        suggestedChapters: {
+                          type: Type.ARRAY,
+                          items: { type: Type.STRING },
+                        },
+                        suggestedTitle: { type: Type.STRING },
+                      },
+                      required: [
+                        'rawText',
+                        'ocrConfidence',
+                        'suggestedGrade',
+                        'suggestedSubject',
+                        'suggestedChapters',
+                        'suggestedTitle',
+                      ],
                     },
                   },
-                  required: ['blocks'],
-                },
-              },
-            })
-          );
-          accumulateTokens(tokensOut, response);
-          return JSON.parse((response.text || '{"blocks":[]}').trim()) as {
-            blocks: Array<{
-              extractedText: string;
-              textType: string;
-              confidence: number;
-              formulaText?: string;
-            }>;
+                }),
+              OCR_FAST_TIMEOUT_MS
+            );
+            accumulateTokens(tokensOut, response);
+            return JSON.parse((response.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+          },
+        });
+
+        let rawText = (parsed.rawText || '').trim();
+        let blocks: ExtractedTextBlock[] = [];
+        let avgConf = Math.max(0.1, Math.min(1, Number(parsed.ocrConfidence) || 0.9));
+
+        if (!rawText && Array.isArray(parsed.blocks) && parsed.blocks.length > 0) {
+          rawText = parsed.blocks
+            .map((b) => (b.extractedText || '').trim())
+            .filter(Boolean)
+            .join('\n');
+        }
+
+        blocks = buildExtractedBlocksFromRawText(rawText, pageNum, avgConf);
+        if (blocks.length === 0) {
+          avgConf = 0;
+        }
+
+        if (rawText && parsed.suggestedSubject) {
+          const grade: GradeLevel =
+            parsed.suggestedGrade === '11' || parsed.suggestedGrade === '12'
+              ? parsed.suggestedGrade
+              : '10';
+          const subject: SubjectId =
+            parsed.suggestedSubject in SUBJECT_LABELS
+              ? (parsed.suggestedSubject as SubjectId)
+              : 'khac';
+          const textHash = crypto.createHash('sha256').update(rawText.slice(0, 1200)).digest('hex');
+          const suggestionObj: InlineScopeSuggestion = {
+            suggestedGrade: grade,
+            suggestedSubject: subject,
+            suggestedChapters: Array.isArray(parsed.suggestedChapters)
+              ? parsed.suggestedChapters.slice(0, 4)
+              : [],
+            suggestedTitle:
+              (parsed.suggestedTitle || '').trim() ||
+              file.originalName.replace(/\.[^.]+$/, '') ||
+              'Tài liệu ôn tập',
           };
-        },
-      });
+          recentInlineScopeByTextHash.set(textHash, suggestionObj);
+          lastExtractedInlineScope = {
+            textPrefix: rawText.slice(0, 160),
+            suggestion: suggestionObj,
+          };
+          if (recentInlineScopeByTextHash.size > 100) {
+            const oldestKey = recentInlineScopeByTextHash.keys().next().value;
+            if (oldestKey) recentInlineScopeByTextHash.delete(oldestKey);
+          }
+        }
 
-      const blocks: ExtractedTextBlock[] = (parsed.blocks || [])
-        .filter((b) => b.extractedText && b.extractedText.trim().length > 0)
-        .map((b, bIdx) => ({
-          blockId: `p${pageNum}_b${bIdx + 1}`,
+        return {
           pageNumber: pageNum,
-          extractedText: b.extractedText.trim(),
-          textType: (validTypes.has(b.textType) ? b.textType : 'paragraph') as ExtractedTextBlock['textType'],
-          confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0.8)),
-          readingOrder: bIdx + 1,
-          ...(b.formulaText ? { formulaText: b.formulaText } : {}),
-          boundingBox: null,
-        }));
+          rawText,
+          blocks,
+          ocrAverageConfidence: avgConf,
+        } satisfies ExtractedPage;
+      })
+    );
 
-      const avgConf =
-        blocks.length > 0
-          ? Math.round((blocks.reduce((s, b) => s + b.confidence, 0) / blocks.length) * 100) / 100
-          : 0;
-
-      pages.push({
-        pageNumber: pageNum,
-        rawText: blocks.map((b) => b.extractedText).join('\n'),
-        blocks,
-        ocrAverageConfidence: avgConf,
-      });
-    }
-
-    return pages;
+    return results.sort((a, b) => a.pageNumber - b.pageNumber);
   }
 
   static async extractFromPdfBuffer(
@@ -392,7 +512,9 @@ export class DocumentExtractionService {
     const { data: parsed } = await runTaskWithRouter<{
       pages: Array<{
         pageNumber: number;
-        blocks: Array<{
+        rawText?: string;
+        ocrConfidence?: number;
+        blocks?: Array<{
           extractedText: string;
           textType: string;
           confidence: number;
@@ -403,101 +525,77 @@ export class DocumentExtractionService {
       taskType: 'curriculum_extraction',
       config: opts?.config,
       idToken: opts?.idToken,
-      cacheInput: { ocrKind: 'pdf_scan', sha256: pdfHash },
+      cacheInput: { ocrKind: 'pdf_scan_v2', sha256: pdfHash },
       runWithModel: async (modelId) => {
         const visionModel =
-          isGroqModelId(modelId) || isCloudflareModelId(modelId) ? 'gemini-4-hydrogen' : modelId;
+          isGroqModelId(modelId) || isCloudflareModelId(modelId)
+            ? 'gemini-3.1-flash-lite'
+            : modelId;
         const base64 = buffer.toString('base64');
-        const response = await callWithTimeout((signal) =>
-          ai.models.generateContent({
-            model: visionModel,
-            contents: {
-              parts: [
-                {
-                  inlineData: {
-                    mimeType: 'application/pdf',
-                    data: base64,
-                  },
-                },
-                {
-                  text: 'Trích xuất văn bản, công thức và bảng biểu theo từng trang của file PDF học tập này. Giữ nguyên nội dung gốc (không tự sửa lỗi kiến thức, không thêm bình luận). Trả về danh sách trang và từng đoạn văn bản kèm độ tin cậy OCR.',
-                },
-              ],
-            },
-            config: {
-              thinkingConfig: thinkingConfigForModel(visionModel, 'minimal'),
-              maxOutputTokens: 4096,
-              abortSignal: signal,
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  pages: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        pageNumber: { type: Type.INTEGER },
-                        blocks: {
-                          type: Type.ARRAY,
-                          items: {
-                            type: Type.OBJECT,
-                            properties: {
-                              extractedText: { type: Type.STRING },
-                              textType: { type: Type.STRING },
-                              confidence: { type: Type.NUMBER },
-                              formulaText: { type: Type.STRING },
-                            },
-                            required: ['extractedText', 'textType', 'confidence'],
-                          },
-                        },
-                      },
-                      required: ['pageNumber', 'blocks'],
+        const response = await callWithTimeout(
+          (signal) =>
+            ai.models.generateContent({
+              model: visionModel,
+              contents: {
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: 'application/pdf',
+                      data: base64,
                     },
                   },
-                },
-                required: ['pages'],
+                  {
+                    text: 'Trích xuất toàn bộ văn bản, công thức và chữ viết tay theo từng trang của file PDF này. Giữ nguyên chính tả và nội dung gốc theo từng dòng xuống hàng (\\n), không tự sửa lỗi kiến thức, không thêm bình luận.',
+                  },
+                ],
               },
-            },
-          })
+              config: {
+                thinkingConfig: thinkingConfigForModel(visionModel, 'minimal'),
+                maxOutputTokens: 4096,
+                abortSignal: signal,
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    pages: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          pageNumber: { type: Type.INTEGER },
+                          rawText: { type: Type.STRING },
+                          ocrConfidence: { type: Type.NUMBER },
+                        },
+                        required: ['pageNumber', 'rawText', 'ocrConfidence'],
+                      },
+                    },
+                  },
+                  required: ['pages'],
+                },
+              },
+            }),
+          20_000
         );
         accumulateTokens(tokensOut, response);
-        return JSON.parse((response.text || '{"pages":[]}').trim()) as {
-          pages: Array<{
-            pageNumber: number;
-            blocks: Array<{
-              extractedText: string;
-              textType: string;
-              confidence: number;
-              formulaText?: string;
-            }>;
-          }>;
-        };
+        return JSON.parse((response.text || '{"pages":[]}').trim());
       },
     });
 
-    const validTypes = new Set(['paragraph', 'heading', 'formula', 'table', 'list', 'handwriting']);
     return (parsed.pages || []).map((p, idx) => {
       const pageNum = p.pageNumber || idx + 1;
-      const blocks: ExtractedTextBlock[] = (p.blocks || []).map((b, bIdx) => ({
-        blockId: `p${pageNum}_b${bIdx + 1}`,
-        pageNumber: pageNum,
-        extractedText: b.extractedText.trim(),
-        textType: (validTypes.has(b.textType) ? b.textType : 'paragraph') as ExtractedTextBlock['textType'],
-        confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0.78)),
-        readingOrder: bIdx + 1,
-        ...(b.formulaText ? { formulaText: b.formulaText } : {}),
-        boundingBox: null,
-      }));
-      const avgConf =
-        blocks.length > 0
-          ? Math.round((blocks.reduce((s, b) => s + b.confidence, 0) / blocks.length) * 100) / 100
-          : 0.75;
+      const rawText =
+        (p.rawText || '').trim() ||
+        (p.blocks || [])
+          .map((b) => (b.extractedText || '').trim())
+          .filter(Boolean)
+          .join('\n');
+      const avgConf = Math.max(0.1, Math.min(1, Number(p.ocrConfidence) || 0.85));
+      const blocks = buildExtractedBlocksFromRawText(rawText, pageNum, avgConf);
       return {
         pageNumber: pageNum,
-        rawText: blocks.map((b) => b.extractedText).join('\n'),
+        rawText,
         blocks,
-        ocrAverageConfidence: avgConf,
+        ocrAverageConfidence: blocks.length > 0 ? avgConf : 0,
       };
     });
   }
@@ -551,6 +649,11 @@ export class SubjectDetectionService {
     suggestedChapters: string[];
     suggestedTitle: string;
   }> {
+    const inlineCached = getInlineScopeSuggestionForText(sampleText);
+    if (inlineCached) {
+      return inlineCached;
+    }
+
     const scopePrompt = [
       'Phân tích đoạn ghi chép học tập sau để xác định ĐÚNG lớp (10, 11 hoặc 12), môn học THPT, tiêu đề ngắn và tối đa 3 chương/chủ đề phù hợp.',
       'LƯU Ý QUAN TRỌNG: Xác định chủ đề dựa trên KHÁI NIỆM/ĐỐI TƯỢNG CHÍNH mà tài liệu đang trình bày hoặc định nghĩa (ví dụ: nếu đoạn văn viết "Chuyển động thẳng đều là..." nhưng học sinh viết nhầm chi tiết bên trong thành "tốc độ thay đổi", chủ đề VẪN LÀ "Chuyển động thẳng đều", TUYỆT ĐỐI KHÔNG bị lỗi sai của học sinh đánh lừa sang chương khác như "Chuyển động biến đổi").',
@@ -573,8 +676,9 @@ export class SubjectDetectionService {
         generateJsonWithProvider({
           modelId,
           prompt: scopePrompt,
-          thinkingTier: 'low',
+          thinkingTier: 'minimal',
           maxOutputTokens: 384,
+          timeoutMs: 8_000,
           tokensOut,
           fallbackJson: '{}',
           groqSchemaHint:
@@ -871,9 +975,9 @@ export class KnowledgeAnalysisService {
         generateJsonWithProvider<RawEvalResult>({
           modelId,
           prompt: analysisPrompt,
-          thinkingTier: 'medium',
-          maxOutputTokens: 6144,
-          timeoutMs: 45_000,
+          thinkingTier: pages.length <= 2 && formattedStudentBlocks.length <= 3500 ? 'low' : 'medium',
+          maxOutputTokens: pages.length <= 2 ? 4096 : 6144,
+          timeoutMs: 26_000,
           tokensOut,
           fallbackJson: '{"claims":[],"coverageItems":[],"strengths":[],"weaknesses":[],"suggestions":[]}',
           groqSchemaHint:
@@ -2107,9 +2211,37 @@ export class ExamPipelineService {
       config,
       idToken,
       bypassCache: true,
+      allowGroqRescue: inlineParts.every((p) => p.inlineData.mimeType !== 'application/pdf'),
       runWithModel: async (modelId) => {
+        const hasPdfBinary = inlineParts.some((p) => p.inlineData.mimeType === 'application/pdf');
+        const imageParts = inlineParts
+          .filter((p) => p.inlineData.mimeType.startsWith('image/'))
+          .map((p) => ({ mimeType: p.inlineData.mimeType, base64: p.inlineData.data }));
+
+        if (isGroqModelId(modelId) && !hasPdfBinary) {
+          const resp = await callWithTimeout((signal) =>
+            callGroqChatCompletion({
+              modelId,
+              prompt: promptText,
+              images: imageParts.length > 0 ? imageParts : undefined,
+              jsonMode: true,
+              jsonSchemaHint:
+                '{"detectedTitle":"...","questions":[{"questionType":"abcd|short_answer|true_false","questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","shortAnswerAccepted":["..."],"scoreWeight":0.25,"answerFromSource":true,"explanation":"...","chapter":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao"}]}',
+              maxOutputTokens: 6144,
+              signal,
+            })
+          );
+          accumulateRawTokens(tokensOut, resp);
+          return JSON.parse((resp.text || '{"questions":[]}').trim()) as {
+            detectedTitle?: string;
+            questions: RawCopiedQuestion[];
+          };
+        }
+
         const safeModel =
-          isGroqModelId(modelId) || isCloudflareModelId(modelId) ? 'gemini-4-hydrogen' : modelId;
+          isGroqModelId(modelId) || isCloudflareModelId(modelId)
+            ? 'gemini-3.1-flash-lite'
+            : modelId;
         const contents =
           inlineParts.length > 0
             ? { parts: [...inlineParts, { text: promptText }] }
@@ -2536,7 +2668,12 @@ export class TextbookSynthesisService {
       title?.trim() || `SGK ${subjectName} ${grade} - ${textbookSeries}`;
 
     let webTocContext = '';
-    if (!customTocHint || customTocHint.trim().length < 20) {
+    const selectedOutlineModel =
+      config?.taskModels?.curriculum_extraction?.defaultModel || config?.activeModel || '';
+    const shouldSearchWithGemini =
+      !isGroqModelId(selectedOutlineModel) && !isCloudflareModelId(selectedOutlineModel);
+
+    if (shouldSearchWithGemini && (!customTocHint || customTocHint.trim().length < 20)) {
       try {
         const ai = await createServerAiClient();
         const searchQuery = `Mục lục các chương và bài học sách giáo khoa ${subjectName} lớp ${grade} bộ sách ${textbookSeries} chương trình GDPT 2018`;
@@ -2552,7 +2689,7 @@ export class TextbookSynthesisService {
                 tools: [{ googleSearch: {} }],
               },
             }),
-          16_000
+          14_000
         );
         accumulateTokens(tokensOut, searchResp);
         webTocContext = (searchResp.text || '').trim().slice(0, 4000);

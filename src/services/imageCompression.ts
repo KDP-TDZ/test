@@ -16,11 +16,13 @@ export {
   splitFilesIntoByteBudgetBatches,
 };
 
+const FAST_OCR_TARGET_BYTES = 360 * 1024;
+
 const ADAPTIVE_COMPRESSION_PASSES: Array<{ maxDimension: number; quality: number }> = [
-  { maxDimension: 1680, quality: 0.84 },
-  { maxDimension: 1480, quality: 0.78 },
-  { maxDimension: 1360, quality: 0.72 },
-  { maxDimension: 1280, quality: 0.68 },
+  { maxDimension: 1360, quality: 0.78 },
+  { maxDimension: 1240, quality: 0.74 },
+  { maxDimension: 1120, quality: 0.70 },
+  { maxDimension: 1024, quality: 0.66 },
 ];
 
 async function renderScaledJpegBlob(
@@ -61,7 +63,7 @@ export async function compressImageFileForUpload(
   file: File,
   opts: { maxDimension?: number; quality?: number; targetMaxBytes?: number } = {}
 ): Promise<File> {
-  const targetMaxBytes = opts.targetMaxBytes ?? TARGET_COMPRESSED_IMAGE_BYTES;
+  const targetMaxBytes = opts.targetMaxBytes ?? Math.min(TARGET_COMPRESSED_IMAGE_BYTES, FAST_OCR_TARGET_BYTES);
 
   if (!file.type.startsWith('image/')) {
     return file;

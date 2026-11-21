@@ -865,30 +865,21 @@ import crypto5 from "node:crypto";
 // src/server/modelDefaults.ts
 var MODEL_CATALOG = [
   {
-    modelId: "gemini-4-hydrogen",
-    displayName: "Gemini 4 Hydrogen (Google Free)",
-    provider: "gemini",
-    tier: "free",
-    strengths: "\u01AFu ti\xEAn s\u1ED1 1 cho OCR \u1EA3nh/PDF c\xF4ng th\u1EE9c vi\u1EBFt tay ph\u1EE9c t\u1EA1p & ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c chu\u1EA9n SGK.",
-    supportsMultimodal: true,
-    supportsGoogleSearch: true
-  },
-  {
-    modelId: "gemini-3.1-flash-lite",
-    displayName: "Gemini 3.1 Flash Lite (Google Free)",
-    provider: "gemini",
-    tier: "free",
-    strengths: "T\u1ED1c \u0111\u1ED9 r\u1EA5t nhanh, h\u1EA1n m\u1EE9c RPM cao cho ph\xE2n lo\u1EA1i m\xF4n, ki\u1EC3m tra c\u1EA5u tr\xFAc, flashcard & ph\u1EA3n h\u1ED3i.",
-    supportsMultimodal: true,
-    supportsGoogleSearch: true
-  },
-  {
     modelId: "groq:openai/gpt-oss-120b",
-    displayName: "Groq \xB7 GPT-OSS 120B (Groq Cloud Free)",
+    displayName: "Groq \xB7 GPT-OSS 120B (\u01AFu ti\xEAn #1 \xB7 Si\xEAu nhanh Free)",
     provider: "groq",
     tier: "free",
-    strengths: "Model s\u1EA3n xu\u1EA5t m\u1EA1nh nh\u1EA5t c\u1EE7a Groq (~500 tok/s, mi\u1EC5n ph\xED) \u2014 c\u1EF1c nhanh cho nh\xF3m 2\u20133 ng\u01B0\u1EDDi d\xF9ng song song khi x\u1EED l\xFD v\u0103n b\u1EA3n/JSON & d\u1EF1 ph\xF2ng Gemini 429.",
+    strengths: "\u01AFu ti\xEAn s\u1ED1 1 cho to\xE0n b\u1ED9 h\u1EC7 th\u1ED1ng (~500 tok/s, mi\u1EC5n ph\xED) \u2014 ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c, t\u1EA1o \u0111\u1EC1, t\u1ED5ng h\u1EE3p SGK; t\u1EF1 g\u1ECDi Llama 4 Scout Vision khi \u0111\u1ECDc \u1EA3nh OCR.",
     supportsMultimodal: false,
+    supportsGoogleSearch: false
+  },
+  {
+    modelId: "groq:meta-llama/llama-4-scout-17b-16e-instruct",
+    displayName: "Groq \xB7 Llama 4 Scout 17B Vision (\u0110a ph\u01B0\u01A1ng th\u1EE9c Free)",
+    provider: "groq",
+    tier: "free",
+    strengths: "Model \u0111a ph\u01B0\u01A1ng th\u1EE9c c\u1EE7a Groq (~460 tok/s, mi\u1EC5n ph\xED) \u2014 \u0111\u1ECDc tr\u1EF1c ti\u1EBFp \u1EA3nh ch\u1EE5p v\u1EDF/PDF scan & x\u1EED l\xFD m\u1ECDi t\xE1c v\u1EE5 v\u0103n b\u1EA3n tr\xEAn c\xF9ng 1 AI.",
+    supportsMultimodal: true,
     supportsGoogleSearch: false
   },
   {
@@ -896,16 +887,34 @@ var MODEL_CATALOG = [
     displayName: "Groq \xB7 GPT-OSS 20B Fast (Groq Cloud Free)",
     provider: "groq",
     tier: "free",
-    strengths: "T\u1ED1c \u0111\u1ED9 t\u1EE9c th\xEC (~1.000 tok/s), mi\u1EC5n ph\xED \u2014 t\u1ED1i \u01B0u cho ph\xE2n lo\u1EA1i m\xF4n, g\u1EE3i \xFD t\xEAn t\u1EC7p, flashcard & d\u1EF1 ph\xF2ng nh\u1EB9.",
+    strengths: "T\u1ED1c \u0111\u1ED9 t\u1EE9c th\xEC (~1.000 tok/s), mi\u1EC5n ph\xED \u2014 c\u1EF1c nhanh cho ph\xE2n lo\u1EA1i m\xF4n, g\u1EE3i \xFD t\xEAn t\u1EC7p, flashcard & t\xE1c v\u1EE5 nh\u1EB9.",
     supportsMultimodal: false,
     supportsGoogleSearch: false
+  },
+  {
+    modelId: "gemini-3.1-flash-lite",
+    displayName: "Gemini 3.1 Flash Lite (Google Free)",
+    provider: "gemini",
+    tier: "free",
+    strengths: "T\u1ED1c \u0111\u1ED9 r\u1EA5t nhanh, h\u1ED7 tr\u1EE3 OCR \u1EA3nh/PDF, Google Search Grounding & l\xE0m t\u1EA7ng d\u1EF1 ph\xF2ng \u1ED5n \u0111\u1ECBnh khi Groq ch\u01B0a c\u1EA5u h\xECnh key.",
+    supportsMultimodal: true,
+    supportsGoogleSearch: true
+  },
+  {
+    modelId: "gemini-4-hydrogen",
+    displayName: "Gemini 4 Hydrogen (Google Free)",
+    provider: "gemini",
+    tier: "free",
+    strengths: "Suy lu\u1EADn s\xE2u cho c\xF4ng th\u1EE9c vi\u1EBFt tay ph\u1EE9c t\u1EA1p, Google Search Grounding & ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c chu\u1EA9n SGK.",
+    supportsMultimodal: true,
+    supportsGoogleSearch: true
   },
   {
     modelId: "cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     displayName: "Cloudflare \xB7 Llama 3.3 70B FP8 Fast (Workers AI Free)",
     provider: "cloudflare",
     tier: "free",
-    strengths: "Mi\u1EC5n ph\xED (10.000 Neurons/ng\xE0y tr\xEAn h\u1EA1 t\u1EA7ng Edge Cloudflare) \u2014 t\u1EA7ng d\u1EF1 ph\xF2ng & chia t\u1EA3i th\u1EE9 3 cho ch\u1EA5m ki\u1EBFn th\u1EE9c, t\u1EA1o \u0111\u1EC1 tr\u1EAFc nghi\u1EC7m.",
+    strengths: "Mi\u1EC5n ph\xED (10.000 Neurons/ng\xE0y tr\xEAn h\u1EA1 t\u1EA7ng Edge Cloudflare) \u2014 t\u1EA7ng d\u1EF1 ph\xF2ng & chia t\u1EA3i cho ch\u1EA5m ki\u1EBFn th\u1EE9c, t\u1EA1o \u0111\u1EC1 tr\u1EAFc nghi\u1EC7m.",
     supportsMultimodal: false,
     supportsGoogleSearch: false
   },
@@ -919,83 +928,85 @@ var MODEL_CATALOG = [
     supportsGoogleSearch: false
   }
 ];
+var UNIFIED_PRIMARY_MODEL = "groq:openai/gpt-oss-120b";
+var UNIFIED_FALLBACK_MODEL = "gemini-3.1-flash-lite";
 var DEFAULT_TASK_MODELS = {
   subject_classification: {
-    defaultModel: "gemini-3.1-flash-lite",
-    fallbackModel: "gemini-4-hydrogen",
+    defaultModel: UNIFIED_PRIMARY_MODEL,
+    fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v3.0"
+    promptVersion: "v3.1"
   },
   curriculum_extraction: {
-    defaultModel: "gemini-3.1-flash-lite",
-    fallbackModel: "gemini-4-hydrogen",
+    defaultModel: UNIFIED_PRIMARY_MODEL,
+    fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v2.2"
+    promptVersion: "v3.1"
   },
   knowledge_analysis: {
-    defaultModel: "gemini-4-hydrogen",
-    fallbackModel: "gemini-3.1-flash-lite",
+    defaultModel: UNIFIED_PRIMARY_MODEL,
+    fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v3.0"
+    promptVersion: "v3.1"
   },
   completeness_analysis: {
-    defaultModel: "gemini-4-hydrogen",
-    fallbackModel: "gemini-3.1-flash-lite",
+    defaultModel: UNIFIED_PRIMARY_MODEL,
+    fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v2.1"
+    promptVersion: "v3.1"
   },
   claim_validation: {
-    defaultModel: "gemini-3.1-flash-lite",
-    fallbackModel: "gemini-4-hydrogen",
+    defaultModel: UNIFIED_PRIMARY_MODEL,
+    fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v2.2"
+    promptVersion: "v3.1"
   },
   quiz_blueprint: {
-    defaultModel: "gemini-4-hydrogen",
-    fallbackModel: "gemini-3.1-flash-lite",
+    defaultModel: UNIFIED_PRIMARY_MODEL,
+    fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v2.1"
+    promptVersion: "v3.1"
   },
   quiz_generation: {
-    defaultModel: "gemini-4-hydrogen",
-    fallbackModel: "gemini-3.1-flash-lite",
+    defaultModel: UNIFIED_PRIMARY_MODEL,
+    fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v2.2"
+    promptVersion: "v3.1"
   },
   quiz_validation: {
-    defaultModel: "gemini-3.1-flash-lite",
-    fallbackModel: "gemini-4-hydrogen",
+    defaultModel: UNIFIED_PRIMARY_MODEL,
+    fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v2.1"
+    promptVersion: "v3.1"
   },
   answer_explanation: {
-    defaultModel: "gemini-3.1-flash-lite",
-    fallbackModel: "gemini-4-hydrogen",
+    defaultModel: UNIFIED_PRIMARY_MODEL,
+    fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v2.1"
+    promptVersion: "v3.1"
   },
   flashcard_generation: {
-    defaultModel: "gemini-3.1-flash-lite",
-    fallbackModel: "gemini-4-hydrogen",
+    defaultModel: UNIFIED_PRIMARY_MODEL,
+    fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v2.1"
+    promptVersion: "v3.1"
   },
   feedback_analysis: {
-    defaultModel: "gemini-3.1-flash-lite",
-    fallbackModel: "gemini-4-hydrogen",
+    defaultModel: UNIFIED_PRIMARY_MODEL,
+    fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: "v2.0"
+    promptVersion: "v3.1"
   }
 };
 
@@ -2139,6 +2150,7 @@ var GROQ_API_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 var GROQ_MODELS_ENDPOINT = "https://api.groq.com/openai/v1/models";
 var GROQ_RESCUE_MODEL_STRONG = "groq:openai/gpt-oss-120b";
 var GROQ_RESCUE_MODEL_FAST = "groq:openai/gpt-oss-20b";
+var GROQ_VISION_MODEL = "groq:meta-llama/llama-4-scout-17b-16e-instruct";
 var GROQ_PREFERRED_TEXT_MODELS = [
   "openai/gpt-oss-120b",
   "openai/gpt-oss-20b",
@@ -2147,6 +2159,14 @@ var GROQ_PREFERRED_TEXT_MODELS = [
   "qwen/qwen3-32b",
   "meta-llama/llama-4-scout-17b-16e-instruct"
 ];
+var GROQ_VISION_MODELS = [
+  "meta-llama/llama-4-scout-17b-16e-instruct",
+  "meta-llama/llama-4-maverick-17b-128e-instruct"
+];
+function isGroqVisionModelId(modelId) {
+  const raw = stripGroqPrefix(modelId).toLowerCase();
+  return GROQ_VISION_MODELS.some((m) => m.toLowerCase() === raw) || raw.includes("llama-4-scout") || raw.includes("llama-4-maverick");
+}
 var LEGACY_GROQ_MODEL_ALIASES = {
   "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
   "llama-3.1-8b-instant": "openai/gpt-oss-20b",
@@ -2288,8 +2308,10 @@ async function callGroqChatCompletion(params) {
       "GROQ_API_KEY_UNCONFIGURED: Ch\u01B0a c\u1EA5u h\xECnh Groq API Key. Qu\u1EA3n tr\u1ECB vi\xEAn c\xF3 th\u1EC3 th\xEAm tr\u1EF1c ti\u1EBFp trong Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt ho\u1EB7c bi\u1EBFn m\xF4i tr\u01B0\u1EDDng GROQ_API_KEY."
     );
   }
+  const hasImages = Array.isArray(params.images) && params.images.length > 0;
   const normalizedModelId = normalizeGroqModelId(params.modelId);
-  const groqModel = stripGroqPrefix(normalizedModelId);
+  const requestedGroqModel = stripGroqPrefix(normalizedModelId);
+  const groqModel = hasImages && !isGroqVisionModelId(requestedGroqModel) ? stripGroqPrefix(GROQ_VISION_MODEL) : requestedGroqModel;
   const systemParts = [];
   if (params.systemInstruction) {
     systemParts.push(params.systemInstruction.trim());
@@ -2307,7 +2329,18 @@ ${params.jsonSchemaHint}`);
   if (systemParts.length > 0) {
     messages.push({ role: "system", content: systemParts.join("\n\n") });
   }
-  messages.push({ role: "user", content: params.prompt });
+  if (hasImages) {
+    const userContent = [
+      ...params.images.map((img) => ({
+        type: "image_url",
+        image_url: { url: `data:${img.mimeType};base64,${img.base64}` }
+      })),
+      { type: "text", text: params.prompt }
+    ];
+    messages.push({ role: "user", content: userContent });
+  } else {
+    messages.push({ role: "user", content: params.prompt });
+  }
   const maxTokens = Math.min(8192, Math.max(256, params.maxOutputTokens || 2048));
   const firstAttempt = await executeGroqRequest({
     apiKey,
@@ -2322,7 +2355,7 @@ ${params.jsonSchemaHint}`);
   }
   if (firstAttempt.status === 404 && !params.disableModelAutoFallback) {
     const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
-    const fallbackGroqModel = pickBestAvailableGroqModel(availableModels, groqModel);
+    const fallbackGroqModel = hasImages ? availableModels.find((m) => isGroqVisionModelId(m) && m.toLowerCase() !== groqModel.toLowerCase()) || null : pickBestAvailableGroqModel(availableModels, groqModel);
     if (fallbackGroqModel) {
       const retryAttempt = await executeGroqRequest({
         apiKey,
@@ -2658,7 +2691,7 @@ async function createServerAiClient() {
 }
 function resolveModelForTask(taskType, config, consumeOverride) {
   const taskCfg = config.taskModels?.[taskType] || DEFAULT_TASK_MODELS[taskType];
-  const activeFallbackDefault = config.activeModel || "gemini-4-hydrogen";
+  const activeFallbackDefault = config.activeModel || "groq:openai/gpt-oss-120b";
   let modelId = (taskCfg.defaultModel || activeFallbackDefault).trim();
   let usedOverride = false;
   if (taskCfg.oneTimeOverrideModel && taskCfg.oneTimeOverrideModel.trim()) {
@@ -2672,7 +2705,7 @@ function resolveModelForTask(taskType, config, consumeOverride) {
     fallbackModelId: (taskCfg.fallbackModel || "gemini-3.1-flash-lite").trim(),
     enableFallback: Boolean(taskCfg.enableFallback),
     usedOverride,
-    promptVersion: taskCfg.promptVersion || "v2.0",
+    promptVersion: taskCfg.promptVersion || "v3.1",
     configVersion: config.configVersion || 1
   };
 }
@@ -2735,9 +2768,15 @@ async function executeRoutedAiTask(params) {
     }
   }
   const canFallback = decision.enableFallback && Boolean(decision.fallbackModelId) && decision.fallbackModelId !== decision.modelId;
+  const primaryUnconfigured = isGroqModelId(decision.modelId) && !isGroqConfigured() || isCloudflareModelId(decision.modelId) && !isCloudflareConfigured();
   const executeTask = async () => {
     const start = Date.now();
     try {
+      if (primaryUnconfigured && canFallback) {
+        throw new Error(
+          isGroqModelId(decision.modelId) ? "GROQ_API_KEY_UNCONFIGURED" : "CLOUDFLARE_CREDENTIALS_UNCONFIGURED"
+        );
+      }
       const primaryRetries = canFallback ? 0 : 1;
       const result = await withExponentialBackoff(() => runWithModel(decision.modelId), primaryRetries);
       if (overrideConsumed && consumeOneTimeOverride) {
@@ -3002,7 +3041,7 @@ var authoritativeAiConfig = {
   updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
   updatedBy: SUPER_ADMIN_EMAIL,
   rateLimitConfig: { ...DEFAULT_RATE_LIMITS },
-  activeModel: "gemini-4-hydrogen",
+  activeModel: "groq:openai/gpt-oss-120b",
   configVersion: 1,
   allowedOrigins: [],
   taskModels: cloneDefaultTaskModels()
@@ -3864,101 +3903,182 @@ async function runTaskWithRouter(params) {
     cacheInput: params.cacheInput,
     bypassCache: params.bypassCache,
     allowGroqRescue: params.allowGroqRescue,
+    groqRescueModelId: params.groqRescueModelId,
     runWithModel: params.runWithModel
   });
   return { data: res.data, modelId: res.modelId };
 }
+var OCR_FAST_TIMEOUT_MS = 14e3;
+function buildExtractedBlocksFromRawText(rawText, pageNumber, confidence) {
+  const safeConf = Math.max(0.1, Math.min(1, Number(confidence) || 0.92));
+  const lines = (rawText || "").split(/\r?\n+/).map((l) => l.trim()).filter((l) => l.length > 0);
+  return lines.map((line, idx) => {
+    let textType = "paragraph";
+    if (idx === 0 && line.length < 95) {
+      textType = "heading";
+    } else if (/^([-*+•]|\d+[.)]|[a-zA-Z][.)])\s+/.test(line)) {
+      textType = "list";
+    } else if (/[=≈≠≤≥±×÷]|(\b[a-zA-Z]\s*=\s*[a-zA-Z0-9])/i.test(line) && line.length < 120) {
+      textType = "formula";
+    }
+    return {
+      blockId: `p${pageNumber}_b${idx + 1}`,
+      pageNumber,
+      extractedText: line,
+      textType,
+      confidence: safeConf,
+      readingOrder: idx + 1,
+      ...textType === "formula" ? { formulaText: line } : {},
+      boundingBox: null
+    };
+  });
+}
+var recentInlineScopeByTextHash = /* @__PURE__ */ new Map();
+var lastExtractedInlineScope = null;
+function getInlineScopeSuggestionForText(text) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return null;
+  const hash = crypto6.createHash("sha256").update(trimmed.slice(0, 1200)).digest("hex");
+  const direct = recentInlineScopeByTextHash.get(hash);
+  if (direct) return direct;
+  if (lastExtractedInlineScope && trimmed.includes(lastExtractedInlineScope.textPrefix)) {
+    return lastExtractedInlineScope.suggestion;
+  }
+  return null;
+}
 var DocumentExtractionService = class {
   static async extractFromImageBuffers(files, tokensOut, opts) {
     const ai = await createServerAiClient();
-    const validTypes = /* @__PURE__ */ new Set(["paragraph", "heading", "formula", "table", "list", "handwriting"]);
     const pageOffset = Math.max(0, Number(opts?.pageOffset) || 0);
-    const pages = [];
-    for (let idx = 0; idx < files.length; idx += 1) {
-      const file = files[idx];
-      const pageNum = pageOffset + idx + 1;
-      const contentHash = crypto6.createHash("sha256").update(file.buffer).digest("hex");
-      const { data: parsed } = await runTaskWithRouter({
-        taskType: "curriculum_extraction",
-        config: opts?.config,
-        idToken: opts?.idToken,
-        cacheInput: { ocrKind: "image", mimeType: file.mimeType, sha256: contentHash },
-        runWithModel: async (modelId) => {
-          const visionModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-4-hydrogen" : modelId;
-          const base64 = file.buffer.toString("base64");
-          const response = await callWithTimeout(
-            (signal) => ai.models.generateContent({
-              model: visionModel,
-              contents: {
-                parts: [
-                  {
-                    inlineData: {
-                      mimeType: file.mimeType,
-                      data: base64
-                    }
-                  },
-                  {
-                    text: [
-                      "Tr\xEDch xu\u1EA5t to\xE0n b\u1ED9 v\u0103n b\u1EA3n, c\xF4ng th\u1EE9c, b\u1EA3ng bi\u1EC3u v\xE0 ch\u1EEF vi\u1EBFt tay t\u1EEB trang t\xE0i li\u1EC7u n\xE0y.",
-                      "- Gi\u1EEF nguy\xEAn ch\xEDnh t\u1EA3 v\xE0 n\u1ED9i dung g\u1ED1c c\u1EE7a h\u1ECDc sinh, KH\xD4NG t\u1EF1 s\u1EEDa l\u1ED7i ki\u1EBFn th\u1EE9c, KH\xD4NG th\xEAm b\xECnh lu\u1EADn.",
-                      "- Chia th\xE0nh c\xE1c kh\u1ED1i theo th\u1EE9 t\u1EF1 \u0111\u1ECDc v\xE0 ghi nh\u1EADn textType + confidence (0.0-1.0). N\u1EBFu ch\u1EEF m\u1EDD/kh\xF3 \u0111\u1ECDc \u0111\u1EB7t confidence < 0.65."
-                    ].join("\n")
-                  }
-                ]
-              },
-              config: {
-                thinkingConfig: thinkingConfigForModel(visionModel, "minimal"),
-                maxOutputTokens: 2048,
-                abortSignal: signal,
-                responseMimeType: "application/json",
-                responseSchema: {
-                  type: Type.OBJECT,
-                  properties: {
-                    blocks: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          extractedText: { type: Type.STRING },
-                          textType: {
-                            type: Type.STRING,
-                            description: "paragraph | heading | formula | table | list | handwriting"
-                          },
-                          confidence: { type: Type.NUMBER },
-                          formulaText: { type: Type.STRING }
-                        },
-                        required: ["extractedText", "textType", "confidence"]
+    const results = await Promise.all(
+      files.map(async (file, idx) => {
+        const pageNum = pageOffset + idx + 1;
+        const contentHash = crypto6.createHash("sha256").update(file.buffer).digest("hex");
+        const { data: parsed } = await runTaskWithRouter({
+          taskType: "curriculum_extraction",
+          config: opts?.config,
+          idToken: opts?.idToken,
+          allowGroqRescue: true,
+          groqRescueModelId: GROQ_VISION_MODEL,
+          cacheInput: { ocrKind: "image_fast_v3", mimeType: file.mimeType, sha256: contentHash },
+          runWithModel: async (modelId) => {
+            const base64 = file.buffer.toString("base64");
+            const ocrPrompt = [
+              "\u0110\u1ECDc OCR to\xE0n b\u1ED9 v\u0103n b\u1EA3n, c\xF4ng th\u1EE9c v\xE0 ch\u1EEF vi\u1EBFt tay trong trang \u1EA3nh n\xE0y.",
+              "- Gi\u1EEF nguy\xEAn 100% ch\xEDnh t\u1EA3 v\xE0 c\xF4ng th\u1EE9c g\u1ED1c c\u1EE7a h\u1ECDc sinh theo t\u1EEBng d\xF2ng xu\u1ED1ng h\xE0ng (\\n), KH\xD4NG t\u1EF1 s\u1EEDa l\u1ED7i ki\u1EBFn th\u1EE9c, KH\xD4NG b\xECnh lu\u1EADn.",
+              "- Ch\u1EA5m \u0111\u1ED9 r\xF5 n\xE9t ch\u1EEF vi\u1EBFt ocrConfidence (0.0-1.0; n\u1EBFu m\u1EDD/kh\xF3 \u0111\u1ECDc \u0111\u1EB7t < 0.65).",
+              '- Nh\u1EADn di\u1EC7n lu\xF4n l\u1EDBp ("10"|"11"|"12"), m\xF4n h\u1ECDc THPT, t\xEAn ch\u01B0\u01A1ng v\xE0 ti\xEAu \u0111\u1EC1 b\xE0i ghi.'
+            ].join("\n");
+            if (isGroqModelId(modelId)) {
+              const resp = await callWithTimeout(
+                (signal) => callGroqChatCompletion({
+                  modelId,
+                  prompt: ocrPrompt,
+                  images: [{ mimeType: file.mimeType, base64 }],
+                  jsonMode: true,
+                  jsonSchemaHint: '{"rawText":"...","ocrConfidence":0.95,"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
+                  maxOutputTokens: 1536,
+                  signal
+                }),
+                OCR_FAST_TIMEOUT_MS
+              );
+              accumulateRawTokens(tokensOut, resp);
+              return JSON.parse((resp.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+            }
+            const visionModel = isCloudflareModelId(modelId) ? "gemini-3.1-flash-lite" : modelId;
+            const response = await callWithTimeout(
+              (signal) => ai.models.generateContent({
+                model: visionModel,
+                contents: {
+                  parts: [
+                    {
+                      inlineData: {
+                        mimeType: file.mimeType,
+                        data: base64
                       }
+                    },
+                    {
+                      text: ocrPrompt
                     }
-                  },
-                  required: ["blocks"]
+                  ]
+                },
+                config: {
+                  thinkingConfig: thinkingConfigForModel(visionModel, "minimal"),
+                  maxOutputTokens: 1536,
+                  abortSignal: signal,
+                  responseMimeType: "application/json",
+                  responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                      rawText: { type: Type.STRING },
+                      ocrConfidence: { type: Type.NUMBER },
+                      suggestedGrade: { type: Type.STRING, description: "10 | 11 | 12" },
+                      suggestedSubject: {
+                        type: Type.STRING,
+                        description: "toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac"
+                      },
+                      suggestedChapters: {
+                        type: Type.ARRAY,
+                        items: { type: Type.STRING }
+                      },
+                      suggestedTitle: { type: Type.STRING }
+                    },
+                    required: [
+                      "rawText",
+                      "ocrConfidence",
+                      "suggestedGrade",
+                      "suggestedSubject",
+                      "suggestedChapters",
+                      "suggestedTitle"
+                    ]
+                  }
                 }
-              }
-            })
-          );
-          accumulateTokens(tokensOut, response);
-          return JSON.parse((response.text || '{"blocks":[]}').trim());
+              }),
+              OCR_FAST_TIMEOUT_MS
+            );
+            accumulateTokens(tokensOut, response);
+            return JSON.parse((response.text || '{"rawText":"","ocrConfidence":0.85}').trim());
+          }
+        });
+        let rawText = (parsed.rawText || "").trim();
+        let blocks = [];
+        let avgConf = Math.max(0.1, Math.min(1, Number(parsed.ocrConfidence) || 0.9));
+        if (!rawText && Array.isArray(parsed.blocks) && parsed.blocks.length > 0) {
+          rawText = parsed.blocks.map((b) => (b.extractedText || "").trim()).filter(Boolean).join("\n");
         }
-      });
-      const blocks = (parsed.blocks || []).filter((b) => b.extractedText && b.extractedText.trim().length > 0).map((b, bIdx) => ({
-        blockId: `p${pageNum}_b${bIdx + 1}`,
-        pageNumber: pageNum,
-        extractedText: b.extractedText.trim(),
-        textType: validTypes.has(b.textType) ? b.textType : "paragraph",
-        confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0.8)),
-        readingOrder: bIdx + 1,
-        ...b.formulaText ? { formulaText: b.formulaText } : {},
-        boundingBox: null
-      }));
-      const avgConf = blocks.length > 0 ? Math.round(blocks.reduce((s, b) => s + b.confidence, 0) / blocks.length * 100) / 100 : 0;
-      pages.push({
-        pageNumber: pageNum,
-        rawText: blocks.map((b) => b.extractedText).join("\n"),
-        blocks,
-        ocrAverageConfidence: avgConf
-      });
-    }
-    return pages;
+        blocks = buildExtractedBlocksFromRawText(rawText, pageNum, avgConf);
+        if (blocks.length === 0) {
+          avgConf = 0;
+        }
+        if (rawText && parsed.suggestedSubject) {
+          const grade = parsed.suggestedGrade === "11" || parsed.suggestedGrade === "12" ? parsed.suggestedGrade : "10";
+          const subject = parsed.suggestedSubject in SUBJECT_LABELS ? parsed.suggestedSubject : "khac";
+          const textHash = crypto6.createHash("sha256").update(rawText.slice(0, 1200)).digest("hex");
+          const suggestionObj = {
+            suggestedGrade: grade,
+            suggestedSubject: subject,
+            suggestedChapters: Array.isArray(parsed.suggestedChapters) ? parsed.suggestedChapters.slice(0, 4) : [],
+            suggestedTitle: (parsed.suggestedTitle || "").trim() || file.originalName.replace(/\.[^.]+$/, "") || "T\xE0i li\u1EC7u \xF4n t\u1EADp"
+          };
+          recentInlineScopeByTextHash.set(textHash, suggestionObj);
+          lastExtractedInlineScope = {
+            textPrefix: rawText.slice(0, 160),
+            suggestion: suggestionObj
+          };
+          if (recentInlineScopeByTextHash.size > 100) {
+            const oldestKey = recentInlineScopeByTextHash.keys().next().value;
+            if (oldestKey) recentInlineScopeByTextHash.delete(oldestKey);
+          }
+        }
+        return {
+          pageNumber: pageNum,
+          rawText,
+          blocks,
+          ocrAverageConfidence: avgConf
+        };
+      })
+    );
+    return results.sort((a, b) => a.pageNumber - b.pageNumber);
   }
   static async extractFromPdfBuffer(buffer, tokensOut, opts) {
     try {
@@ -3993,9 +4113,9 @@ var DocumentExtractionService = class {
       taskType: "curriculum_extraction",
       config: opts?.config,
       idToken: opts?.idToken,
-      cacheInput: { ocrKind: "pdf_scan", sha256: pdfHash },
+      cacheInput: { ocrKind: "pdf_scan_v2", sha256: pdfHash },
       runWithModel: async (modelId) => {
-        const visionModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-4-hydrogen" : modelId;
+        const visionModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-3.1-flash-lite" : modelId;
         const base64 = buffer.toString("base64");
         const response = await callWithTimeout(
           (signal) => ai.models.generateContent({
@@ -4009,7 +4129,7 @@ var DocumentExtractionService = class {
                   }
                 },
                 {
-                  text: "Tr\xEDch xu\u1EA5t v\u0103n b\u1EA3n, c\xF4ng th\u1EE9c v\xE0 b\u1EA3ng bi\u1EC3u theo t\u1EEBng trang c\u1EE7a file PDF h\u1ECDc t\u1EADp n\xE0y. Gi\u1EEF nguy\xEAn n\u1ED9i dung g\u1ED1c (kh\xF4ng t\u1EF1 s\u1EEDa l\u1ED7i ki\u1EBFn th\u1EE9c, kh\xF4ng th\xEAm b\xECnh lu\u1EADn). Tr\u1EA3 v\u1EC1 danh s\xE1ch trang v\xE0 t\u1EEBng \u0111o\u1EA1n v\u0103n b\u1EA3n k\xE8m \u0111\u1ED9 tin c\u1EADy OCR."
+                  text: "Tr\xEDch xu\u1EA5t to\xE0n b\u1ED9 v\u0103n b\u1EA3n, c\xF4ng th\u1EE9c v\xE0 ch\u1EEF vi\u1EBFt tay theo t\u1EEBng trang c\u1EE7a file PDF n\xE0y. Gi\u1EEF nguy\xEAn ch\xEDnh t\u1EA3 v\xE0 n\u1ED9i dung g\u1ED1c theo t\u1EEBng d\xF2ng xu\u1ED1ng h\xE0ng (\\n), kh\xF4ng t\u1EF1 s\u1EEDa l\u1ED7i ki\u1EBFn th\u1EE9c, kh\xF4ng th\xEAm b\xECnh lu\u1EADn."
                 }
               ]
             },
@@ -4027,52 +4147,33 @@ var DocumentExtractionService = class {
                       type: Type.OBJECT,
                       properties: {
                         pageNumber: { type: Type.INTEGER },
-                        blocks: {
-                          type: Type.ARRAY,
-                          items: {
-                            type: Type.OBJECT,
-                            properties: {
-                              extractedText: { type: Type.STRING },
-                              textType: { type: Type.STRING },
-                              confidence: { type: Type.NUMBER },
-                              formulaText: { type: Type.STRING }
-                            },
-                            required: ["extractedText", "textType", "confidence"]
-                          }
-                        }
+                        rawText: { type: Type.STRING },
+                        ocrConfidence: { type: Type.NUMBER }
                       },
-                      required: ["pageNumber", "blocks"]
+                      required: ["pageNumber", "rawText", "ocrConfidence"]
                     }
                   }
                 },
                 required: ["pages"]
               }
             }
-          })
+          }),
+          2e4
         );
         accumulateTokens(tokensOut, response);
         return JSON.parse((response.text || '{"pages":[]}').trim());
       }
     });
-    const validTypes = /* @__PURE__ */ new Set(["paragraph", "heading", "formula", "table", "list", "handwriting"]);
     return (parsed.pages || []).map((p, idx) => {
       const pageNum = p.pageNumber || idx + 1;
-      const blocks = (p.blocks || []).map((b, bIdx) => ({
-        blockId: `p${pageNum}_b${bIdx + 1}`,
-        pageNumber: pageNum,
-        extractedText: b.extractedText.trim(),
-        textType: validTypes.has(b.textType) ? b.textType : "paragraph",
-        confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0.78)),
-        readingOrder: bIdx + 1,
-        ...b.formulaText ? { formulaText: b.formulaText } : {},
-        boundingBox: null
-      }));
-      const avgConf = blocks.length > 0 ? Math.round(blocks.reduce((s, b) => s + b.confidence, 0) / blocks.length * 100) / 100 : 0.75;
+      const rawText = (p.rawText || "").trim() || (p.blocks || []).map((b) => (b.extractedText || "").trim()).filter(Boolean).join("\n");
+      const avgConf = Math.max(0.1, Math.min(1, Number(p.ocrConfidence) || 0.85));
+      const blocks = buildExtractedBlocksFromRawText(rawText, pageNum, avgConf);
       return {
         pageNumber: pageNum,
-        rawText: blocks.map((b) => b.extractedText).join("\n"),
+        rawText,
         blocks,
-        ocrAverageConfidence: avgConf
+        ocrAverageConfidence: blocks.length > 0 ? avgConf : 0
       };
     });
   }
@@ -4111,6 +4212,10 @@ var DocumentExtractionService = class {
 };
 var SubjectDetectionService = class {
   static async detectScope(sampleText, tokensOut, opts) {
+    const inlineCached = getInlineScopeSuggestionForText(sampleText);
+    if (inlineCached) {
+      return inlineCached;
+    }
     const scopePrompt = [
       "Ph\xE2n t\xEDch \u0111o\u1EA1n ghi ch\xE9p h\u1ECDc t\u1EADp sau \u0111\u1EC3 x\xE1c \u0111\u1ECBnh \u0110\xDANG l\u1EDBp (10, 11 ho\u1EB7c 12), m\xF4n h\u1ECDc THPT, ti\xEAu \u0111\u1EC1 ng\u1EAFn v\xE0 t\u1ED1i \u0111a 3 ch\u01B0\u01A1ng/ch\u1EE7 \u0111\u1EC1 ph\xF9 h\u1EE3p.",
       'L\u01AFU \xDD QUAN TR\u1ECCNG: X\xE1c \u0111\u1ECBnh ch\u1EE7 \u0111\u1EC1 d\u1EF1a tr\xEAn KH\xC1I NI\u1EC6M/\u0110\u1ED0I T\u01AF\u1EE2NG CH\xCDNH m\xE0 t\xE0i li\u1EC7u \u0111ang tr\xECnh b\xE0y ho\u1EB7c \u0111\u1ECBnh ngh\u0129a (v\xED d\u1EE5: n\u1EBFu \u0111o\u1EA1n v\u0103n vi\u1EBFt "Chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u l\xE0..." nh\u01B0ng h\u1ECDc sinh vi\u1EBFt nh\u1EA7m chi ti\u1EBFt b\xEAn trong th\xE0nh "t\u1ED1c \u0111\u1ED9 thay \u0111\u1ED5i", ch\u1EE7 \u0111\u1EC1 V\u1EAAN L\xC0 "Chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u", TUY\u1EC6T \u0110\u1ED0I KH\xD4NG b\u1ECB l\u1ED7i sai c\u1EE7a h\u1ECDc sinh \u0111\xE1nh l\u1EEBa sang ch\u01B0\u01A1ng kh\xE1c nh\u01B0 "Chuy\u1EC3n \u0111\u1ED9ng bi\u1EBFn \u0111\u1ED5i").',
@@ -4126,8 +4231,9 @@ var SubjectDetectionService = class {
       runWithModel: async (modelId) => generateJsonWithProvider({
         modelId,
         prompt: scopePrompt,
-        thinkingTier: "low",
+        thinkingTier: "minimal",
         maxOutputTokens: 384,
+        timeoutMs: 8e3,
         tokensOut,
         fallbackJson: "{}",
         groqSchemaHint: '{"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
@@ -4326,9 +4432,9 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
       runWithModel: async (modelId) => generateJsonWithProvider({
         modelId,
         prompt: analysisPrompt,
-        thinkingTier: "medium",
-        maxOutputTokens: 6144,
-        timeoutMs: 45e3,
+        thinkingTier: pages.length <= 2 && formattedStudentBlocks.length <= 3500 ? "low" : "medium",
+        maxOutputTokens: pages.length <= 2 ? 4096 : 6144,
+        timeoutMs: 26e3,
         tokensOut,
         fallbackJson: '{"claims":[],"coverageItems":[],"strengths":[],"weaknesses":[],"suggestions":[]}',
         groqSchemaHint: '{"claims":[{"blockId":"...","sourcePage":1,"sourceText":"...","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"..."}],"coverageItems":[{"concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}',
@@ -5220,8 +5326,26 @@ ${extractedTextContent.slice(0, 48e3)}` : ""
       config,
       idToken,
       bypassCache: true,
+      allowGroqRescue: inlineParts.every((p) => p.inlineData.mimeType !== "application/pdf"),
       runWithModel: async (modelId) => {
-        const safeModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-4-hydrogen" : modelId;
+        const hasPdfBinary = inlineParts.some((p) => p.inlineData.mimeType === "application/pdf");
+        const imageParts = inlineParts.filter((p) => p.inlineData.mimeType.startsWith("image/")).map((p) => ({ mimeType: p.inlineData.mimeType, base64: p.inlineData.data }));
+        if (isGroqModelId(modelId) && !hasPdfBinary) {
+          const resp2 = await callWithTimeout(
+            (signal) => callGroqChatCompletion({
+              modelId,
+              prompt: promptText,
+              images: imageParts.length > 0 ? imageParts : void 0,
+              jsonMode: true,
+              jsonSchemaHint: '{"detectedTitle":"...","questions":[{"questionType":"abcd|short_answer|true_false","questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","shortAnswerAccepted":["..."],"scoreWeight":0.25,"answerFromSource":true,"explanation":"...","chapter":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao"}]}',
+              maxOutputTokens: 6144,
+              signal
+            })
+          );
+          accumulateRawTokens(tokensOut, resp2);
+          return JSON.parse((resp2.text || '{"questions":[]}').trim());
+        }
+        const safeModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-3.1-flash-lite" : modelId;
         const contents = inlineParts.length > 0 ? { parts: [...inlineParts, { text: promptText }] } : promptText;
         const resp = await callWithTimeout(
           (signal) => ai.models.generateContent({
@@ -5539,7 +5663,9 @@ var TextbookSynthesisService = class {
     const subjectName = SUBJECT_LABELS[subject] || subject;
     const defaultBookTitle = title?.trim() || `SGK ${subjectName} ${grade} - ${textbookSeries}`;
     let webTocContext = "";
-    if (!customTocHint || customTocHint.trim().length < 20) {
+    const selectedOutlineModel = config?.taskModels?.curriculum_extraction?.defaultModel || config?.activeModel || "";
+    const shouldSearchWithGemini = !isGroqModelId(selectedOutlineModel) && !isCloudflareModelId(selectedOutlineModel);
+    if (shouldSearchWithGemini && (!customTocHint || customTocHint.trim().length < 20)) {
       try {
         const ai = await createServerAiClient();
         const searchQuery = `M\u1EE5c l\u1EE5c c\xE1c ch\u01B0\u01A1ng v\xE0 b\xE0i h\u1ECDc s\xE1ch gi\xE1o khoa ${subjectName} l\u1EDBp ${grade} b\u1ED9 s\xE1ch ${textbookSeries} ch\u01B0\u01A1ng tr\xECnh GDPT 2018`;
@@ -5554,7 +5680,7 @@ var TextbookSynthesisService = class {
               tools: [{ googleSearch: {} }]
             }
           }),
-          16e3
+          14e3
         );
         accumulateTokens(tokensOut, searchResp);
         webTocContext = (searchResp.text || "").trim().slice(0, 4e3);
@@ -7199,12 +7325,14 @@ function createApiApp() {
       });
       recordUsageEvent({
         uid: user.uid,
-        isError: false,
+        email: user.email,
+        requestType: "analysis",
+        outcome: "success",
         promptTokens: tokensOut.promptTokens,
         candidateTokens: tokensOut.candidateTokens,
         totalTokens: tokensOut.totalTokens
       });
-      void persistUsageSnapshot(user.idToken);
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.json(result);
     } catch (err) {
       const mapped = mapGeminiErrorResponse(err);
@@ -7245,12 +7373,14 @@ function createApiApp() {
       });
       recordUsageEvent({
         uid: user.uid,
-        isError: false,
+        email: user.email,
+        requestType: "analysis",
+        outcome: "success",
         promptTokens: tokensOut.promptTokens,
         candidateTokens: tokensOut.candidateTokens,
         totalTokens: tokensOut.totalTokens
       });
-      void persistUsageSnapshot(user.idToken);
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.json({ chunks });
     } catch (err) {
       const mapped = mapGeminiErrorResponse(err);
@@ -7296,12 +7426,14 @@ function createApiApp() {
         });
         recordUsageEvent({
           uid: user.uid,
-          isError: false,
+          email: user.email,
+          requestType: "ocr",
+          outcome: "success",
           promptTokens: tokensOut.promptTokens,
           candidateTokens: tokensOut.candidateTokens,
           totalTokens: tokensOut.totalTokens
         });
-        void persistUsageSnapshot(user.idToken);
+        void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
         res.json({ pages });
       } catch (err) {
         const mapped = mapGeminiErrorResponse(err);

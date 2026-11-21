@@ -4,6 +4,7 @@ import {
   extractJsonStringFromModelOutput,
   isGroqChatModelId,
   isGroqModelId,
+  isGroqVisionModelId,
   normalizeGroqModelId,
   pickBestAvailableGroqModel,
   stripGroqPrefix,
@@ -21,7 +22,7 @@ import {
   validateCloudflareAccountId,
   validateCloudflareToken,
 } from './singleKeyService.js';
-import { MODEL_CATALOG } from './modelDefaults.js';
+import { DEFAULT_TASK_MODELS, MODEL_CATALOG } from './modelDefaults.js';
 
 test('isGroqModelId, isCloudflareModelId, and prefix strippers handle groq:*, cf:*, and gemini-* IDs cleanly', () => {
   assert.equal(isGroqModelId('groq:openai/gpt-oss-120b'), true);
@@ -29,6 +30,8 @@ test('isGroqModelId, isCloudflareModelId, and prefix strippers handle groq:*, cf
   assert.equal(isGroqModelId('gemini-4-hydrogen'), false);
   assert.equal(stripGroqPrefix('groq:openai/gpt-oss-120b'), 'openai/gpt-oss-120b');
   assert.equal(stripGroqPrefix('gemini-4-hydrogen'), 'gemini-4-hydrogen');
+  assert.equal(isGroqVisionModelId('groq:meta-llama/llama-4-scout-17b-16e-instruct'), true);
+  assert.equal(isGroqVisionModelId('groq:openai/gpt-oss-120b'), false);
 
   assert.equal(isCloudflareModelId('cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast'), true);
   assert.equal(isCloudflareModelId('CF:@cf/meta/llama-3.1-8b-instruct-fast'), true);
@@ -76,19 +79,29 @@ test('extractJsonStringFromModelOutput strips markdown fences and surrounding pr
   assert.equal(extractJsonStringFromModelOutput(''), '{}');
 });
 
-test('MODEL_CATALOG contains active free-tier Gemini, Groq, and Cloudflare Workers AI models', () => {
+test('MODEL_CATALOG prioritizes Groq (including Llama 4 Scout Vision) and unifies all 11 default tasks', () => {
   assert.ok(MODEL_CATALOG.every((m) => m.tier === 'free'));
+  assert.equal(MODEL_CATALOG[0].provider, 'groq');
   const ids = MODEL_CATALOG.map((m) => m.modelId);
   assert.ok(ids.includes('gemini-4-hydrogen'));
   assert.ok(ids.includes('gemini-3.1-flash-lite'));
   assert.ok(ids.includes('groq:openai/gpt-oss-120b'));
+  assert.ok(ids.includes('groq:meta-llama/llama-4-scout-17b-16e-instruct'));
   assert.ok(ids.includes('groq:openai/gpt-oss-20b'));
   assert.ok(ids.includes('cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast'));
   assert.ok(ids.includes('cf:@cf/meta/llama-3.1-8b-instruct-fast'));
 
-  // Groq and Cloudflare text models must be marked non-multimodal so OCR always routes to Gemini
-  for (const m of MODEL_CATALOG.filter((item) => item.provider !== 'gemini')) {
+  // Groq Llama 4 Scout is multimodal; Cloudflare & GPT-OSS models remain text-only
+  const scout = MODEL_CATALOG.find((m) => m.modelId === 'groq:meta-llama/llama-4-scout-17b-16e-instruct');
+  assert.equal(scout?.supportsMultimodal, true);
+  for (const m of MODEL_CATALOG.filter((item) => item.provider === 'cloudflare')) {
     assert.equal(m.supportsMultimodal, false);
+  }
+
+  // All 11 default tasks share 1 unified Groq primary model
+  for (const cfg of Object.values(DEFAULT_TASK_MODELS)) {
+    assert.equal(cfg.defaultModel, 'groq:openai/gpt-oss-120b');
+    assert.equal(cfg.enableFallback, true);
   }
 });
 

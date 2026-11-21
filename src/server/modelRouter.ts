@@ -189,7 +189,7 @@ export function resolveModelForTask(
   consumeOverride?: () => void
 ): ResolvedModelDecision {
   const taskCfg = config.taskModels?.[taskType] || DEFAULT_TASK_MODELS[taskType];
-  const activeFallbackDefault = config.activeModel || 'gemini-4-hydrogen';
+  const activeFallbackDefault = config.activeModel || 'groq:openai/gpt-oss-120b';
 
   let modelId = (taskCfg.defaultModel || activeFallbackDefault).trim();
   let usedOverride = false;
@@ -206,7 +206,7 @@ export function resolveModelForTask(
     fallbackModelId: (taskCfg.fallbackModel || 'gemini-3.1-flash-lite').trim(),
     enableFallback: Boolean(taskCfg.enableFallback),
     usedOverride,
-    promptVersion: taskCfg.promptVersion || 'v2.0',
+    promptVersion: taskCfg.promptVersion || 'v3.1',
     configVersion: config.configVersion || 1,
   };
 }
@@ -291,6 +291,10 @@ export async function executeRoutedAiTask<T>(params: {
     Boolean(decision.fallbackModelId) &&
     decision.fallbackModelId !== decision.modelId;
 
+  const primaryUnconfigured =
+    (isGroqModelId(decision.modelId) && !isGroqConfigured()) ||
+    (isCloudflareModelId(decision.modelId) && !isCloudflareConfigured());
+
   const executeTask = async (): Promise<{
     data: T;
     modelId: string;
@@ -300,6 +304,13 @@ export async function executeRoutedAiTask<T>(params: {
   }> => {
     const start = Date.now();
     try {
+      if (primaryUnconfigured && canFallback) {
+        throw new Error(
+          isGroqModelId(decision.modelId)
+            ? 'GROQ_API_KEY_UNCONFIGURED'
+            : 'CLOUDFLARE_CREDENTIALS_UNCONFIGURED'
+        );
+      }
       // When fallback is active, retry primary 0 times so 429/503 transitions immediately to fallback within Vercel's 60s budget
       const primaryRetries = canFallback ? 0 : 1;
       const result = await withExponentialBackoff(() => runWithModel(decision.modelId), primaryRetries);

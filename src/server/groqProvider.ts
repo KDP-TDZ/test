@@ -6,6 +6,7 @@ export const GROQ_MODELS_ENDPOINT = 'https://api.groq.com/openai/v1/models';
 
 export const GROQ_RESCUE_MODEL_STRONG = 'groq:openai/gpt-oss-120b';
 export const GROQ_RESCUE_MODEL_FAST = 'groq:openai/gpt-oss-20b';
+export const GROQ_VISION_MODEL = 'groq:meta-llama/llama-4-scout-17b-16e-instruct';
 
 export const GROQ_PREFERRED_TEXT_MODELS = [
   'openai/gpt-oss-120b',
@@ -15,6 +16,16 @@ export const GROQ_PREFERRED_TEXT_MODELS = [
   'qwen/qwen3-32b',
   'meta-llama/llama-4-scout-17b-16e-instruct',
 ] as const;
+
+export const GROQ_VISION_MODELS = [
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'meta-llama/llama-4-maverick-17b-128e-instruct',
+] as const;
+
+export function isGroqVisionModelId(modelId: string): boolean {
+  const raw = stripGroqPrefix(modelId).toLowerCase();
+  return GROQ_VISION_MODELS.some((m) => m.toLowerCase() === raw) || raw.includes('llama-4-scout') || raw.includes('llama-4-maverick');
+}
 
 const LEGACY_GROQ_MODEL_ALIASES: Record<string, string> = {
   'llama-3.3-70b-versatile': 'openai/gpt-oss-120b',
@@ -147,10 +158,19 @@ export interface GroqCompletionResult {
   resolvedModel?: string;
 }
 
+type GroqMessageContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
+type GroqMessage = {
+  role: 'system' | 'user';
+  content: string | GroqMessageContentPart[];
+};
+
 async function executeGroqRequest(params: {
   apiKey: string;
   groqModel: string;
-  messages: Array<{ role: 'system' | 'user'; content: string }>;
+  messages: GroqMessage[];
   jsonMode?: boolean;
   maxTokens: number;
   signal?: AbortSignal;
@@ -205,6 +225,7 @@ async function executeGroqRequest(params: {
 export async function callGroqChatCompletion(params: {
   modelId: string;
   prompt: string;
+  images?: Array<{ mimeType: string; base64: string }>;
   systemInstruction?: string;
   jsonMode?: boolean;
   jsonSchemaHint?: string;
@@ -220,8 +241,14 @@ export async function callGroqChatCompletion(params: {
     );
   }
 
+  const hasImages = Array.isArray(params.images) && params.images.length > 0;
   const normalizedModelId = normalizeGroqModelId(params.modelId);
-  const groqModel = stripGroqPrefix(normalizedModelId);
+  const requestedGroqModel = stripGroqPrefix(normalizedModelId);
+  const groqModel =
+    hasImages && !isGroqVisionModelId(requestedGroqModel)
+      ? stripGroqPrefix(GROQ_VISION_MODEL)
+      : requestedGroqModel;
+
   const systemParts: string[] = [];
   if (params.systemInstruction) {
     systemParts.push(params.systemInstruction.trim());
@@ -235,11 +262,22 @@ export async function callGroqChatCompletion(params: {
     }
   }
 
-  const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+  const messages: GroqMessage[] = [];
   if (systemParts.length > 0) {
     messages.push({ role: 'system', content: systemParts.join('\n\n') });
   }
-  messages.push({ role: 'user', content: params.prompt });
+  if (hasImages) {
+    const userContent: GroqMessageContentPart[] = [
+      ...params.images!.map((img) => ({
+        type: 'image_url' as const,
+        image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+      })),
+      { type: 'text', text: params.prompt },
+    ];
+    messages.push({ role: 'user', content: userContent });
+  } else {
+    messages.push({ role: 'user', content: params.prompt });
+  }
 
   // Reasoning-capable models (e.g. openai/gpt-oss-*) need at least 256 tokens so final content isn't truncated
   const maxTokens = Math.min(8192, Math.max(256, params.maxOutputTokens || 2048));
@@ -260,7 +298,10 @@ export async function callGroqChatCompletion(params: {
   // If Groq reports HTTP 404 (model retired or disabled on this org), discover active models on the key and retry once
   if (firstAttempt.status === 404 && !params.disableModelAutoFallback) {
     const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
-    const fallbackGroqModel = pickBestAvailableGroqModel(availableModels, groqModel);
+    const fallbackGroqModel = hasImages
+      ? availableModels.find((m) => isGroqVisionModelId(m) && m.toLowerCase() !== groqModel.toLowerCase()) ||
+        null
+      : pickBestAvailableGroqModel(availableModels, groqModel);
     if (fallbackGroqModel) {
       const retryAttempt = await executeGroqRequest({
         apiKey,

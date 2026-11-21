@@ -123,43 +123,57 @@ interface ModelCatalogItem {
 
 const FALLBACK_MODEL_CATALOG: ModelCatalogItem[] = [
   {
-    modelId: 'gemini-4-hydrogen',
-    displayName: 'Gemini 4 Hydrogen (Google Free)',
-    provider: 'gemini',
-    tier: 'free',
-    strengths: 'Ưu tiên số 1 cho OCR ảnh/PDF công thức viết tay phức tạp & kiểm định kiến thức chuẩn SGK.',
-    supportsMultimodal: true,
-  },
-  {
-    modelId: 'gemini-3.1-flash-lite',
-    displayName: 'Gemini 3.1 Flash Lite (Google Free)',
-    provider: 'gemini',
-    tier: 'free',
-    strengths: 'Tốc độ nhanh, tiết kiệm token cho phân loại môn, kiểm tra cấu trúc, flashcard & phản hồi.',
-    supportsMultimodal: true,
-  },
-  {
     modelId: 'groq:openai/gpt-oss-120b',
-    displayName: 'Groq · GPT-OSS 120B (Groq Cloud Free)',
+    displayName: 'Groq · GPT-OSS 120B (Ưu tiên #1 · Siêu nhanh Free)',
     provider: 'groq',
     tier: 'free',
-    strengths: 'Model sản xuất mạnh nhất của Groq (~500 tok/s, miễn phí) — xử lý văn bản/JSON: kiểm định kiến thức, tạo đề & dự phòng khi Gemini 429.',
+    strengths:
+      'Ưu tiên số 1 cho toàn bộ hệ thống (~500 tok/s, miễn phí) — kiểm định kiến thức, tạo đề, tổng hợp SGK; tự gọi Llama 4 Scout Vision khi đọc ảnh OCR.',
     supportsMultimodal: false,
+  },
+  {
+    modelId: 'groq:meta-llama/llama-4-scout-17b-16e-instruct',
+    displayName: 'Groq · Llama 4 Scout 17B Vision (Đa phương thức Free)',
+    provider: 'groq',
+    tier: 'free',
+    strengths:
+      'Model đa phương thức của Groq (~460 tok/s, miễn phí) — đọc trực tiếp ảnh chụp vở/PDF scan & xử lý mọi tác vụ văn bản trên cùng 1 AI.',
+    supportsMultimodal: true,
   },
   {
     modelId: 'groq:openai/gpt-oss-20b',
     displayName: 'Groq · GPT-OSS 20B Fast (Groq Cloud Free)',
     provider: 'groq',
     tier: 'free',
-    strengths: 'Siêu nhanh (~1.000 tok/s), miễn phí — phân loại môn, gợi ý tên tệp, flashcard & dự phòng nhẹ.',
+    strengths:
+      'Siêu nhanh (~1.000 tok/s), miễn phí — phân loại môn, gợi ý tên tệp, flashcard & tác vụ nhẹ.',
     supportsMultimodal: false,
+  },
+  {
+    modelId: 'gemini-3.1-flash-lite',
+    displayName: 'Gemini 3.1 Flash Lite (Google Free)',
+    provider: 'gemini',
+    tier: 'free',
+    strengths:
+      'Tốc độ nhanh, hỗ trợ OCR ảnh/PDF, Google Search Grounding & làm tầng dự phòng ổn định.',
+    supportsMultimodal: true,
+  },
+  {
+    modelId: 'gemini-4-hydrogen',
+    displayName: 'Gemini 4 Hydrogen (Google Free)',
+    provider: 'gemini',
+    tier: 'free',
+    strengths:
+      'Suy luận sâu cho công thức viết tay phức tạp, Google Search Grounding & kiểm định kiến thức chuẩn SGK.',
+    supportsMultimodal: true,
   },
   {
     modelId: 'cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast',
     displayName: 'Cloudflare · Llama 3.3 70B FP8 Fast (Workers AI Free)',
     provider: 'cloudflare',
     tier: 'free',
-    strengths: 'Miễn phí (10.000 Neurons/ngày trên Cloudflare Edge) — tầng dự phòng & chia tải thứ 3 cho chấm kiến thức, tạo đề.',
+    strengths:
+      'Miễn phí (10.000 Neurons/ngày trên Cloudflare Edge) — tầng dự phòng & chia tải cho chấm kiến thức, tạo đề.',
     supportsMultimodal: false,
   },
   {
@@ -167,7 +181,8 @@ const FALLBACK_MODEL_CATALOG: ModelCatalogItem[] = [
     displayName: 'Cloudflare · Llama 3.1 8B Fast (Workers AI Free)',
     provider: 'cloudflare',
     tier: 'free',
-    strengths: 'Miễn phí, tiêu tốn cực ít Neuron trên Cloudflare Edge — phân loại môn, thẩm định nhanh & flashcard.',
+    strengths:
+      'Miễn phí, tiêu tốn cực ít Neuron trên Cloudflare Edge — phân loại môn, thẩm định nhanh & flashcard.',
     supportsMultimodal: false,
   },
 ];
@@ -235,7 +250,9 @@ export const AdminControlCenter: React.FC = () => {
   // Overview / AI Switch form
   const [maintenanceMessage, setMaintenanceMessage] = useState('');
   const [disabledReason, setDisabledReason] = useState('');
-  const [activeModel, setActiveModel] = useState('gemini-4-hydrogen');
+  const [activeModel, setActiveModel] = useState('groq:openai/gpt-oss-120b');
+  const [unifiedFallbackModel, setUnifiedFallbackModel] = useState('gemini-3.1-flash-lite');
+  const [unifiedEnableFallback, setUnifiedEnableFallback] = useState(true);
   const [savingConfig, setSavingConfig] = useState(false);
 
   // Model Router state
@@ -417,9 +434,16 @@ export const AdminControlCenter: React.FC = () => {
       setConfig(data.config);
       setMaintenanceMessage(data.config?.maintenanceMessage || '');
       setDisabledReason(data.config?.disabledReason || '');
-      setActiveModel(data.config?.activeModel || 'gemini-4-hydrogen');
+      const loadedPrimary = data.config?.activeModel || 'groq:openai/gpt-oss-120b';
+      setActiveModel(loadedPrimary);
       if (data.config?.rateLimitConfig) setLimits(data.config.rateLimitConfig);
-      if (data.config?.taskModels) setTaskModelsDraft(data.config.taskModels);
+      if (data.config?.taskModels) {
+        setTaskModelsDraft(data.config.taskModels);
+        const ka = data.config.taskModels.knowledge_analysis;
+        if (ka?.defaultModel) setActiveModel(ka.defaultModel);
+        if (ka?.fallbackModel) setUnifiedFallbackModel(ka.fallbackModel);
+        if (typeof ka?.enableFallback === 'boolean') setUnifiedEnableFallback(ka.enableFallback);
+      }
       setUsageStats(data.usageStats);
       setAuditLogs(data.auditLogs || []);
       setSingleKeyStatus(data.singleKeyStatus || null);
@@ -488,6 +512,7 @@ export const AdminControlCenter: React.FC = () => {
       });
       const data = await parseApiResponse<any>(res, 'Không thể cập nhật cấu hình.');
       setConfig(data.config);
+      if (data.config?.activeModel) setActiveModel(data.config.activeModel);
       if (data.config?.taskModels) setTaskModelsDraft(data.config.taskModels);
       await refreshSystemStatus();
       setNotice(successMsg || `Đã cập nhật cấu hình hệ thống (Phiên bản v${data.config?.configVersion ?? 1}).`);
@@ -496,6 +521,34 @@ export const AdminControlCenter: React.FC = () => {
     } finally {
       setSavingConfig(false);
     }
+  };
+
+  const handleApplyUnifiedAi = async (
+    primaryModelId: string,
+    fallbackModelId: string,
+    enableFb: boolean
+  ) => {
+    const nextTaskModels = {} as Record<AiTaskType, TaskModelConfig>;
+    for (const taskKey of Object.keys(AI_TASK_LABELS) as AiTaskType[]) {
+      const existing = taskModelsDraft?.[taskKey];
+      nextTaskModels[taskKey] = {
+        defaultModel: primaryModelId,
+        fallbackModel: fallbackModelId,
+        enableFallback: enableFb,
+        oneTimeOverrideModel: null,
+        promptVersion: existing?.promptVersion || 'v3.1',
+      };
+    }
+    setActiveModel(primaryModelId);
+    setUnifiedFallbackModel(fallbackModelId);
+    setUnifiedEnableFallback(enableFb);
+    setTaskModelsDraft(nextTaskModels);
+    await handlePatchAiConfig(
+      { activeModel: primaryModelId, taskModels: nextTaskModels },
+      `Đã gộp toàn bộ 11 tác vụ AI sang 1 model chính: "${primaryModelId}"${
+        enableFb ? ` (dự phòng: ${fallbackModelId})` : ''
+      }.`
+    );
   };
 
   const handleSetOneTimeOverride = async (taskType: AiTaskType, modelId: string | null) => {
@@ -2003,7 +2056,7 @@ export const AdminControlCenter: React.FC = () => {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                          Model Gemini dự phòng chung
+                          1 AI chính dùng chung toàn hệ thống (Ưu tiên Groq)
                         </label>
                         <select
                           value={activeModel}
@@ -2020,19 +2073,30 @@ export const AdminControlCenter: React.FC = () => {
                     </div>
                   </div>
 
-                  <WaterRippleButton
-                    disabled={savingConfig}
-                    onClick={() =>
-                      handlePatchAiConfig({
-                        maintenanceMessage,
-                        disabledReason,
-                        activeModel,
-                      })
-                    }
-                  >
-                    <Save className="w-4 h-4" />
-                    Lưu cấu hình bảo trì & Model chung
-                  </WaterRippleButton>
+                  <div className="flex flex-wrap gap-2.5">
+                    <WaterRippleButton
+                      disabled={savingConfig}
+                      onClick={() =>
+                        handleApplyUnifiedAi(activeModel, unifiedFallbackModel, unifiedEnableFallback)
+                      }
+                    >
+                      <Save className="w-4 h-4" />
+                      Áp dụng 1 AI này cho toàn bộ 11 tác vụ
+                    </WaterRippleButton>
+                    <WaterRippleButton
+                      variant="secondary"
+                      disabled={savingConfig}
+                      onClick={() =>
+                        handlePatchAiConfig({
+                          maintenanceMessage,
+                          disabledReason,
+                          activeModel,
+                        })
+                      }
+                    >
+                      Lưu riêng thông báo bảo trì
+                    </WaterRippleButton>
+                  </div>
                 </GlassSurface>
               )}
 
@@ -2076,17 +2140,17 @@ export const AdminControlCenter: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 2: MODEL ROUTER (11 TASKS) */}
+          {/* TAB 2: MODEL ROUTER (1 AI DUY NHẤT - ƯU TIÊN GROQ) */}
           {tab === 'models' && taskModelsDraft && (
             <div className="space-y-6">
               <GlassSurface className="rounded-3xl p-6 space-y-5">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
                     <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                      Model Router cho 11 tác vụ AI chuyên biệt
+                      Chọn 1 AI duy nhất cho toàn bộ hệ thống (Ưu tiên Groq)
                     </h2>
                     <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
-                      Chọn model mặc định, model fallback (chỉ chạy khi bật Fallback) hoặc gán model dùng 1 lần cho lần chạy kế tiếp. Không cần deploy lại.
+                      Gộp toàn bộ 11 tác vụ (OCR ảnh, nhận diện môn, kiểm định 4 lớp, tổng hợp SGK, tạo đề &amp; flashcard) về 1 AI tùy chọn duy nhất — mặc định ưu tiên Groq tốc độ cao.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -2105,10 +2169,10 @@ export const AdminControlCenter: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-sky-200/80 dark:border-sky-800/60 bg-sky-50/70 dark:bg-sky-950/35 px-4 py-3.5 text-xs text-[#16243E] dark:text-[#E6EFFC] space-y-2.5">
+                <div className="rounded-2xl border border-sky-200/80 dark:border-sky-800/60 bg-sky-50/70 dark:bg-sky-950/35 px-4 py-4 text-xs text-[#16243E] dark:text-[#E6EFFC] space-y-3.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="font-semibold">
-                      Định tuyến 3 Nhà cung cấp AI Miễn phí (Tối ưu cho nhóm 2–3 người dùng cùng lúc)
+                      Cấu hình 1 AI hợp nhất · Ưu tiên số 1: Groq Cloud Free
                     </p>
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span
@@ -2147,18 +2211,104 @@ export const AdminControlCenter: React.FC = () => {
                       </button>
                     </div>
                   </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        1. AI chính chạy toàn bộ tác vụ
+                      </label>
+                      <select
+                        value={activeModel}
+                        onChange={(e) => setActiveModel(e.target.value)}
+                        className={`${INPUT_CLASS} font-mono`}
+                      >
+                        {modelCatalog.map((m) => (
+                          <option key={m.modelId} value={m.modelId}>
+                            {m.displayName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        2. AI dự phòng tự động (khi lỗi / 429)
+                      </label>
+                      <select
+                        value={unifiedFallbackModel}
+                        onChange={(e) => setUnifiedFallbackModel(e.target.value)}
+                        className={`${INPUT_CLASS} font-mono`}
+                      >
+                        {modelCatalog.map((m) => (
+                          <option key={m.modelId} value={m.modelId}>
+                            {m.modelId}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <label className="inline-flex items-center gap-1.5 cursor-pointer text-xs font-medium">
+                        <input
+                          type="checkbox"
+                          checked={unifiedEnableFallback}
+                          onChange={(e) => setUnifiedEnableFallback(e.target.checked)}
+                        />
+                        <span>Bật dự phòng</span>
+                      </label>
+                      <WaterRippleButton
+                        disabled={savingConfig}
+                        onClick={() =>
+                          handleApplyUnifiedAi(activeModel, unifiedFallbackModel, unifiedEnableFallback)
+                        }
+                      >
+                        <Save className="w-4 h-4" />
+                        Áp dụng cho cả 11 tác vụ
+                      </WaterRippleButton>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                      Chọn nhanh 1 chạm:
+                    </span>
+                    <button
+                      type="button"
+                      disabled={savingConfig}
+                      onClick={() =>
+                        handleApplyUnifiedAi('groq:openai/gpt-oss-120b', 'gemini-3.1-flash-lite', true)
+                      }
+                      className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-[11px] font-semibold hover:bg-emerald-700 transition-colors cursor-pointer"
+                    >
+                      Ưu tiên Groq · GPT-OSS 120B (Tự gọi Llama 4 Vision đọc ảnh)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={savingConfig}
+                      onClick={() =>
+                        handleApplyUnifiedAi(
+                          'groq:meta-llama/llama-4-scout-17b-16e-instruct',
+                          'gemini-3.1-flash-lite',
+                          true
+                        )
+                      }
+                      className="px-3 py-1.5 rounded-xl glass-control text-[11px] font-semibold cursor-pointer"
+                    >
+                      Groq Vision · Llama 4 Scout 17B (1 model cho cả ảnh &amp; chữ)
+                    </button>
+                    <button
+                      type="button"
+                      disabled={savingConfig}
+                      onClick={() =>
+                        handleApplyUnifiedAi('gemini-3.1-flash-lite', 'groq:openai/gpt-oss-120b', true)
+                      }
+                      className="px-3 py-1.5 rounded-xl glass-control text-[11px] font-semibold cursor-pointer"
+                    >
+                      Gemini 3.1 Flash Lite (Dự phòng Groq)
+                    </button>
+                  </div>
+
                   <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
-                    <strong>Thứ tự ưu tiên khuyến nghị cho 2–3 người dùng song song:</strong>{' '}
-                    <strong>(1) Gemini 4 Hydrogen / 3.1 Flash Lite</strong> bắt buộc giữ vị trí số 1 cho{' '}
-                    <strong>OCR Ảnh/PDF</strong> và kiểm định chính vì hỗ trợ đa phương thức (vision) và suy luận
-                    công thức chuẩn nhất; <strong>(2) Groq Cloud Free</strong> (
-                    <code className="font-mono text-[11px]">groq:openai/gpt-oss-120b</code>,{' '}
-                    <code className="font-mono text-[11px]">groq:openai/gpt-oss-20b</code>) ưu tiên số 2 cho
-                    tác vụ văn bản/JSON vì tốc độ ~500–1.000 token/s (tự động chuyển model khả dụng nếu tài khoản Groq giới hạn);{' '}
-                    <strong>(3) Cloudflare Workers AI Free</strong> (
-                    <code className="font-mono text-[11px]">cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast</code>)
-                    làm tầng cứu hộ thứ 3 (10.000 Neurons/ngày). Super Admin có thể thêm trực tiếp cả 3 bộ khóa trong mục{' '}
-                    <strong>API Key &amp; Bảo mật</strong> mà không cần chỉnh biến môi trường trên Vercel.
+                    Khi ưu tiên <strong>Groq</strong>, mọi tác vụ văn bản/JSON (kiểm định 4 lớp, tổng hợp SGK, tạo đề, flashcard) chạy siêu nhanh (~500–1.000 token/s); riêng tác vụ <strong>đọc ảnh OCR</strong> sẽ tự chạy qua{' '}
+                    <code className="font-mono text-[11px]">meta-llama/llama-4-scout-17b-16e-instruct</code> trên chính Groq Key của bạn (chỉ tự chuyển sang Gemini dự phòng nếu chưa nhập Groq Key hoặc Groq gặp lỗi).
                   </p>
                 </div>
 
@@ -2175,156 +2325,163 @@ export const AdminControlCenter: React.FC = () => {
                   </div>
                 )}
 
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="border-b border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
-                      <tr>
-                        <th className="py-2.5 pr-3">Tác vụ AI</th>
-                        <th className="py-2.5 pr-3">Model mặc định</th>
-                        <th className="py-2.5 pr-3">Fallback</th>
-                        <th className="py-2.5 pr-3">Bật Fallback</th>
-                        <th className="py-2.5 pr-3">Dùng 1 lần cho lần chạy tới</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                      {(Object.keys(AI_TASK_LABELS) as AiTaskType[]).map((taskKey) => {
-                        const row = taskModelsDraft[taskKey] || {
-                          defaultModel: 'gemini-4-hydrogen',
-                          fallbackModel: 'gemini-3.1-flash-lite',
-                          enableFallback: false,
-                          oneTimeOverrideModel: null,
-                          promptVersion: 'v2.1',
-                        };
-                        const overrideDraft =
-                          overrideSelection[taskKey] ?? row.oneTimeOverrideModel ?? 'gemini-3.1-flash-lite';
-                        return (
-                          <tr key={taskKey} className="align-middle">
-                            <td className="py-3 pr-3">
-                              <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
-                                {AI_TASK_LABELS[taskKey]}
-                              </p>
-                              <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                                {taskKey} · {row.promptVersion}
-                              </p>
-                            </td>
-                            <td className="py-3 pr-3 min-w-[175px]">
-                              <select
-                                value={row.defaultModel}
-                                onChange={(e) =>
-                                  setTaskModelsDraft((prev) =>
-                                    prev
-                                      ? {
-                                          ...prev,
-                                          [taskKey]: { ...row, defaultModel: e.target.value },
-                                        }
-                                      : prev
-                                  )
-                                }
-                                className={`${INPUT_CLASS} font-mono`}
-                              >
-                                {modelCatalog.map((m) => (
-                                  <option key={m.modelId} value={m.modelId}>
-                                    {m.modelId}
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="py-3 pr-3 min-w-[175px]">
-                              <select
-                                value={row.fallbackModel}
-                                onChange={(e) =>
-                                  setTaskModelsDraft((prev) =>
-                                    prev
-                                      ? {
-                                          ...prev,
-                                          [taskKey]: { ...row, fallbackModel: e.target.value },
-                                        }
-                                      : prev
-                                  )
-                                }
-                                className={`${INPUT_CLASS} font-mono`}
-                              >
-                                {modelCatalog.map((m) => (
-                                  <option key={m.modelId} value={m.modelId}>
-                                    {m.modelId}
-                                  </option>
-                                ))}
-                              </select>
-                            </td>
-                            <td className="py-3 pr-3">
-                              <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={Boolean(row.enableFallback)}
-                                  onChange={(e) =>
-                                    setTaskModelsDraft((prev) =>
-                                      prev
-                                        ? {
-                                            ...prev,
-                                            [taskKey]: { ...row, enableFallback: e.target.checked },
-                                          }
-                                        : prev
-                                    )
-                                  }
-                                />
-                                <span>{row.enableFallback ? 'Có' : 'Không'}</span>
-                              </label>
-                            </td>
-                            <td className="py-3 pr-3">
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                <select
-                                  value={overrideDraft}
-                                  onChange={(e) =>
-                                    setOverrideSelection((prev) => ({
-                                      ...prev,
-                                      [taskKey]: e.target.value,
-                                    }))
-                                  }
-                                  className="px-2 py-1.5 rounded-lg glass-control font-mono text-[11px]"
-                                >
-                                  {modelCatalog.map((m) => (
-                                    <option key={m.modelId} value={m.modelId}>
-                                      {m.modelId}
-                                    </option>
-                                  ))}
-                                </select>
-                                <button
-                                  type="button"
-                                  onClick={() => handleSetOneTimeOverride(taskKey, overrideDraft)}
-                                  className="px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-sky-500 to-blue-600 text-white text-[11px] font-semibold hover:brightness-105 shadow-sm cursor-pointer"
-                                >
-                                  Dùng 1 lần
-                                </button>
-                                {row.oneTimeOverrideModel && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleSetOneTimeOverride(taskKey, null)}
-                                    className="px-2 py-1.5 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 text-[11px] font-semibold cursor-pointer"
-                                  >
-                                    Đang chờ: {row.oneTimeOverrideModel} (Gỡ)
-                                  </button>
-                                )}
-                              </div>
-                            </td>
+                <details className="rounded-2xl border border-slate-200/80 dark:border-slate-700/70 p-4">
+                  <summary className="cursor-pointer text-xs font-semibold text-slate-700 dark:text-slate-200 select-none">
+                    Tùy chỉnh nâng cao riêng từng tác vụ ({Object.keys(AI_TASK_LABELS).length} tác vụ — chỉ mở khi cần tách model riêng)
+                  </summary>
+                  <div className="mt-4 space-y-4">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="border-b border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
+                          <tr>
+                            <th className="py-2.5 pr-3">Tác vụ AI</th>
+                            <th className="py-2.5 pr-3">Model mặc định</th>
+                            <th className="py-2.5 pr-3">Fallback</th>
+                            <th className="py-2.5 pr-3">Bật Fallback</th>
+                            <th className="py-2.5 pr-3">Dùng 1 lần cho lần chạy tới</th>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                          {(Object.keys(AI_TASK_LABELS) as AiTaskType[]).map((taskKey) => {
+                            const row = taskModelsDraft[taskKey] || {
+                              defaultModel: 'groq:openai/gpt-oss-120b',
+                              fallbackModel: 'gemini-3.1-flash-lite',
+                              enableFallback: true,
+                              oneTimeOverrideModel: null,
+                              promptVersion: 'v3.1',
+                            };
+                            const overrideDraft =
+                              overrideSelection[taskKey] ?? row.oneTimeOverrideModel ?? 'groq:openai/gpt-oss-120b';
+                            return (
+                              <tr key={taskKey} className="align-middle">
+                                <td className="py-3 pr-3">
+                                  <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                                    {AI_TASK_LABELS[taskKey]}
+                                  </p>
+                                  <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                                    {taskKey} · {row.promptVersion}
+                                  </p>
+                                </td>
+                                <td className="py-3 pr-3 min-w-[175px]">
+                                  <select
+                                    value={row.defaultModel}
+                                    onChange={(e) =>
+                                      setTaskModelsDraft((prev) =>
+                                        prev
+                                          ? {
+                                              ...prev,
+                                              [taskKey]: { ...row, defaultModel: e.target.value },
+                                            }
+                                          : prev
+                                      )
+                                    }
+                                    className={`${INPUT_CLASS} font-mono`}
+                                  >
+                                    {modelCatalog.map((m) => (
+                                      <option key={m.modelId} value={m.modelId}>
+                                        {m.modelId}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td className="py-3 pr-3 min-w-[175px]">
+                                  <select
+                                    value={row.fallbackModel}
+                                    onChange={(e) =>
+                                      setTaskModelsDraft((prev) =>
+                                        prev
+                                          ? {
+                                              ...prev,
+                                              [taskKey]: { ...row, fallbackModel: e.target.value },
+                                            }
+                                          : prev
+                                      )
+                                    }
+                                    className={`${INPUT_CLASS} font-mono`}
+                                  >
+                                    {modelCatalog.map((m) => (
+                                      <option key={m.modelId} value={m.modelId}>
+                                        {m.modelId}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td className="py-3 pr-3">
+                                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(row.enableFallback)}
+                                      onChange={(e) =>
+                                        setTaskModelsDraft((prev) =>
+                                          prev
+                                            ? {
+                                                ...prev,
+                                                [taskKey]: { ...row, enableFallback: e.target.checked },
+                                              }
+                                            : prev
+                                        )
+                                      }
+                                    />
+                                    <span>{row.enableFallback ? 'Có' : 'Không'}</span>
+                                  </label>
+                                </td>
+                                <td className="py-3 pr-3">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <select
+                                      value={overrideDraft}
+                                      onChange={(e) =>
+                                        setOverrideSelection((prev) => ({
+                                          ...prev,
+                                          [taskKey]: e.target.value,
+                                        }))
+                                      }
+                                      className="px-2 py-1.5 rounded-lg glass-control font-mono text-[11px]"
+                                    >
+                                      {modelCatalog.map((m) => (
+                                        <option key={m.modelId} value={m.modelId}>
+                                          {m.modelId}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSetOneTimeOverride(taskKey, overrideDraft)}
+                                      className="px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-sky-500 to-blue-600 text-white text-[11px] font-semibold hover:brightness-105 shadow-sm cursor-pointer"
+                                    >
+                                      Dùng 1 lần
+                                    </button>
+                                    {row.oneTimeOverrideModel && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSetOneTimeOverride(taskKey, null)}
+                                        className="px-2 py-1.5 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 text-[11px] font-semibold cursor-pointer"
+                                      >
+                                        Đang chờ: {row.oneTimeOverrideModel} (Gỡ)
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
 
-                <WaterRippleButton
-                  disabled={savingConfig}
-                  onClick={() =>
-                    handlePatchAiConfig(
-                      { taskModels: taskModelsDraft },
-                      'Đã lưu bảng điều phối Model cho 11 tác vụ AI.'
-                    )
-                  }
-                >
-                  <Save className="w-4 h-4" />
-                  Lưu toàn bộ Model Router
-                </WaterRippleButton>
+                    <WaterRippleButton
+                      disabled={savingConfig}
+                      onClick={() =>
+                        handlePatchAiConfig(
+                          { taskModels: taskModelsDraft },
+                          'Đã lưu bảng tùy chỉnh nâng cao cho từng tác vụ AI.'
+                        )
+                      }
+                    >
+                      <Save className="w-4 h-4" />
+                      Lưu tùy chỉnh nâng cao
+                    </WaterRippleButton>
+                  </div>
+                </details>
               </GlassSurface>
 
               <GlassSurface className="rounded-3xl p-6 space-y-4">
