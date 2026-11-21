@@ -50,6 +50,7 @@ import {
   KnowledgeAnalysisService,
   QuizGenerationService,
   SubjectDetectionService,
+  TextbookSynthesisService,
   type TokenTelemetry,
 } from './geminiPipeline.js';
 import {
@@ -1514,6 +1515,168 @@ export function createApiApp(): express.Express {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
+
+  app.post('/api/admin/references/synthesize-outline', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    const { grade, subject, textbookSeries, title, customTocHint } = req.body as {
+      grade?: GradeLevel;
+      subject?: SubjectId;
+      textbookSeries?: string;
+      title?: string;
+      customTocHint?: string;
+    };
+    const tokensOut: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
+    try {
+      const cfg = await loadAuthoritativeAiConfig();
+      const result = await TextbookSynthesisService.synthesizeOutline({
+        grade: grade || '10',
+        subject: subject || 'hoa_hoc',
+        textbookSeries: textbookSeries || 'Kết nối tri thức với cuộc sống',
+        title,
+        customTocHint,
+        tokensOut,
+        config: cfg,
+        idToken: user.idToken,
+      });
+      recordUsageEvent({
+        uid: user.uid,
+        email: user.email,
+        requestType: 'analysis',
+        outcome: 'success',
+        promptTokens: tokensOut.promptTokens,
+        candidateTokens: tokensOut.candidateTokens,
+        totalTokens: tokensOut.totalTokens,
+      });
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
+      res.json(result);
+    } catch (err) {
+      const mapped = mapGeminiErrorResponse(err);
+      res.status(mapped.status).json({ code: mapped.code, error: mapped.error });
+    }
+  });
+
+  app.post('/api/admin/references/synthesize-chapter', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    const {
+      referenceId,
+      grade,
+      subject,
+      textbookSeries,
+      chapterIndex,
+      chapterTitle,
+      lessons,
+      estimatedPageStart,
+    } = req.body as {
+      referenceId: string;
+      grade?: GradeLevel;
+      subject?: SubjectId;
+      textbookSeries?: string;
+      chapterIndex?: number;
+      chapterTitle: string;
+      lessons?: string[];
+      estimatedPageStart?: number;
+    };
+
+    if (!referenceId || !chapterTitle) {
+      res.status(400).json({ error: 'Thiếu mã sách tham chiếu (referenceId) hoặc tên chương (chapterTitle).' });
+      return;
+    }
+
+    const tokensOut: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
+    try {
+      const cfg = await loadAuthoritativeAiConfig();
+      const chunks = await TextbookSynthesisService.synthesizeChapterChunks({
+        referenceId,
+        grade: grade || '10',
+        subject: subject || 'hoa_hoc',
+        textbookSeries: textbookSeries || 'Kết nối tri thức với cuộc sống',
+        chapterIndex: Math.max(1, Number(chapterIndex) || 1),
+        chapterTitle,
+        lessons: Array.isArray(lessons) ? lessons : [],
+        estimatedPageStart: Math.max(1, Number(estimatedPageStart) || 1),
+        tokensOut,
+        config: cfg,
+        idToken: user.idToken,
+      });
+      recordUsageEvent({
+        uid: user.uid,
+        email: user.email,
+        requestType: 'analysis',
+        outcome: 'success',
+        promptTokens: tokensOut.promptTokens,
+        candidateTokens: tokensOut.candidateTokens,
+        totalTokens: tokensOut.totalTokens,
+      });
+      void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
+      res.json({ chunks });
+    } catch (err) {
+      const mapped = mapGeminiErrorResponse(err);
+      res.status(mapped.status).json({ code: mapped.code, error: mapped.error });
+    }
+  });
+
+  app.post(
+    '/api/admin/references/ocr-pages',
+    requireSuperAdmin,
+    upload.array('files', 4),
+    async (req, res) => {
+      const user = req.authUser!;
+      const rawFiles = (req.files as Express.Multer.File[]) || [];
+      if (rawFiles.length === 0) {
+        res.status(400).json({ error: 'Không có trang ảnh nào được gửi lên để đọc OCR.' });
+        return;
+      }
+
+      const { pageNumbers: rawPageNumbers, grade, subject, textbookSeries } = req.body as {
+        pageNumbers?: string;
+        grade?: GradeLevel;
+        subject?: SubjectId;
+        textbookSeries?: string;
+      };
+
+      let parsedPageNums: number[] = [];
+      try {
+        if (rawPageNumbers) {
+          const arr = JSON.parse(rawPageNumbers);
+          if (Array.isArray(arr)) parsedPageNums = arr.map((n) => Number(n) || 1);
+        }
+      } catch {
+        parsedPageNums = [];
+      }
+
+      const tokensOut: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
+      try {
+        const cfg = await loadAuthoritativeAiConfig();
+        const pages = await TextbookSynthesisService.ocrScannedTextbookPages({
+          files: rawFiles.map((f, idx) => ({
+            buffer: f.buffer,
+            mimeType: f.mimetype || 'image/jpeg',
+            pageNumber: parsedPageNums[idx] || idx + 1,
+          })),
+          grade: grade || '10',
+          subject: subject || 'hoa_hoc',
+          textbookSeries: textbookSeries || 'Sách giáo khoa',
+          tokensOut,
+          config: cfg,
+          idToken: user.idToken,
+        });
+        recordUsageEvent({
+          uid: user.uid,
+          email: user.email,
+          requestType: 'ocr',
+          outcome: 'success',
+          promptTokens: tokensOut.promptTokens,
+          candidateTokens: tokensOut.candidateTokens,
+          totalTokens: tokensOut.totalTokens,
+        });
+        void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
+        res.json({ pages });
+      } catch (err) {
+        const mapped = mapGeminiErrorResponse(err);
+        res.status(mapped.status).json({ code: mapped.code, error: mapped.error });
+      }
+    }
+  );
 
   // --- Admin Exam Blueprint & Exam Generator Endpoints ---
   app.post('/api/admin/exams/blueprint', requireSuperAdmin, async (req, res) => {

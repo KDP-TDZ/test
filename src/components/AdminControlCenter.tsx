@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertCircle,
@@ -86,11 +86,19 @@ import {
   listReferenceChunksForBook,
   saveExamBlueprint,
   saveExamDocument,
+  saveReferenceBookProgress,
+  saveReferenceBookRecord,
   saveReferenceBookWithChunks,
+  saveReferenceChunksBatch,
   updateFeedbackStatus,
   updateReferenceBookStatus,
   updateReferenceChunkContent,
 } from '../services/firestoreService';
+import {
+  inspectClientPdfPageCount,
+  runSmartClientPdfIngest,
+  type SmartPdfIngestProgress,
+} from '../services/clientPdfIngest';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { SlidingTabs } from './LiquidGlass/SlidingTabs';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
@@ -297,11 +305,38 @@ export const AdminControlCenter: React.FC = () => {
     useState<KnowledgeSourceType>('textbook_reference');
   const [refLicenseStatus, setRefLicenseStatus] =
     useState<SourceLicenseStatus>('Chỉ được tham chiếu nội bộ');
-  const [refInputMode, setRefInputMode] = useState<'pdf' | 'docx' | 'url' | 'text' | 'json'>('pdf');
+  const [refInputMode, setRefInputMode] = useState<
+    'ai_synthesize' | 'pdf' | 'docx' | 'url' | 'text' | 'json'
+  >('ai_synthesize');
   const [refUrl, setRefUrl] = useState('');
   const [refFile, setRefFile] = useState<File | null>(null);
   const [refRawContent, setRefRawContent] = useState('');
   const [ingestingRef, setIngestingRef] = useState(false);
+
+  // Smart Client-Side PDF Ingest state
+  const [pdfDetectedPages, setPdfDetectedPages] = useState<number | null>(null);
+  const [pdfPageRangeInput, setPdfPageRangeInput] = useState('');
+  const [pdfProgress, setPdfProgress] = useState<SmartPdfIngestProgress | null>(null);
+  const pdfAbortRef = useRef<AbortController | null>(null);
+
+  // Sequential AI Textbook Chapter Synthesizer state
+  const [customTocHint, setCustomTocHint] = useState('');
+  const [synthesizingOutline, setSynthesizingOutline] = useState(false);
+  const [outlineChapters, setOutlineChapters] = useState<
+    Array<{
+      chapterIndex: number;
+      chapterTitle: string;
+      lessons: string[];
+      estimatedPageStart: number;
+      selected: boolean;
+      status: 'idle' | 'running' | 'saved' | 'error';
+      savedChunks: number;
+      errorMsg?: string;
+    }>
+  >([]);
+  const [synthesizingChapters, setSynthesizingChapters] = useState(false);
+  const [activeSynthReferenceId, setActiveSynthReferenceId] = useState<string | null>(null);
+  const synthAbortRef = useRef<AbortController | null>(null);
 
   const [editingBook, setEditingBook] = useState<ReferenceBook | null>(null);
   const [bookChunks, setBookChunks] = useState<ReferenceChunk[]>([]);
@@ -765,14 +800,320 @@ export const AdminControlCenter: React.FC = () => {
     );
   };
 
+  const handleSelectPdfFile = async (file: File | null) => {
+    setRefFile(file);
+    setPdfDetectedPages(null);
+    setPdfPageRangeInput('');
+    if (!file) return;
+    if (!refTitle.trim()) {
+      setRefTitle(file.name.replace(/\.pdf$/i, ''));
+    }
+    try {
+      const count = await inspectClientPdfPageCount(file);
+      setPdfDetectedPages(count);
+      setPdfPageRangeInput(`1-${count}`);
+    } catch {
+      setPdfDetectedPages(null);
+    }
+  };
+
+  const handleGenerateSgkOutline = async () => {
+    setError(null);
+    setNotice(null);
+    setSynthesizingOutline(true);
+    try {
+      const res = await authorizedFetch('/api/admin/references/synthesize-outline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          grade: refGrade,
+          subject: refSubject,
+          textbookSeries: refSeries,
+          title: refTitle.trim() || undefined,
+          customTocHint: customTocHint.trim() || undefined,
+        }),
+      });
+      const data = await parseApiResponse<{
+        bookTitle: string;
+        chapters: Array<{
+          chapterIndex: number;
+          chapterTitle: string;
+          lessons: string[];
+          estimatedPageStart: number;
+        }>;
+      }>(res, 'Không thể tạo mục lục chương chuẩn.');
+
+      if (data.bookTitle && !refTitle.trim()) {
+        setRefTitle(data.bookTitle);
+      }
+      setActiveSynthReferenceId(null);
+      setOutlineChapters(
+        (data.chapters || []).map((ch, idx) => ({
+          chapterIndex: ch.chapterIndex || idx + 1,
+          chapterTitle: ch.chapterTitle,
+          lessons: Array.isArray(ch.lessons) ? ch.lessons : [],
+          estimatedPageStart: ch.estimatedPageStart || 6 + idx * 20,
+          selected: true,
+          status: 'idle',
+          savedChunks: 0,
+        }))
+      );
+      setNotice(
+        `Đã tạo mục lục chuẩn gồm ${(data.chapters || []).length} chương cho ${
+          data.bookTitle || SUBJECT_LABELS[refSubject]
+        }. Hãy kiểm tra và bấm "2. Tổng hợp & Lưu tuần tự từng Chương".`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lỗi tạo mục lục SGK.');
+    } finally {
+      setSynthesizingOutline(false);
+    }
+  };
+
+  const handleRunSequentialChapterSynthesis = async (retrySingleChapterIndex?: number) => {
+    const targetChapters =
+      typeof retrySingleChapterIndex === 'number'
+        ? outlineChapters.filter((ch) => ch.chapterIndex === retrySingleChapterIndex)
+        : outlineChapters.filter((ch) => ch.selected && ch.status !== 'saved');
+
+    if (targetChapters.length === 0) {
+      setError('Vui lòng chọn ít nhất 1 chương chưa lưu để tổng hợp.');
+      return;
+    }
+
+    setError(null);
+    setNotice(null);
+    setSynthesizingChapters(true);
+    const abortCtrl = new AbortController();
+    synthAbortRef.current = abortCtrl;
+
+    const referenceId =
+      activeSynthReferenceId || `ref_${refSubject}_${refGrade}_${Date.now()}`;
+    const bookTitle =
+      refTitle.trim() ||
+      `SGK ${SUBJECT_LABELS[refSubject]} ${refGrade} - ${refSeries}`;
+
+    try {
+      if (!activeSynthReferenceId) {
+        const now = new Date().toISOString();
+        const initialBook: ReferenceBook = {
+          referenceId,
+          title: bookTitle,
+          grade: refGrade,
+          subject: refSubject,
+          textbookSeries: refSeries.trim(),
+          publisher: refPublisher.trim(),
+          editionYear: refYear.trim(),
+          description:
+            refDesc.trim() ||
+            `Tổng hợp chuẩn chương trình GDPT 2018 (${outlineChapters.filter((c) => c.selected).length} chương)`,
+          sourceType: 'text',
+          knowledgeSourceType: refKnowledgeSourceType,
+          licenseStatus: refLicenseStatus,
+          chapters: [],
+          chunkCount: 0,
+          status: 'active',
+          indexStatus: 'processing',
+          createdAt: now,
+          updatedAt: now,
+        };
+        await saveReferenceBookRecord(initialBook);
+        setActiveSynthReferenceId(referenceId);
+        setBooks((prev) => [initialBook, ...prev.filter((b) => b.referenceId !== referenceId)]);
+      }
+
+      let runningTotalChunks = outlineChapters.reduce(
+        (sum, ch) => sum + (ch.status === 'saved' ? ch.savedChunks : 0),
+        0
+      );
+      const completedChapterTitles = new Set<string>(
+        outlineChapters.filter((ch) => ch.status === 'saved').map((ch) => ch.chapterTitle)
+      );
+
+      for (const ch of targetChapters) {
+        if (abortCtrl.signal.aborted) break;
+
+        setOutlineChapters((prev) =>
+          prev.map((item) =>
+            item.chapterIndex === ch.chapterIndex
+              ? { ...item, status: 'running', errorMsg: undefined }
+              : item
+          )
+        );
+
+        try {
+          const res = await authorizedFetch('/api/admin/references/synthesize-chapter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              referenceId,
+              grade: refGrade,
+              subject: refSubject,
+              textbookSeries: refSeries,
+              chapterIndex: ch.chapterIndex,
+              chapterTitle: ch.chapterTitle,
+              lessons: ch.lessons,
+              estimatedPageStart: ch.estimatedPageStart,
+            }),
+            signal: abortCtrl.signal,
+          });
+          const data = await parseApiResponse<{ chunks: ReferenceChunk[] }>(
+            res,
+            `Không thể tổng hợp ${ch.chapterTitle}.`
+          );
+          const chunks = data.chunks || [];
+
+          await saveReferenceChunksBatch(chunks);
+          runningTotalChunks += chunks.length;
+          completedChapterTitles.add(ch.chapterTitle);
+
+          const updatedChaptersArr = Array.from(completedChapterTitles);
+          await saveReferenceBookProgress(referenceId, {
+            title: bookTitle,
+            chapters: updatedChaptersArr,
+            chunkCount: runningTotalChunks,
+            indexStatus: 'processing',
+          });
+
+          setBooks((prev) =>
+            prev.map((b) =>
+              b.referenceId === referenceId
+                ? {
+                    ...b,
+                    title: bookTitle,
+                    chapters: updatedChaptersArr,
+                    chunkCount: runningTotalChunks,
+                    updatedAt: new Date().toISOString(),
+                  }
+                : b
+            )
+          );
+
+          setOutlineChapters((prev) =>
+            prev.map((item) =>
+              item.chapterIndex === ch.chapterIndex
+                ? { ...item, status: 'saved', savedChunks: chunks.length, errorMsg: undefined }
+                : item
+            )
+          );
+        } catch (chErr) {
+          if (abortCtrl.signal.aborted) {
+            setOutlineChapters((prev) =>
+              prev.map((item) =>
+                item.chapterIndex === ch.chapterIndex && item.status === 'running'
+                  ? { ...item, status: 'idle' }
+                  : item
+              )
+            );
+            break;
+          }
+          const errMsg = chErr instanceof Error ? chErr.message : 'Lỗi tổng hợp chương.';
+          setOutlineChapters((prev) =>
+            prev.map((item) =>
+              item.chapterIndex === ch.chapterIndex
+                ? { ...item, status: 'error', errorMsg: errMsg }
+                : item
+            )
+          );
+        }
+      }
+
+      const finalChaptersArr = Array.from(completedChapterTitles);
+      const finalIndexStatus: ReferenceBook['indexStatus'] =
+        runningTotalChunks > 0 ? 'indexed' : 'failed';
+
+      await saveReferenceBookProgress(referenceId, {
+        title: bookTitle,
+        chapters: finalChaptersArr,
+        chunkCount: runningTotalChunks,
+        indexStatus: finalIndexStatus,
+      });
+
+      setBooks((prev) =>
+        prev.map((b) =>
+          b.referenceId === referenceId
+            ? {
+                ...b,
+                title: bookTitle,
+                chapters: finalChaptersArr,
+                chunkCount: runningTotalChunks,
+                indexStatus: finalIndexStatus,
+                updatedAt: new Date().toISOString(),
+              }
+            : b
+        )
+      );
+
+      if (runningTotalChunks > 0) {
+        setNotice(
+          abortCtrl.signal.aborted
+            ? `Đã tạm dừng và lưu an toàn ${finalChaptersArr.length} chương (${runningTotalChunks} đoạn tri thức) vào kho chuẩn.`
+            : `Hoàn tất tổng hợp & lưu "${bookTitle}" — ${finalChaptersArr.length} chương (${runningTotalChunks} đoạn tri thức chuẩn SGK).`
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lỗi tổng hợp SGK theo chương.');
+    } finally {
+      synthAbortRef.current = null;
+      setSynthesizingChapters(false);
+    }
+  };
+
   const handleIngestReference = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (refInputMode === 'ai_synthesize') {
+      await handleGenerateSgkOutline();
+      return;
+    }
+
     setError(null);
     setNotice(null);
     setIngestingRef(true);
 
     const referenceId = `ref_${refSubject}_${refGrade}_${Date.now()}`;
     try {
+      if (refInputMode === 'pdf') {
+        if (!refFile) throw new Error('Vui lòng chọn tệp PDF sách giáo khoa.');
+        const abortCtrl = new AbortController();
+        pdfAbortRef.current = abortCtrl;
+        setPdfProgress(null);
+
+        const smartRes = await runSmartClientPdfIngest({
+          file: refFile,
+          referenceId,
+          title: refTitle.trim() || refFile.name.replace(/\.pdf$/i, ''),
+          grade: refGrade,
+          subject: refSubject,
+          textbookSeries: refSeries,
+          publisher: refPublisher,
+          editionYear: refYear,
+          description: refDesc,
+          knowledgeSourceType: refKnowledgeSourceType,
+          licenseStatus: refLicenseStatus,
+          pageRangeInput: pdfPageRangeInput,
+          signal: abortCtrl.signal,
+          onProgress: (prog) => setPdfProgress(prog),
+        });
+
+        setBooks((prev) => [
+          smartRes.book,
+          ...prev.filter((b) => b.referenceId !== smartRes.book.referenceId),
+        ]);
+        setRefTitle('');
+        setRefDesc('');
+        setRefFile(null);
+        setPdfDetectedPages(null);
+        setPdfPageRangeInput('');
+        setNotice(
+          `${smartRes.stoppedEarly ? 'Đã dừng & lưu phần đã đọc' : 'Đã đọc PDF thông minh & lưu'} “${
+            smartRes.book.title
+          }” — ${smartRes.totalChunksSaved} đoạn tri thức (${smartRes.directTextPages} trang văn bản trực tiếp, ${
+            smartRes.ocrPages
+          } trang scan OCR AI).`
+        );
+        return;
+      }
+
       let ingestResult: { chunks: ReferenceChunk[]; chapters: string[]; extractedSummary: string };
       let mappedSourceType: ReferenceBook['sourceType'] = 'upload';
 
@@ -808,7 +1149,7 @@ export const AdminControlCenter: React.FC = () => {
           }),
         });
         ingestResult = await parseApiResponse<any>(res, 'Không thể lập chỉ mục từ văn bản / JSON.');
-      } else if (refInputMode === 'docx') {
+      } else {
         if (!refFile) throw new Error('Vui lòng chọn tệp DOCX tài liệu.');
         const formData = new FormData();
         formData.append('file', refFile);
@@ -822,20 +1163,6 @@ export const AdminControlCenter: React.FC = () => {
           body: formData,
         });
         ingestResult = await parseApiResponse<any>(res, 'Không thể trích xuất và lập chỉ mục DOCX.');
-      } else {
-        if (!refFile) throw new Error('Vui lòng chọn tệp PDF sách giáo khoa.');
-        const formData = new FormData();
-        formData.append('file', refFile);
-        formData.append('referenceId', referenceId);
-        formData.append('grade', refGrade);
-        formData.append('subject', refSubject);
-        formData.append('textbookSeries', refSeries);
-
-        const res = await authorizedFetch('/api/admin/references/ingest-pdf', {
-          method: 'POST',
-          body: formData,
-        });
-        ingestResult = await parseApiResponse<any>(res, 'Không thể trích xuất và lập chỉ mục PDF.');
       }
 
       const now = new Date().toISOString();
@@ -871,6 +1198,7 @@ export const AdminControlCenter: React.FC = () => {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Lỗi thêm tài liệu tham chiếu.');
     } finally {
+      pdfAbortRef.current = null;
       setIngestingRef(false);
     }
   };
@@ -2498,14 +2826,22 @@ export const AdminControlCenter: React.FC = () => {
           {tab === 'references' && (
             <div className="space-y-6">
               <GlassSurface className="rounded-3xl p-6 space-y-5">
-                <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                  Thêm nguồn kiến thức chuẩn (PDF / DOCX / URL / Text / JSON)
-                </h2>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                      Thêm nguồn kiến thức chuẩn SGK (AI Tổng Hợp Theo Chương / Đọc PDF Thông Minh)
+                    </h2>
+                    <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
+                      Nạp nhanh khung SGK chuẩn GDPT 2018 tuần tự từng chương không lo timeout, hoặc đọc PDF bất kỳ dung lượng (hỗ trợ cả PDF scan) trực tiếp trên trình duyệt.
+                    </p>
+                  </div>
+                </div>
 
                 <div className="glass-segment rounded-2xl p-1.5 inline-flex flex-wrap gap-1.5 text-xs">
                   {(
                     [
-                      ['pdf', 'Tải PDF', FileUp],
+                      ['ai_synthesize', 'AI Tổng hợp chuẩn SGK', Sparkles],
+                      ['pdf', 'Đọc PDF thông minh', FileUp],
                       ['docx', 'Tải DOCX', FileText],
                       ['url', 'Nhập URL HTTPS', Globe],
                       ['text', 'Dán văn bản chuẩn', Edit3],
@@ -2518,6 +2854,8 @@ export const AdminControlCenter: React.FC = () => {
                       onClick={() => {
                         setRefInputMode(modeId);
                         setRefFile(null);
+                        setPdfDetectedPages(null);
+                        setPdfProgress(null);
                       }}
                       className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl font-semibold cursor-pointer transition-all ${
                         refInputMode === modeId
@@ -2535,14 +2873,14 @@ export const AdminControlCenter: React.FC = () => {
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                     <div>
                       <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Tên tài liệu / Sách
+                        Tên tài liệu / Sách {refInputMode === 'ai_synthesize' ? '(có thể để AI tự điền)' : ''}
                       </label>
                       <input
                         type="text"
-                        required
+                        required={refInputMode !== 'ai_synthesize'}
                         value={refTitle}
                         onChange={(e) => setRefTitle(e.target.value)}
-                        placeholder="Ví dụ: Hóa học 10 - Kết nối tri thức"
+                        placeholder={`Ví dụ: SGK ${SUBJECT_LABELS[refSubject]} ${refGrade} - ${refSeries}`}
                         className={INPUT_CLASS}
                       />
                     </div>
@@ -2662,6 +3000,392 @@ export const AdminControlCenter: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* MODE 1: AI SEQUENTIAL TEXTBOOK CHAPTER SYNTHESIZER */}
+                  {refInputMode === 'ai_synthesize' && (
+                    <div className="rounded-2xl border border-sky-200/80 dark:border-sky-800/60 bg-sky-50/40 dark:bg-slate-900/50 p-4 sm:p-5 space-y-4">
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                          Gợi ý mục lục Chương / Bài (Không bắt buộc — để trống nếu muốn AI tự tra cứu chuẩn GDPT 2018)
+                        </label>
+                        <textarea
+                          rows={3}
+                          value={customTocHint}
+                          onChange={(e) => setCustomTocHint(e.target.value)}
+                          placeholder="Có thể dán nhanh mục lục các chương ở đây nếu bạn muốn chỉ định chính xác tên chương/bài..."
+                          className={`${INPUT_CLASS} font-mono`}
+                        />
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        <WaterRippleButton
+                          type="button"
+                          disabled={synthesizingOutline || synthesizingChapters}
+                          onClick={() => void handleGenerateSgkOutline()}
+                        >
+                          {synthesizingOutline ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Wand2 className="w-4 h-4" />
+                          )}
+                          <span>
+                            {synthesizingOutline
+                              ? 'Đang tra cứu & lập mục lục Chương...'
+                              : '1. Tạo Mục lục Chương chuẩn'}
+                          </span>
+                        </WaterRippleButton>
+
+                        {outlineChapters.length > 0 && (
+                          <button
+                            type="button"
+                            disabled={synthesizingChapters}
+                            onClick={() => {
+                              const nextIndex = outlineChapters.length + 1;
+                              setOutlineChapters((prev) => [
+                                ...prev,
+                                {
+                                  chapterIndex: nextIndex,
+                                  chapterTitle: `Chương ${nextIndex}: Chủ đề bổ sung`,
+                                  lessons: ['Bài 1: Nội dung trọng tâm'],
+                                  estimatedPageStart: 6 + (nextIndex - 1) * 20,
+                                  selected: true,
+                                  status: 'idle',
+                                  savedChunks: 0,
+                                },
+                              ]);
+                            }}
+                            className="glass-control inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Thêm chương thủ công</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {outlineChapters.length > 0 && (
+                        <div className="space-y-3 pt-2 border-t border-sky-200/60 dark:border-slate-800">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                              <ListChecks className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+                              <span>
+                                Danh sách Chương ({outlineChapters.filter((c) => c.selected).length}/
+                                {outlineChapters.length} chương được chọn · Đã lưu{' '}
+                                {outlineChapters.filter((c) => c.status === 'saved').length} chương)
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-2 text-xs">
+                              <button
+                                type="button"
+                                disabled={synthesizingChapters}
+                                onClick={() =>
+                                  setOutlineChapters((prev) =>
+                                    prev.map((c) => ({ ...c, selected: true }))
+                                  )
+                                }
+                                className="text-sky-700 dark:text-sky-400 hover:underline font-medium cursor-pointer"
+                              >
+                                Chọn tất cả
+                              </button>
+                              <span>·</span>
+                              <button
+                                type="button"
+                                disabled={synthesizingChapters}
+                                onClick={() =>
+                                  setOutlineChapters((prev) =>
+                                    prev.map((c) => ({ ...c, selected: false }))
+                                  )
+                                }
+                                className="text-slate-600 dark:text-slate-400 hover:underline font-medium cursor-pointer"
+                              >
+                                Bỏ chọn
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Overall Chapter Synthesis Progress Bar */}
+                          {(synthesizingChapters ||
+                            outlineChapters.some((c) => c.status === 'saved')) && (
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between text-xs font-mono">
+                                <span className="text-slate-600 dark:text-slate-300">
+                                  Tiến độ tổng hợp & lưu tuần tự vào Firestore
+                                </span>
+                                <span className="font-semibold text-sky-700 dark:text-sky-300 tabular-nums">
+                                  {outlineChapters.filter((c) => c.status === 'saved').length}/
+                                  {Math.max(1, outlineChapters.filter((c) => c.selected).length)}{' '}
+                                  chương (
+                                  {outlineChapters.reduce((s, c) => s + c.savedChunks, 0)} chunks)
+                                </span>
+                              </div>
+                              <div className="h-2 w-full rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
+                                <div
+                                  className="h-full rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 transition-all duration-300"
+                                  style={{
+                                    width: `${Math.min(
+                                      100,
+                                      Math.round(
+                                        (outlineChapters.filter((c) => c.status === 'saved')
+                                          .length /
+                                          Math.max(
+                                            1,
+                                            outlineChapters.filter((c) => c.selected).length
+                                          )) *
+                                          100
+                                      )
+                                    )}%`,
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                            {outlineChapters.map((ch) => (
+                              <div
+                                key={ch.chapterIndex}
+                                className={`rounded-2xl border p-3 text-xs transition-colors ${
+                                  ch.status === 'running'
+                                    ? 'border-sky-400 bg-sky-50/90 dark:bg-sky-950/40 dark:border-sky-600'
+                                    : ch.status === 'saved'
+                                    ? 'border-emerald-300/80 bg-emerald-50/60 dark:bg-emerald-950/30 dark:border-emerald-800/70'
+                                    : ch.status === 'error'
+                                    ? 'border-rose-300 bg-rose-50/70 dark:bg-rose-950/30 dark:border-rose-800/70'
+                                    : 'border-slate-200/80 bg-white/80 dark:bg-slate-900/60 dark:border-slate-800'
+                                }`}
+                              >
+                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <div className="flex items-start gap-2.5 flex-1 min-w-[220px]">
+                                    <input
+                                      type="checkbox"
+                                      checked={ch.selected}
+                                      disabled={synthesizingChapters}
+                                      onChange={(e) =>
+                                        setOutlineChapters((prev) =>
+                                          prev.map((item) =>
+                                            item.chapterIndex === ch.chapterIndex
+                                              ? { ...item, selected: e.target.checked }
+                                              : item
+                                          )
+                                        )
+                                      }
+                                      className="mt-1 h-4 w-4 accent-sky-600 rounded cursor-pointer"
+                                    />
+                                    <div className="flex-1 space-y-1.5">
+                                      <input
+                                        type="text"
+                                        disabled={synthesizingChapters}
+                                        value={ch.chapterTitle}
+                                        onChange={(e) =>
+                                          setOutlineChapters((prev) =>
+                                            prev.map((item) =>
+                                              item.chapterIndex === ch.chapterIndex
+                                                ? { ...item, chapterTitle: e.target.value }
+                                                : item
+                                            )
+                                          )
+                                        }
+                                        className="w-full font-semibold text-[#16243E] dark:text-[#E6EFFC] bg-transparent border-b border-transparent focus:border-sky-400 focus:outline-none pb-0.5"
+                                      />
+                                      <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                                        Các bài: {ch.lessons.join(' · ')}
+                                      </p>
+                                      {ch.errorMsg && (
+                                        <p className="text-[11px] font-medium text-rose-600 dark:text-rose-400">
+                                          {ch.errorMsg}
+                                        </p>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    {ch.status === 'running' && (
+                                      <span className="inline-flex items-center gap-1 font-semibold text-sky-700 dark:text-sky-300">
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        <span>Đang tổng hợp...</span>
+                                      </span>
+                                    )}
+                                    {ch.status === 'saved' && (
+                                      <span className="inline-flex items-center gap-1 font-semibold text-emerald-700 dark:text-emerald-300">
+                                        <CheckCircle2 className="w-3.5 h-3.5" />
+                                        <span>Đã lưu ({ch.savedChunks} chunks)</span>
+                                      </span>
+                                    )}
+                                    {ch.status === 'error' && (
+                                      <button
+                                        type="button"
+                                        disabled={synthesizingChapters}
+                                        onClick={() =>
+                                          void handleRunSequentialChapterSynthesis(ch.chapterIndex)
+                                        }
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-semibold cursor-pointer"
+                                      >
+                                        <RefreshCw className="w-3 h-3" />
+                                        <span>Thử lại chương này</span>
+                                      </button>
+                                    )}
+                                    {ch.status === 'idle' && (
+                                      <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                                        Chờ xử lý
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-3 pt-2">
+                            <WaterRippleButton
+                              type="button"
+                              disabled={
+                                synthesizingChapters ||
+                                outlineChapters.filter((c) => c.selected && c.status !== 'saved')
+                                  .length === 0
+                              }
+                              onClick={() => void handleRunSequentialChapterSynthesis()}
+                            >
+                              {synthesizingChapters ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Sparkles className="w-4 h-4" />
+                              )}
+                              <span>
+                                {synthesizingChapters
+                                  ? 'Đang tổng hợp & lưu tuần tự từng chương...'
+                                  : '2. Tổng hợp & Lưu tuần tự từng Chương'}
+                              </span>
+                            </WaterRippleButton>
+
+                            {synthesizingChapters && (
+                              <button
+                                type="button"
+                                onClick={() => synthAbortRef.current?.abort()}
+                                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 text-xs font-semibold text-amber-800 dark:text-amber-200 cursor-pointer"
+                              >
+                                <PauseCircle className="w-4 h-4" />
+                                <span>Tạm dừng & Giữ các chương đã lưu</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* MODE 2: SMART CLIENT-SIDE PDF READER (Supports large PDFs & scanned PDFs) */}
+                  {refInputMode === 'pdf' && (
+                    <div className="rounded-2xl border border-sky-200/80 dark:border-sky-800/60 bg-sky-50/40 dark:bg-slate-900/50 p-4 sm:p-5 space-y-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+                        <div className="sm:col-span-8">
+                          <label className="block text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] mb-1">
+                            Chọn tệp PDF SGK từ máy (Hỗ trợ cả PDF nặng 50–100MB & PDF scan ảnh)
+                          </label>
+                          <input
+                            type="file"
+                            accept="application/pdf"
+                            required
+                            disabled={ingestingRef}
+                            onChange={(e) => void handleSelectPdfFile(e.target.files?.[0] || null)}
+                            className={INPUT_CLASS}
+                          />
+                        </div>
+                        <div className="sm:col-span-4">
+                          <label className="block text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] mb-1">
+                            Khoảng trang cần nạp{' '}
+                            {pdfDetectedPages ? `(Tổng ${pdfDetectedPages} trang)` : ''}
+                          </label>
+                          <input
+                            type="text"
+                            disabled={ingestingRef}
+                            value={pdfPageRangeInput}
+                            onChange={(e) => setPdfPageRangeInput(e.target.value)}
+                            placeholder={pdfDetectedPages ? `1-${pdfDetectedPages}` : 'Ví dụ: 1-120'}
+                            className={`${INPUT_CLASS} font-mono`}
+                          />
+                        </div>
+                      </div>
+
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                        Trình duyệt sẽ tự động tách từng trang ngay trên máy bạn: trang có lớp chữ chuẩn được đọc tức thì (0 giây chờ mạng), trang scan ảnh sẽ tự nén nhẹ và gửi đọc OCR công thức bằng AI theo từng lô 3 trang.
+                      </p>
+
+                      {pdfProgress && (
+                        <div className="rounded-2xl border border-sky-300/80 dark:border-sky-700/80 bg-white/90 dark:bg-slate-900/90 p-4 space-y-2.5 text-xs">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                              {pdfProgress.stageLabel}
+                            </span>
+                            <span className="font-mono font-semibold text-sky-700 dark:text-sky-300 tabular-nums">
+                              {pdfProgress.processedPages}/{pdfProgress.totalTargetPages} trang (
+                              {Math.min(
+                                100,
+                                Math.round(
+                                  (pdfProgress.processedPages /
+                                    Math.max(1, pdfProgress.totalTargetPages)) *
+                                    100
+                                )
+                              )}
+                              %)
+                            </span>
+                          </div>
+
+                          <div className="h-2 w-full rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 transition-all duration-200"
+                              style={{
+                                width: `${Math.min(
+                                  100,
+                                  Math.round(
+                                    (pdfProgress.processedPages /
+                                      Math.max(1, pdfProgress.totalTargetPages)) *
+                                      100
+                                  )
+                                )}%`,
+                              }}
+                            />
+                          </div>
+
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-300 font-mono">
+                            <span>
+                              Đọc text trực tiếp: <strong>{pdfProgress.directTextPages}</strong> trang ·
+                              OCR AI trang scan: <strong>{pdfProgress.ocrPages}</strong> trang
+                            </span>
+                            <span>
+                              Đã lưu Firestore: <strong>{pdfProgress.savedChunksCount}</strong> chunks (
+                              {pdfProgress.detectedChapters.length} chương)
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        <WaterRippleButton type="submit" disabled={ingestingRef || !refFile}>
+                          {ingestingRef ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <FileUp className="w-4 h-4" />
+                          )}
+                          <span>
+                            {ingestingRef
+                              ? 'Đang đọc PDF & lưu tuần tự vào kho chuẩn...'
+                              : 'Bắt đầu đọc PDF thông minh & Lưu vào kho chuẩn'}
+                          </span>
+                        </WaterRippleButton>
+
+                        {ingestingRef && (
+                          <button
+                            type="button"
+                            onClick={() => pdfAbortRef.current?.abort()}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 text-xs font-semibold text-amber-800 dark:text-amber-200 cursor-pointer"
+                          >
+                            <PauseCircle className="w-4 h-4" />
+                            <span>Dừng lại & Giữ kết quả đã đọc</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {refInputMode === 'url' && (
                     <div>
                       <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
@@ -2678,18 +3402,14 @@ export const AdminControlCenter: React.FC = () => {
                     </div>
                   )}
 
-                  {(refInputMode === 'pdf' || refInputMode === 'docx') && (
+                  {refInputMode === 'docx' && (
                     <div>
                       <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Chọn tệp {refInputMode.toUpperCase()} có lớp văn bản
+                        Chọn tệp DOCX có lớp văn bản
                       </label>
                       <input
                         type="file"
-                        accept={
-                          refInputMode === 'pdf'
-                            ? 'application/pdf'
-                            : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-                        }
+                        accept="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                         required
                         onChange={(e) => setRefFile(e.target.files?.[0] || null)}
                         className={INPUT_CLASS}
@@ -2719,9 +3439,13 @@ export const AdminControlCenter: React.FC = () => {
                     </div>
                   )}
 
-                  <WaterRippleButton type="submit" disabled={ingestingRef}>
-                    {ingestingRef ? 'Đang trích xuất & lập chỉ mục...' : 'Lập chỉ mục & Lưu vào kho chuẩn'}
-                  </WaterRippleButton>
+                  {refInputMode !== 'ai_synthesize' && refInputMode !== 'pdf' && (
+                    <WaterRippleButton type="submit" disabled={ingestingRef}>
+                      {ingestingRef
+                        ? 'Đang trích xuất & lập chỉ mục...'
+                        : 'Lập chỉ mục & Lưu vào kho chuẩn'}
+                    </WaterRippleButton>
+                  )}
                 </form>
               </GlassSurface>
 

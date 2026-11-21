@@ -22,6 +22,7 @@ import {
   gradeExamSubmission,
 } from '../core/examScoring';
 import { evaluateMasteryStatus } from '../core/scoring';
+import { sanitizeReferenceChunkForFirestore } from '../core/retrieval';
 import type {
   AnalysisRecord,
   GradeLevel,
@@ -243,19 +244,52 @@ export async function listReferenceBooks(onlyActive = false): Promise<ReferenceB
   }
 }
 
-export async function saveReferenceBookWithChunks(
-  book: ReferenceBook,
-  chunks: ReferenceChunk[]
-): Promise<void> {
-  const path = `referenceBooks/${book.referenceId}`;
+export async function saveReferenceBookRecord(book: ReferenceBook): Promise<void> {
+  const safeRefId = makeSafeId(book.referenceId);
+  const path = `referenceBooks/${safeRefId}`;
   try {
-    await setDoc(doc(db, 'referenceBooks', book.referenceId), stripUndefinedDeep(book));
-    for (const chunk of chunks) {
-      await setDoc(doc(db, 'referenceChunks', chunk.chunkId), stripUndefinedDeep(chunk));
+    await setDoc(
+      doc(db, 'referenceBooks', safeRefId),
+      stripUndefinedDeep({
+        ...book,
+        referenceId: safeRefId,
+        title: (book.title || 'Sách giáo khoa chuẩn').trim().slice(0, 195),
+        textbookSeries: (book.textbookSeries || 'Chuẩn chương trình GDPT 2018').trim().slice(0, 95),
+      })
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function saveReferenceChunksBatch(chunks: ReferenceChunk[]): Promise<void> {
+  if (chunks.length === 0) return;
+  const path = 'referenceChunks';
+  try {
+    const BATCH_LIMIT = 400;
+    for (let i = 0; i < chunks.length; i += BATCH_LIMIT) {
+      const slice = chunks.slice(i, i + BATCH_LIMIT);
+      const batch = writeBatch(db);
+      slice.forEach((rawChunk, idx) => {
+        const clean = sanitizeReferenceChunkForFirestore({
+          ...rawChunk,
+          fallbackIndex: i + idx + 1,
+        });
+        batch.set(doc(db, 'referenceChunks', clean.chunkId), stripUndefinedDeep(clean));
+      });
+      await batch.commit();
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
+}
+
+export async function saveReferenceBookWithChunks(
+  book: ReferenceBook,
+  chunks: ReferenceChunk[]
+): Promise<void> {
+  await saveReferenceBookRecord(book);
+  await saveReferenceChunksBatch(chunks);
 }
 
 export async function listReferenceChunksForBook(referenceId: string): Promise<ReferenceChunk[]> {
@@ -271,18 +305,38 @@ export async function listReferenceChunksForBook(referenceId: string): Promise<R
 
 export async function updateReferenceBookStatus(
   referenceId: string,
-  updates: Partial<Pick<ReferenceBook, 'status' | 'title' | 'description' | 'textbookSeries' | 'editionYear' | 'publisher'>>
+  updates: Partial<
+    Pick<
+      ReferenceBook,
+      | 'status'
+      | 'title'
+      | 'description'
+      | 'textbookSeries'
+      | 'editionYear'
+      | 'publisher'
+      | 'chapters'
+      | 'chunkCount'
+      | 'indexStatus'
+      | 'indexError'
+    >
+  >
 ): Promise<void> {
-  const path = `referenceBooks/${referenceId}`;
+  const safeRefId = makeSafeId(referenceId);
+  const path = `referenceBooks/${safeRefId}`;
   try {
-    await updateDoc(doc(db, 'referenceBooks', referenceId), stripUndefinedDeep({
-      ...updates,
-      updatedAt: new Date().toISOString(),
-    }));
+    await updateDoc(
+      doc(db, 'referenceBooks', safeRefId),
+      stripUndefinedDeep({
+        ...updates,
+        updatedAt: new Date().toISOString(),
+      })
+    );
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
+
+export const saveReferenceBookProgress = updateReferenceBookStatus;
 
 export async function deleteReferenceBookAndChunks(referenceId: string): Promise<void> {
   const path = `referenceBooks/${referenceId}`;

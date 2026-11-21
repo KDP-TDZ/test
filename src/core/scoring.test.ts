@@ -6,7 +6,13 @@ import {
   evaluateMasteryStatus,
 } from './scoring';
 import { validateReferenceUrl } from './urlSecurity';
-import { retrieveRelevantChunks, buildChunksFromPages } from './retrieval';
+import {
+  retrieveRelevantChunks,
+  buildChunksFromPages,
+  isReadableExtractedPageText,
+  parsePageRangeInput,
+  sanitizeReferenceChunkForFirestore,
+} from './retrieval';
 import type { ExtractedClaim, KnowledgeCoverageItem } from './types';
 
 function makeClaim(
@@ -174,4 +180,39 @@ test('retrieveRelevantChunks builds and ranks textbook chunks by keyword and tit
   });
   assert.ok(hits.length >= 1);
   assert.equal(hits[0].chunk.pageNumber, 54);
+});
+
+test('isReadableExtractedPageText, parsePageRangeInput, and sanitizeReferenceChunkForFirestore enforce strict PDF & Firestore rules', () => {
+  assert.equal(isReadableExtractedPageText('Ngắn quá'), false);
+  assert.equal(
+    isReadableExtractedPageText(
+      'Chương 1: Cấu tạo nguyên tử. Nguyên tử gồm hạt nhân mang điện tích dương và vỏ nguyên tử tạo bởi các electron mang điện tích âm chuyển động xung quanh hạt nhân.'
+    ),
+    true
+  );
+
+  assert.deepEqual(parsePageRangeInput('', 150), { startPage: 1, endPage: 150 });
+  assert.deepEqual(parsePageRangeInput('5-40', 150), { startPage: 5, endPage: 40 });
+  assert.deepEqual(parsePageRangeInput('10 - 999', 120), { startPage: 10, endPage: 120 });
+  assert.deepEqual(parsePageRangeInput('18', 120), { startPage: 18, endPage: 18 });
+
+  const longContent = 'Kiến thức chuẩn SGK. '.repeat(450); // ~9450 chars (> 8000 limit)
+  const longChapter = 'Chương 1: '.repeat(30); // 300 chars (> 200 limit)
+  const sanitized = sanitizeReferenceChunkForFirestore({
+    chunkId: 'ref/invalid:id#123',
+    referenceId: 'ref_hoa_10',
+    grade: '10',
+    subject: 'hoa_hoc',
+    textbookSeries: 'Kết nối tri thức với cuộc sống',
+    chapter: longChapter,
+    lesson: 'Bài 1: Thành phần nguyên tử',
+    pageNumber: 12,
+    content: longContent,
+  });
+
+  assert.match(sanitized.chunkId, /^[a-zA-Z0-9_-]{1,128}$/);
+  assert.ok(sanitized.chapter.length <= 200);
+  assert.ok(sanitized.content.length <= 6000);
+  assert.equal(sanitized.pageNumber, 12);
+  assert.ok(sanitized.keywords.length > 0);
 });

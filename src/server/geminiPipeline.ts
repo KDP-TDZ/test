@@ -10,7 +10,10 @@ import {
   validateExamBlueprint,
   validateQuizQuestionSet,
 } from '../core/quizValidation.js';
-import { retrieveRelevantChunks } from '../core/retrieval.js';
+import {
+  retrieveRelevantChunks,
+  sanitizeReferenceChunkForFirestore,
+} from '../core/retrieval.js';
 import type {
   AiTaskType,
   AnalysisStrength,
@@ -2499,3 +2502,363 @@ export class FeedbackAnalysisService {
     return data;
   }
 }
+
+export interface SynthesizedChapterOutline {
+  chapterIndex: number;
+  chapterTitle: string;
+  lessons: string[];
+  estimatedPageStart: number;
+}
+
+export class TextbookSynthesisService {
+  static async synthesizeOutline(params: {
+    grade: GradeLevel;
+    subject: SubjectId;
+    textbookSeries: string;
+    title?: string;
+    customTocHint?: string;
+    tokensOut: TokenTelemetry;
+    config?: SystemAiConfig;
+    idToken?: string;
+  }): Promise<{ bookTitle: string; chapters: SynthesizedChapterOutline[] }> {
+    const {
+      grade,
+      subject,
+      textbookSeries,
+      title,
+      customTocHint,
+      tokensOut,
+      config,
+      idToken,
+    } = params;
+    const subjectName = SUBJECT_LABELS[subject] || subject;
+    const defaultBookTitle =
+      title?.trim() || `SGK ${subjectName} ${grade} - ${textbookSeries}`;
+
+    let webTocContext = '';
+    if (!customTocHint || customTocHint.trim().length < 20) {
+      try {
+        const ai = await createServerAiClient();
+        const searchQuery = `Mục lục các chương và bài học sách giáo khoa ${subjectName} lớp ${grade} bộ sách ${textbookSeries} chương trình GDPT 2018`;
+        const searchResp = await callWithTimeout(
+          (signal) =>
+            ai.models.generateContent({
+              model: 'gemini-3.1-flash-lite',
+              contents: searchQuery,
+              config: {
+                thinkingConfig: thinkingConfigForModel('gemini-3.1-flash-lite', 'minimal'),
+                maxOutputTokens: 1024,
+                abortSignal: signal,
+                tools: [{ googleSearch: {} }],
+              },
+            }),
+          16_000
+        );
+        accumulateTokens(tokensOut, searchResp);
+        webTocContext = (searchResp.text || '').trim().slice(0, 4000);
+      } catch {
+        // Proceed with model's built-in GDPT 2018 curriculum knowledge if search grounding times out
+      }
+    }
+
+    const prompt = [
+      `Bạn là chuyên gia chương trình Giáo dục phổ thông 2018 (GDPT 2018) của Bộ GD&ĐT Việt Nam.`,
+      `Hãy lập danh sách MỤC LỤC CHUẨN gồm đầy đủ các Chương/Chủ đề và danh sách các Bài học cho cuốn sách giáo khoa:`,
+      `- Môn học: ${subjectName}`,
+      `- Khối lớp: Lớp ${grade}`,
+      `- Bộ sách: ${textbookSeries}`,
+      `- Tên sách gợi ý: ${defaultBookTitle}`,
+      customTocHint?.trim()
+        ? `\n[MỤC LỤC DO QUẢN TRỊ VIÊN CUNG CẤP - HÃY BÁM SÁT 100%]:\n${customTocHint.trim().slice(0, 6000)}`
+        : '',
+      webTocContext
+        ? `\n[THÔNG TIN TRA CỨU MỤC LỤC THAM KHẢO]:\n${webTocContext}`
+        : '',
+      '',
+      'YÊU CẦU ĐẦU RA JSON:',
+      '- Trả về từ 4 đến 10 Chương/Chủ đề đúng thực tế SGK GDPT 2018.',
+      '- Mỗi chương có: chapterIndex (1, 2, 3...), chapterTitle (ví dụ: "Chương 1: Cấu tạo nguyên tử"), lessons (mảng 2-6 tên bài học cụ thể, ví dụ: ["Bài 1: Thành phần của nguyên tử", "Bài 2: Nguyên tố hóa học"]), estimatedPageStart (số trang bắt đầu ước tính tăng dần, ví dụ: 6, 25, 48...).',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    type RawOutlineResponse = {
+      bookTitle?: string;
+      chapters?: Array<{
+        chapterIndex?: number;
+        chapterTitle?: string;
+        lessons?: string[];
+        estimatedPageStart?: number;
+      }>;
+    };
+
+    const { data: parsed } = await runTaskWithRouter<RawOutlineResponse>({
+      taskType: 'curriculum_extraction',
+      config,
+      idToken,
+      allowGroqRescue: true,
+      cacheInput: {
+        outlineTask: 'sgk_outline_v1',
+        grade,
+        subject,
+        textbookSeries,
+        customTocHint: (customTocHint || '').trim().slice(0, 1200),
+      },
+      runWithModel: async (modelId) =>
+        generateJsonWithProvider<RawOutlineResponse>({
+          modelId,
+          prompt,
+          thinkingTier: 'low',
+          maxOutputTokens: 2048,
+          tokensOut,
+          fallbackJson: '{"bookTitle":"","chapters":[]}',
+          groqSchemaHint:
+            '{"bookTitle":"...","chapters":[{"chapterIndex":1,"chapterTitle":"Chương 1: ...","lessons":["Bài 1: ...","Bài 2: ..."],"estimatedPageStart":6}]}',
+          geminiSchema: {
+            type: Type.OBJECT,
+            properties: {
+              bookTitle: { type: Type.STRING },
+              chapters: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    chapterIndex: { type: Type.INTEGER },
+                    chapterTitle: { type: Type.STRING },
+                    lessons: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                    estimatedPageStart: { type: Type.INTEGER },
+                  },
+                  required: ['chapterIndex', 'chapterTitle', 'lessons', 'estimatedPageStart'],
+                },
+              },
+            },
+            required: ['bookTitle', 'chapters'],
+          },
+        }),
+    });
+
+    const rawChapters = Array.isArray(parsed.chapters) ? parsed.chapters : [];
+    const normalizedChapters: SynthesizedChapterOutline[] = rawChapters
+      .filter((ch) => ch && typeof ch.chapterTitle === 'string' && ch.chapterTitle.trim().length > 0)
+      .slice(0, 15)
+      .map((ch, idx) => {
+        const chapterIndex = idx + 1;
+        const rawTitle = ch.chapterTitle!.trim().slice(0, 180);
+        const chapterTitle = /^(chương|chủ đề|chuyên đề)/i.test(rawTitle)
+          ? rawTitle
+          : `Chương ${chapterIndex}: ${rawTitle}`;
+        const lessons = Array.isArray(ch.lessons)
+          ? ch.lessons
+              .map((l) => (typeof l === 'string' ? l.trim().slice(0, 160) : ''))
+              .filter(Boolean)
+              .slice(0, 10)
+          : [`Bài ${chapterIndex}.1: Kiến thức trọng tâm ${chapterTitle}`];
+        const estimatedPageStart = Math.max(
+          1,
+          Number(ch.estimatedPageStart) || 6 + idx * 22
+        );
+        return {
+          chapterIndex,
+          chapterTitle,
+          lessons: lessons.length > 0 ? lessons : [`Bài 1: Nội dung trọng tâm`],
+          estimatedPageStart,
+        };
+      });
+
+    if (normalizedChapters.length === 0) {
+      throw new Error('AI không tạo được mục lục chương hợp lệ. Vui lòng thử lại hoặc dán gợi ý mục lục.');
+    }
+
+    return {
+      bookTitle: (parsed.bookTitle?.trim() || defaultBookTitle).slice(0, 190),
+      chapters: normalizedChapters,
+    };
+  }
+
+  static async synthesizeChapterChunks(params: {
+    referenceId: string;
+    grade: GradeLevel;
+    subject: SubjectId;
+    textbookSeries: string;
+    chapterIndex: number;
+    chapterTitle: string;
+    lessons: string[];
+    estimatedPageStart: number;
+    tokensOut: TokenTelemetry;
+    config?: SystemAiConfig;
+    idToken?: string;
+  }): Promise<ReferenceChunk[]> {
+    const {
+      referenceId,
+      grade,
+      subject,
+      textbookSeries,
+      chapterIndex,
+      chapterTitle,
+      lessons,
+      estimatedPageStart,
+      tokensOut,
+      config,
+      idToken,
+    } = params;
+
+    const subjectName = SUBJECT_LABELS[subject] || subject;
+    const lessonListStr =
+      lessons.length > 0
+        ? lessons.map((l, i) => `${i + 1}. ${l}`).join('\n')
+        : '1. Kiến thức cốt lõi trong chương';
+
+    const prompt = [
+      `Bạn là biên tập viên Sách giáo khoa chuẩn chương trình GDPT 2018 môn ${subjectName} Lớp ${grade} (Bộ sách: ${textbookSeries}).`,
+      `Hãy biên soạn các đoạn tri thức chuẩn (ReferenceChunk) cho DUY NHẤT chương sau để phục vụ hệ thống kiểm định bài làm của học sinh:`,
+      `- Chương: ${chapterTitle}`,
+      `- Danh sách bài học trong chương:\n${lessonListStr}`,
+      `- Trang bắt đầu ước lượng: trang ${estimatedPageStart}`,
+      '',
+      'YÊU CẦU NỘI DUNG TỪNG ĐOẠN TRI THỨC (CHUNKS):',
+      '- Tạo từ 3 đến 8 đoạn tri thức (chunks) bao phủ toàn bộ các bài học trong chương trên.',
+      '- Mỗi đoạn (content) dài khoảng 350–1200 ký tự, trình bày rõ ràng, chính xác tuyệt đối theo SGK GDPT 2018:',
+      '  1. Khái niệm / Định nghĩa / Định lý chuẩn SGK.',
+      '  2. Công thức / Phương trình / Quy tắc (nếu có) kèm giải thích ký hiệu & đơn vị chuẩn SI.',
+      '  3. Điều kiện áp dụng / Điều kiện tồn tại (rất quan trọng để chấm lỗi thiếu điều kiện).',
+      '  4. Lưu ý các nhầm lẫn hoặc lỗi sai học sinh THPT thường gặp.',
+      '- learningObjectives: 2–4 mục tiêu cần đạt của bài học (dùng để chấm Độ đầy đủ - Completeness).',
+      '- keywords: 4–8 thuật ngữ trọng tâm.',
+      '- conceptTags: 2–4 tên khái niệm ngắn gọn.',
+    ].join('\n');
+
+    type RawChapterChunksResponse = {
+      chunks?: Array<{
+        lesson?: string;
+        pageNumber?: number;
+        sectionTitle?: string;
+        content?: string;
+        keywords?: string[];
+        learningObjectives?: string[];
+        conceptTags?: string[];
+      }>;
+    };
+
+    const { data: parsed } = await runTaskWithRouter<RawChapterChunksResponse>({
+      taskType: 'curriculum_extraction',
+      config,
+      idToken,
+      allowGroqRescue: true,
+      cacheInput: {
+        chapterTask: 'sgk_chapter_v1',
+        grade,
+        subject,
+        textbookSeries,
+        chapterIndex,
+        chapterTitle,
+        lessons: lessons.join('|'),
+      },
+      runWithModel: async (modelId) =>
+        generateJsonWithProvider<RawChapterChunksResponse>({
+          modelId,
+          prompt,
+          thinkingTier: 'low',
+          maxOutputTokens: 4096,
+          tokensOut,
+          fallbackJson: '{"chunks":[]}',
+          groqSchemaHint:
+            '{"chunks":[{"lesson":"Bài 1: ...","pageNumber":10,"sectionTitle":"1. Khái niệm & Công thức","content":"...","keywords":["..."],"learningObjectives":["..."],"conceptTags":["..."]}]}',
+          geminiSchema: {
+            type: Type.OBJECT,
+            properties: {
+              chunks: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    lesson: { type: Type.STRING },
+                    pageNumber: { type: Type.INTEGER },
+                    sectionTitle: { type: Type.STRING },
+                    content: { type: Type.STRING },
+                    keywords: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                    learningObjectives: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                    conceptTags: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING },
+                    },
+                  },
+                  required: ['lesson', 'pageNumber', 'sectionTitle', 'content', 'keywords', 'learningObjectives'],
+                },
+              },
+            },
+            required: ['chunks'],
+          },
+        }),
+    });
+
+    const rawChunks = Array.isArray(parsed.chunks) ? parsed.chunks : [];
+    const safeRefId = referenceId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+
+    const sanitizedChunks: ReferenceChunk[] = rawChunks
+      .filter((c) => c && typeof c.content === 'string' && c.content.trim().length >= 30)
+      .slice(0, 12)
+      .map((c, idx) =>
+        sanitizeReferenceChunkForFirestore({
+          chunkId: `${safeRefId}_ch${chapterIndex}_${idx + 1}`,
+          referenceId: safeRefId,
+          grade,
+          subject,
+          textbookSeries,
+          chapter: chapterTitle,
+          lesson: c.lesson || lessons[idx % Math.max(1, lessons.length)] || `Bài ${chapterIndex}.${idx + 1}`,
+          pageNumber: Math.max(1, Number(c.pageNumber) || estimatedPageStart + idx * 3),
+          sectionTitle: c.sectionTitle || c.lesson || 'Kiến thức chuẩn SGK',
+          content: c.content!,
+          keywords: c.keywords,
+          learningObjectives: c.learningObjectives,
+          conceptTags: c.conceptTags,
+          fallbackIndex: chapterIndex * 100 + idx + 1,
+        })
+      );
+
+    if (sanitizedChunks.length === 0) {
+      throw new Error(`Không tạo được đoạn tri thức nào cho "${chapterTitle}". Vui lòng bấm Thử lại chương này.`);
+    }
+
+    return sanitizedChunks;
+  }
+
+  static async ocrScannedTextbookPages(params: {
+    files: Array<{ buffer: Buffer; mimeType: string; pageNumber: number }>;
+    grade: GradeLevel;
+    subject: SubjectId;
+    textbookSeries: string;
+    tokensOut: TokenTelemetry;
+    config?: SystemAiConfig;
+    idToken?: string;
+  }): Promise<Array<{ pageNumber: number; text: string }>> {
+    const extractedPages = await DocumentExtractionService.extractFromImageBuffers(
+      params.files.map((f) => ({
+        buffer: f.buffer,
+        mimeType: f.mimeType,
+        originalName: `page_${f.pageNumber}.jpg`,
+      })),
+      params.tokensOut,
+      {
+        config: params.config,
+        idToken: params.idToken,
+        pageOffset: 0,
+      }
+    );
+
+    return params.files.map((f, idx) => ({
+      pageNumber: f.pageNumber,
+      text: (extractedPages[idx]?.rawText || '').trim(),
+    }));
+  }
+}
+

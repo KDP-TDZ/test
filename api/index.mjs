@@ -17,6 +17,44 @@ var __export = (target, all) => {
 function tokenizeVietnamese(text) {
   return text.toLowerCase().normalize("NFC").replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((token) => token.length >= 2);
 }
+function sanitizeReferenceChunkForFirestore(params) {
+  const safeRefId = params.referenceId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "ref_book";
+  const idx = Math.max(1, Math.floor(params.fallbackIndex ?? 1));
+  const rawChunkId = (params.chunkId || `${safeRefId}_c${idx}`).replace(/[^a-zA-Z0-9_-]/g, "_");
+  const chunkId = rawChunkId.slice(0, 120) || `${safeRefId}_c${idx}`;
+  const chapter = (params.chapter || "Ch\u01B0\u01A1ng 1: Ki\u1EBFn th\u1EE9c tr\u1ECDng t\xE2m").trim().slice(0, 190);
+  const lesson = (params.lesson || "B\xE0i h\u1ECDc tr\u1ECDng t\xE2m").trim().slice(0, 180);
+  const sectionTitle = (params.sectionTitle || lesson || "N\u1ED9i dung chu\u1EA9n SGK").trim().slice(0, 180);
+  const pageNumber = Math.max(0, Math.floor(Number(params.pageNumber) || idx));
+  const content = (params.content || "").trim().slice(0, 6e3) || chapter;
+  const cleanList = (arr, maxItems, maxLen = 140) => Array.isArray(arr) ? arr.map((item) => typeof item === "string" ? item.trim().slice(0, maxLen) : "").filter(Boolean).slice(0, maxItems) : [];
+  let keywords = cleanList(params.keywords, 10, 80);
+  if (keywords.length === 0) {
+    const tokens = tokenizeVietnamese(`${sectionTitle} ${content}`);
+    const freq = /* @__PURE__ */ new Map();
+    for (const t of tokens) {
+      if (t.length >= 3) freq.set(t, (freq.get(t) ?? 0) + 1);
+    }
+    keywords = Array.from(freq.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k]) => k);
+  }
+  const learningObjectives = cleanList(params.learningObjectives, 8, 220);
+  const conceptTags = cleanList(params.conceptTags, 8, 80).length > 0 ? cleanList(params.conceptTags, 8, 80) : keywords.slice(0, 4);
+  return {
+    chunkId,
+    referenceId: safeRefId,
+    grade: params.grade,
+    subject: params.subject,
+    textbookSeries: (params.textbookSeries || "Chu\u1EA9n ch\u01B0\u01A1ng tr\xECnh GDPT 2018").trim().slice(0, 100),
+    chapter,
+    lesson,
+    pageNumber,
+    sectionTitle,
+    content,
+    keywords,
+    learningObjectives,
+    conceptTags
+  };
+}
 function retrieveRelevantChunks(queryText, chunks, options = {}) {
   const { referenceId, selectedChapters, topK = 6 } = options;
   const queryTokens = Array.from(new Set(tokenizeVietnamese(queryText)));
@@ -62,11 +100,20 @@ function retrieveRelevantChunks(queryText, chunks, options = {}) {
   return scored.filter((item) => item.lexicalScore > 0).sort((a, b) => b.lexicalScore - a.lexicalScore).slice(0, topK);
 }
 function buildChunksFromPages(params) {
-  const { referenceId, grade, subject, textbookSeries, pages } = params;
+  const {
+    referenceId,
+    grade,
+    subject,
+    textbookSeries,
+    pages,
+    startingChunkIndex = 0,
+    initialChapter = "Ch\u01B0\u01A1ng 1: Ki\u1EBFn th\u1EE9c n\u1EC1n t\u1EA3ng",
+    initialLesson = "B\xE0i 1"
+  } = params;
   const chunks = [];
-  let currentChapter = "Ch\u01B0\u01A1ng 1: Ki\u1EBFn th\u1EE9c n\u1EC1n t\u1EA3ng";
-  let currentLesson = "B\xE0i 1";
-  let chunkIndex = 0;
+  let currentChapter = initialChapter;
+  let currentLesson = initialLesson;
+  let chunkIndex = startingChunkIndex;
   for (const page of pages) {
     const lines = page.text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
     let buffer = [];
@@ -78,36 +125,30 @@ function buildChunksFromPages(params) {
         return;
       }
       chunkIndex += 1;
-      const tokens = tokenizeVietnamese(content);
-      const freq = /* @__PURE__ */ new Map();
-      for (const t of tokens) {
-        if (t.length >= 3) freq.set(t, (freq.get(t) ?? 0) + 1);
-      }
-      const keywords = Array.from(freq.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k]) => k);
-      chunks.push({
-        chunkId: `${referenceId}_c${chunkIndex}`,
-        referenceId,
-        grade,
-        subject,
-        textbookSeries,
-        chapter: currentChapter,
-        lesson: currentLesson,
-        pageNumber: page.pageNumber,
-        sectionTitle: currentSection,
-        content,
-        keywords,
-        learningObjectives: [],
-        conceptTags: keywords.slice(0, 4)
-      });
+      chunks.push(
+        sanitizeReferenceChunkForFirestore({
+          chunkId: `${referenceId}_c${chunkIndex}`,
+          referenceId,
+          grade,
+          subject,
+          textbookSeries,
+          chapter: currentChapter,
+          lesson: currentLesson,
+          pageNumber: page.pageNumber,
+          sectionTitle: currentSection,
+          content,
+          fallbackIndex: chunkIndex
+        })
+      );
       buffer = [];
     };
     for (const line of lines) {
-      if (/^(chương|chủ đề)\s+[0-9ivxlcdm]+/i.test(line)) {
+      if (/^(chương|chủ đề|chuyên đề)\s+[0-9ivxlcdm]+/i.test(line)) {
         flushBuffer();
-        currentChapter = line.slice(0, 120);
+        currentChapter = line.slice(0, 180);
       } else if (/^(bài|tiết)\s+[0-9]+/i.test(line)) {
         flushBuffer();
-        currentLesson = line.slice(0, 120);
+        currentLesson = line.slice(0, 180);
       } else if (/^([0-9]+\.|[ivx]+\.)\s+/i.test(line) && line.length < 90) {
         flushBuffer();
         currentSection = line;
@@ -471,7 +512,7 @@ var init_referenceIngestService = __esm({
 });
 
 // src/server/app.ts
-import crypto6 from "node:crypto";
+import crypto7 from "node:crypto";
 import express from "express";
 import multer from "multer";
 
@@ -819,7 +860,7 @@ async function firestoreRestDelete(docPath, idToken) {
 }
 
 // src/server/aiGuardService.ts
-import crypto4 from "node:crypto";
+import crypto5 from "node:crypto";
 
 // src/server/modelDefaults.ts
 var MODEL_CATALOG = [
@@ -842,20 +883,20 @@ var MODEL_CATALOG = [
     supportsGoogleSearch: true
   },
   {
-    modelId: "groq:llama-3.3-70b-versatile",
-    displayName: "Groq \xB7 Llama 3.3 70B (Groq Cloud Free)",
+    modelId: "groq:openai/gpt-oss-120b",
+    displayName: "Groq \xB7 GPT-OSS 120B (Groq Cloud Free)",
     provider: "groq",
     tier: "free",
-    strengths: "Mi\u1EC5n ph\xED (~1.000 req/ng\xE0y, ~300\u2013500 tok/s) \u2014 c\u1EF1c nhanh cho nh\xF3m 2\u20133 ng\u01B0\u1EDDi d\xF9ng song song khi x\u1EED l\xFD v\u0103n b\u1EA3n/JSON & d\u1EF1 ph\xF2ng Gemini 429.",
+    strengths: "Model s\u1EA3n xu\u1EA5t m\u1EA1nh nh\u1EA5t c\u1EE7a Groq (~500 tok/s, mi\u1EC5n ph\xED) \u2014 c\u1EF1c nhanh cho nh\xF3m 2\u20133 ng\u01B0\u1EDDi d\xF9ng song song khi x\u1EED l\xFD v\u0103n b\u1EA3n/JSON & d\u1EF1 ph\xF2ng Gemini 429.",
     supportsMultimodal: false,
     supportsGoogleSearch: false
   },
   {
-    modelId: "groq:llama-3.1-8b-instant",
-    displayName: "Groq \xB7 Llama 3.1 8B Instant (Groq Cloud Free)",
+    modelId: "groq:openai/gpt-oss-20b",
+    displayName: "Groq \xB7 GPT-OSS 20B Fast (Groq Cloud Free)",
     provider: "groq",
     tier: "free",
-    strengths: "T\u1ED1c \u0111\u1ED9 t\u1EE9c th\xEC (<0.6s), mi\u1EC5n ph\xED (~14.400 req/ng\xE0y) \u2014 t\u1ED1i \u01B0u cho ph\xE2n lo\u1EA1i m\xF4n, g\u1EE3i \xFD t\xEAn t\u1EC7p, flashcard & d\u1EF1 ph\xF2ng nh\u1EB9.",
+    strengths: "T\u1ED1c \u0111\u1ED9 t\u1EE9c th\xEC (~1.000 tok/s), mi\u1EC5n ph\xED \u2014 t\u1ED1i \u01B0u cho ph\xE2n lo\u1EA1i m\xF4n, g\u1EE3i \xFD t\xEAn t\u1EC7p, flashcard & d\u1EF1 ph\xF2ng nh\u1EB9.",
     supportsMultimodal: false,
     supportsGoogleSearch: false
   },
@@ -958,64 +999,8 @@ var DEFAULT_TASK_MODELS = {
   }
 };
 
-// src/server/modelRouter.ts
+// src/server/groqProvider.ts
 import crypto3 from "node:crypto";
-import { GoogleGenAI as GoogleGenAI2, ThinkingLevel as ThinkingLevel2 } from "@google/genai";
-
-// src/core/cache.ts
-function buildDeterministicCacheKey(parts) {
-  const canonical = JSON.stringify(parts, Object.keys(parts).sort());
-  let h1 = 0xcbf29ce484222325n;
-  let h2 = 0x84222325cbf29ce4n;
-  const prime = 0x100000001b3n;
-  const mask = 0xffffffffffffffffn;
-  for (let i = 0; i < canonical.length; i += 1) {
-    const code = BigInt(canonical.charCodeAt(i));
-    h1 ^= code;
-    h1 = h1 * prime & mask;
-    h2 ^= code + BigInt(i % 251 + 1);
-    h2 = h2 * prime & mask;
-  }
-  return `${h1.toString(16).padStart(16, "0")}${h2.toString(16).padStart(16, "0")}`;
-}
-var BoundedTtlCache = class {
-  constructor(maxEntries = 150, defaultTtlMs = 30 * 60 * 1e3) {
-    this.store = /* @__PURE__ */ new Map();
-    this.maxEntries = maxEntries;
-    this.defaultTtlMs = defaultTtlMs;
-  }
-  get(key) {
-    const entry = this.store.get(key);
-    if (!entry) return void 0;
-    if (Date.now() > entry.expiresAt) {
-      this.store.delete(key);
-      return void 0;
-    }
-    this.store.delete(key);
-    this.store.set(key, entry);
-    return entry.value;
-  }
-  set(key, value, ttlMs = this.defaultTtlMs) {
-    if (this.store.has(key)) {
-      this.store.delete(key);
-    } else if (this.store.size >= this.maxEntries) {
-      const oldestKey = this.store.keys().next().value;
-      if (oldestKey !== void 0) {
-        this.store.delete(oldestKey);
-      }
-    }
-    this.store.set(key, {
-      value,
-      expiresAt: Date.now() + ttlMs
-    });
-  }
-  clear() {
-    this.store.clear();
-  }
-  size() {
-    return this.store.size;
-  }
-};
 
 // src/server/singleKeyService.ts
 import crypto2 from "node:crypto";
@@ -1027,14 +1012,20 @@ var DATA_DIR = path2.resolve(process.cwd(), ".data");
 var ENCRYPTED_KEY_FILE = path2.join(DATA_DIR, "single-gemini-key.enc");
 var TMP_ENCRYPTED_KEY_FILE = path2.join(os.tmpdir(), "studycheck-single-gemini-key.enc");
 var FIRESTORE_SECRET_DOC = "adminSecrets/primary";
+var GROQ_ENCRYPTED_KEY_FILE = path2.join(DATA_DIR, "groq-api-key.enc");
+var TMP_GROQ_ENCRYPTED_KEY_FILE = path2.join(os.tmpdir(), "studycheck-groq-api-key.enc");
+var FIRESTORE_GROQ_DOC = "adminSecrets/groq";
+var CF_ENCRYPTED_KEY_FILE = path2.join(DATA_DIR, "cloudflare-ai-key.enc");
+var TMP_CF_ENCRYPTED_KEY_FILE = path2.join(os.tmpdir(), "studycheck-cloudflare-ai-key.enc");
+var FIRESTORE_CF_DOC = "adminSecrets/cloudflare";
 function deriveAesKey() {
   const seed = process.env.KEY_ENCRYPTION_SECRET || process.env.ADMIN_KEY_ENCRYPTION_SECRET || `${firebaseConfig.projectId}:${firebaseConfig.apiKey}:studycheck-single-key-v1`;
   return crypto2.createHash("sha256").update(seed).digest();
 }
-function encryptApiKey(rawKey) {
+function encryptSecretPayload(rawValue) {
   const iv = crypto2.randomBytes(12);
   const cipher = crypto2.createCipheriv("aes-256-gcm", deriveAesKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(rawKey, "utf8"), cipher.final()]);
+  const encrypted = Buffer.concat([cipher.update(rawValue, "utf8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
   return {
     ciphertext: encrypted.toString("base64"),
@@ -1042,7 +1033,7 @@ function encryptApiKey(rawKey) {
     authTag: authTag.toString("base64")
   };
 }
-function decryptApiKey(payload) {
+function decryptSecretPayload(payload) {
   const decipher = crypto2.createDecipheriv(
     "aes-256-gcm",
     deriveAesKey(),
@@ -1060,35 +1051,74 @@ function maskApiKey(rawKey) {
   if (trimmed.length <= 8) return "\u2022\u2022\u2022\u2022";
   return `${trimmed.slice(0, 6)}\u2022\u2022\u2022\u2022${trimmed.slice(-4)}`;
 }
+function maskCompactSecret(value) {
+  const trimmed = value.trim();
+  if (trimmed.length <= 8) return "\u2022\u2022\u2022\u2022";
+  return `${trimmed.slice(0, 4)}\u2022\u2022${trimmed.slice(-4)}`;
+}
+function maskCloudflareIdentifier(accountId, apiToken) {
+  return `${maskCompactSecret(accountId)} / ${maskCompactSecret(apiToken)}`.slice(0, 40);
+}
 function validateApiKeyInput(rawKey) {
   const trimmed = rawKey.trim();
   if (trimmed.length < 20) {
     return { valid: false, reason: "API key qu\xE1 ng\u1EAFn (c\u1EA7n t\u1ED1i thi\u1EC3u 20 k\xFD t\u1EF1)." };
+  }
+  if (trimmed.length > 512) {
+    return { valid: false, reason: "API key qu\xE1 d\xE0i (t\u1ED1i \u0111a 512 k\xFD t\u1EF1)." };
   }
   if (/\s/.test(trimmed)) {
     return { valid: false, reason: "API key kh\xF4ng \u0111\u01B0\u1EE3c ch\u1EE9a kho\u1EA3ng tr\u1EAFng ho\u1EB7c xu\u1ED1ng d\xF2ng." };
   }
   return { valid: true };
 }
+function validateCloudflareAccountId(accountId) {
+  const trimmed = accountId.trim();
+  if (trimmed.length < 16 || trimmed.length > 64) {
+    return { valid: false, reason: "Cloudflare Account ID ph\u1EA3i d\xE0i t\u1EEB 16 \u0111\u1EBFn 64 k\xFD t\u1EF1." };
+  }
+  if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
+    return {
+      valid: false,
+      reason: "Cloudflare Account ID ch\u1EC9 \u0111\u01B0\u1EE3c ch\u1EE9a ch\u1EEF c\xE1i, ch\u1EEF s\u1ED1, d\u1EA5u g\u1EA1ch ngang ho\u1EB7c g\u1EA1ch d\u01B0\u1EDBi."
+    };
+  }
+  return { valid: true };
+}
+function validateCloudflareToken(apiToken) {
+  const trimmed = apiToken.trim();
+  if (trimmed.length < 16) {
+    return { valid: false, reason: "Cloudflare API Token qu\xE1 ng\u1EAFn (c\u1EA7n t\u1ED1i thi\u1EC3u 16 k\xFD t\u1EF1)." };
+  }
+  if (trimmed.length > 512) {
+    return { valid: false, reason: "Cloudflare API Token qu\xE1 d\xE0i (t\u1ED1i \u0111a 512 k\xFD t\u1EF1)." };
+  }
+  if (/\s/.test(trimmed)) {
+    return { valid: false, reason: "Cloudflare API Token kh\xF4ng \u0111\u01B0\u1EE3c ch\u1EE9a kho\u1EA3ng tr\u1EAFng ho\u1EB7c xu\u1ED1ng d\xF2ng." };
+  }
+  return { valid: true };
+}
 var cachedSingleKey = null;
-function writeLocalEncryptedFile(record) {
+var cachedGroqKey = null;
+var cachedCloudflareCreds = null;
+function writeEncryptedSecretFiles(primaryFile, tmpFile, record) {
   const serialized = JSON.stringify(record, null, 2);
   if (process.env.VERCEL !== "1") {
     try {
       if (!fs2.existsSync(DATA_DIR)) {
         fs2.mkdirSync(DATA_DIR, { recursive: true, mode: 448 });
       }
-      fs2.writeFileSync(ENCRYPTED_KEY_FILE, serialized, { mode: 384 });
+      fs2.writeFileSync(primaryFile, serialized, { mode: 384 });
     } catch {
     }
   }
   try {
-    fs2.writeFileSync(TMP_ENCRYPTED_KEY_FILE, serialized, { mode: 384 });
+    fs2.writeFileSync(tmpFile, serialized, { mode: 384 });
   } catch {
   }
 }
-function removeLocalEncryptedFile() {
-  for (const filePath of [ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE]) {
+function removeEncryptedSecretFiles(primaryFile, tmpFile) {
+  for (const filePath of [primaryFile, tmpFile]) {
     try {
       if (fs2.existsSync(filePath)) {
         fs2.unlinkSync(filePath);
@@ -1097,43 +1127,114 @@ function removeLocalEncryptedFile() {
     }
   }
 }
-function loadLocalEncryptedFile() {
-  for (const filePath of [ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE]) {
+function readLocalEncryptedRecord(primaryFile, tmpFile) {
+  for (const filePath of [primaryFile, tmpFile]) {
     try {
       if (!fs2.existsSync(filePath)) continue;
       const raw = fs2.readFileSync(filePath, "utf8");
       const parsed = JSON.parse(raw);
       if (!parsed.ciphertext || !parsed.iv || !parsed.authTag) continue;
-      const rawKey = decryptApiKey(parsed);
-      if (!rawKey) continue;
-      cachedSingleKey = {
-        rawKey,
-        maskedKey: parsed.maskedIdentifier || maskApiKey(rawKey),
-        label: parsed.label || "Gemini API Key duy nh\u1EA5t",
-        updatedAt: parsed.updatedAt || (/* @__PURE__ */ new Date()).toISOString(),
-        updatedBy: parsed.updatedBy || "admin",
-        lastTestStatus: parsed.lastTestStatus,
-        lastTestAt: parsed.lastTestAt,
-        lastTestMessage: parsed.lastTestMessage
-      };
-      return;
+      return parsed;
+    } catch {
+    }
+  }
+  return null;
+}
+function parseStoredCloudflareDoc(doc) {
+  try {
+    const rawJson = decryptSecretPayload(doc);
+    const parsed = JSON.parse(rawJson);
+    const accountId = (parsed.accountId || "").trim();
+    const apiToken = (parsed.apiToken || "").trim();
+    if (!accountId || !apiToken) return null;
+    const maskedAccountId = maskCompactSecret(accountId);
+    const maskedKey = maskApiKey(apiToken);
+    return {
+      accountId,
+      apiToken,
+      maskedAccountId,
+      maskedKey,
+      maskedIdentifier: doc.maskedIdentifier || maskCloudflareIdentifier(accountId, apiToken),
+      label: doc.label || "Cloudflare Workers AI Free",
+      updatedAt: doc.updatedAt || (/* @__PURE__ */ new Date()).toISOString(),
+      updatedBy: doc.updatedBy || "admin",
+      lastTestStatus: doc.lastTestStatus,
+      lastTestAt: doc.lastTestAt,
+      lastTestMessage: doc.lastTestMessage
+    };
+  } catch {
+    return null;
+  }
+}
+function loadLocalEncryptedFiles() {
+  const geminiDoc = readLocalEncryptedRecord(ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE);
+  if (geminiDoc) {
+    try {
+      const rawKey = decryptSecretPayload(geminiDoc);
+      if (rawKey) {
+        cachedSingleKey = {
+          rawKey,
+          maskedKey: geminiDoc.maskedIdentifier || maskApiKey(rawKey),
+          label: geminiDoc.label || "Gemini API Key duy nh\u1EA5t",
+          updatedAt: geminiDoc.updatedAt || (/* @__PURE__ */ new Date()).toISOString(),
+          updatedBy: geminiDoc.updatedBy || "admin",
+          lastTestStatus: geminiDoc.lastTestStatus,
+          lastTestAt: geminiDoc.lastTestAt,
+          lastTestMessage: geminiDoc.lastTestMessage
+        };
+      }
     } catch {
       cachedSingleKey = null;
     }
   }
+  const groqDoc = readLocalEncryptedRecord(GROQ_ENCRYPTED_KEY_FILE, TMP_GROQ_ENCRYPTED_KEY_FILE);
+  if (groqDoc) {
+    try {
+      const rawKey = decryptSecretPayload(groqDoc);
+      if (rawKey) {
+        cachedGroqKey = {
+          rawKey,
+          maskedKey: groqDoc.maskedIdentifier || maskApiKey(rawKey),
+          label: groqDoc.label || "Groq Cloud Free API Key",
+          updatedAt: groqDoc.updatedAt || (/* @__PURE__ */ new Date()).toISOString(),
+          updatedBy: groqDoc.updatedBy || "admin",
+          lastTestStatus: groqDoc.lastTestStatus,
+          lastTestAt: groqDoc.lastTestAt,
+          lastTestMessage: groqDoc.lastTestMessage
+        };
+      }
+    } catch {
+      cachedGroqKey = null;
+    }
+  }
+  const cfDoc = readLocalEncryptedRecord(CF_ENCRYPTED_KEY_FILE, TMP_CF_ENCRYPTED_KEY_FILE);
+  if (cfDoc) {
+    cachedCloudflareCreds = parseStoredCloudflareDoc(cfDoc);
+  }
 }
-loadLocalEncryptedFile();
+loadLocalEncryptedFiles();
 function getEnvFallbackKey() {
   const envKey = process.env.GEMINI_API_KEY?.trim();
   if (!envKey || envKey === "MY_GEMINI_API_KEY") return null;
   return envKey;
 }
-async function hydrateSingleKeyForSuperAdmin(idToken) {
+function getEnvFallbackGroqKey() {
+  const envKey = process.env.GROQ_API_KEY?.trim();
+  if (!envKey) return null;
+  return envKey;
+}
+function getEnvFallbackCloudflareCredentials() {
+  const accountId = (process.env.CLOUDFLARE_ACCOUNT_ID || "").trim();
+  const apiToken = (process.env.CLOUDFLARE_API_TOKEN || "").trim();
+  if (!accountId || !apiToken) return null;
+  return { accountId, apiToken };
+}
+async function hydrateGeminiSecretFromFirestore(idToken) {
   if (cachedSingleKey) return;
   try {
     const doc = await firestoreRestGet(FIRESTORE_SECRET_DOC, idToken);
     if (!doc || !doc.ciphertext || !doc.iv || !doc.authTag) return;
-    const rawKey = decryptApiKey(doc);
+    const rawKey = decryptSecretPayload(doc);
     if (!rawKey) return;
     cachedSingleKey = {
       rawKey,
@@ -1145,13 +1246,57 @@ async function hydrateSingleKeyForSuperAdmin(idToken) {
       lastTestAt: doc.lastTestAt,
       lastTestMessage: doc.lastTestMessage
     };
-    writeLocalEncryptedFile(doc);
+    writeEncryptedSecretFiles(ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE, doc);
   } catch {
   }
 }
+async function hydrateGroqSecretFromFirestore(idToken) {
+  if (cachedGroqKey) return;
+  try {
+    const doc = await firestoreRestGet(FIRESTORE_GROQ_DOC, idToken);
+    if (!doc || !doc.ciphertext || !doc.iv || !doc.authTag) return;
+    const rawKey = decryptSecretPayload(doc);
+    if (!rawKey) return;
+    cachedGroqKey = {
+      rawKey,
+      maskedKey: doc.maskedIdentifier || maskApiKey(rawKey),
+      label: doc.label || "Groq Cloud Free API Key",
+      updatedAt: doc.updatedAt || (/* @__PURE__ */ new Date()).toISOString(),
+      updatedBy: doc.updatedBy || "admin",
+      lastTestStatus: doc.lastTestStatus,
+      lastTestAt: doc.lastTestAt,
+      lastTestMessage: doc.lastTestMessage
+    };
+    writeEncryptedSecretFiles(GROQ_ENCRYPTED_KEY_FILE, TMP_GROQ_ENCRYPTED_KEY_FILE, doc);
+  } catch {
+  }
+}
+async function hydrateCloudflareSecretFromFirestore(idToken) {
+  if (cachedCloudflareCreds) return;
+  try {
+    const doc = await firestoreRestGet(FIRESTORE_CF_DOC, idToken);
+    if (!doc || !doc.ciphertext || !doc.iv || !doc.authTag) return;
+    const parsed = parseStoredCloudflareDoc(doc);
+    if (!parsed) return;
+    cachedCloudflareCreds = parsed;
+    writeEncryptedSecretFiles(CF_ENCRYPTED_KEY_FILE, TMP_CF_ENCRYPTED_KEY_FILE, doc);
+  } catch {
+  }
+}
+async function hydrateAllProviderKeysFromFirestore(idToken) {
+  if (!idToken) return;
+  await Promise.allSettled([
+    hydrateGeminiSecretFromFirestore(idToken),
+    hydrateGroqSecretFromFirestore(idToken),
+    hydrateCloudflareSecretFromFirestore(idToken)
+  ]);
+}
+async function hydrateSingleKeyForSuperAdmin(idToken) {
+  await hydrateAllProviderKeysFromFirestore(idToken);
+}
 async function getSingleKeyStatus(idToken) {
   if (idToken && !cachedSingleKey) {
-    await hydrateSingleKeyForSuperAdmin(idToken);
+    await hydrateGeminiSecretFromFirestore(idToken);
   }
   const hasEnvFallbackKey = Boolean(getEnvFallbackKey());
   if (cachedSingleKey) {
@@ -1188,6 +1333,94 @@ async function getSingleKeyStatus(idToken) {
     lastTestStatus: "Untested"
   };
 }
+async function getGroqKeyStatus(idToken) {
+  if (idToken && !cachedGroqKey) {
+    await hydrateGroqSecretFromFirestore(idToken);
+  }
+  const hasEnvFallbackKey = Boolean(getEnvFallbackGroqKey());
+  if (cachedGroqKey) {
+    return {
+      configured: true,
+      source: "admin",
+      maskedKey: cachedGroqKey.maskedKey,
+      label: cachedGroqKey.label,
+      hasEnvFallbackKey,
+      lastTestStatus: cachedGroqKey.lastTestStatus || "Untested",
+      lastTestAt: cachedGroqKey.lastTestAt,
+      lastTestMessage: cachedGroqKey.lastTestMessage,
+      updatedAt: cachedGroqKey.updatedAt,
+      updatedBy: cachedGroqKey.updatedBy
+    };
+  }
+  const envKey = getEnvFallbackGroqKey();
+  if (envKey) {
+    return {
+      configured: true,
+      source: "server_env",
+      maskedKey: maskApiKey(envKey),
+      label: "Bi\u1EBFn m\xF4i tr\u01B0\u1EDDng m\xE1y ch\u1EE7 (GROQ_API_KEY)",
+      hasEnvFallbackKey: true,
+      lastTestStatus: "Untested"
+    };
+  }
+  return {
+    configured: false,
+    source: "none",
+    maskedKey: "",
+    label: "",
+    hasEnvFallbackKey: false,
+    lastTestStatus: "Untested"
+  };
+}
+async function getCloudflareKeyStatus(idToken) {
+  if (idToken && !cachedCloudflareCreds) {
+    await hydrateCloudflareSecretFromFirestore(idToken);
+  }
+  const envCreds = getEnvFallbackCloudflareCredentials();
+  const hasEnvFallbackKey = Boolean(envCreds);
+  if (cachedCloudflareCreds) {
+    return {
+      configured: true,
+      source: "admin",
+      maskedAccountId: cachedCloudflareCreds.maskedAccountId,
+      maskedKey: cachedCloudflareCreds.maskedKey,
+      label: cachedCloudflareCreds.label,
+      hasEnvFallbackKey,
+      lastTestStatus: cachedCloudflareCreds.lastTestStatus || "Untested",
+      lastTestAt: cachedCloudflareCreds.lastTestAt,
+      lastTestMessage: cachedCloudflareCreds.lastTestMessage,
+      updatedAt: cachedCloudflareCreds.updatedAt,
+      updatedBy: cachedCloudflareCreds.updatedBy
+    };
+  }
+  if (envCreds) {
+    return {
+      configured: true,
+      source: "server_env",
+      maskedAccountId: maskCompactSecret(envCreds.accountId),
+      maskedKey: maskApiKey(envCreds.apiToken),
+      label: "Bi\u1EBFn m\xF4i tr\u01B0\u1EDDng m\xE1y ch\u1EE7 (CLOUDFLARE_ACCOUNT_ID / TOKEN)",
+      hasEnvFallbackKey: true,
+      lastTestStatus: "Untested"
+    };
+  }
+  return {
+    configured: false,
+    source: "none",
+    maskedAccountId: "",
+    maskedKey: "",
+    label: "",
+    hasEnvFallbackKey: false,
+    lastTestStatus: "Untested"
+  };
+}
+async function getProviderKeysStatus(idToken) {
+  const [groq, cloudflare] = await Promise.all([
+    getGroqKeyStatus(idToken),
+    getCloudflareKeyStatus(idToken)
+  ]);
+  return { groq, cloudflare };
+}
 async function setSingleGeminiApiKey(params) {
   const { rawKey, label, actorUid, actorEmail, idToken } = params;
   const trimmed = rawKey.trim();
@@ -1196,9 +1429,9 @@ async function setSingleGeminiApiKey(params) {
     return { ok: false, error: check.reason || "API key kh\xF4ng h\u1EE3p l\u1EC7." };
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const maskedIdentifier = maskApiKey(trimmed);
-  const encrypted = encryptApiKey(trimmed);
-  const finalLabel = (label || "").trim() || "Gemini API Key duy nh\u1EA5t";
+  const maskedIdentifier = maskApiKey(trimmed).slice(0, 40);
+  const encrypted = encryptSecretPayload(trimmed);
+  const finalLabel = ((label || "").trim() || "Gemini API Key duy nh\u1EA5t").slice(0, 100);
   const storedDoc = {
     secretId: "primary",
     ciphertext: encrypted.ciphertext,
@@ -1207,7 +1440,7 @@ async function setSingleGeminiApiKey(params) {
     maskedIdentifier,
     label: finalLabel,
     updatedAt: now,
-    updatedBy: actorEmail || actorUid,
+    updatedBy: (actorEmail || actorUid).slice(0, 128),
     lastTestStatus: "Untested",
     lastTestAt: "",
     lastTestMessage: ""
@@ -1217,10 +1450,10 @@ async function setSingleGeminiApiKey(params) {
     maskedKey: maskedIdentifier,
     label: finalLabel,
     updatedAt: now,
-    updatedBy: actorEmail || actorUid,
+    updatedBy: storedDoc.updatedBy,
     lastTestStatus: "Untested"
   };
-  writeLocalEncryptedFile(storedDoc);
+  writeEncryptedSecretFiles(ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE, storedDoc);
   try {
     await firestoreRestSet(
       FIRESTORE_SECRET_DOC,
@@ -1256,7 +1489,7 @@ async function setSingleGeminiApiKey(params) {
 async function clearSingleGeminiApiKey(params) {
   const { actorUid, actorEmail, idToken } = params;
   cachedSingleKey = null;
-  removeLocalEncryptedFile();
+  removeEncryptedSecretFiles(ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE);
   try {
     await firestoreRestDelete(FIRESTORE_SECRET_DOC, idToken);
   } catch {
@@ -1275,11 +1508,197 @@ async function clearSingleGeminiApiKey(params) {
   );
   return { ok: true, status: await getSingleKeyStatus() };
 }
+async function setGroqApiKey(params) {
+  const { rawKey, label, actorUid, actorEmail, idToken } = params;
+  const trimmed = rawKey.trim();
+  const check = validateApiKeyInput(trimmed);
+  if (!check.valid) {
+    return { ok: false, error: check.reason || "Groq API key kh\xF4ng h\u1EE3p l\u1EC7." };
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const maskedIdentifier = maskApiKey(trimmed).slice(0, 40);
+  const encrypted = encryptSecretPayload(trimmed);
+  const finalLabel = ((label || "").trim() || "Groq Cloud Free API Key").slice(0, 100);
+  const storedDoc = {
+    secretId: "groq",
+    ciphertext: encrypted.ciphertext,
+    iv: encrypted.iv,
+    authTag: encrypted.authTag,
+    maskedIdentifier,
+    label: finalLabel,
+    updatedAt: now,
+    updatedBy: (actorEmail || actorUid).slice(0, 128),
+    lastTestStatus: "Untested",
+    lastTestAt: "",
+    lastTestMessage: ""
+  };
+  cachedGroqKey = {
+    rawKey: trimmed,
+    maskedKey: maskedIdentifier,
+    label: finalLabel,
+    updatedAt: now,
+    updatedBy: storedDoc.updatedBy,
+    lastTestStatus: "Untested"
+  };
+  writeEncryptedSecretFiles(GROQ_ENCRYPTED_KEY_FILE, TMP_GROQ_ENCRYPTED_KEY_FILE, storedDoc);
+  try {
+    await firestoreRestSet(
+      FIRESTORE_GROQ_DOC,
+      storedDoc,
+      idToken
+    );
+  } catch (err) {
+    console.warn("Could not persist encrypted Groq key to Firestore:", err);
+    if (process.env.VERCEL === "1") {
+      return {
+        ok: false,
+        error: "Kh\xF4ng th\u1EC3 l\u01B0u kh\xF3a Groq m\xE3 h\xF3a l\xEAn Cloud Firestore (adminSecrets/groq). Vui l\xF2ng ki\u1EC3m tra quy\u1EC1n Super Admin ho\u1EB7c k\u1EBFt n\u1ED1i Firestore."
+      };
+    }
+  }
+  await recordAuditLog(
+    {
+      actorUid,
+      actorEmail,
+      action: "GROQ_API_KEY_SAVED",
+      resourceType: "adminSecrets",
+      resourceId: "groq",
+      status: "success",
+      metadata: {
+        maskedIdentifier,
+        label: finalLabel
+      }
+    },
+    idToken
+  );
+  return { ok: true, status: await getGroqKeyStatus() };
+}
+async function clearGroqApiKey(params) {
+  const { actorUid, actorEmail, idToken } = params;
+  cachedGroqKey = null;
+  removeEncryptedSecretFiles(GROQ_ENCRYPTED_KEY_FILE, TMP_GROQ_ENCRYPTED_KEY_FILE);
+  try {
+    await firestoreRestDelete(FIRESTORE_GROQ_DOC, idToken);
+  } catch {
+  }
+  await recordAuditLog(
+    {
+      actorUid,
+      actorEmail,
+      action: "GROQ_API_KEY_CLEARED",
+      resourceType: "adminSecrets",
+      resourceId: "groq",
+      status: "success",
+      metadata: {}
+    },
+    idToken
+  );
+  return { ok: true, status: await getGroqKeyStatus() };
+}
+async function setCloudflareCredentials(params) {
+  const { accountId, apiToken, label, actorUid, actorEmail, idToken } = params;
+  const cleanAccountId = accountId.trim();
+  const cleanToken = apiToken.trim();
+  const accCheck = validateCloudflareAccountId(cleanAccountId);
+  if (!accCheck.valid) {
+    return { ok: false, error: accCheck.reason || "Cloudflare Account ID kh\xF4ng h\u1EE3p l\u1EC7." };
+  }
+  const tokCheck = validateCloudflareToken(cleanToken);
+  if (!tokCheck.valid) {
+    return { ok: false, error: tokCheck.reason || "Cloudflare API Token kh\xF4ng h\u1EE3p l\u1EC7." };
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const maskedAccountId = maskCompactSecret(cleanAccountId);
+  const maskedKey = maskApiKey(cleanToken);
+  const maskedIdentifier = maskCloudflareIdentifier(cleanAccountId, cleanToken);
+  const encrypted = encryptSecretPayload(
+    JSON.stringify({ accountId: cleanAccountId, apiToken: cleanToken })
+  );
+  const finalLabel = ((label || "").trim() || "Cloudflare Workers AI Free").slice(0, 100);
+  const storedDoc = {
+    secretId: "cloudflare",
+    ciphertext: encrypted.ciphertext,
+    iv: encrypted.iv,
+    authTag: encrypted.authTag,
+    maskedIdentifier,
+    label: finalLabel,
+    updatedAt: now,
+    updatedBy: (actorEmail || actorUid).slice(0, 128),
+    lastTestStatus: "Untested",
+    lastTestAt: "",
+    lastTestMessage: ""
+  };
+  cachedCloudflareCreds = {
+    accountId: cleanAccountId,
+    apiToken: cleanToken,
+    maskedAccountId,
+    maskedKey,
+    maskedIdentifier,
+    label: finalLabel,
+    updatedAt: now,
+    updatedBy: storedDoc.updatedBy,
+    lastTestStatus: "Untested"
+  };
+  writeEncryptedSecretFiles(CF_ENCRYPTED_KEY_FILE, TMP_CF_ENCRYPTED_KEY_FILE, storedDoc);
+  try {
+    await firestoreRestSet(
+      FIRESTORE_CF_DOC,
+      storedDoc,
+      idToken
+    );
+  } catch (err) {
+    console.warn("Could not persist encrypted Cloudflare credentials to Firestore:", err);
+    if (process.env.VERCEL === "1") {
+      return {
+        ok: false,
+        error: "Kh\xF4ng th\u1EC3 l\u01B0u th\xF4ng tin Cloudflare m\xE3 h\xF3a l\xEAn Cloud Firestore (adminSecrets/cloudflare). Vui l\xF2ng ki\u1EC3m tra quy\u1EC1n Super Admin ho\u1EB7c k\u1EBFt n\u1ED1i Firestore."
+      };
+    }
+  }
+  await recordAuditLog(
+    {
+      actorUid,
+      actorEmail,
+      action: "CLOUDFLARE_CREDENTIALS_SAVED",
+      resourceType: "adminSecrets",
+      resourceId: "cloudflare",
+      status: "success",
+      metadata: {
+        maskedIdentifier,
+        label: finalLabel
+      }
+    },
+    idToken
+  );
+  return { ok: true, status: await getCloudflareKeyStatus() };
+}
+async function clearCloudflareCredentials(params) {
+  const { actorUid, actorEmail, idToken } = params;
+  cachedCloudflareCreds = null;
+  removeEncryptedSecretFiles(CF_ENCRYPTED_KEY_FILE, TMP_CF_ENCRYPTED_KEY_FILE);
+  try {
+    await firestoreRestDelete(FIRESTORE_CF_DOC, idToken);
+  } catch {
+  }
+  await recordAuditLog(
+    {
+      actorUid,
+      actorEmail,
+      action: "CLOUDFLARE_CREDENTIALS_CLEARED",
+      resourceType: "adminSecrets",
+      resourceId: "cloudflare",
+      status: "success",
+      metadata: {}
+    },
+    idToken
+  );
+  return { ok: true, status: await getCloudflareKeyStatus() };
+}
 async function testSingleGeminiKey(params) {
   const { rawKeyOverride, actorUid, actorEmail, idToken, activeModel } = params;
   const testedAt = (/* @__PURE__ */ new Date()).toISOString();
   if (!cachedSingleKey) {
-    await hydrateSingleKeyForSuperAdmin(idToken);
+    await hydrateGeminiSecretFromFirestore(idToken);
   }
   let keyToTest = "";
   let testedSource = "none";
@@ -1351,22 +1770,22 @@ async function testSingleGeminiKey(params) {
   if (testedSource === "admin" && cachedSingleKey) {
     cachedSingleKey.lastTestStatus = resultStatus;
     cachedSingleKey.lastTestAt = testedAt;
-    cachedSingleKey.lastTestMessage = resultMessage;
-    const encrypted = encryptApiKey(cachedSingleKey.rawKey);
+    cachedSingleKey.lastTestMessage = resultMessage.slice(0, 280);
+    const encrypted = encryptSecretPayload(cachedSingleKey.rawKey);
     const updatedDoc = {
       secretId: "primary",
       ciphertext: encrypted.ciphertext,
       iv: encrypted.iv,
       authTag: encrypted.authTag,
-      maskedIdentifier: cachedSingleKey.maskedKey,
-      label: cachedSingleKey.label,
+      maskedIdentifier: cachedSingleKey.maskedKey.slice(0, 40),
+      label: cachedSingleKey.label.slice(0, 100),
       updatedAt: cachedSingleKey.updatedAt,
       updatedBy: cachedSingleKey.updatedBy,
       lastTestStatus: resultStatus,
       lastTestAt: testedAt,
-      lastTestMessage: resultMessage
+      lastTestMessage: cachedSingleKey.lastTestMessage
     };
-    writeLocalEncryptedFile(updatedDoc);
+    writeEncryptedSecretFiles(ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE, updatedDoc);
     try {
       await firestoreRestSet(
         FIRESTORE_SECRET_DOC,
@@ -1399,6 +1818,296 @@ async function testSingleGeminiKey(params) {
     keyStatus: await getSingleKeyStatus()
   };
 }
+async function testGroqApiKey(params) {
+  const { rawKeyOverride, actorUid, actorEmail, idToken } = params;
+  const testedAt = (/* @__PURE__ */ new Date()).toISOString();
+  if (!cachedGroqKey) {
+    await hydrateGroqSecretFromFirestore(idToken);
+  }
+  let keyToTest = "";
+  let testedSource = "none";
+  if (rawKeyOverride && rawKeyOverride.trim()) {
+    keyToTest = rawKeyOverride.trim();
+    testedSource = "preview_input";
+  } else if (cachedGroqKey) {
+    keyToTest = cachedGroqKey.rawKey;
+    testedSource = "admin";
+  } else {
+    const envKey = getEnvFallbackGroqKey();
+    if (envKey) {
+      keyToTest = envKey;
+      testedSource = "server_env";
+    }
+  }
+  if (!keyToTest) {
+    return {
+      status: "Invalid key",
+      message: "Ch\u01B0a c\u1EA5u h\xECnh Groq API Key. H\xE3y d\xE1n key (gsk_...) r\u1ED3i b\u1EA5m L\u01B0u ho\u1EB7c Th\u1EED nghi\u1EC7m.",
+      testedSource: "none",
+      testedAt,
+      keyStatus: await getGroqKeyStatus()
+    };
+  }
+  let resultStatus = "Connected";
+  let resultMessage = "";
+  let availableModels = [];
+  try {
+    const modelsRes = await fetch("https://api.groq.com/openai/v1/models", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${keyToTest}` },
+      signal: AbortSignal.timeout(15e3)
+    });
+    if (modelsRes.status === 401 || modelsRes.status === 403) {
+      resultStatus = "Invalid key";
+      resultMessage = "Groq API Key kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c \u0111\xE3 b\u1ECB thu h\u1ED3i.";
+    } else if (modelsRes.status === 429) {
+      resultStatus = "Quota exceeded";
+      resultMessage = "T\xE0i kho\u1EA3n Groq \u0111ang ch\u1EA1m h\u1EA1n m\u1EE9c (429).";
+    } else if (!modelsRes.ok) {
+      resultStatus = "Temporary provider error";
+      resultMessage = `Groq API ph\u1EA3n h\u1ED3i HTTP ${modelsRes.status}.`;
+    } else {
+      const modelsData = await modelsRes.json();
+      const excluded = ["whisper", "tts", "playai", "guard", "safeguard", "orpheus", "compound"];
+      availableModels = (modelsData.data || []).filter((m) => m && typeof m.id === "string" && m.active !== false).map((m) => m.id.trim()).filter((id) => !excluded.some((tok) => id.toLowerCase().includes(tok)));
+      const preferred = [
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "qwen/qwen3-32b",
+        "meta-llama/llama-4-scout-17b-16e-instruct"
+      ];
+      const chosenModel = preferred.find((p) => availableModels.some((m) => m.toLowerCase() === p)) || availableModels[0] || "openai/gpt-oss-120b";
+      const pingRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${keyToTest}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: chosenModel,
+          messages: [{ role: "user", content: "Tr\u1EA3 l\u1EDDi duy nh\u1EA5t 1 t\u1EEB: OK" }],
+          temperature: 0.1,
+          max_tokens: 256
+        }),
+        signal: AbortSignal.timeout(15e3)
+      });
+      if (pingRes.ok) {
+        resultStatus = "Connected";
+        resultMessage = `K\u1EBFt n\u1ED1i Groq Cloud th\xE0nh c\xF4ng (model ${chosenModel} ph\u1EA3n h\u1ED3i t\u1ED1t; ${availableModels.length} model v\u0103n b\u1EA3n kh\u1EA3 d\u1EE5ng).`;
+      } else {
+        const errText = await pingRes.text().catch(() => "");
+        if (pingRes.status === 401 || pingRes.status === 403) {
+          resultStatus = "Invalid key";
+          resultMessage = "Groq API Key kh\xF4ng c\xF3 quy\u1EC1n g\u1ECDi chat completion.";
+        } else if (pingRes.status === 429) {
+          resultStatus = "Quota exceeded";
+          resultMessage = "Groq API Key \u0111\xE3 ch\u1EA1m h\u1EA1n m\u1EE9c (429).";
+        } else if (pingRes.status === 404) {
+          resultStatus = "Model unavailable";
+          resultMessage = `Model ${chosenModel} kh\xF4ng kh\u1EA3 d\u1EE5ng tr\xEAn t\xE0i kho\u1EA3n Groq n\xE0y.`;
+        } else {
+          resultStatus = "Temporary provider error";
+          resultMessage = `L\u1ED7i Groq (HTTP ${pingRes.status}): ${errText.slice(0, 120)}`;
+        }
+      }
+    }
+  } catch (err) {
+    resultStatus = "Temporary provider error";
+    resultMessage = `L\u1ED7i k\u1EBFt n\u1ED1i Groq Cloud: ${(err instanceof Error ? err.message : String(err)).slice(0, 140)}`;
+  }
+  if (testedSource === "admin" && cachedGroqKey) {
+    cachedGroqKey.lastTestStatus = resultStatus;
+    cachedGroqKey.lastTestAt = testedAt;
+    cachedGroqKey.lastTestMessage = resultMessage.slice(0, 280);
+    const encrypted = encryptSecretPayload(cachedGroqKey.rawKey);
+    const updatedDoc = {
+      secretId: "groq",
+      ciphertext: encrypted.ciphertext,
+      iv: encrypted.iv,
+      authTag: encrypted.authTag,
+      maskedIdentifier: cachedGroqKey.maskedKey.slice(0, 40),
+      label: cachedGroqKey.label.slice(0, 100),
+      updatedAt: cachedGroqKey.updatedAt,
+      updatedBy: cachedGroqKey.updatedBy,
+      lastTestStatus: resultStatus,
+      lastTestAt: testedAt,
+      lastTestMessage: cachedGroqKey.lastTestMessage
+    };
+    writeEncryptedSecretFiles(GROQ_ENCRYPTED_KEY_FILE, TMP_GROQ_ENCRYPTED_KEY_FILE, updatedDoc);
+    try {
+      await firestoreRestSet(
+        FIRESTORE_GROQ_DOC,
+        updatedDoc,
+        idToken
+      );
+    } catch {
+    }
+  }
+  await recordAuditLog(
+    {
+      actorUid,
+      actorEmail,
+      action: "GROQ_API_KEY_TESTED",
+      resourceType: "adminSecrets",
+      resourceId: "groq",
+      status: resultStatus === "Connected" ? "success" : "failure",
+      metadata: {
+        resultStatus,
+        testedSource
+      }
+    },
+    idToken
+  );
+  return {
+    status: resultStatus,
+    message: resultMessage,
+    testedSource,
+    testedAt,
+    keyStatus: await getGroqKeyStatus(),
+    availableModels: availableModels.slice(0, 10)
+  };
+}
+async function testCloudflareCredentials(params) {
+  const { accountIdOverride, apiTokenOverride, actorUid, actorEmail, idToken } = params;
+  const testedAt = (/* @__PURE__ */ new Date()).toISOString();
+  if (!cachedCloudflareCreds) {
+    await hydrateCloudflareSecretFromFirestore(idToken);
+  }
+  let accountId = "";
+  let apiToken = "";
+  let testedSource = "none";
+  if (accountIdOverride?.trim() || apiTokenOverride?.trim()) {
+    accountId = (accountIdOverride || "").trim();
+    apiToken = (apiTokenOverride || "").trim();
+    testedSource = "preview_input";
+  } else if (cachedCloudflareCreds) {
+    accountId = cachedCloudflareCreds.accountId;
+    apiToken = cachedCloudflareCreds.apiToken;
+    testedSource = "admin";
+  } else {
+    const envCreds = getEnvFallbackCloudflareCredentials();
+    if (envCreds) {
+      accountId = envCreds.accountId;
+      apiToken = envCreds.apiToken;
+      testedSource = "server_env";
+    }
+  }
+  if (!accountId || !apiToken) {
+    return {
+      status: "Invalid key",
+      message: "Ch\u01B0a \u0111\u1EE7 th\xF4ng tin Cloudflare Workers AI (c\u1EA7n c\u1EA3 Account ID v\xE0 API Token). H\xE3y \u0111i\u1EC1n \u0111\u1EE7 2 tr\u01B0\u1EDDng r\u1ED3i b\u1EA5m L\u01B0u ho\u1EB7c Th\u1EED nghi\u1EC7m.",
+      testedSource: "none",
+      testedAt,
+      keyStatus: await getCloudflareKeyStatus()
+    };
+  }
+  const accCheck = validateCloudflareAccountId(accountId);
+  if (!accCheck.valid) {
+    return {
+      status: "Invalid key",
+      message: accCheck.reason || "Cloudflare Account ID kh\xF4ng h\u1EE3p l\u1EC7.",
+      testedSource,
+      testedAt,
+      keyStatus: await getCloudflareKeyStatus()
+    };
+  }
+  let resultStatus = "Connected";
+  const testModel = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+  let resultMessage = `K\u1EBFt n\u1ED1i Cloudflare Workers AI th\xE0nh c\xF4ng (${testModel} ph\u1EA3n h\u1ED3i t\u1ED1t).`;
+  try {
+    const endpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/v1/chat/completions`;
+    const pingRes = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: testModel,
+        messages: [{ role: "user", content: "Tr\u1EA3 l\u1EDDi duy nh\u1EA5t 1 t\u1EEB: OK" }],
+        temperature: 0.1,
+        max_tokens: 128
+      }),
+      signal: AbortSignal.timeout(15e3)
+    });
+    if (!pingRes.ok) {
+      const errText = await pingRes.text().catch(() => "");
+      if (pingRes.status === 401 || pingRes.status === 403) {
+        resultStatus = "Permission denied";
+        resultMessage = "Cloudflare Account ID ho\u1EB7c API Token kh\xF4ng h\u1EE3p l\u1EC7 (h\xE3y \u0111\u1EA3m b\u1EA3o token c\xF3 quy\u1EC1n Workers AI Read/Edit).";
+      } else if (pingRes.status === 429) {
+        resultStatus = "Quota exceeded";
+        resultMessage = "T\xE0i kho\u1EA3n Cloudflare Workers AI \u0111\xE3 ch\u1EA1m gi\u1EDBi h\u1EA1n 10.000 Neurons/ng\xE0y (429).";
+      } else if (pingRes.status === 404) {
+        resultStatus = "Model unavailable";
+        resultMessage = "Account ID kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c model Cloudflare kh\xF4ng kh\u1EA3 d\u1EE5ng.";
+      } else {
+        resultStatus = "Temporary provider error";
+        resultMessage = `L\u1ED7i Cloudflare Workers AI (HTTP ${pingRes.status}): ${errText.slice(0, 120)}`;
+      }
+    }
+  } catch (err) {
+    resultStatus = "Temporary provider error";
+    resultMessage = `L\u1ED7i k\u1EBFt n\u1ED1i Cloudflare Workers AI: ${(err instanceof Error ? err.message : String(err)).slice(0, 140)}`;
+  }
+  if (testedSource === "admin" && cachedCloudflareCreds) {
+    cachedCloudflareCreds.lastTestStatus = resultStatus;
+    cachedCloudflareCreds.lastTestAt = testedAt;
+    cachedCloudflareCreds.lastTestMessage = resultMessage.slice(0, 280);
+    const encrypted = encryptSecretPayload(
+      JSON.stringify({
+        accountId: cachedCloudflareCreds.accountId,
+        apiToken: cachedCloudflareCreds.apiToken
+      })
+    );
+    const updatedDoc = {
+      secretId: "cloudflare",
+      ciphertext: encrypted.ciphertext,
+      iv: encrypted.iv,
+      authTag: encrypted.authTag,
+      maskedIdentifier: cachedCloudflareCreds.maskedIdentifier.slice(0, 40),
+      label: cachedCloudflareCreds.label.slice(0, 100),
+      updatedAt: cachedCloudflareCreds.updatedAt,
+      updatedBy: cachedCloudflareCreds.updatedBy,
+      lastTestStatus: resultStatus,
+      lastTestAt: testedAt,
+      lastTestMessage: cachedCloudflareCreds.lastTestMessage
+    };
+    writeEncryptedSecretFiles(CF_ENCRYPTED_KEY_FILE, TMP_CF_ENCRYPTED_KEY_FILE, updatedDoc);
+    try {
+      await firestoreRestSet(
+        FIRESTORE_CF_DOC,
+        updatedDoc,
+        idToken
+      );
+    } catch {
+    }
+  }
+  await recordAuditLog(
+    {
+      actorUid,
+      actorEmail,
+      action: "CLOUDFLARE_CREDENTIALS_TESTED",
+      resourceType: "adminSecrets",
+      resourceId: "cloudflare",
+      status: resultStatus === "Connected" ? "success" : "failure",
+      metadata: {
+        resultStatus,
+        testedSource
+      }
+    },
+    idToken
+  );
+  return {
+    status: resultStatus,
+    message: resultMessage,
+    testedSource,
+    testedAt,
+    keyStatus: await getCloudflareKeyStatus()
+  };
+}
 async function resolveActiveGeminiApiKey() {
   if (cachedSingleKey?.rawKey) {
     return cachedSingleKey.rawKey;
@@ -1409,11 +2118,44 @@ async function resolveActiveGeminiApiKey() {
   }
   throw new Error("GEMINI_API_KEY_UNCONFIGURED");
 }
+function resolveActiveGroqApiKey() {
+  if (cachedGroqKey?.rawKey) {
+    return cachedGroqKey.rawKey;
+  }
+  return getEnvFallbackGroqKey() || "";
+}
+function resolveActiveCloudflareCredentials() {
+  if (cachedCloudflareCreds?.accountId && cachedCloudflareCreds?.apiToken) {
+    return {
+      accountId: cachedCloudflareCreds.accountId,
+      apiToken: cachedCloudflareCreds.apiToken
+    };
+  }
+  return getEnvFallbackCloudflareCredentials() || { accountId: "", apiToken: "" };
+}
 
 // src/server/groqProvider.ts
 var GROQ_API_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
-var GROQ_RESCUE_MODEL_STRONG = "groq:llama-3.3-70b-versatile";
-var GROQ_RESCUE_MODEL_FAST = "groq:llama-3.1-8b-instant";
+var GROQ_MODELS_ENDPOINT = "https://api.groq.com/openai/v1/models";
+var GROQ_RESCUE_MODEL_STRONG = "groq:openai/gpt-oss-120b";
+var GROQ_RESCUE_MODEL_FAST = "groq:openai/gpt-oss-20b";
+var GROQ_PREFERRED_TEXT_MODELS = [
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+  "qwen/qwen3-32b",
+  "meta-llama/llama-4-scout-17b-16e-instruct"
+];
+var LEGACY_GROQ_MODEL_ALIASES = {
+  "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
+  "llama-3.1-8b-instant": "openai/gpt-oss-20b",
+  "llama3-70b-8192": "openai/gpt-oss-120b",
+  "llama3-8b-8192": "openai/gpt-oss-20b",
+  "mixtral-8x7b-32768": "openai/gpt-oss-120b",
+  "gemma2-9b-it": "openai/gpt-oss-20b"
+};
+var availableModelsCache = /* @__PURE__ */ new Map();
 function isGroqModelId(modelId) {
   return modelId.trim().toLowerCase().startsWith("groq:");
 }
@@ -1421,11 +2163,71 @@ function stripGroqPrefix(modelId) {
   const trimmed = modelId.trim();
   return trimmed.toLowerCase().startsWith("groq:") ? trimmed.slice(5).trim() : trimmed;
 }
+function normalizeGroqModelId(modelId) {
+  const trimmed = (modelId || "").trim();
+  if (!isGroqModelId(trimmed)) return trimmed;
+  const rawName = stripGroqPrefix(trimmed);
+  const mapped = LEGACY_GROQ_MODEL_ALIASES[rawName.toLowerCase()];
+  return mapped ? `groq:${mapped}` : `groq:${rawName}`;
+}
 function getGroqApiKey() {
-  return (process.env.GROQ_API_KEY || "").trim();
+  return resolveActiveGroqApiKey();
 }
 function isGroqConfigured() {
   return getGroqApiKey().length > 0;
+}
+function isGroqChatModelId(id) {
+  const lower = id.trim().toLowerCase();
+  if (!lower) return false;
+  const excludedTokens = [
+    "whisper",
+    "tts",
+    "playai",
+    "guard",
+    "safeguard",
+    "orpheus",
+    "distil-whisper",
+    "compound"
+  ];
+  return !excludedTokens.some((tok) => lower.includes(tok));
+}
+async function fetchAvailableGroqChatModels(apiKey, signal) {
+  const cleanKey = apiKey.trim();
+  if (!cleanKey) return [];
+  const cacheKey = crypto3.createHash("sha256").update(cleanKey).digest("hex").slice(0, 16);
+  const cached = availableModelsCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.models;
+  }
+  try {
+    const res = await fetch(GROQ_MODELS_ENDPOINT, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${cleanKey}`
+      },
+      signal
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const models = (data.data || []).filter((item) => item && typeof item.id === "string" && item.active !== false).map((item) => item.id.trim()).filter((id) => isGroqChatModelId(id));
+    availableModelsCache.set(cacheKey, {
+      expiresAt: Date.now() + 10 * 60 * 1e3,
+      models
+    });
+    return models;
+  } catch {
+    return [];
+  }
+}
+function pickBestAvailableGroqModel(availableModels, excludeModel) {
+  const excludedLower = (excludeModel || "").trim().toLowerCase();
+  const candidates = availableModels.filter((m) => m.toLowerCase() !== excludedLower);
+  if (candidates.length === 0) return null;
+  for (const preferred of GROQ_PREFERRED_TEXT_MODELS) {
+    const found = candidates.find((m) => m.toLowerCase() === preferred.toLowerCase());
+    if (found) return found;
+  }
+  return candidates[0];
 }
 function extractJsonStringFromModelOutput(raw) {
   const trimmed = (raw || "").trim();
@@ -1441,14 +2243,53 @@ function extractJsonStringFromModelOutput(raw) {
   }
   return trimmed;
 }
+async function executeGroqRequest(params) {
+  const body = {
+    model: params.groqModel,
+    messages: params.messages,
+    temperature: 0.15,
+    max_tokens: params.maxTokens
+  };
+  if (params.jsonMode) {
+    body.response_format = { type: "json_object" };
+  }
+  const res = await fetch(GROQ_API_ENDPOINT, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${params.apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body),
+    signal: params.signal
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    return { ok: false, status: res.status, errText };
+  }
+  const data = await res.json();
+  const msg = data.choices?.[0]?.message;
+  const rawText = msg?.content || (!params.jsonMode ? msg?.reasoning || "" : "");
+  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
+  return {
+    ok: true,
+    result: {
+      text,
+      promptTokens: data.usage?.prompt_tokens || 0,
+      candidateTokens: data.usage?.completion_tokens || 0,
+      totalTokens: data.usage?.total_tokens || 0,
+      resolvedModel: `groq:${params.groqModel}`
+    }
+  };
+}
 async function callGroqChatCompletion(params) {
-  const apiKey = getGroqApiKey();
+  const apiKey = (params.apiKeyOverride || "").trim() || getGroqApiKey();
   if (!apiKey) {
     throw new Error(
-      "GROQ_API_KEY_UNCONFIGURED: Bi\u1EBFn m\xF4i tr\u01B0\u1EDDng GROQ_API_KEY ch\u01B0a \u0111\u01B0\u1EE3c thi\u1EBFt l\u1EADp tr\xEAn m\xE1y ch\u1EE7."
+      "GROQ_API_KEY_UNCONFIGURED: Ch\u01B0a c\u1EA5u h\xECnh Groq API Key. Qu\u1EA3n tr\u1ECB vi\xEAn c\xF3 th\u1EC3 th\xEAm tr\u1EF1c ti\u1EBFp trong Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt ho\u1EB7c bi\u1EBFn m\xF4i tr\u01B0\u1EDDng GROQ_API_KEY."
     );
   }
-  const groqModel = stripGroqPrefix(params.modelId);
+  const normalizedModelId = normalizeGroqModelId(params.modelId);
+  const groqModel = stripGroqPrefix(normalizedModelId);
   const systemParts = [];
   if (params.systemInstruction) {
     systemParts.push(params.systemInstruction.trim());
@@ -1467,51 +2308,119 @@ ${params.jsonSchemaHint}`);
     messages.push({ role: "system", content: systemParts.join("\n\n") });
   }
   messages.push({ role: "user", content: params.prompt });
-  const body = {
-    model: groqModel,
+  const maxTokens = Math.min(8192, Math.max(256, params.maxOutputTokens || 2048));
+  const firstAttempt = await executeGroqRequest({
+    apiKey,
+    groqModel,
     messages,
-    temperature: 0.15,
-    max_tokens: Math.min(8192, Math.max(128, params.maxOutputTokens || 2048))
-  };
-  if (params.jsonMode) {
-    body.response_format = { type: "json_object" };
-  }
-  const res = await fetch(GROQ_API_ENDPOINT, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body),
+    jsonMode: params.jsonMode,
+    maxTokens,
     signal: params.signal
   });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    if (res.status === 429) {
-      throw new Error(`429 RESOURCE_EXHAUSTED (Groq): ${errText.slice(0, 180)}`);
-    }
-    if (res.status === 401 || res.status === 403) {
-      throw new Error(`PERMISSION_DENIED (Groq ${res.status}): Kh\xF3a GROQ_API_KEY kh\xF4ng h\u1EE3p l\u1EC7.`);
-    }
-    if (res.status === 503 || res.status === 502) {
-      throw new Error(`503 UNAVAILABLE (Groq): ${errText.slice(0, 180)}`);
-    }
-    throw new Error(`Groq API error (HTTP ${res.status}): ${errText.slice(0, 200)}`);
+  if (firstAttempt.ok) {
+    return firstAttempt.result;
   }
-  const data = await res.json();
-  const rawText = data.choices?.[0]?.message?.content || "";
-  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
-  return {
-    text,
-    promptTokens: data.usage?.prompt_tokens || 0,
-    candidateTokens: data.usage?.completion_tokens || 0,
-    totalTokens: data.usage?.total_tokens || 0
-  };
+  if (firstAttempt.status === 404 && !params.disableModelAutoFallback) {
+    const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
+    const fallbackGroqModel = pickBestAvailableGroqModel(availableModels, groqModel);
+    if (fallbackGroqModel) {
+      const retryAttempt = await executeGroqRequest({
+        apiKey,
+        groqModel: fallbackGroqModel,
+        messages,
+        jsonMode: params.jsonMode,
+        maxTokens,
+        signal: params.signal
+      });
+      if (retryAttempt.ok) {
+        return retryAttempt.result;
+      }
+    }
+  }
+  const { status, errText } = firstAttempt;
+  if (status === 429) {
+    throw new Error(`429 RESOURCE_EXHAUSTED (Groq): ${errText.slice(0, 180)}`);
+  }
+  if (status === 401 || status === 403) {
+    throw new Error(`PERMISSION_DENIED (Groq ${status}): Groq API Key kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c \u0111\xE3 b\u1ECB thu h\u1ED3i.`);
+  }
+  if (status === 404) {
+    const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal);
+    const sampleHint = availableModels.length > 0 ? ` C\xE1c model kh\u1EA3 d\u1EE5ng tr\xEAn t\xE0i kho\u1EA3n Groq c\u1EE7a b\u1EA1n: ${availableModels.slice(0, 4).join(", ")}.` : " Vui l\xF2ng ki\u1EC3m tra m\u1EE5c Model Access tr\xEAn Groq Console.";
+    throw new Error(`NOT_FOUND (Groq 404): Model "${groqModel}" kh\xF4ng kh\u1EA3 d\u1EE5ng tr\xEAn t\xE0i kho\u1EA3n Groq n\xE0y.${sampleHint}`);
+  }
+  if (status === 503 || status === 502) {
+    throw new Error(`503 UNAVAILABLE (Groq): ${errText.slice(0, 180)}`);
+  }
+  throw new Error(`Groq API error (HTTP ${status}): ${errText.slice(0, 200)}`);
 }
+
+// src/server/modelRouter.ts
+import crypto4 from "node:crypto";
+import { GoogleGenAI as GoogleGenAI2, ThinkingLevel as ThinkingLevel2 } from "@google/genai";
+
+// src/core/cache.ts
+function buildDeterministicCacheKey(parts) {
+  const canonical = JSON.stringify(parts, Object.keys(parts).sort());
+  let h1 = 0xcbf29ce484222325n;
+  let h2 = 0x84222325cbf29ce4n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (let i = 0; i < canonical.length; i += 1) {
+    const code = BigInt(canonical.charCodeAt(i));
+    h1 ^= code;
+    h1 = h1 * prime & mask;
+    h2 ^= code + BigInt(i % 251 + 1);
+    h2 = h2 * prime & mask;
+  }
+  return `${h1.toString(16).padStart(16, "0")}${h2.toString(16).padStart(16, "0")}`;
+}
+var BoundedTtlCache = class {
+  constructor(maxEntries = 150, defaultTtlMs = 30 * 60 * 1e3) {
+    this.store = /* @__PURE__ */ new Map();
+    this.maxEntries = maxEntries;
+    this.defaultTtlMs = defaultTtlMs;
+  }
+  get(key) {
+    const entry = this.store.get(key);
+    if (!entry) return void 0;
+    if (Date.now() > entry.expiresAt) {
+      this.store.delete(key);
+      return void 0;
+    }
+    this.store.delete(key);
+    this.store.set(key, entry);
+    return entry.value;
+  }
+  set(key, value, ttlMs = this.defaultTtlMs) {
+    if (this.store.has(key)) {
+      this.store.delete(key);
+    } else if (this.store.size >= this.maxEntries) {
+      const oldestKey = this.store.keys().next().value;
+      if (oldestKey !== void 0) {
+        this.store.delete(oldestKey);
+      }
+    }
+    this.store.set(key, {
+      value,
+      expiresAt: Date.now() + ttlMs
+    });
+  }
+  clear() {
+    this.store.clear();
+  }
+  size() {
+    return this.store.size;
+  }
+};
 
 // src/server/cloudflareProvider.ts
 var CF_RESCUE_MODEL_STRONG = "cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 var CF_RESCUE_MODEL_FAST = "cf:@cf/meta/llama-3.1-8b-instruct-fast";
+var CF_FALLBACK_ON_404 = {
+  "@cf/meta/llama-3.1-8b-instruct-fast": "@cf/meta/llama-3.1-8b-instruct-fp8-fast",
+  "@cf/meta/llama-3.1-8b-instruct-fp8-fast": "@cf/meta/llama-3.1-8b-instruct-fast"
+};
 function isCloudflareModelId(modelId) {
   return modelId.trim().toLowerCase().startsWith("cf:");
 }
@@ -1520,10 +2429,7 @@ function stripCloudflarePrefix(modelId) {
   return trimmed.toLowerCase().startsWith("cf:") ? trimmed.slice(3).trim() : trimmed;
 }
 function getCloudflareCredentials() {
-  return {
-    accountId: (process.env.CLOUDFLARE_ACCOUNT_ID || "").trim(),
-    apiToken: (process.env.CLOUDFLARE_API_TOKEN || "").trim()
-  };
+  return resolveActiveCloudflareCredentials();
 }
 function isCloudflareConfigured() {
   const { accountId, apiToken } = getCloudflareCredentials();
@@ -1532,11 +2438,50 @@ function isCloudflareConfigured() {
 function buildCloudflareChatEndpoint(accountId) {
   return `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/v1/chat/completions`;
 }
+async function executeCloudflareRequest(params) {
+  const body = {
+    model: params.cfModel,
+    messages: params.messages,
+    temperature: 0.15,
+    max_tokens: params.maxTokens
+  };
+  if (params.jsonMode) {
+    body.response_format = { type: "json_object" };
+  }
+  const res = await fetch(buildCloudflareChatEndpoint(params.accountId), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${params.apiToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body),
+    signal: params.signal
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    return { ok: false, status: res.status, errText };
+  }
+  const data = await res.json();
+  const rawText = data.choices?.[0]?.message?.content || data.result?.response || "";
+  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
+  return {
+    ok: true,
+    result: {
+      text,
+      promptTokens: data.usage?.prompt_tokens || 0,
+      candidateTokens: data.usage?.completion_tokens || 0,
+      totalTokens: data.usage?.total_tokens || 0,
+      resolvedModel: `cf:${params.cfModel}`
+    }
+  };
+}
 async function callCloudflareChatCompletion(params) {
-  const { accountId, apiToken } = getCloudflareCredentials();
+  const activeCreds = params.credentialsOverride || getCloudflareCredentials();
+  const accountId = (activeCreds.accountId || "").trim();
+  const apiToken = (activeCreds.apiToken || "").trim();
   if (!accountId || !apiToken) {
     throw new Error(
-      "CLOUDFLARE_AI_UNCONFIGURED: Bi\u1EBFn m\xF4i tr\u01B0\u1EDDng CLOUDFLARE_ACCOUNT_ID ho\u1EB7c CLOUDFLARE_API_TOKEN ch\u01B0a \u0111\u01B0\u1EE3c thi\u1EBFt l\u1EADp tr\xEAn m\xE1y ch\u1EE7."
+      "CLOUDFLARE_AI_UNCONFIGURED: Ch\u01B0a c\u1EA5u h\xECnh Cloudflare Account ID / API Token. Qu\u1EA3n tr\u1ECB vi\xEAn c\xF3 th\u1EC3 th\xEAm tr\u1EF1c ti\u1EBFp trong Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt ho\u1EB7c bi\u1EBFn m\xF4i tr\u01B0\u1EDDng."
     );
   }
   const cfModel = stripCloudflarePrefix(params.modelId);
@@ -1558,48 +2503,47 @@ ${params.jsonSchemaHint}`);
     messages.push({ role: "system", content: systemParts.join("\n\n") });
   }
   messages.push({ role: "user", content: params.prompt });
-  const body = {
-    model: cfModel,
+  const maxTokens = Math.min(4096, Math.max(128, params.maxOutputTokens || 2048));
+  const firstAttempt = await executeCloudflareRequest({
+    accountId,
+    apiToken,
+    cfModel,
     messages,
-    temperature: 0.15,
-    max_tokens: Math.min(4096, Math.max(128, params.maxOutputTokens || 2048))
-  };
-  if (params.jsonMode) {
-    body.response_format = { type: "json_object" };
-  }
-  const res = await fetch(buildCloudflareChatEndpoint(accountId), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiToken}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body),
+    jsonMode: params.jsonMode,
+    maxTokens,
     signal: params.signal
   });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    if (res.status === 429) {
-      throw new Error(`429 RESOURCE_EXHAUSTED (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
-    }
-    if (res.status === 401 || res.status === 403) {
-      throw new Error(
-        `PERMISSION_DENIED (Cloudflare ${res.status}): CLOUDFLARE_ACCOUNT_ID ho\u1EB7c CLOUDFLARE_API_TOKEN kh\xF4ng h\u1EE3p l\u1EC7.`
-      );
-    }
-    if (res.status === 503 || res.status === 502) {
-      throw new Error(`503 UNAVAILABLE (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
-    }
-    throw new Error(`Cloudflare Workers AI error (HTTP ${res.status}): ${errText.slice(0, 200)}`);
+  if (firstAttempt.ok) {
+    return firstAttempt.result;
   }
-  const data = await res.json();
-  const rawText = data.choices?.[0]?.message?.content || data.result?.response || "";
-  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
-  return {
-    text,
-    promptTokens: data.usage?.prompt_tokens || 0,
-    candidateTokens: data.usage?.completion_tokens || 0,
-    totalTokens: data.usage?.total_tokens || 0
-  };
+  const fallbackModel = CF_FALLBACK_ON_404[cfModel];
+  if (firstAttempt.status === 404 && fallbackModel) {
+    const retryAttempt = await executeCloudflareRequest({
+      accountId,
+      apiToken,
+      cfModel: fallbackModel,
+      messages,
+      jsonMode: params.jsonMode,
+      maxTokens,
+      signal: params.signal
+    });
+    if (retryAttempt.ok) {
+      return retryAttempt.result;
+    }
+  }
+  const { status, errText } = firstAttempt;
+  if (status === 429) {
+    throw new Error(`429 RESOURCE_EXHAUSTED (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
+  }
+  if (status === 401 || status === 403) {
+    throw new Error(
+      `PERMISSION_DENIED (Cloudflare ${status}): Cloudflare Account ID ho\u1EB7c API Token kh\xF4ng h\u1EE3p l\u1EC7.`
+    );
+  }
+  if (status === 503 || status === 502) {
+    throw new Error(`503 UNAVAILABLE (Cloudflare Workers AI): ${errText.slice(0, 180)}`);
+  }
+  throw new Error(`Cloudflare Workers AI error (HTTP ${status}): ${errText.slice(0, 200)}`);
 }
 
 // src/server/modelRouter.ts
@@ -1641,7 +2585,7 @@ function appendExecutionLog(log) {
     executionLogs.length = 120;
   }
 }
-var GEMINI_TIMEOUT_MS = 22e3;
+var GEMINI_TIMEOUT_MS = 45e3;
 async function callWithTimeout(operation, timeoutMs = GEMINI_TIMEOUT_MS) {
   const controller = new AbortController();
   let timer;
@@ -1758,7 +2702,7 @@ async function executeRoutedAiTask(params) {
     const hit = aiResponseCache.get(cacheKey);
     if (hit !== void 0) {
       appendExecutionLog({
-        executionId: `exec_${Date.now()}_${crypto3.randomBytes(2).toString("hex")}`,
+        executionId: `exec_${Date.now()}_${crypto4.randomBytes(2).toString("hex")}`,
         taskType,
         modelId: decision.modelId,
         usedFallback: false,
@@ -1803,7 +2747,7 @@ async function executeRoutedAiTask(params) {
         aiResponseCache.set(cacheKey, result);
       }
       appendExecutionLog({
-        executionId: `exec_${Date.now()}_${crypto3.randomBytes(2).toString("hex")}`,
+        executionId: `exec_${Date.now()}_${crypto4.randomBytes(2).toString("hex")}`,
         taskType,
         modelId: decision.modelId,
         usedFallback: false,
@@ -1831,7 +2775,7 @@ async function executeRoutedAiTask(params) {
             aiResponseCache.set(cacheKey, fbResult);
           }
           appendExecutionLog({
-            executionId: `exec_${Date.now()}_${crypto3.randomBytes(2).toString("hex")}`,
+            executionId: `exec_${Date.now()}_${crypto4.randomBytes(2).toString("hex")}`,
             taskType,
             modelId: decision.fallbackModelId,
             usedFallback: true,
@@ -1863,7 +2807,7 @@ async function executeRoutedAiTask(params) {
             aiResponseCache.set(cacheKey, rescueResult);
           }
           appendExecutionLog({
-            executionId: `exec_${Date.now()}_${crypto3.randomBytes(2).toString("hex")}`,
+            executionId: `exec_${Date.now()}_${crypto4.randomBytes(2).toString("hex")}`,
             taskType,
             modelId: rescueModel,
             usedFallback: true,
@@ -1895,7 +2839,7 @@ async function executeRoutedAiTask(params) {
             aiResponseCache.set(cacheKey, cfResult);
           }
           appendExecutionLog({
-            executionId: `exec_${Date.now()}_${crypto3.randomBytes(2).toString("hex")}`,
+            executionId: `exec_${Date.now()}_${crypto4.randomBytes(2).toString("hex")}`,
             taskType,
             modelId: cfRescueModel,
             usedFallback: true,
@@ -1919,7 +2863,7 @@ async function executeRoutedAiTask(params) {
         }
       }
       appendExecutionLog({
-        executionId: `exec_${Date.now()}_${crypto3.randomBytes(2).toString("hex")}`,
+        executionId: `exec_${Date.now()}_${crypto4.randomBytes(2).toString("hex")}`,
         taskType,
         modelId: canFallback ? decision.fallbackModelId : decision.modelId,
         usedFallback: canFallback,
@@ -1955,24 +2899,25 @@ async function testModelConnectivity(modelId) {
           ok: false,
           modelId,
           latencyMs: Date.now() - start,
-          message: "Ch\u01B0a thi\u1EBFt l\u1EADp bi\u1EBFn m\xF4i tr\u01B0\u1EDDng GROQ_API_KEY tr\xEAn m\xE1y ch\u1EE7 (Vercel Environment Variables ho\u1EB7c .env)."
+          message: 'Ch\u01B0a c\u1EA5u h\xECnh Groq API Key. Super Admin c\xF3 th\u1EC3 th\xEAm tr\u1EF1c ti\u1EBFp t\u1EA1i tab "API Key & B\u1EA3o m\u1EADt" trong web (kh\xF4ng c\u1EA7n s\u1EEDa bi\u1EBFn m\xF4i tr\u01B0\u1EDDng Vercel).'
         };
       }
       const resp2 = await callWithTimeout(
         (signal) => callGroqChatCompletion({
           modelId,
           prompt: "Tr\u1EA3 l\u1EDDi duy nh\u1EA5t 1 t\u1EEB: OK",
-          maxOutputTokens: 32,
+          maxOutputTokens: 256,
           signal
         }),
         15e3
       );
       const text2 = (resp2.text || "").trim();
+      const resolvedLabel = resp2.resolvedModel && resp2.resolvedModel !== modelId ? `${modelId} \u2192 t\u1EF1 \u0111\u1ED9ng ch\u1EA1y b\u1EB1ng ${resp2.resolvedModel}` : modelId;
       return {
         ok: Boolean(text2),
-        modelId,
+        modelId: resp2.resolvedModel || modelId,
         latencyMs: Date.now() - start,
-        message: text2 ? `Model ${modelId} (Groq Cloud Free) ho\u1EA1t \u0111\u1ED9ng b\xECnh th\u01B0\u1EDDng (${Date.now() - start}ms).` : `Model ${modelId} tr\u1EA3 v\u1EC1 n\u1ED9i dung r\u1ED7ng.`
+        message: text2 ? `Model ${resolvedLabel} (Groq Cloud Free) ho\u1EA1t \u0111\u1ED9ng b\xECnh th\u01B0\u1EDDng (${Date.now() - start}ms).` : `Model ${modelId} tr\u1EA3 v\u1EC1 n\u1ED9i dung r\u1ED7ng.`
       };
     }
     if (isCloudflareModelId(modelId)) {
@@ -1981,24 +2926,25 @@ async function testModelConnectivity(modelId) {
           ok: false,
           modelId,
           latencyMs: Date.now() - start,
-          message: "Ch\u01B0a thi\u1EBFt l\u1EADp CLOUDFLARE_ACCOUNT_ID v\xE0 CLOUDFLARE_API_TOKEN tr\xEAn m\xE1y ch\u1EE7 (Vercel Environment Variables ho\u1EB7c .env)."
+          message: 'Ch\u01B0a c\u1EA5u h\xECnh Cloudflare Account ID & API Token. Super Admin c\xF3 th\u1EC3 th\xEAm tr\u1EF1c ti\u1EBFp t\u1EA1i tab "API Key & B\u1EA3o m\u1EADt" trong web (kh\xF4ng c\u1EA7n s\u1EEDa bi\u1EBFn m\xF4i tr\u01B0\u1EDDng Vercel).'
         };
       }
       const resp2 = await callWithTimeout(
         (signal) => callCloudflareChatCompletion({
           modelId,
           prompt: "Tr\u1EA3 l\u1EDDi duy nh\u1EA5t 1 t\u1EEB: OK",
-          maxOutputTokens: 32,
+          maxOutputTokens: 128,
           signal
         }),
         15e3
       );
       const text2 = (resp2.text || "").trim();
+      const resolvedLabel = resp2.resolvedModel && resp2.resolvedModel !== modelId ? `${modelId} \u2192 t\u1EF1 \u0111\u1ED9ng ch\u1EA1y b\u1EB1ng ${resp2.resolvedModel}` : modelId;
       return {
         ok: Boolean(text2),
-        modelId,
+        modelId: resp2.resolvedModel || modelId,
         latencyMs: Date.now() - start,
-        message: text2 ? `Model ${modelId} (Cloudflare Workers AI Free) ho\u1EA1t \u0111\u1ED9ng b\xECnh th\u01B0\u1EDDng (${Date.now() - start}ms).` : `Model ${modelId} tr\u1EA3 v\u1EC1 n\u1ED9i dung r\u1ED7ng.`
+        message: text2 ? `Model ${resolvedLabel} (Cloudflare Workers AI Free) ho\u1EA1t \u0111\u1ED9ng b\xECnh th\u01B0\u1EDDng (${Date.now() - start}ms).` : `Model ${modelId} tr\u1EA3 v\u1EC1 n\u1ED9i dung r\u1ED7ng.`
       };
     }
     const ai = await createServerAiClient();
@@ -2026,7 +2972,7 @@ async function testModelConnectivity(modelId) {
       ok: false,
       modelId,
       latencyMs: Date.now() - start,
-      message: `L\u1ED7i k\u1EBFt n\u1ED1i model ${modelId}: ${msg.slice(0, 160)}`
+      message: `L\u1ED7i k\u1EBFt n\u1ED1i model ${modelId}: ${msg.slice(0, 220)}`
     };
   }
 }
@@ -2099,10 +3045,16 @@ function getOrCreateDailyUsage(date = todayDateKey()) {
 function mergeTaskModels(base, patch) {
   const merged = {};
   for (const taskKey of Object.keys(DEFAULT_TASK_MODELS)) {
-    merged[taskKey] = {
+    const combined = {
       ...DEFAULT_TASK_MODELS[taskKey],
       ...base?.[taskKey] || {},
       ...patch?.[taskKey] || {}
+    };
+    merged[taskKey] = {
+      ...combined,
+      defaultModel: normalizeGroqModelId(combined.defaultModel),
+      fallbackModel: normalizeGroqModelId(combined.fallbackModel),
+      oneTimeOverrideModel: combined.oneTimeOverrideModel ? normalizeGroqModelId(combined.oneTimeOverrideModel) : null
     };
   }
   return merged;
@@ -2455,7 +3407,7 @@ async function getUsageStatistics(idToken) {
 }
 async function recordAuditLog(entry, idToken) {
   const log = {
-    logId: `log_${Date.now()}_${crypto4.randomBytes(4).toString("hex")}`,
+    logId: `log_${Date.now()}_${crypto5.randomBytes(4).toString("hex")}`,
     timestamp: (/* @__PURE__ */ new Date()).toISOString(),
     ...entry
   };
@@ -2487,7 +3439,7 @@ async function getAuditLogs(idToken) {
 }
 
 // src/server/geminiPipeline.ts
-import crypto5 from "node:crypto";
+import crypto6 from "node:crypto";
 import { Type } from "@google/genai";
 
 // src/core/scoring.ts
@@ -2925,7 +3877,7 @@ var DocumentExtractionService = class {
     for (let idx = 0; idx < files.length; idx += 1) {
       const file = files[idx];
       const pageNum = pageOffset + idx + 1;
-      const contentHash = crypto5.createHash("sha256").update(file.buffer).digest("hex");
+      const contentHash = crypto6.createHash("sha256").update(file.buffer).digest("hex");
       const { data: parsed } = await runTaskWithRouter({
         taskType: "curriculum_extraction",
         config: opts?.config,
@@ -3036,7 +3988,7 @@ var DocumentExtractionService = class {
     } catch {
     }
     const ai = await createServerAiClient();
-    const pdfHash = crypto5.createHash("sha256").update(buffer).digest("hex");
+    const pdfHash = crypto6.createHash("sha256").update(buffer).digest("hex");
     const { data: parsed } = await runTaskWithRouter({
       taskType: "curriculum_extraction",
       config: opts?.config,
@@ -3547,7 +4499,7 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
       }
       const resolvedSuggestedFix = c.suggestedFix && c.suggestedFix.trim() ? c.suggestedFix.trim() : status !== "CORRECT" && c.correctKnowledge ? c.correctKnowledge : null;
       return {
-        claimId: `claim_${idx + 1}_${crypto5.randomBytes(2).toString("hex")}`,
+        claimId: `claim_${idx + 1}_${crypto6.randomBytes(2).toString("hex")}`,
         sourceText: c.sourceText,
         normalizedMeaning: c.sourceText,
         subject,
@@ -3793,7 +4745,7 @@ var QuizGenerationService = class {
         "problem_type"
       ]);
       return {
-        questionId: `q_${Date.now()}_${idx + 1}_${crypto5.randomBytes(2).toString("hex")}`,
+        questionId: `q_${Date.now()}_${idx + 1}_${crypto6.randomBytes(2).toString("hex")}`,
         questionText: q.questionText,
         optionA: q.optionA,
         optionB: q.optionB,
@@ -3971,7 +4923,7 @@ ${relevant}` : ""
     }
     const now = (/* @__PURE__ */ new Date()).toISOString();
     return {
-      blueprintId: `bp_${Date.now()}_${crypto5.randomBytes(3).toString("hex")}`,
+      blueprintId: `bp_${Date.now()}_${crypto6.randomBytes(3).toString("hex")}`,
       title: title?.trim() || parsed.title || `${EXAM_TYPE_LABELS[examType]} - ${SUBJECT_LABELS[subject]} ${grade}`,
       grade,
       subject,
@@ -4095,7 +5047,7 @@ ${contextChunks}` : ""
         needsReview = true;
       }
       return {
-        questionId: `eq_${Date.now()}_${idx + 1}_${crypto5.randomBytes(2).toString("hex")}`,
+        questionId: `eq_${Date.now()}_${idx + 1}_${crypto6.randomBytes(2).toString("hex")}`,
         orderIndex: idx + 1,
         chapterId: q.chapterId || blueprint.chapters[0] || "T\u1ED5ng h\u1EE3p",
         conceptId: q.conceptId || "Ki\u1EBFn th\u1EE9c tr\u1ECDng t\xE2m",
@@ -4382,7 +5334,7 @@ ${extractedTextContent.slice(0, 48e3)}` : ""
       else if (qType === "short_answer") shortAnswerCount += 1;
       else if (qType === "true_false") trueFalseCount += 1;
       rawMapped.push({
-        questionId: `eq_${Date.now()}_${rawMapped.length + 1}_${crypto5.randomBytes(2).toString("hex")}`,
+        questionId: `eq_${Date.now()}_${rawMapped.length + 1}_${crypto6.randomBytes(2).toString("hex")}`,
         orderIndex: rawMapped.length + 1,
         chapterId: (q.chapter || "Theo \u0111\u1EC1 m\u1EABu").slice(0, 120),
         conceptId: "Theo \u0111\u1EC1 m\u1EABu",
@@ -4415,7 +5367,7 @@ ${extractedTextContent.slice(0, 48e3)}` : ""
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const fallbackTitle = first.originalName.replace(/\.[^.]+$/, "") || `${EXAM_TYPE_LABELS[examType]} - ${SUBJECT_LABELS[subject]} ${grade}`;
     const exam = {
-      examId: `exam_${Date.now()}_${crypto5.randomBytes(3).toString("hex")}`,
+      examId: `exam_${Date.now()}_${crypto6.randomBytes(3).toString("hex")}`,
       blueprintId: "imported_sample_exam",
       title: (title?.trim() || parsed.detectedTitle?.trim() || fallbackTitle).slice(0, 190),
       description: `Tr\xEDch xu\u1EA5t nguy\xEAn v\u0103n t\u1EEB \u0111\u1EC1 m\u1EABu "${first.originalName}" (${abcdCount} c\xE2u ABCD, ${shortAnswerCount} c\xE2u Tr\u1EA3 l\u1EDDi ng\u1EAFn${trueFalseCount > 0 ? `, ${trueFalseCount} c\xE2u \u0110\xFAng/Sai` : ""}).`,
@@ -4532,7 +5484,7 @@ var FlashcardGenerationService = class {
     ]);
     const now = (/* @__PURE__ */ new Date()).toISOString();
     return (parsed.cards || []).slice(0, safeCount).map((card, idx) => ({
-      flashcardId: `fc_${Date.now()}_${idx + 1}_${crypto5.randomBytes(2).toString("hex")}`,
+      flashcardId: `fc_${Date.now()}_${idx + 1}_${crypto6.randomBytes(2).toString("hex")}`,
       ownerUid,
       front: card.front,
       back: card.back,
@@ -4570,6 +5522,266 @@ var FeedbackAnalysisService = class {
       }
     });
     return data;
+  }
+};
+var TextbookSynthesisService = class {
+  static async synthesizeOutline(params) {
+    const {
+      grade,
+      subject,
+      textbookSeries,
+      title,
+      customTocHint,
+      tokensOut,
+      config,
+      idToken
+    } = params;
+    const subjectName = SUBJECT_LABELS[subject] || subject;
+    const defaultBookTitle = title?.trim() || `SGK ${subjectName} ${grade} - ${textbookSeries}`;
+    let webTocContext = "";
+    if (!customTocHint || customTocHint.trim().length < 20) {
+      try {
+        const ai = await createServerAiClient();
+        const searchQuery = `M\u1EE5c l\u1EE5c c\xE1c ch\u01B0\u01A1ng v\xE0 b\xE0i h\u1ECDc s\xE1ch gi\xE1o khoa ${subjectName} l\u1EDBp ${grade} b\u1ED9 s\xE1ch ${textbookSeries} ch\u01B0\u01A1ng tr\xECnh GDPT 2018`;
+        const searchResp = await callWithTimeout(
+          (signal) => ai.models.generateContent({
+            model: "gemini-3.1-flash-lite",
+            contents: searchQuery,
+            config: {
+              thinkingConfig: thinkingConfigForModel("gemini-3.1-flash-lite", "minimal"),
+              maxOutputTokens: 1024,
+              abortSignal: signal,
+              tools: [{ googleSearch: {} }]
+            }
+          }),
+          16e3
+        );
+        accumulateTokens(tokensOut, searchResp);
+        webTocContext = (searchResp.text || "").trim().slice(0, 4e3);
+      } catch {
+      }
+    }
+    const prompt = [
+      `B\u1EA1n l\xE0 chuy\xEAn gia ch\u01B0\u01A1ng tr\xECnh Gi\xE1o d\u1EE5c ph\u1ED5 th\xF4ng 2018 (GDPT 2018) c\u1EE7a B\u1ED9 GD&\u0110T Vi\u1EC7t Nam.`,
+      `H\xE3y l\u1EADp danh s\xE1ch M\u1EE4C L\u1EE4C CHU\u1EA8N g\u1ED3m \u0111\u1EA7y \u0111\u1EE7 c\xE1c Ch\u01B0\u01A1ng/Ch\u1EE7 \u0111\u1EC1 v\xE0 danh s\xE1ch c\xE1c B\xE0i h\u1ECDc cho cu\u1ED1n s\xE1ch gi\xE1o khoa:`,
+      `- M\xF4n h\u1ECDc: ${subjectName}`,
+      `- Kh\u1ED1i l\u1EDBp: L\u1EDBp ${grade}`,
+      `- B\u1ED9 s\xE1ch: ${textbookSeries}`,
+      `- T\xEAn s\xE1ch g\u1EE3i \xFD: ${defaultBookTitle}`,
+      customTocHint?.trim() ? `
+[M\u1EE4C L\u1EE4C DO QU\u1EA2N TR\u1ECA VI\xCAN CUNG C\u1EA4P - H\xC3Y B\xC1M S\xC1T 100%]:
+${customTocHint.trim().slice(0, 6e3)}` : "",
+      webTocContext ? `
+[TH\xD4NG TIN TRA C\u1EE8U M\u1EE4C L\u1EE4C THAM KH\u1EA2O]:
+${webTocContext}` : "",
+      "",
+      "Y\xCAU C\u1EA6U \u0110\u1EA6U RA JSON:",
+      "- Tr\u1EA3 v\u1EC1 t\u1EEB 4 \u0111\u1EBFn 10 Ch\u01B0\u01A1ng/Ch\u1EE7 \u0111\u1EC1 \u0111\xFAng th\u1EF1c t\u1EBF SGK GDPT 2018.",
+      '- M\u1ED7i ch\u01B0\u01A1ng c\xF3: chapterIndex (1, 2, 3...), chapterTitle (v\xED d\u1EE5: "Ch\u01B0\u01A1ng 1: C\u1EA5u t\u1EA1o nguy\xEAn t\u1EED"), lessons (m\u1EA3ng 2-6 t\xEAn b\xE0i h\u1ECDc c\u1EE5 th\u1EC3, v\xED d\u1EE5: ["B\xE0i 1: Th\xE0nh ph\u1EA7n c\u1EE7a nguy\xEAn t\u1EED", "B\xE0i 2: Nguy\xEAn t\u1ED1 h\xF3a h\u1ECDc"]), estimatedPageStart (s\u1ED1 trang b\u1EAFt \u0111\u1EA7u \u01B0\u1EDBc t\xEDnh t\u0103ng d\u1EA7n, v\xED d\u1EE5: 6, 25, 48...).'
+    ].filter(Boolean).join("\n");
+    const { data: parsed } = await runTaskWithRouter({
+      taskType: "curriculum_extraction",
+      config,
+      idToken,
+      allowGroqRescue: true,
+      cacheInput: {
+        outlineTask: "sgk_outline_v1",
+        grade,
+        subject,
+        textbookSeries,
+        customTocHint: (customTocHint || "").trim().slice(0, 1200)
+      },
+      runWithModel: async (modelId) => generateJsonWithProvider({
+        modelId,
+        prompt,
+        thinkingTier: "low",
+        maxOutputTokens: 2048,
+        tokensOut,
+        fallbackJson: '{"bookTitle":"","chapters":[]}',
+        groqSchemaHint: '{"bookTitle":"...","chapters":[{"chapterIndex":1,"chapterTitle":"Ch\u01B0\u01A1ng 1: ...","lessons":["B\xE0i 1: ...","B\xE0i 2: ..."],"estimatedPageStart":6}]}',
+        geminiSchema: {
+          type: Type.OBJECT,
+          properties: {
+            bookTitle: { type: Type.STRING },
+            chapters: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  chapterIndex: { type: Type.INTEGER },
+                  chapterTitle: { type: Type.STRING },
+                  lessons: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                  },
+                  estimatedPageStart: { type: Type.INTEGER }
+                },
+                required: ["chapterIndex", "chapterTitle", "lessons", "estimatedPageStart"]
+              }
+            }
+          },
+          required: ["bookTitle", "chapters"]
+        }
+      })
+    });
+    const rawChapters = Array.isArray(parsed.chapters) ? parsed.chapters : [];
+    const normalizedChapters = rawChapters.filter((ch) => ch && typeof ch.chapterTitle === "string" && ch.chapterTitle.trim().length > 0).slice(0, 15).map((ch, idx) => {
+      const chapterIndex = idx + 1;
+      const rawTitle = ch.chapterTitle.trim().slice(0, 180);
+      const chapterTitle = /^(chương|chủ đề|chuyên đề)/i.test(rawTitle) ? rawTitle : `Ch\u01B0\u01A1ng ${chapterIndex}: ${rawTitle}`;
+      const lessons = Array.isArray(ch.lessons) ? ch.lessons.map((l) => typeof l === "string" ? l.trim().slice(0, 160) : "").filter(Boolean).slice(0, 10) : [`B\xE0i ${chapterIndex}.1: Ki\u1EBFn th\u1EE9c tr\u1ECDng t\xE2m ${chapterTitle}`];
+      const estimatedPageStart = Math.max(
+        1,
+        Number(ch.estimatedPageStart) || 6 + idx * 22
+      );
+      return {
+        chapterIndex,
+        chapterTitle,
+        lessons: lessons.length > 0 ? lessons : [`B\xE0i 1: N\u1ED9i dung tr\u1ECDng t\xE2m`],
+        estimatedPageStart
+      };
+    });
+    if (normalizedChapters.length === 0) {
+      throw new Error("AI kh\xF4ng t\u1EA1o \u0111\u01B0\u1EE3c m\u1EE5c l\u1EE5c ch\u01B0\u01A1ng h\u1EE3p l\u1EC7. Vui l\xF2ng th\u1EED l\u1EA1i ho\u1EB7c d\xE1n g\u1EE3i \xFD m\u1EE5c l\u1EE5c.");
+    }
+    return {
+      bookTitle: (parsed.bookTitle?.trim() || defaultBookTitle).slice(0, 190),
+      chapters: normalizedChapters
+    };
+  }
+  static async synthesizeChapterChunks(params) {
+    const {
+      referenceId,
+      grade,
+      subject,
+      textbookSeries,
+      chapterIndex,
+      chapterTitle,
+      lessons,
+      estimatedPageStart,
+      tokensOut,
+      config,
+      idToken
+    } = params;
+    const subjectName = SUBJECT_LABELS[subject] || subject;
+    const lessonListStr = lessons.length > 0 ? lessons.map((l, i) => `${i + 1}. ${l}`).join("\n") : "1. Ki\u1EBFn th\u1EE9c c\u1ED1t l\xF5i trong ch\u01B0\u01A1ng";
+    const prompt = [
+      `B\u1EA1n l\xE0 bi\xEAn t\u1EADp vi\xEAn S\xE1ch gi\xE1o khoa chu\u1EA9n ch\u01B0\u01A1ng tr\xECnh GDPT 2018 m\xF4n ${subjectName} L\u1EDBp ${grade} (B\u1ED9 s\xE1ch: ${textbookSeries}).`,
+      `H\xE3y bi\xEAn so\u1EA1n c\xE1c \u0111o\u1EA1n tri th\u1EE9c chu\u1EA9n (ReferenceChunk) cho DUY NH\u1EA4T ch\u01B0\u01A1ng sau \u0111\u1EC3 ph\u1EE5c v\u1EE5 h\u1EC7 th\u1ED1ng ki\u1EC3m \u0111\u1ECBnh b\xE0i l\xE0m c\u1EE7a h\u1ECDc sinh:`,
+      `- Ch\u01B0\u01A1ng: ${chapterTitle}`,
+      `- Danh s\xE1ch b\xE0i h\u1ECDc trong ch\u01B0\u01A1ng:
+${lessonListStr}`,
+      `- Trang b\u1EAFt \u0111\u1EA7u \u01B0\u1EDBc l\u01B0\u1EE3ng: trang ${estimatedPageStart}`,
+      "",
+      "Y\xCAU C\u1EA6U N\u1ED8I DUNG T\u1EEANG \u0110O\u1EA0N TRI TH\u1EE8C (CHUNKS):",
+      "- T\u1EA1o t\u1EEB 3 \u0111\u1EBFn 8 \u0111o\u1EA1n tri th\u1EE9c (chunks) bao ph\u1EE7 to\xE0n b\u1ED9 c\xE1c b\xE0i h\u1ECDc trong ch\u01B0\u01A1ng tr\xEAn.",
+      "- M\u1ED7i \u0111o\u1EA1n (content) d\xE0i kho\u1EA3ng 350\u20131200 k\xFD t\u1EF1, tr\xECnh b\xE0y r\xF5 r\xE0ng, ch\xEDnh x\xE1c tuy\u1EC7t \u0111\u1ED1i theo SGK GDPT 2018:",
+      "  1. Kh\xE1i ni\u1EC7m / \u0110\u1ECBnh ngh\u0129a / \u0110\u1ECBnh l\xFD chu\u1EA9n SGK.",
+      "  2. C\xF4ng th\u1EE9c / Ph\u01B0\u01A1ng tr\xECnh / Quy t\u1EAFc (n\u1EBFu c\xF3) k\xE8m gi\u1EA3i th\xEDch k\xFD hi\u1EC7u & \u0111\u01A1n v\u1ECB chu\u1EA9n SI.",
+      "  3. \u0110i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng / \u0110i\u1EC1u ki\u1EC7n t\u1ED3n t\u1EA1i (r\u1EA5t quan tr\u1ECDng \u0111\u1EC3 ch\u1EA5m l\u1ED7i thi\u1EBFu \u0111i\u1EC1u ki\u1EC7n).",
+      "  4. L\u01B0u \xFD c\xE1c nh\u1EA7m l\u1EABn ho\u1EB7c l\u1ED7i sai h\u1ECDc sinh THPT th\u01B0\u1EDDng g\u1EB7p.",
+      "- learningObjectives: 2\u20134 m\u1EE5c ti\xEAu c\u1EA7n \u0111\u1EA1t c\u1EE7a b\xE0i h\u1ECDc (d\xF9ng \u0111\u1EC3 ch\u1EA5m \u0110\u1ED9 \u0111\u1EA7y \u0111\u1EE7 - Completeness).",
+      "- keywords: 4\u20138 thu\u1EADt ng\u1EEF tr\u1ECDng t\xE2m.",
+      "- conceptTags: 2\u20134 t\xEAn kh\xE1i ni\u1EC7m ng\u1EAFn g\u1ECDn."
+    ].join("\n");
+    const { data: parsed } = await runTaskWithRouter({
+      taskType: "curriculum_extraction",
+      config,
+      idToken,
+      allowGroqRescue: true,
+      cacheInput: {
+        chapterTask: "sgk_chapter_v1",
+        grade,
+        subject,
+        textbookSeries,
+        chapterIndex,
+        chapterTitle,
+        lessons: lessons.join("|")
+      },
+      runWithModel: async (modelId) => generateJsonWithProvider({
+        modelId,
+        prompt,
+        thinkingTier: "low",
+        maxOutputTokens: 4096,
+        tokensOut,
+        fallbackJson: '{"chunks":[]}',
+        groqSchemaHint: '{"chunks":[{"lesson":"B\xE0i 1: ...","pageNumber":10,"sectionTitle":"1. Kh\xE1i ni\u1EC7m & C\xF4ng th\u1EE9c","content":"...","keywords":["..."],"learningObjectives":["..."],"conceptTags":["..."]}]}',
+        geminiSchema: {
+          type: Type.OBJECT,
+          properties: {
+            chunks: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  lesson: { type: Type.STRING },
+                  pageNumber: { type: Type.INTEGER },
+                  sectionTitle: { type: Type.STRING },
+                  content: { type: Type.STRING },
+                  keywords: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                  },
+                  learningObjectives: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                  },
+                  conceptTags: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING }
+                  }
+                },
+                required: ["lesson", "pageNumber", "sectionTitle", "content", "keywords", "learningObjectives"]
+              }
+            }
+          },
+          required: ["chunks"]
+        }
+      })
+    });
+    const rawChunks = Array.isArray(parsed.chunks) ? parsed.chunks : [];
+    const safeRefId = referenceId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+    const sanitizedChunks = rawChunks.filter((c) => c && typeof c.content === "string" && c.content.trim().length >= 30).slice(0, 12).map(
+      (c, idx) => sanitizeReferenceChunkForFirestore({
+        chunkId: `${safeRefId}_ch${chapterIndex}_${idx + 1}`,
+        referenceId: safeRefId,
+        grade,
+        subject,
+        textbookSeries,
+        chapter: chapterTitle,
+        lesson: c.lesson || lessons[idx % Math.max(1, lessons.length)] || `B\xE0i ${chapterIndex}.${idx + 1}`,
+        pageNumber: Math.max(1, Number(c.pageNumber) || estimatedPageStart + idx * 3),
+        sectionTitle: c.sectionTitle || c.lesson || "Ki\u1EBFn th\u1EE9c chu\u1EA9n SGK",
+        content: c.content,
+        keywords: c.keywords,
+        learningObjectives: c.learningObjectives,
+        conceptTags: c.conceptTags,
+        fallbackIndex: chapterIndex * 100 + idx + 1
+      })
+    );
+    if (sanitizedChunks.length === 0) {
+      throw new Error(`Kh\xF4ng t\u1EA1o \u0111\u01B0\u1EE3c \u0111o\u1EA1n tri th\u1EE9c n\xE0o cho "${chapterTitle}". Vui l\xF2ng b\u1EA5m Th\u1EED l\u1EA1i ch\u01B0\u01A1ng n\xE0y.`);
+    }
+    return sanitizedChunks;
+  }
+  static async ocrScannedTextbookPages(params) {
+    const extractedPages = await DocumentExtractionService.extractFromImageBuffers(
+      params.files.map((f) => ({
+        buffer: f.buffer,
+        mimeType: f.mimeType,
+        originalName: `page_${f.pageNumber}.jpg`
+      })),
+      params.tokensOut,
+      {
+        config: params.config,
+        idToken: params.idToken,
+        pageOffset: 0
+      }
+    );
+    return params.files.map((f, idx) => ({
+      pageNumber: f.pageNumber,
+      text: (extractedPages[idx]?.rawText || "").trim()
+    }));
   }
 };
 
@@ -4824,7 +6036,7 @@ function mapGeminiErrorResponse(err) {
     return {
       status: 504,
       code: "AI_TIMEOUT",
-      error: "AI ph\u1EA3n h\u1ED3i qu\xE1 30 gi\xE2y n\xEAn h\u1EC7 th\u1ED1ng \u0111\xE3 t\u1EF1 \u0111\u1ED9ng ng\u1EAFt. Vui l\xF2ng th\u1EED l\u1EA1i."
+      error: "AI ph\u1EA3n h\u1ED3i qu\xE1 45 gi\xE2y n\xEAn h\u1EC7 th\u1ED1ng \u0111\xE3 t\u1EF1 \u0111\u1ED9ng ng\u1EAFt \u0111\u1EC3 b\u1EA3o v\u1EC7 k\u1EBFt n\u1ED1i. Vui l\xF2ng th\u1EED l\u1EA1i."
     };
   }
   if (msg.includes("GEMINI_API_KEY_UNCONFIGURED")) {
@@ -5420,7 +6632,7 @@ function createApiApp() {
   app.get("/api/admin/overview", requireSuperAdmin, async (req, res) => {
     const user = req.authUser;
     try {
-      const [config, usageStats, auditLogs, singleKeyStatus] = await Promise.all([
+      const [config, usageStats, auditLogs, singleKeyStatus, providerKeys] = await Promise.all([
         loadAuthoritativeAiConfig(user.idToken),
         getUsageStatistics(user.idToken).catch(() => ({
           today: {
@@ -5451,6 +6663,25 @@ function createApiApp() {
           label: "",
           hasEnvFallbackKey: false,
           lastTestStatus: "Untested"
+        })),
+        getProviderKeysStatus(user.idToken).catch(() => ({
+          groq: {
+            configured: false,
+            source: "none",
+            maskedKey: "",
+            label: "",
+            hasEnvFallbackKey: false,
+            lastTestStatus: "Untested"
+          },
+          cloudflare: {
+            configured: false,
+            source: "none",
+            maskedAccountId: "",
+            maskedKey: "",
+            label: "",
+            hasEnvFallbackKey: false,
+            lastTestStatus: "Untested"
+          }
         }))
       ]);
       res.json({
@@ -5458,6 +6689,7 @@ function createApiApp() {
         usageStats,
         auditLogs,
         singleKeyStatus,
+        providerKeys,
         groqConfigured: isGroqConfigured(),
         cloudflareConfigured: isCloudflareConfigured(),
         executionLogs: getRecentExecutionLogs(),
@@ -5720,6 +6952,161 @@ function createApiApp() {
       res.status(500).json({ error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 x\xF3a Gemini API key." });
     }
   });
+  app.get("/api/admin/provider-keys", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    try {
+      const providerKeys = await getProviderKeysStatus(user.idToken);
+      res.json({
+        providerKeys,
+        groqConfigured: isGroqConfigured(),
+        cloudflareConfigured: isCloudflareConfigured()
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : "Kh\xF4ng t\u1EA3i \u0111\u01B0\u1EE3c tr\u1EA1ng th\xE1i API key d\u1EF1 ph\xF2ng."
+      });
+    }
+  });
+  app.post("/api/admin/provider-keys/groq", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    try {
+      const { apiKey, label } = req.body || {};
+      if (!apiKey || typeof apiKey !== "string") {
+        res.status(400).json({ error: "Vui l\xF2ng nh\u1EADp Groq API Key (b\u1EAFt \u0111\u1EA7u b\u1EB1ng gsk_...)." });
+        return;
+      }
+      const result = await setGroqApiKey({
+        rawKey: apiKey,
+        label,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken
+      });
+      if (!result.ok) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+      res.json({
+        groqStatus: result.status,
+        providerKeys: await getProviderKeysStatus(user.idToken),
+        groqConfigured: isGroqConfigured()
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 l\u01B0u Groq API Key."
+      });
+    }
+  });
+  app.post("/api/admin/provider-keys/groq/test", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    try {
+      const { apiKey } = req.body || {};
+      const result = await testGroqApiKey({
+        rawKeyOverride: typeof apiKey === "string" ? apiKey : void 0,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        status: "Temporary provider error",
+        message: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 ki\u1EC3m tra Groq API Key.",
+        testedSource: "none",
+        testedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    }
+  });
+  app.delete("/api/admin/provider-keys/groq", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    try {
+      const result = await clearGroqApiKey({
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken
+      });
+      res.json({
+        groqStatus: result.status,
+        providerKeys: await getProviderKeysStatus(user.idToken),
+        groqConfigured: isGroqConfigured()
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 g\u1EE1 Groq API Key."
+      });
+    }
+  });
+  app.post("/api/admin/provider-keys/cloudflare", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    try {
+      const { accountId, apiToken, label } = req.body || {};
+      if (!accountId || typeof accountId !== "string" || !apiToken || typeof apiToken !== "string") {
+        res.status(400).json({ error: "Vui l\xF2ng nh\u1EADp \u0111\u1EA7y \u0111\u1EE7 Cloudflare Account ID v\xE0 API Token." });
+        return;
+      }
+      const result = await setCloudflareCredentials({
+        accountId,
+        apiToken,
+        label,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken
+      });
+      if (!result.ok) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+      res.json({
+        cloudflareStatus: result.status,
+        providerKeys: await getProviderKeysStatus(user.idToken),
+        cloudflareConfigured: isCloudflareConfigured()
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 l\u01B0u th\xF4ng tin Cloudflare Workers AI."
+      });
+    }
+  });
+  app.post("/api/admin/provider-keys/cloudflare/test", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    try {
+      const { accountId, apiToken } = req.body || {};
+      const result = await testCloudflareCredentials({
+        accountIdOverride: typeof accountId === "string" ? accountId : void 0,
+        apiTokenOverride: typeof apiToken === "string" ? apiToken : void 0,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        status: "Temporary provider error",
+        message: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 ki\u1EC3m tra Cloudflare Workers AI.",
+        testedSource: "none",
+        testedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    }
+  });
+  app.delete("/api/admin/provider-keys/cloudflare", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    try {
+      const result = await clearCloudflareCredentials({
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken
+      });
+      res.json({
+        cloudflareStatus: result.status,
+        providerKeys: await getProviderKeysStatus(user.idToken),
+        cloudflareConfigured: isCloudflareConfigured()
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 g\u1EE1 th\xF4ng tin Cloudflare Workers AI."
+      });
+    }
+  });
   app.post("/api/admin/references/ingest-url", requireSuperAdmin, async (req, res) => {
     const { url, referenceId, grade, subject, textbookSeries } = req.body;
     try {
@@ -5794,6 +7181,134 @@ function createApiApp() {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
+  app.post("/api/admin/references/synthesize-outline", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    const { grade, subject, textbookSeries, title, customTocHint } = req.body;
+    const tokensOut = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
+    try {
+      const cfg = await loadAuthoritativeAiConfig();
+      const result = await TextbookSynthesisService.synthesizeOutline({
+        grade: grade || "10",
+        subject: subject || "hoa_hoc",
+        textbookSeries: textbookSeries || "K\u1EBFt n\u1ED1i tri th\u1EE9c v\u1EDBi cu\u1ED9c s\u1ED1ng",
+        title,
+        customTocHint,
+        tokensOut,
+        config: cfg,
+        idToken: user.idToken
+      });
+      recordUsageEvent({
+        uid: user.uid,
+        isError: false,
+        promptTokens: tokensOut.promptTokens,
+        candidateTokens: tokensOut.candidateTokens,
+        totalTokens: tokensOut.totalTokens
+      });
+      void persistUsageSnapshot(user.idToken);
+      res.json(result);
+    } catch (err) {
+      const mapped = mapGeminiErrorResponse(err);
+      res.status(mapped.status).json({ code: mapped.code, error: mapped.error });
+    }
+  });
+  app.post("/api/admin/references/synthesize-chapter", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    const {
+      referenceId,
+      grade,
+      subject,
+      textbookSeries,
+      chapterIndex,
+      chapterTitle,
+      lessons,
+      estimatedPageStart
+    } = req.body;
+    if (!referenceId || !chapterTitle) {
+      res.status(400).json({ error: "Thi\u1EBFu m\xE3 s\xE1ch tham chi\u1EBFu (referenceId) ho\u1EB7c t\xEAn ch\u01B0\u01A1ng (chapterTitle)." });
+      return;
+    }
+    const tokensOut = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
+    try {
+      const cfg = await loadAuthoritativeAiConfig();
+      const chunks = await TextbookSynthesisService.synthesizeChapterChunks({
+        referenceId,
+        grade: grade || "10",
+        subject: subject || "hoa_hoc",
+        textbookSeries: textbookSeries || "K\u1EBFt n\u1ED1i tri th\u1EE9c v\u1EDBi cu\u1ED9c s\u1ED1ng",
+        chapterIndex: Math.max(1, Number(chapterIndex) || 1),
+        chapterTitle,
+        lessons: Array.isArray(lessons) ? lessons : [],
+        estimatedPageStart: Math.max(1, Number(estimatedPageStart) || 1),
+        tokensOut,
+        config: cfg,
+        idToken: user.idToken
+      });
+      recordUsageEvent({
+        uid: user.uid,
+        isError: false,
+        promptTokens: tokensOut.promptTokens,
+        candidateTokens: tokensOut.candidateTokens,
+        totalTokens: tokensOut.totalTokens
+      });
+      void persistUsageSnapshot(user.idToken);
+      res.json({ chunks });
+    } catch (err) {
+      const mapped = mapGeminiErrorResponse(err);
+      res.status(mapped.status).json({ code: mapped.code, error: mapped.error });
+    }
+  });
+  app.post(
+    "/api/admin/references/ocr-pages",
+    requireSuperAdmin,
+    upload.array("files", 4),
+    async (req, res) => {
+      const user = req.authUser;
+      const rawFiles = req.files || [];
+      if (rawFiles.length === 0) {
+        res.status(400).json({ error: "Kh\xF4ng c\xF3 trang \u1EA3nh n\xE0o \u0111\u01B0\u1EE3c g\u1EEDi l\xEAn \u0111\u1EC3 \u0111\u1ECDc OCR." });
+        return;
+      }
+      const { pageNumbers: rawPageNumbers, grade, subject, textbookSeries } = req.body;
+      let parsedPageNums = [];
+      try {
+        if (rawPageNumbers) {
+          const arr = JSON.parse(rawPageNumbers);
+          if (Array.isArray(arr)) parsedPageNums = arr.map((n) => Number(n) || 1);
+        }
+      } catch {
+        parsedPageNums = [];
+      }
+      const tokensOut = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
+      try {
+        const cfg = await loadAuthoritativeAiConfig();
+        const pages = await TextbookSynthesisService.ocrScannedTextbookPages({
+          files: rawFiles.map((f, idx) => ({
+            buffer: f.buffer,
+            mimeType: f.mimetype || "image/jpeg",
+            pageNumber: parsedPageNums[idx] || idx + 1
+          })),
+          grade: grade || "10",
+          subject: subject || "hoa_hoc",
+          textbookSeries: textbookSeries || "S\xE1ch gi\xE1o khoa",
+          tokensOut,
+          config: cfg,
+          idToken: user.idToken
+        });
+        recordUsageEvent({
+          uid: user.uid,
+          isError: false,
+          promptTokens: tokensOut.promptTokens,
+          candidateTokens: tokensOut.candidateTokens,
+          totalTokens: tokensOut.totalTokens
+        });
+        void persistUsageSnapshot(user.idToken);
+        res.json({ pages });
+      } catch (err) {
+        const mapped = mapGeminiErrorResponse(err);
+        res.status(mapped.status).json({ code: mapped.code, error: mapped.error });
+      }
+    }
+  );
   app.post("/api/admin/exams/blueprint", requireSuperAdmin, async (req, res) => {
     const user = req.authUser;
     const {
@@ -5854,7 +7369,7 @@ function createApiApp() {
       });
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const exam = {
-        examId: `exam_${Date.now()}_${crypto6.randomBytes(3).toString("hex")}`,
+        examId: `exam_${Date.now()}_${crypto7.randomBytes(3).toString("hex")}`,
         blueprintId: blueprint.blueprintId,
         title: blueprint.title,
         description: `\u0110\u1EC1 ki\u1EC3m tra \u0111\u01B0\u1EE3c sinh t\u1EEB ma tr\u1EADn "${blueprint.title}".`,
