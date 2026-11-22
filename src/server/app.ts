@@ -97,6 +97,7 @@ import {
   isGenericCameraFileNames,
   validateUploadFileSize,
 } from '../core/uploadBatching.js';
+import { repairUtf8Mojibake } from '../core/textEncoding.js';
 
 const filenameScopeServerCache = new Map<
   string,
@@ -121,6 +122,7 @@ const ALLOWED_UPLOAD_MIMES = new Set([
 
 const upload = multer({
   storage: multer.memoryStorage(),
+  defParamCharset: 'utf8',
   limits: {
     fileSize: 25 * 1024 * 1024,
     files: 25,
@@ -508,7 +510,10 @@ export function createApiApp(): express.Express {
         return;
       }
 
-      const uploadedFiles = (req.files as Express.Multer.File[]) || [];
+      const uploadedFiles = ((req.files as Express.Multer.File[]) || []).map((f) => ({
+        ...f,
+        originalname: repairUtf8Mojibake(f.originalname),
+      }));
       if (uploadedFiles.length === 0) {
         res.status(400).json({ error: 'Vui lòng chọn ít nhất một tài liệu hợp lệ.' });
         return;
@@ -2122,7 +2127,10 @@ export function createApiApp(): express.Express {
 
   app.post('/api/admin/exams/import-sample', requireSuperAdmin, upload.array('files', 25), async (req, res) => {
     const user = req.authUser!;
-    const uploadedFiles = (req.files as Express.Multer.File[]) || [];
+    const uploadedFiles = ((req.files as Express.Multer.File[]) || []).map((f) => ({
+      ...f,
+      originalname: repairUtf8Mojibake(f.originalname),
+    }));
     if (uploadedFiles.length === 0) {
       res.status(400).json({ error: 'Vui lòng chọn file đề mẫu (PDF, DOCX hoặc ảnh).' });
       return;

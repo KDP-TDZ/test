@@ -6850,6 +6850,73 @@ function inferGradeAndSubjectFromFileNames(fileNames) {
   };
 }
 
+// src/core/textEncoding.ts
+var WIN1252_REVERSE_MAP = {
+  8364: 128,
+  8218: 130,
+  402: 131,
+  8222: 132,
+  8230: 133,
+  8224: 134,
+  8225: 135,
+  710: 136,
+  8240: 137,
+  352: 138,
+  8249: 139,
+  338: 140,
+  381: 142,
+  8216: 145,
+  8217: 146,
+  8220: 147,
+  8221: 148,
+  8226: 149,
+  8211: 150,
+  8212: 151,
+  732: 152,
+  8482: 153,
+  353: 154,
+  8250: 155,
+  339: 156,
+  382: 158,
+  376: 159
+};
+var HIGH_BYTE_RUN_REGEX = /[\u0080-\u00FF\u20AC\u201A\u0192\u201E\u2026\u2020\u2021\u02C6\u2030\u0160\u2039\u0152\u017D\u2018\u2019\u201C\u201D\u2022\u2013\u2014\u02DC\u2122\u0161\u203A\u0153\u017E\u0178]{2,}/g;
+var utf8FatalDecoder = new TextDecoder("utf-8", { fatal: true });
+function decodeLatin1HighRunAsUtf8(segment) {
+  const bytes = new Uint8Array(segment.length);
+  for (let i = 0; i < segment.length; i += 1) {
+    const code = segment.charCodeAt(i);
+    if (code <= 255) {
+      bytes[i] = code;
+    } else {
+      const mapped = WIN1252_REVERSE_MAP[code];
+      if (mapped === void 0) {
+        return segment;
+      }
+      bytes[i] = mapped;
+    }
+  }
+  try {
+    const decoded = utf8FatalDecoder.decode(bytes);
+    if (!decoded || /[\u0000-\u001F\u007F-\u009F\uFFFD]/.test(decoded)) {
+      return segment;
+    }
+    return decoded;
+  } catch {
+    return segment;
+  }
+}
+function repairUtf8Mojibake(value) {
+  if (!value || typeof value !== "string") return value || "";
+  let current = value;
+  for (let pass = 0; pass < 2; pass += 1) {
+    const next = current.replace(HIGH_BYTE_RUN_REGEX, (run) => decodeLatin1HighRunAsUtf8(run));
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
 // src/server/app.ts
 var filenameScopeServerCache = /* @__PURE__ */ new Map();
 var ALLOWED_UPLOAD_MIMES = /* @__PURE__ */ new Set([
@@ -6861,6 +6928,7 @@ var ALLOWED_UPLOAD_MIMES = /* @__PURE__ */ new Set([
 ]);
 var upload = multer({
   storage: multer.memoryStorage(),
+  defParamCharset: "utf8",
   limits: {
     fileSize: 25 * 1024 * 1024,
     files: 25
@@ -7180,7 +7248,10 @@ function createApiApp() {
         res.status(guard.httpStatus || 503).json({ code: guard.code, error: guard.message });
         return;
       }
-      const uploadedFiles = req.files || [];
+      const uploadedFiles = (req.files || []).map((f) => ({
+        ...f,
+        originalname: repairUtf8Mojibake(f.originalname)
+      }));
       if (uploadedFiles.length === 0) {
         res.status(400).json({ error: "Vui l\xF2ng ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t t\xE0i li\u1EC7u h\u1EE3p l\u1EC7." });
         return;
@@ -8576,7 +8647,10 @@ function createApiApp() {
   });
   app.post("/api/admin/exams/import-sample", requireSuperAdmin, upload.array("files", 25), async (req, res) => {
     const user = req.authUser;
-    const uploadedFiles = req.files || [];
+    const uploadedFiles = (req.files || []).map((f) => ({
+      ...f,
+      originalname: repairUtf8Mojibake(f.originalname)
+    }));
     if (uploadedFiles.length === 0) {
       res.status(400).json({ error: "Vui l\xF2ng ch\u1ECDn file \u0111\u1EC1 m\u1EABu (PDF, DOCX ho\u1EB7c \u1EA3nh)." });
       return;

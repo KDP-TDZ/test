@@ -54,8 +54,9 @@ export async function exportSummaryAsDocx(report: VerificationSummaryReport): Pr
   const makeCell = (
     text: string,
     opts?: { bold?: boolean; shaded?: boolean; widthPct?: number; color?: string }
-  ) =>
-    new TableCell({
+  ) => {
+    const lines = (text || '—').split(/\r?\n/);
+    return new TableCell({
       width: opts?.widthPct
         ? { size: opts.widthPct, type: WidthType.PERCENTAGE }
         : undefined,
@@ -63,21 +64,23 @@ export async function exportSummaryAsDocx(report: VerificationSummaryReport): Pr
         ? { type: ShadingType.CLEAR, fill: 'EFF6FF', color: 'auto' }
         : undefined,
       margins: { top: 90, bottom: 90, left: 120, right: 120 },
-      children: [
-        new Paragraph({
-          spacing: { after: 40 },
-          children: [
-            new TextRun({
-              text: text || '—',
-              bold: opts?.bold,
-              color: opts?.color || '1E293B',
-              size: 20,
-              font: 'Calibri',
-            }),
-          ],
-        }),
-      ],
+      children: lines.map(
+        (line, idx) =>
+          new Paragraph({
+            spacing: { after: idx === lines.length - 1 ? 40 : 60 },
+            children: [
+              new TextRun({
+                text: line || ' ',
+                bold: opts?.bold,
+                color: opts?.color || '1E293B',
+                size: 20,
+                font: 'Calibri',
+              }),
+            ],
+          })
+      ),
     });
+  };
 
   const makeSectionTitle = (title: string) =>
     new Paragraph({

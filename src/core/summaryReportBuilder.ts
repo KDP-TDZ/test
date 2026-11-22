@@ -4,6 +4,7 @@ import {
   type ClaimStatus,
   type CoverageStatus,
 } from './types';
+import { repairUtf8Mojibake } from './textEncoding';
 import { buildErrorCorrectionQueue } from './verificationStepper';
 
 export interface StudentCorrectionEntry {
@@ -249,18 +250,27 @@ export function buildVerificationSummaryReport(
   ).length;
   const missingCoverageCount = analysis.coverageItems.filter((i) => i.status === 'MISSING').length;
 
+  const cleanTitle = repairUtf8Mojibake(analysis.documentTitle);
+  const cleanOriginalFileName = repairUtf8Mojibake(analysis.originalFileName);
+  const cleanTextbookTitle = repairUtf8Mojibake(
+    analysis.textbookTitle || 'Đối chiếu chương trình phổ thông (GDPT 2018)'
+  );
+  const cleanScope = repairUtf8Mojibake(
+    analysis.scope || (analysis.selectedChapters || []).join(', ') || 'Toàn bộ tài liệu'
+  );
+
   return {
     analysisId: analysis.analysisId,
     confirmedAt,
     confirmedAtDisplay: formatViDateTime(confirmedAt),
     analyzedAtDisplay: formatViDateTime(analysis.createdAt),
-    fileBaseName: sanitizeSummaryFileBaseName(analysis.documentTitle, confirmedAt),
-    documentTitle: analysis.documentTitle,
-    originalFileName: analysis.originalFileName,
+    fileBaseName: sanitizeSummaryFileBaseName(cleanTitle, confirmedAt),
+    documentTitle: cleanTitle,
+    originalFileName: cleanOriginalFileName,
     subjectLabel: SUBJECT_LABELS[analysis.subject],
     grade: analysis.grade,
-    textbookTitle: analysis.textbookTitle || 'Đối chiếu chương trình phổ thông (GDPT 2018)',
-    scope: analysis.scope || (analysis.selectedChapters || []).join(', ') || 'Toàn bộ tài liệu',
+    textbookTitle: cleanTextbookTitle,
+    scope: cleanScope,
     generatedByName: (options.generatedByName || '').trim() || 'Học sinh StudyCheck AI',
     customNote: (options.customNote || '').trim(),
     includeStudentCorrections,

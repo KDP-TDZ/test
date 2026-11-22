@@ -35,6 +35,7 @@ import {
   splitFilesIntoByteBudgetBatches,
   validateUploadFileSize,
 } from '../core/uploadBatching';
+import { repairUtf8Mojibake } from '../core/textEncoding';
 import { authorizedFetch, parseApiResponse } from '../services/apiClient';
 import { compressImageFilesForUpload } from '../services/imageCompression';
 import {
@@ -201,8 +202,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         if (Array.isArray(parsed.pages) && parsed.pages.length > 0) {
           setOcrDraft({
             documentId: parsed.documentId || `doc_${Date.now()}`,
-            documentTitle: parsed.documentTitle || 'Tài liệu kiểm định',
-            originalFileName: parsed.originalFileName || 'tai_lieu.txt',
+            documentTitle: repairUtf8Mojibake(parsed.documentTitle || 'Tài liệu kiểm định'),
+            originalFileName: repairUtf8Mojibake(parsed.originalFileName || 'tai_lieu.txt'),
             mimeType: parsed.mimeType || 'text/plain',
             grade: parsed.grade || profile?.grade || '10',
             subject: parsed.subject || 'khac',
@@ -884,8 +885,10 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         throw new Error('Không trích xuất được nội dung văn bản nào từ tệp tải lên. Hãy thử ảnh rõ nét hơn.');
       }
 
-      const nextTitle =
-        suggestion.suggestedTitle || files[0].name.replace(/\.[^.]+$/, '') || 'Tài liệu học tập';
+      const rawFileName = repairUtf8Mojibake(files[0]?.name || '');
+      const nextTitle = repairUtf8Mojibake(
+        suggestion.suggestedTitle || rawFileName.replace(/\.[^.]+$/, '') || 'Tài liệu học tập'
+      );
       const nextGrade: GradeLevel = manualSubject
         ? manualGrade
         : suggestion.suggestedGrade || profile?.grade || '10';
@@ -900,7 +903,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       const readyDraft: OcrDraftCache = {
         documentId: newDocId,
         documentTitle: nextTitle,
-        originalFileName: files[0]?.name || `${nextTitle}.txt`,
+        originalFileName: rawFileName || `${nextTitle}.txt`,
         mimeType: files[0]?.type || 'text/plain',
         grade: nextGrade,
         subject: nextSubject,

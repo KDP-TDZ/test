@@ -5,6 +5,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { SUBJECT_LABELS, type AnalysisRecord, type SubjectId } from '../core/types';
+import { repairUtf8Mojibake } from '../core/textEncoding';
 import { deleteAnalysisRecord } from '../services/firestoreService';
 import { deletePrivateStorageFile } from '../services/storageService';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
@@ -55,7 +56,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         if (search.trim()) {
           const q = search.trim().toLowerCase();
           return (
-            a.documentTitle.toLowerCase().includes(q) ||
+            repairUtf8Mojibake(a.documentTitle).toLowerCase().includes(q) ||
             (a.scope || '').toLowerCase().includes(q) ||
             (a.textbookTitle || '').toLowerCase().includes(q)
           );
@@ -178,7 +179,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                 <div className="flex items-center gap-2">
                   <FileText className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0" />
                   <h2 className="text-base font-bold text-[#16243E] dark:text-[#E6EFFC] truncate">
-                    {item.documentTitle}
+                    {repairUtf8Mojibake(item.documentTitle)}
                   </h2>
                 </div>
                 <p className="text-xs text-slate-600 dark:text-slate-300">
@@ -239,7 +240,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               Xác nhận xóa kết quả phân tích?
             </h3>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              Thao tác này sẽ xóa báo cáo “{confirmDelete.documentTitle}” khỏi lịch sử học tập trên
+              Thao tác này sẽ xóa báo cáo “{repairUtf8Mojibake(confirmDelete.documentTitle)}” khỏi lịch sử học tập trên
               Firestore.
             </p>
             {deleteError && (

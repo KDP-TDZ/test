@@ -23,6 +23,7 @@ import {
 } from '../core/examScoring';
 import { evaluateMasteryStatus } from '../core/scoring';
 import { sanitizeReferenceChunkForFirestore } from '../core/retrieval';
+import { repairUtf8Mojibake } from '../core/textEncoding';
 import type {
   AnalysisRecord,
   GradeLevel,
@@ -115,12 +116,24 @@ export async function updateUserPreferences(
   }
 }
 
+function normalizeLoadedAnalysisRecord(record: AnalysisRecord): AnalysisRecord {
+  return {
+    ...record,
+    documentTitle: repairUtf8Mojibake(record.documentTitle || 'Tài liệu kiểm định'),
+    originalFileName: repairUtf8Mojibake(record.originalFileName || 'tai_lieu.txt'),
+  };
+}
+
 export async function saveAnalysisRecord(record: AnalysisRecord): Promise<void> {
   const safeId = makeSafeId(record.analysisId);
   const path = `analyses/${safeId}`;
   try {
-    const safeTitle = (record.documentTitle || 'Tài liệu kiểm định').trim().slice(0, 200) || 'Tài liệu kiểm định';
-    const safeFileName = (record.originalFileName || 'tai_lieu.txt').trim().slice(0, 255) || 'tai_lieu.txt';
+    const safeTitle =
+      repairUtf8Mojibake(record.documentTitle || 'Tài liệu kiểm định').trim().slice(0, 200) ||
+      'Tài liệu kiểm định';
+    const safeFileName =
+      repairUtf8Mojibake(record.originalFileName || 'tai_lieu.txt').trim().slice(0, 255) ||
+      'tai_lieu.txt';
 
     const sanitizedPages = (record.extractedPages || []).slice(0, 50).map((p) => {
       const { imageUrl, ...rest } = p;
@@ -165,7 +178,7 @@ export async function getAnalysisById(analysisId: string): Promise<AnalysisRecor
   const path = `analyses/${analysisId}`;
   try {
     const snap = await getDoc(doc(db, 'analyses', analysisId));
-    return snap.exists() ? (snap.data() as AnalysisRecord) : null;
+    return snap.exists() ? normalizeLoadedAnalysisRecord(snap.data() as AnalysisRecord) : null;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
   }
@@ -197,7 +210,7 @@ export async function listUserAnalyses(
     const hasMore = docs.length > pageSize;
     const sliced = hasMore ? docs.slice(0, pageSize) : docs;
     return {
-      items: sliced.map((d) => d.data() as AnalysisRecord),
+      items: sliced.map((d) => normalizeLoadedAnalysisRecord(d.data() as AnalysisRecord)),
       lastDoc: sliced.length > 0 ? sliced[sliced.length - 1] : null,
       hasMore,
     };
@@ -208,7 +221,7 @@ export async function listUserAnalyses(
         query(collection(db, 'analyses'), where('ownerUid', '==', uid), limit(100))
       );
       const sorted = fallbackSnap.docs
-        .map((d) => d.data() as AnalysisRecord)
+        .map((d) => normalizeLoadedAnalysisRecord(d.data() as AnalysisRecord))
         .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
       return {
         items: sorted.slice(0, pageSize),
