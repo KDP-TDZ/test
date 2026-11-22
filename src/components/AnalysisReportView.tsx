@@ -6,6 +6,9 @@ import {
   CheckCircle2,
   ChevronDown,
   ExternalLink,
+  FileCheck2,
+  FileSpreadsheet,
+  FileText,
   Flag,
   Globe,
   HelpCircle,
@@ -13,21 +16,33 @@ import {
   Lightbulb,
   Loader2,
   Printer,
+  ScrollText,
   Sparkles,
   TrendingUp,
   XCircle,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { compareAnalysesBeforeAfter } from '../core/examScoring';
+import {
+  buildVerificationSummaryReport,
+  type VerificationSummaryReport,
+} from '../core/summaryReportBuilder';
 import { SUBJECT_LABELS, type AnalysisRecord, type FeedbackEntry } from '../core/types';
 import { gsap, MOTION_ALLOWED_MEDIA, ScrollTrigger, useGSAP } from '../lib/gsapSetup';
 import { authorizedFetch, parseApiResponse } from '../services/apiClient';
 import { saveFlashcard, submitFeedback } from '../services/firestoreService';
+import {
+  exportSummaryAsDocx,
+  exportSummaryAsTxt,
+  exportSummaryAsXlsx,
+  type SummaryExportFormat,
+} from '../services/summaryExportService';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { ScoreRing } from './LiquidGlass/ScoreRing';
 import { SmoothAccordion } from './LiquidGlass/SmoothAccordion';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 import { SplitDocumentViewer } from './SplitDocumentViewer';
+import { SummaryExportModal } from './SummaryExportModal';
 import { VerificationFiveStepBar } from './VerificationFiveStepBar';
 import {
   buildErrorCorrectionQueue,
@@ -68,8 +83,19 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
   onStartNewUpload,
 }) => {
   const reportRef = useRef<HTMLDivElement>(null);
-  const { user, systemStatus } = useAuth();
+  const { user, profile, systemStatus } = useAuth();
   const [showFormula, setShowFormula] = useState(false);
+
+  // Confirmed Summary Report Export State (strictly null until user explicitly confirms)
+  const [summaryModalOpen, setSummaryModalOpen] = useState(false);
+  const [confirmedSummary, setConfirmedSummary] = useState<VerificationSummaryReport | null>(null);
+  const [includeStudentCorrections, setIncludeStudentCorrections] = useState(true);
+  const [includeCoverageAndSources, setIncludeCoverageAndSources] = useState(true);
+  const [summaryCustomNote, setSummaryCustomNote] = useState('');
+  const [printSheetMode, setPrintSheetMode] = useState<'fix_sheet' | 'full_summary'>('fix_sheet');
+  const [inlineExportingFormat, setInlineExportingFormat] = useState<SummaryExportFormat | null>(null);
+  const [inlineExportNotice, setInlineExportNotice] = useState<string | null>(null);
+  const [inlineExportError, setInlineExportError] = useState<string | null>(null);
 
   // Flashcard generation state
   const [generatingCards, setGeneratingCards] = useState(false);
@@ -133,7 +159,76 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
   useEffect(() => {
     setActiveWorkflowStep(actionableQueue.length === 0 ? 5 : 4);
     setCorrectionFilter('all');
+    setConfirmedSummary(null);
+    setSummaryModalOpen(false);
+    setSummaryCustomNote('');
+    setPrintSheetMode('fix_sheet');
+    setInlineExportNotice(null);
+    setInlineExportError(null);
   }, [analysis.analysisId, actionableQueue.length]);
+
+  useEffect(() => {
+    const handleAfterPrint = () => {
+      setPrintSheetMode('fix_sheet');
+    };
+    window.addEventListener('afterprint', handleAfterPrint);
+    return () => window.removeEventListener('afterprint', handleAfterPrint);
+  }, []);
+
+  const triggerPrintWithMode = (mode: 'fix_sheet' | 'full_summary') => {
+    if (mode === 'full_summary' && !confirmedSummary) return;
+    setPrintSheetMode(mode);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        window.print();
+      });
+    });
+  };
+
+  const handleConfirmCreateSummary = () => {
+    const generatedByName =
+      profile?.displayName || user?.displayName || user?.email || 'Học sinh StudyCheck AI';
+    const report = buildVerificationSummaryReport(analysis, {
+      confirmed: true,
+      confirmedAt: new Date().toISOString(),
+      includeStudentCorrections,
+      includeCoverageAndSources,
+      customNote: summaryCustomNote,
+      correctionsMap,
+      generatedByName,
+    });
+    setConfirmedSummary(report);
+    setInlineExportNotice(null);
+    setInlineExportError(null);
+  };
+
+  const handleInlineSummaryDownload = async (format: SummaryExportFormat) => {
+    if (!confirmedSummary || inlineExportingFormat) return;
+    setInlineExportingFormat(format);
+    setInlineExportNotice(null);
+    setInlineExportError(null);
+    try {
+      if (format === 'txt') {
+        const fileName = exportSummaryAsTxt(confirmedSummary);
+        setInlineExportNotice(`Đã tải xuống bản tổng kết TXT: ${fileName}`);
+      } else if (format === 'docx') {
+        const fileName = await exportSummaryAsDocx(confirmedSummary);
+        setInlineExportNotice(`Đã tải xuống bản tổng kết Word: ${fileName}`);
+      } else if (format === 'xlsx') {
+        const fileName = await exportSummaryAsXlsx(confirmedSummary);
+        setInlineExportNotice(`Đã tải xuống bản tổng kết Excel: ${fileName}`);
+      } else if (format === 'pdf') {
+        triggerPrintWithMode('full_summary');
+        setInlineExportNotice('Đã mở hộp thoại In / Lưu PDF cho bản tổng kết.');
+      }
+    } catch (err) {
+      setInlineExportError(
+        err instanceof Error ? err.message : 'Không thể tạo tệp bản tổng kết lúc này.'
+      );
+    } finally {
+      setInlineExportingFormat(null);
+    }
+  };
 
   const handleUpdateStudentCorrectionText = (itemId: string, text: string) => {
     const existing = correctionsMap[itemId];
@@ -250,7 +345,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       ScrollTrigger.refresh();
     });
     return () => window.cancelAnimationFrame(rafId);
-  }, [showFormula, reportingClaimId, flashcardNotice, feedbackResult]);
+  }, [showFormula, reportingClaimId, flashcardNotice, feedbackResult, confirmedSummary]);
 
   // Before/After Comparison against an older analysis in the same subject
   const previousComparable = useMemo(() => {
@@ -442,11 +537,20 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
             <button
               type="button"
-              onClick={() => window.print()}
+              onClick={() => triggerPrintWithMode('fix_sheet')}
               className="glass-control min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
             >
               <Printer className="w-4 h-4 text-sky-600 dark:text-sky-400" />
               Xuất Phiếu sửa lỗi (In / PDF)
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSummaryModalOpen(true)}
+              className="glass-control min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-[#0E4D5D] dark:text-cyan-300 cursor-pointer"
+            >
+              <FileCheck2 className="w-4 h-4 text-sky-600 dark:text-cyan-400" />
+              {confirmedSummary ? 'Tải bản tổng kết (Đã tạo)' : 'Tạo & Tải bản tổng kết'}
             </button>
 
             <button
@@ -492,70 +596,199 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
         )}
       </GlassSurface>
 
-      {/* Printable Error Fix Sheet ("Phiếu sửa lỗi" - visible cleanly when printing) */}
-      <div className="hidden print:block document-paper p-6 space-y-4">
-        <div className="border-b border-slate-300 pb-3">
-          <h2 className="text-xl font-bold">PHIẾU SỬA LỖI & BỔ SUNG KIẾN THỨC — STUDYCHECK AI</h2>
-          <p className="text-xs mt-1">
-            Tài liệu: {analysis.documentTitle} · {SUBJECT_LABELS[analysis.subject]} Lớp {analysis.grade} · Ngày:{' '}
-            {new Date(analysis.createdAt).toLocaleDateString('vi-VN')}
-          </p>
-          <p className="text-xs font-semibold mt-1">
-            Độ chính xác: {analysis.accuracyScore ?? 'Chưa đủ dữ liệu'}% · Độ đầy đủ:{' '}
-            {analysis.completenessScore ?? 'Không áp dụng'}%
-          </p>
-        </div>
+      {/* Printable Sheet (Error Fix Sheet OR Confirmed Full Summary Report) */}
+      {printSheetMode === 'full_summary' && confirmedSummary ? (
+        <div className="hidden print:block document-paper p-6 space-y-5 text-slate-900">
+          <div className="border-b border-slate-300 pb-3">
+            <h2 className="text-xl font-bold">BẢN TỔNG KẾT KIỂM ĐỊNH KIẾN THỨC — STUDYCHECK AI</h2>
+            <p className="text-xs mt-1">
+              Tài liệu: <strong>{confirmedSummary.documentTitle}</strong> ·{' '}
+              {confirmedSummary.subjectLabel} Lớp {confirmedSummary.grade} · Nguồn:{' '}
+              {confirmedSummary.textbookTitle}
+            </p>
+            <p className="text-xs mt-0.5">
+              Phạm vi: {confirmedSummary.scope} · Kiểm định: {confirmedSummary.analyzedAtDisplay} ·
+              Xác nhận tạo bản tổng kết: {confirmedSummary.confirmedAtDisplay}
+            </p>
+            {confirmedSummary.customNote && (
+              <p className="text-xs mt-1 italic">Ghi chú: {confirmedSummary.customNote}</p>
+            )}
+            <p className="text-xs font-semibold mt-2">
+              Độ chính xác: {confirmedSummary.metrics.accuracyScoreDisplay} · Độ đầy đủ:{' '}
+              {confirmedSummary.metrics.completenessScoreDisplay} · Tỷ lệ dẫn chứng:{' '}
+              {confirmedSummary.metrics.evidenceCoverageDisplay} · Tin cậy:{' '}
+              {confirmedSummary.metrics.confidenceLevel}
+            </p>
+          </div>
 
-        <div>
-          <h3 className="text-sm font-bold mb-2">1. Các nội dung cần chỉnh sửa ({incorrectClaims.length})</h3>
-          {incorrectClaims.length === 0 ? (
-            <p className="text-xs">Không có lỗi sai cần chỉnh sửa.</p>
-          ) : (
-            <ul className="space-y-2 text-xs">
-              {incorrectClaims.map((c, idx) => (
-                <li key={c.claimId} className="border-b border-slate-200 pb-2">
-                  <p className="font-semibold">
-                    {idx + 1}. [{c.evaluationStatus}] {c.concept} (Tr. {c.sourcePage}): “{c.sourceText}”
-                  </p>
-                  <p>Cách sửa chuẩn: {c.suggestedFix || c.correctKnowledge}</p>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+          <div className="grid grid-cols-3 gap-4 text-xs">
+            <div>
+              <h3 className="font-bold mb-1">Điểm mạnh ({confirmedSummary.strengths.length})</h3>
+              {confirmedSummary.strengths.length === 0 ? (
+                <p>Chưa ghi nhận điểm mạnh nổi bật.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {confirmedSummary.strengths.map((s, idx) => (
+                    <li key={idx}>• {s.title}: {s.detail}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <h3 className="font-bold mb-1">Cần khắc phục ({confirmedSummary.weaknesses.length})</h3>
+              {confirmedSummary.weaknesses.length === 0 ? (
+                <p>Không phát hiện lỗi sai nghiêm trọng.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {confirmedSummary.weaknesses.map((w, idx) => (
+                    <li key={idx}>• [{w.categoryLabel}] {w.title}: {w.detail}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <h3 className="font-bold mb-1">Gợi ý ưu tiên ({confirmedSummary.suggestions.length})</h3>
+              {confirmedSummary.suggestions.length === 0 ? (
+                <p>Tiếp tục ôn tập đều qua đề trắc nghiệm.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {confirmedSummary.suggestions.map((sg) => (
+                    <li key={sg.priority}>• #{sg.priority} {sg.title}: {sg.description}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
 
-        <div>
-          <h3 className="text-sm font-bold mb-2">2. Kiến thức còn thiếu theo phạm vi chương</h3>
-          {analysis.coverageItems.filter((i) => i.status !== 'COVERED').length === 0 ? (
-            <p className="text-xs">Đã bao phủ đầy đủ các mục tiêu kiểm tra.</p>
-          ) : (
-            <ul className="space-y-1 text-xs">
-              {analysis.coverageItems
-                .filter((i) => i.status !== 'COVERED')
-                .map((cov) => (
-                  <li key={cov.itemId}>
-                    • <strong>{cov.concept}</strong>: {cov.suggestedAddition}
+          <div>
+            <h3 className="text-sm font-bold mb-2">
+              Chi tiết mệnh đề đã kiểm định ({confirmedSummary.claims.length})
+            </h3>
+            {confirmedSummary.claims.length === 0 ? (
+              <p className="text-xs">Không có mệnh đề trích xuất.</p>
+            ) : (
+              <ul className="space-y-2 text-xs">
+                {confirmedSummary.claims.map((c) => (
+                  <li key={c.claimId} className="border-b border-slate-200 pb-2">
+                    <p className="font-semibold">
+                      #{c.index} [{c.statusLabel}] {c.concept} (Tr. {c.sourcePage}): “{c.sourceText}”
+                    </p>
+                    <p>Giải thích: {c.explanation}</p>
+                    {(c.suggestedFix || c.correctKnowledge) && (
+                      <p>Kiến thức chuẩn / Gợi ý sửa: {c.suggestedFix || c.correctKnowledge}</p>
+                    )}
+                    {confirmedSummary.includeStudentCorrections && c.status !== 'CORRECT' && (
+                      <p>
+                        Tự sửa của học sinh ({c.studentResolved ? 'Đã sửa' : 'Chưa đánh dấu sửa'}):{' '}
+                        {c.studentFixText || '(Chưa nhập)'}
+                      </p>
+                    )}
                   </li>
                 ))}
-            </ul>
-          )}
-        </div>
+              </ul>
+            )}
+          </div>
 
-        <div className="pt-4 border-t border-slate-200 flex items-center justify-between text-xs">
-          <span>Xác thực bởi hệ thống StudyCheck AI</span>
-          <div className="flex items-center gap-2">
-            <span className="font-semibold">Tác giả hệ thống: Tuấn Khang</span>
-            <div className="h-10 w-28 overflow-hidden flex items-center justify-center">
-              <img
-                src="/assets/aistudio/taoanhdep_chu_ky_35965_c16c11c6.png"
-                alt="Chữ ký Tuấn Khang"
-                data-no-privacy-blur="true"
-                className="w-full h-full object-contain scale-[2.3] mix-blend-multiply"
-              />
+          {confirmedSummary.includeCoverageAndSources && confirmedSummary.coverageItems.length > 0 && (
+            <div>
+              <h3 className="text-sm font-bold mb-2">
+                Bảng kiểm độ bao phủ chương ({confirmedSummary.coverageItems.length})
+              </h3>
+              <ul className="space-y-1 text-xs">
+                {confirmedSummary.coverageItems.map((cov) => (
+                  <li key={cov.itemId}>
+                    • [{cov.statusLabel}] <strong>{cov.concept}</strong> ({cov.chapter}):{' '}
+                    {cov.status === 'COVERED'
+                      ? 'Đã bao phủ đầy đủ'
+                      : cov.suggestedAddition || cov.referenceExcerpt}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="pt-4 border-t border-slate-200 flex items-center justify-between text-xs">
+            <span>
+              Người xuất: {confirmedSummary.generatedByName} · Xác thực bởi StudyCheck AI
+            </span>
+            <div className="flex items-center gap-2">
+              <span className="font-semibold">Tác giả hệ thống: Tuấn Khang</span>
+              <div className="h-10 w-28 overflow-hidden flex items-center justify-center">
+                <img
+                  src="/assets/aistudio/taoanhdep_chu_ky_35965_c16c11c6.png"
+                  alt="Chữ ký Tuấn Khang"
+                  data-no-privacy-blur="true"
+                  className="w-full h-full object-contain scale-[2.3] mix-blend-multiply"
+                />
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="hidden print:block document-paper p-6 space-y-4">
+          <div className="border-b border-slate-300 pb-3">
+            <h2 className="text-xl font-bold">PHIẾU SỬA LỖI & BỔ SUNG KIẾN THỨC — STUDYCHECK AI</h2>
+            <p className="text-xs mt-1">
+              Tài liệu: {analysis.documentTitle} · {SUBJECT_LABELS[analysis.subject]} Lớp {analysis.grade} · Ngày:{' '}
+              {new Date(analysis.createdAt).toLocaleDateString('vi-VN')}
+            </p>
+            <p className="text-xs font-semibold mt-1">
+              Độ chính xác: {analysis.accuracyScore ?? 'Chưa đủ dữ liệu'}% · Độ đầy đủ:{' '}
+              {analysis.completenessScore ?? 'Không áp dụng'}%
+            </p>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold mb-2">1. Các nội dung cần chỉnh sửa ({incorrectClaims.length})</h3>
+            {incorrectClaims.length === 0 ? (
+              <p className="text-xs">Không có lỗi sai cần chỉnh sửa.</p>
+            ) : (
+              <ul className="space-y-2 text-xs">
+                {incorrectClaims.map((c, idx) => (
+                  <li key={c.claimId} className="border-b border-slate-200 pb-2">
+                    <p className="font-semibold">
+                      {idx + 1}. [{c.evaluationStatus}] {c.concept} (Tr. {c.sourcePage}): “{c.sourceText}”
+                    </p>
+                    <p>Cách sửa chuẩn: {c.suggestedFix || c.correctKnowledge}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold mb-2">2. Kiến thức còn thiếu theo phạm vi chương</h3>
+            {analysis.coverageItems.filter((i) => i.status !== 'COVERED').length === 0 ? (
+              <p className="text-xs">Đã bao phủ đầy đủ các mục tiêu kiểm tra.</p>
+            ) : (
+              <ul className="space-y-1 text-xs">
+                {analysis.coverageItems
+                  .filter((i) => i.status !== 'COVERED')
+                  .map((cov) => (
+                    <li key={cov.itemId}>
+                      • <strong>{cov.concept}</strong>: {cov.suggestedAddition}
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="pt-4 border-t border-slate-200 flex items-center justify-between text-xs">
+            <span>Xác thực bởi hệ thống StudyCheck AI</span>
+            <div className="flex items-center gap-2">
+              <span className="font-semibold">Tác giả hệ thống: Tuấn Khang</span>
+              <div className="h-10 w-28 overflow-hidden flex items-center justify-center">
+                <img
+                  src="/assets/aistudio/taoanhdep_chu_ky_35965_c16c11c6.png"
+                  alt="Chữ ký Tuấn Khang"
+                  data-no-privacy-blur="true"
+                  className="w-full h-full object-contain scale-[2.3] mix-blend-multiply"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Four Independent Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-5 no-print">
@@ -1131,11 +1364,19 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => window.print()}
+                  onClick={() => triggerPrintWithMode('fix_sheet')}
                   className="glass-control min-h-[42px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
                 >
                   <Printer className="w-4 h-4 text-sky-600 dark:text-sky-400" />
                   <span>In Phiếu sửa lỗi</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSummaryModalOpen(true)}
+                  className="glass-control min-h-[42px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#0E4D5D] dark:text-cyan-300 cursor-pointer"
+                >
+                  <FileCheck2 className="w-4 h-4 text-sky-600 dark:text-cyan-400" />
+                  <span>{confirmedSummary ? 'Tải bản tổng kết' : 'Tạo bản tổng kết'}</span>
                 </button>
                 <WaterRippleButton onClick={() => onStartQuiz(analysis)}>
                   <HelpCircle className="w-4 h-4" />
@@ -1143,6 +1384,130 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 </WaterRippleButton>
               </div>
             </div>
+          </div>
+        )}
+      </GlassSurface>
+
+      {/* Dedicated Confirmed Summary Report Download Card */}
+      <GlassSurface className="report-scroll-section rounded-3xl p-4 sm:p-6 border border-sky-200/80 dark:border-sky-800/60 space-y-4 no-print">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="size-10 rounded-2xl bg-sky-500/15 dark:bg-sky-400/15 border border-sky-300/60 dark:border-sky-500/30 flex items-center justify-center shrink-0">
+              <FileCheck2 className="w-5 h-5 text-sky-600 dark:text-sky-400" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-display text-base sm:text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                  Tải bản tổng kết kiểm định (DOCX / Excel / TXT / PDF)
+                </h2>
+                {confirmedSummary && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/12 px-2.5 py-0.5 rounded-lg border border-emerald-300/60 dark:border-emerald-700/60">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    Đã xác nhận tạo lúc {confirmedSummary.confirmedAtDisplay}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] leading-relaxed prose-measure">
+                {confirmedSummary
+                  ? `Bản tổng kết cho "${confirmedSummary.documentTitle}" đã được tạo theo xác nhận của bạn. Bạn có thể tải xuống ngay ở bất kỳ định dạng nào bên dưới.`
+                  : 'Hệ thống không tự động tạo tệp tổng kết. Hãy bấm nút xác nhận để tổng hợp điểm độc lập, chi tiết lỗi, bản tự sửa ở Bước 4 và bảng bao phủ chương rồi chọn định dạng tải về.'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            {!confirmedSummary ? (
+              <WaterRippleButton onClick={() => setSummaryModalOpen(true)}>
+                <FileCheck2 className="w-4 h-4" />
+                <span>Xác nhận & Tạo bản tổng kết</span>
+              </WaterRippleButton>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmedSummary(null);
+                  setInlineExportNotice(null);
+                  setInlineExportError(null);
+                  setSummaryModalOpen(true);
+                }}
+                className="glass-control min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer"
+              >
+                Tạo lại với tùy chọn khác
+              </button>
+            )}
+          </div>
+        </div>
+
+        {confirmedSummary && (
+          <div className="space-y-3 pt-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+              <button
+                type="button"
+                disabled={inlineExportingFormat !== null}
+                onClick={() => handleInlineSummaryDownload('docx')}
+                className="glass-control min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+              >
+                {inlineExportingFormat === 'docx' ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                ) : (
+                  <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                )}
+                <span>Tải Word (.docx)</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={inlineExportingFormat !== null}
+                onClick={() => handleInlineSummaryDownload('xlsx')}
+                className="glass-control min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+              >
+                {inlineExportingFormat === 'xlsx' ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
+                ) : (
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                )}
+                <span>Tải Excel (.xlsx)</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={inlineExportingFormat !== null}
+                onClick={() => handleInlineSummaryDownload('txt')}
+                className="glass-control min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+              >
+                {inlineExportingFormat === 'txt' ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+                ) : (
+                  <ScrollText className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                )}
+                <span>Tải Văn bản (.txt)</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={inlineExportingFormat !== null}
+                onClick={() => handleInlineSummaryDownload('pdf')}
+                className="glass-control min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+              >
+                {inlineExportingFormat === 'pdf' ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-rose-600" />
+                ) : (
+                  <Printer className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                )}
+                <span>Xuất PDF (In / Lưu)</span>
+              </button>
+            </div>
+
+            {inlineExportNotice && (
+              <p className="text-xs text-sky-900 dark:text-sky-200 bg-sky-50/80 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800/70 rounded-xl px-3.5 py-2">
+                {inlineExportNotice}
+              </p>
+            )}
+            {inlineExportError && (
+              <p className="text-xs text-rose-800 dark:text-rose-200 bg-rose-50/80 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/70 rounded-xl px-3.5 py-2">
+                {inlineExportError}
+              </p>
+            )}
           </div>
         )}
       </GlassSurface>
@@ -1317,6 +1682,24 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
           )}
         </div>
       </div>
+
+      <SummaryExportModal
+        open={summaryModalOpen}
+        onClose={() => setSummaryModalOpen(false)}
+        analysis={analysis}
+        actionableCount={actionableQueue.length}
+        resolvedCount={resolvedItemsCount}
+        confirmedSummary={confirmedSummary}
+        includeStudentCorrections={includeStudentCorrections}
+        onChangeIncludeStudentCorrections={setIncludeStudentCorrections}
+        includeCoverageAndSources={includeCoverageAndSources}
+        onChangeIncludeCoverageAndSources={setIncludeCoverageAndSources}
+        customNote={summaryCustomNote}
+        onChangeCustomNote={setSummaryCustomNote}
+        onConfirmCreate={handleConfirmCreateSummary}
+        onResetConfirmation={() => setConfirmedSummary(null)}
+        onPrintSummaryPdf={() => triggerPrintWithMode('full_summary')}
+      />
     </div>
   );
 };
