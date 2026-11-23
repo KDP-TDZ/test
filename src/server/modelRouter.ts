@@ -57,13 +57,34 @@ function defaultCloudflareRescueModelForTask(taskType: AiTaskType): string {
   }
 }
 
+interface CachedTaskEnvelope {
+  data: unknown;
+  requestedModel: string;
+  actualModel: string;
+  usedFallback: boolean;
+  usedOverride: boolean;
+  systemFingerprint?: string;
+  promptVersion: string;
+  configVersion: number;
+}
+
+export interface RoutedAiTaskResult<T> {
+  data: T;
+  modelId: string;
+  requestedModel: string;
+  actualModel: string;
+  usedFallback: boolean;
+  usedOverride: boolean;
+  cached: boolean;
+  systemFingerprint?: string;
+  promptVersion: string;
+  configVersion: number;
+}
+
 // Extended 6-hour bounded cache (320 entries) tuned for small 2-3 user teams re-running documents
-const aiResponseCache = new BoundedTtlCache<unknown>(320, 6 * 60 * 60 * 1000);
+const aiResponseCache = new BoundedTtlCache<CachedTaskEnvelope>(320, 6 * 60 * 60 * 1000);
 // Coalesce concurrent identical AI requests so simultaneous calls spend only 1 API invocation
-const inFlightTasks = new Map<
-  string,
-  Promise<{ data: unknown; modelId: string; usedFallback: boolean; usedOverride: boolean; cached: boolean }>
->();
+const inFlightTasks = new Map<string, Promise<RoutedAiTaskResult<unknown>>>();
 const executionLogs: AiExecutionLog[] = [];
 
 export function clearAiResponseCache(): void {
@@ -214,9 +235,14 @@ async function fetchPublicGeminiGenerateModels(apiKey: string, signal?: AbortSig
   }
 }
 
+function isGemini4ModelId(modelId: string): boolean {
+  return /gemini-4/i.test(modelId || '');
+}
+
 /**
  * Calls `ai.models.generateContent` with automatic model discovery & fallback when an external or sandbox
  * Gemini API key returns 404 NOT_FOUND or 400 INVALID_ARGUMENT on an internal model alias or schema config.
+ * When `strictModelLock: true`, strictly runs the requested model without silently swapping to another model.
  */
 export async function generateGeminiContentWithFallback(params: {
   ai?: GoogleGenAI;
@@ -225,10 +251,14 @@ export async function generateGeminiContentWithFallback(params: {
   contents: unknown;
   config?: Record<string, unknown>;
   thinkingTier?: 'minimal' | 'low' | 'medium';
+  temperature?: number;
+  seed?: number;
+  strictModelLock?: boolean;
 }): Promise<{
   text: string;
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
   resolvedModel: string;
+  systemFingerprint?: string;
 }> {
   const apiKey = (params.apiKeyOverride || '').trim() || (await resolveActiveGeminiApiKey());
   const keyHash = crypto.createHash('sha256').update(apiKey).digest('hex').slice(0, 16);
@@ -244,12 +274,16 @@ export async function generateGeminiContentWithFallback(params: {
     });
 
   const requestedModel = sanitizeGeminiModelId(params.model);
-  const cachedWorking = workingGeminiModelPerKey.get(keyHash);
+  const cachedWorking = params.strictModelLock ? undefined : workingGeminiModelPerKey.get(keyHash);
   const candidates: string[] = [];
-  // Prioritize cachedWorking first if known for this key, then requestedModel, then public v1beta fallback candidates
-  for (const m of [cachedWorking, requestedModel, ...GEMINI_FALLBACK_CANDIDATES]) {
-    if (m && !candidates.includes(m)) {
-      candidates.push(m);
+  if (params.strictModelLock) {
+    candidates.push(requestedModel);
+  } else {
+    // Prioritize cachedWorking first if known for this key, then requestedModel, then public v1beta fallback candidates
+    for (const m of [cachedWorking, requestedModel, ...GEMINI_FALLBACK_CANDIDATES]) {
+      if (m && !candidates.includes(m)) {
+        candidates.push(m);
+      }
     }
   }
 
@@ -282,6 +316,21 @@ export async function generateGeminiContentWithFallback(params: {
     triedList.push(candidateModel);
     const baseConfig = { ...(params.config || {}) };
     delete baseConfig.thinkingConfig;
+
+    // Gemini 4 models strictly reject deprecated sampling parameters (temperature, topP, topK, candidateCount) with HTTP 400.
+    if (isGemini4ModelId(candidateModel)) {
+      delete baseConfig.temperature;
+      delete baseConfig.topP;
+      delete baseConfig.topK;
+      delete baseConfig.candidateCount;
+    } else if (typeof params.temperature === 'number' && Number.isFinite(params.temperature)) {
+      baseConfig.temperature = Math.max(0, Math.min(2, params.temperature));
+    }
+
+    if (typeof params.seed === 'number' && Number.isFinite(params.seed)) {
+      baseConfig.seed = Math.floor(params.seed);
+    }
+
     const tc = params.thinkingTier ? thinkingConfigForModel(candidateModel, params.thinkingTier) : undefined;
     if (tc) {
       baseConfig.thinkingConfig = tc;
@@ -293,7 +342,9 @@ export async function generateGeminiContentWithFallback(params: {
         contents: params.contents as never,
         config: baseConfig as never,
       });
-      workingGeminiModelPerKey.set(keyHash, candidateModel);
+      if (!params.strictModelLock) {
+        workingGeminiModelPerKey.set(keyHash, candidateModel);
+      }
       return {
         text: normalizeOutputText(resp.text || ''),
         usageMetadata: resp.usageMetadata,
@@ -306,8 +357,31 @@ export async function generateGeminiContentWithFallback(params: {
         msg.includes('INVALID_ARGUMENT') ||
         msg.includes('thinking') ||
         msg.includes('Thinking') ||
+        msg.includes('seed') ||
         msg.includes('response_schema') ||
         msg.includes('responseSchema');
+
+      // Progressive fallback 0: retry without seed if this Gemini model rejects `seed`
+      if (baseConfig.seed !== undefined && is400OrParamErr && msg.toLowerCase().includes('seed')) {
+        delete baseConfig.seed;
+        try {
+          const retrySeedResp = await ai.models.generateContent({
+            model: candidateModel,
+            contents: params.contents as never,
+            config: baseConfig as never,
+          });
+          if (!params.strictModelLock) {
+            workingGeminiModelPerKey.set(keyHash, candidateModel);
+          }
+          return {
+            text: normalizeOutputText(retrySeedResp.text || ''),
+            usageMetadata: retrySeedResp.usageMetadata,
+            resolvedModel: candidateModel,
+          };
+        } catch {
+          // Continue to progressive fallback 1/2
+        }
+      }
 
       // Progressive fallback 1: retry without thinkingConfig
       if (tc && is400OrParamErr) {
@@ -318,7 +392,9 @@ export async function generateGeminiContentWithFallback(params: {
             contents: params.contents as never,
             config: baseConfig as never,
           });
-          workingGeminiModelPerKey.set(keyHash, candidateModel);
+          if (!params.strictModelLock) {
+            workingGeminiModelPerKey.set(keyHash, candidateModel);
+          }
           return {
             text: normalizeOutputText(retryResp.text || ''),
             usageMetadata: retryResp.usageMetadata,
@@ -343,7 +419,9 @@ export async function generateGeminiContentWithFallback(params: {
           contents: params.contents as never,
           config: schemaLessConfig as never,
         });
-        workingGeminiModelPerKey.set(keyHash, candidateModel);
+        if (!params.strictModelLock) {
+          workingGeminiModelPerKey.set(keyHash, candidateModel);
+        }
         return {
           text: normalizeOutputText(retryResp2.text || ''),
           usageMetadata: retryResp2.usageMetadata,
@@ -379,14 +457,14 @@ export async function generateGeminiContentWithFallback(params: {
         msg.includes('API key not valid') ||
         msg.includes('SERVICE_DISABLED') ||
         msg.includes('API has not been used');
-      if (isFatalKeyError) {
+      if (isFatalKeyError || params.strictModelLock) {
         throw err;
       }
     }
   }
 
-  // Last resort: query public /v1beta/models for this key and try available flash/pro models
-  if (!signal?.aborted) {
+  // Last resort: query public /v1beta/models for this key and try available flash/pro models (disabled when strictModelLock)
+  if (!signal?.aborted && !params.strictModelLock) {
     const discovered = await fetchPublicGeminiGenerateModels(apiKey, signal);
     for (const disc of discovered) {
       if (signal?.aborted) break;
@@ -527,8 +605,10 @@ export async function executeRoutedAiTask<T>(params: {
   bypassCache?: boolean;
   allowGroqRescue?: boolean;
   groqRescueModelId?: string;
+  strictModelLock?: boolean;
+  extractExecutionMeta?: (data: T) => { actualModel?: string; systemFingerprint?: string };
   runWithModel: (modelId: string) => Promise<T>;
-}): Promise<{ data: T; modelId: string; usedFallback: boolean; usedOverride: boolean; cached: boolean }> {
+}): Promise<RoutedAiTaskResult<T>> {
   const {
     taskType,
     config,
@@ -537,6 +617,8 @@ export async function executeRoutedAiTask<T>(params: {
     bypassCache,
     allowGroqRescue = true,
     groqRescueModelId,
+    strictModelLock = false,
+    extractExecutionMeta,
     runWithModel,
   } = params;
 
@@ -545,11 +627,13 @@ export async function executeRoutedAiTask<T>(params: {
     overrideConsumed = true;
   });
 
+  const requestedModel = decision.modelId;
   const cacheKey =
     cacheInput && !bypassCache
       ? buildDeterministicCacheKey({
           taskType,
-          modelId: decision.modelId,
+          modelId: requestedModel,
+          strictModelLock,
           promptVersion: decision.promptVersion,
           configVersion: decision.configVersion,
           ...cacheInput,
@@ -562,22 +646,30 @@ export async function executeRoutedAiTask<T>(params: {
       appendExecutionLog({
         executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
         taskType,
-        modelId: decision.modelId,
-        usedFallback: false,
-        usedOverride: decision.usedOverride,
-        promptVersion: decision.promptVersion,
-        configVersion: decision.configVersion,
+        modelId: hit.actualModel,
+        requestedModel: hit.requestedModel,
+        actualModel: hit.actualModel,
+        ...(hit.systemFingerprint ? { systemFingerprint: hit.systemFingerprint } : {}),
+        usedFallback: hit.usedFallback,
+        usedOverride: hit.usedOverride,
+        promptVersion: hit.promptVersion,
+        configVersion: hit.configVersion,
         status: 'success',
         durationMs: 0,
         cached: true,
         timestamp: new Date().toISOString(),
       });
       return {
-        data: hit as T,
-        modelId: decision.modelId,
-        usedFallback: false,
-        usedOverride: decision.usedOverride,
+        data: hit.data as T,
+        modelId: hit.actualModel,
+        requestedModel: hit.requestedModel,
+        actualModel: hit.actualModel,
+        usedFallback: hit.usedFallback,
+        usedOverride: hit.usedOverride,
         cached: true,
+        ...(hit.systemFingerprint ? { systemFingerprint: hit.systemFingerprint } : {}),
+        promptVersion: hit.promptVersion,
+        configVersion: hit.configVersion,
       };
     }
 
@@ -586,70 +678,134 @@ export async function executeRoutedAiTask<T>(params: {
       const shared = await pending;
       return {
         data: shared.data as T,
-        modelId: shared.modelId,
+        modelId: shared.actualModel,
+        requestedModel: shared.requestedModel,
+        actualModel: shared.actualModel,
         usedFallback: shared.usedFallback,
         usedOverride: shared.usedOverride,
         cached: true,
+        ...(shared.systemFingerprint ? { systemFingerprint: shared.systemFingerprint } : {}),
+        promptVersion: shared.promptVersion,
+        configVersion: shared.configVersion,
       };
     }
   }
 
   const canFallback =
+    !strictModelLock &&
+    decision.enableFallback &&
     Boolean(decision.fallbackModelId) &&
-    decision.fallbackModelId !== decision.modelId &&
+    decision.fallbackModelId !== requestedModel &&
     isModelProviderConfigured(decision.fallbackModelId);
 
-  const primaryUnconfigured = !isModelProviderConfigured(decision.modelId);
+  const primaryUnconfigured = !isModelProviderConfigured(requestedModel);
 
-  const executeTask = async (): Promise<{
-    data: T;
-    modelId: string;
-    usedFallback: boolean;
-    usedOverride: boolean;
-    cached: boolean;
-  }> => {
+  const finalizeSuccess = (
+    result: T,
+    executedModel: string,
+    usedFallback: boolean,
+    startMs: number
+  ): RoutedAiTaskResult<T> => {
+    const meta = extractExecutionMeta?.(result);
+    const actualModel = (meta?.actualModel || executedModel).trim();
+    const systemFingerprint = meta?.systemFingerprint;
+    const effectiveFallback = usedFallback || actualModel !== requestedModel;
+
+    if (cacheKey) {
+      aiResponseCache.set(cacheKey, {
+        data: result,
+        requestedModel,
+        actualModel,
+        usedFallback: effectiveFallback,
+        usedOverride: decision.usedOverride,
+        ...(systemFingerprint ? { systemFingerprint } : {}),
+        promptVersion: decision.promptVersion,
+        configVersion: decision.configVersion,
+      });
+    }
+    appendExecutionLog({
+      executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+      taskType,
+      modelId: actualModel,
+      requestedModel,
+      actualModel,
+      ...(systemFingerprint ? { systemFingerprint } : {}),
+      usedFallback: effectiveFallback,
+      usedOverride: decision.usedOverride,
+      promptVersion: decision.promptVersion,
+      configVersion: decision.configVersion,
+      status: 'success',
+      durationMs: Date.now() - startMs,
+      cached: false,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      data: result,
+      modelId: actualModel,
+      requestedModel,
+      actualModel,
+      usedFallback: effectiveFallback,
+      usedOverride: decision.usedOverride,
+      cached: false,
+      ...(systemFingerprint ? { systemFingerprint } : {}),
+      promptVersion: decision.promptVersion,
+      configVersion: decision.configVersion,
+    };
+  };
+
+  const executeTask = async (): Promise<RoutedAiTaskResult<T>> => {
     const start = Date.now();
     try {
-      if (primaryUnconfigured && canFallback) {
+      if (primaryUnconfigured) {
         throw new Error(
-          isGroqModelId(decision.modelId)
+          isGroqModelId(requestedModel)
             ? 'GROQ_API_KEY_UNCONFIGURED'
-            : isCloudflareModelId(decision.modelId)
+            : isCloudflareModelId(requestedModel)
               ? 'CLOUDFLARE_CREDENTIALS_UNCONFIGURED'
               : 'GEMINI_API_KEY_UNCONFIGURED'
         );
       }
       // When fallback is active, retry primary 0 times so 429/503 transitions immediately to fallback within Vercel's 60s budget
       const primaryRetries = canFallback ? 0 : 1;
-      const result = await withExponentialBackoff(() => runWithModel(decision.modelId), primaryRetries);
+      const result = await withExponentialBackoff(() => runWithModel(requestedModel), primaryRetries);
       if (overrideConsumed && consumeOneTimeOverride) {
         await consumeOneTimeOverride(taskType);
       }
-      if (cacheKey) {
-        aiResponseCache.set(cacheKey, result);
-      }
-      appendExecutionLog({
-        executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
-        taskType,
-        modelId: decision.modelId,
-        usedFallback: false,
-        usedOverride: decision.usedOverride,
-        promptVersion: decision.promptVersion,
-        configVersion: decision.configVersion,
-        status: 'success',
-        durationMs: Date.now() - start,
-        cached: false,
-        timestamp: new Date().toISOString(),
-      });
-      return {
-        data: result,
-        modelId: decision.modelId,
-        usedFallback: false,
-        usedOverride: decision.usedOverride,
-        cached: false,
-      };
+      return finalizeSuccess(result, requestedModel, false, start);
     } catch (primaryErr) {
       let lastErr: unknown = primaryErr;
+
+      if (strictModelLock) {
+        const reason =
+          primaryErr instanceof Error ? primaryErr.message.slice(0, 220) : String(primaryErr).slice(0, 220);
+        appendExecutionLog({
+          executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
+          taskType,
+          modelId: requestedModel,
+          requestedModel,
+          actualModel: requestedModel,
+          usedFallback: false,
+          usedOverride: decision.usedOverride,
+          promptVersion: decision.promptVersion,
+          configVersion: decision.configVersion,
+          status: 'failed',
+          error: `STRICT_LOCK: ${reason}`.slice(0, 180),
+          durationMs: Date.now() - start,
+          timestamp: new Date().toISOString(),
+        });
+        // Preserve specific JSON validation or key missing error codes while signaling strict model lock
+        if (
+          reason.includes('GRADING_JSON_INVALID') ||
+          reason.includes('GROQ_API_KEY_UNCONFIGURED') ||
+          reason.includes('GEMINI_API_KEY_UNCONFIGURED') ||
+          reason.includes('CLOUDFLARE_CREDENTIALS_UNCONFIGURED')
+        ) {
+          throw primaryErr;
+        }
+        throw new Error(
+          `STRICT_GRADING_MODEL_UNAVAILABLE: Model chấm điểm cố định (${requestedModel}) tạm thời không phản hồi và hệ thống đã khóa chuyển đổi chéo model để bảo vệ tính nhất quán điểm số. Chi tiết: ${reason}`
+        );
+      }
 
       if (canFallback) {
         try {
@@ -657,29 +813,7 @@ export async function executeRoutedAiTask<T>(params: {
           if (overrideConsumed && consumeOneTimeOverride) {
             await consumeOneTimeOverride(taskType);
           }
-          if (cacheKey) {
-            aiResponseCache.set(cacheKey, fbResult);
-          }
-          appendExecutionLog({
-            executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
-            taskType,
-            modelId: decision.fallbackModelId,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            promptVersion: decision.promptVersion,
-            configVersion: decision.configVersion,
-            status: 'success',
-            durationMs: Date.now() - start,
-            cached: false,
-            timestamp: new Date().toISOString(),
-          });
-          return {
-            data: fbResult,
-            modelId: decision.fallbackModelId,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            cached: false,
-          };
+          return finalizeSuccess(fbResult, decision.fallbackModelId, true, start);
         } catch (fbErr) {
           lastErr = fbErr;
         }
@@ -690,35 +824,13 @@ export async function executeRoutedAiTask<T>(params: {
       const canGroqRescue =
         allowGroqRescue &&
         isGroqConfigured() &&
-        !isGroqModelId(decision.modelId) &&
+        !isGroqModelId(requestedModel) &&
         !(canFallback && isGroqModelId(decision.fallbackModelId));
 
       if (canGroqRescue) {
         try {
           const rescueResult = await withExponentialBackoff(() => runWithModel(rescueModel), 1);
-          if (cacheKey) {
-            aiResponseCache.set(cacheKey, rescueResult);
-          }
-          appendExecutionLog({
-            executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
-            taskType,
-            modelId: rescueModel,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            promptVersion: decision.promptVersion,
-            configVersion: decision.configVersion,
-            status: 'success',
-            durationMs: Date.now() - start,
-            cached: false,
-            timestamp: new Date().toISOString(),
-          });
-          return {
-            data: rescueResult,
-            modelId: rescueModel,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            cached: false,
-          };
+          return finalizeSuccess(rescueResult, rescueModel, true, start);
         } catch (rescueErr) {
           lastErr = rescueErr;
         }
@@ -729,42 +841,20 @@ export async function executeRoutedAiTask<T>(params: {
       const canCloudflareRescue =
         allowGroqRescue &&
         isCloudflareConfigured() &&
-        !isCloudflareModelId(decision.modelId) &&
+        !isCloudflareModelId(requestedModel) &&
         !(canFallback && isCloudflareModelId(decision.fallbackModelId));
 
       if (canCloudflareRescue) {
         try {
           const cfResult = await withExponentialBackoff(() => runWithModel(cfRescueModel), 1);
-          if (cacheKey) {
-            aiResponseCache.set(cacheKey, cfResult);
-          }
-          appendExecutionLog({
-            executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
-            taskType,
-            modelId: cfRescueModel,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            promptVersion: decision.promptVersion,
-            configVersion: decision.configVersion,
-            status: 'success',
-            durationMs: Date.now() - start,
-            cached: false,
-            timestamp: new Date().toISOString(),
-          });
-          return {
-            data: cfResult,
-            modelId: cfRescueModel,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            cached: false,
-          };
+          return finalizeSuccess(cfResult, cfRescueModel, true, start);
         } catch (cfErr) {
           lastErr = cfErr;
         }
       }
 
       // Cross-provider rescue hop 3 (Gemini): if Groq/Cloudflare failed and Gemini API Key is configured
-      const isPrimaryGemini = !isGroqModelId(decision.modelId) && !isCloudflareModelId(decision.modelId);
+      const isPrimaryGemini = !isGroqModelId(requestedModel) && !isCloudflareModelId(requestedModel);
       const isFallbackGemini =
         canFallback && !isGroqModelId(decision.fallbackModelId) && !isCloudflareModelId(decision.fallbackModelId);
       const canGeminiRescue = isGeminiConfigured() && !isPrimaryGemini && !isFallbackGemini;
@@ -773,29 +863,7 @@ export async function executeRoutedAiTask<T>(params: {
         const geminiRescueModel = 'gemini-2.5-flash';
         try {
           const gemResult = await withExponentialBackoff(() => runWithModel(geminiRescueModel), 1);
-          if (cacheKey) {
-            aiResponseCache.set(cacheKey, gemResult);
-          }
-          appendExecutionLog({
-            executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
-            taskType,
-            modelId: geminiRescueModel,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            promptVersion: decision.promptVersion,
-            configVersion: decision.configVersion,
-            status: 'success',
-            durationMs: Date.now() - start,
-            cached: false,
-            timestamp: new Date().toISOString(),
-          });
-          return {
-            data: gemResult,
-            modelId: geminiRescueModel,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            cached: false,
-          };
+          return finalizeSuccess(gemResult, geminiRescueModel, true, start);
         } catch (gemErr) {
           lastErr = gemErr;
         }
@@ -804,7 +872,9 @@ export async function executeRoutedAiTask<T>(params: {
       appendExecutionLog({
         executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
         taskType,
-        modelId: canFallback ? decision.fallbackModelId : decision.modelId,
+        modelId: canFallback ? decision.fallbackModelId : requestedModel,
+        requestedModel,
+        actualModel: canFallback ? decision.fallbackModelId : requestedModel,
         usedFallback: canFallback,
         usedOverride: decision.usedOverride,
         promptVersion: decision.promptVersion,
@@ -826,16 +896,7 @@ export async function executeRoutedAiTask<T>(params: {
   const taskPromise = executeTask().finally(() => {
     inFlightTasks.delete(cacheKey);
   });
-  inFlightTasks.set(
-    cacheKey,
-    taskPromise as Promise<{
-      data: unknown;
-      modelId: string;
-      usedFallback: boolean;
-      usedOverride: boolean;
-      cached: boolean;
-    }>
-  );
+  inFlightTasks.set(cacheKey, taskPromise as Promise<RoutedAiTaskResult<unknown>>);
   return taskPromise;
 }
 

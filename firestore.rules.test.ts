@@ -16,7 +16,10 @@ test('firestore.rules enforces Eight Pillars and Dirty Dozen defenses', () => {
   assert.match(rules, /affectedKeys\(\)\.hasOnly/);
   assert.match(rules, /incoming\(\)\.ownerUid\s*==\s*existing\(\)\.ownerUid/);
   assert.match(rules, /resource\.data\.ownerUid\s*==\s*request\.auth\.uid/);
-  assert.match(rules, /match\s+\/adminSecrets\/\{secretId\}/);
+  assert.match(rules, /match\s+\/adminSecrets\/\{secretId\}[\s\S]*allow\s+get:\s*if\s+isValidId\(secretId\)\s*&&\s*isSuperAdmin\(\);/);
+  assert.match(rules, /!?\('isSuperAdmin'\s+in\s+incoming\(\)\)\s*\|\|\s*incoming\(\)\.isSuperAdmin\s*==\s*false/);
+  assert.match(rules, /function\s+isValidUsageDaily\(data,\s*uid\)/);
+  assert.match(rules, /incoming\(\)\.totalScore\s*<=\s*existing\(\)\.totalScore\s*\+\s*100/);
   assert.match(rules, /match\s+\/systemConfig\/\{configId\}/);
   assert.match(rules, /match\s+\/practiceItems\/\{itemId\}/);
   assert.match(rules, /match\s+\/examBlueprints\/\{blueprintId\}/);

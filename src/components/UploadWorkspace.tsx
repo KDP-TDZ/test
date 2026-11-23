@@ -26,6 +26,7 @@ import {
   type ReferenceChunk,
   type SubjectId,
 } from '../core/types';
+import { computeStableTextDigest } from '../core/cache';
 import { retrieveRelevantChunks } from '../core/retrieval';
 import {
   buildFileNameSuggestionCacheKey,
@@ -72,6 +73,8 @@ interface OcrDraftCache {
   selectedChapters: string[];
   scopeNote: string;
   pages: ExtractedPage[];
+  ocrConfirmed?: boolean;
+  ocrTextHash?: string;
   savedAt: string;
 }
 
@@ -210,6 +213,10 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
             selectedChapters: Array.isArray(parsed.selectedChapters) ? parsed.selectedChapters : [],
             scopeNote: parsed.scopeNote || '',
             pages: parsed.pages,
+            ocrConfirmed: Boolean(parsed.ocrConfirmed),
+            ocrTextHash:
+              parsed.ocrTextHash ||
+              computeStableTextDigest(parsed.pages.map((p) => p.rawText).join('\n')),
             savedAt: parsed.savedAt || new Date().toISOString(),
           });
         }
@@ -610,11 +617,11 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
 
       let relevantChunks: ReferenceChunk[] = [];
       if (matchedBook && allChunks.length > 0) {
-        const queryText = draft.pages.map((p) => p.rawText).join(' ').slice(0, 2500);
+        const queryText = draft.pages.map((p) => p.rawText).join('\n').slice(0, 16000);
         const retrieved = retrieveRelevantChunks(queryText, allChunks, {
           referenceId: matchedBook.referenceId,
           selectedChapters: draft.selectedChapters.length > 0 ? draft.selectedChapters : undefined,
-          topK: 8,
+          topK: 16,
         });
         relevantChunks =
           retrieved.length > 0
@@ -625,7 +632,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                     draft.selectedChapters.length === 0 ||
                     draft.selectedChapters.some((ch) => c.chapter.includes(ch))
                 )
-                .slice(0, 6);
+                .sort((a, b) => a.pageNumber - b.pageNumber || a.chunkId.localeCompare(b.chunkId))
+                .slice(0, 16);
       }
 
       setActiveStage('verifying');
@@ -634,7 +642,10 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         `Đang kiểm định từng câu, công thức & chú thích trên ${draft.pages.length} trang tài liệu...`
       );
 
-      const idempotencyKey = `${draft.documentId}_${draft.grade}_${draft.subject}_${Date.now()}`;
+      const ocrTextHash =
+        draft.ocrTextHash ||
+        computeStableTextDigest(draft.pages.map((p) => p.rawText).join('\n'));
+      const idempotencyKey = `${draft.documentId}_${draft.grade}_${draft.subject}_${ocrTextHash.slice(0, 10)}`;
       const res = await authorizedFetch('/api/ai/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -649,6 +660,9 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
           scope: draft.scopeNote,
           referenceChunks: relevantChunks,
           enableWebGrounding: false,
+          strictModelLock: true,
+          ocrConfirmed: Boolean(draft.ocrConfirmed),
+          ocrTextHash,
         }),
       });
 
@@ -910,6 +924,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         selectedChapters: nextChapters,
         scopeNote: nextScope,
         pages,
+        ocrConfirmed: false,
+        ocrTextHash: computeStableTextDigest(pages.map((p) => p.rawText).join('\n')),
         savedAt: new Date().toISOString(),
       };
 
@@ -951,12 +967,13 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     }
   };
 
-  const handleGradeSavedDraftNow = async () => {
-    if (!ocrDraft || !aiEnabled) return;
+  const handleGradeSavedDraftNow = async (overrideDraft?: OcrDraftCache) => {
+    const activeDraft = overrideDraft || ocrDraft;
+    if (!activeDraft || !aiEnabled) return;
     setError(null);
     setLastFailedAction(null);
     setStep('processing');
-    await runVerificationOnDraft(ocrDraft, files[0] || null);
+    await runVerificationOnDraft(activeDraft, files[0] || null);
   };
 
   const activeStageIdx = PIPELINE_STAGES.findIndex((s) => s.id === activeStage);
@@ -1014,7 +1031,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
             >
               Xem / sửa OCR
             </button>
-            <WaterRippleButton size="sm" disabled={!aiEnabled} onClick={handleGradeSavedDraftNow}>
+            <WaterRippleButton size="sm" disabled={!aiEnabled} onClick={() => void handleGradeSavedDraftNow()}>
               <CheckCircle2 className="w-3.5 h-3.5" />
               Chấm điểm ngay
             </WaterRippleButton>
@@ -1420,11 +1437,22 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
               persistOcrDraft({
                 ...ocrDraft,
                 pages: updatedPages,
+                ocrConfirmed: true,
+                ocrTextHash: computeStableTextDigest(updatedPages.map((p) => p.rawText).join('\n')),
                 savedAt: new Date().toISOString(),
               });
             }}
             onConfirmOcr={() => {
-              void handleGradeSavedDraftNow();
+              const confirmedDraft: OcrDraftCache = {
+                ...ocrDraft,
+                ocrConfirmed: true,
+                ocrTextHash: computeStableTextDigest(
+                  ocrDraft.pages.map((p) => p.rawText).join('\n')
+                ),
+                savedAt: new Date().toISOString(),
+              };
+              persistOcrDraft(confirmedDraft);
+              void handleGradeSavedDraftNow(confirmedDraft);
             }}
             onBack={() => setStep('select')}
           />

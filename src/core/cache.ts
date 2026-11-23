@@ -3,16 +3,34 @@
  * Used to deduplicate identical AI requests without external Redis/paid dependencies.
  */
 
-export function buildDeterministicCacheKey(parts: Record<string, unknown>): string {
-  const canonical = JSON.stringify(parts, Object.keys(parts).sort());
+export function canonicalizeValue(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalizeValue(item));
+  }
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(obj).sort()) {
+      if (obj[key] !== undefined) {
+        sorted[key] = canonicalizeValue(obj[key]);
+      }
+    }
+    return sorted;
+  }
+  return value;
+}
+
+export function computeStableTextDigest(input: string): string {
+  const normalized = (input || '').normalize('NFC');
   // Dual 64-bit FNV-1a mix producing a deterministic 32-char hex digest (128-bit effective key)
   let h1 = 0xcbf29ce484222325n;
   let h2 = 0x84222325cbf29ce4n;
   const prime = 0x100000001b3n;
   const mask = 0xffffffffffffffffn;
 
-  for (let i = 0; i < canonical.length; i += 1) {
-    const code = BigInt(canonical.charCodeAt(i));
+  for (let i = 0; i < normalized.length; i += 1) {
+    const code = BigInt(normalized.charCodeAt(i));
     h1 ^= code;
     h1 = (h1 * prime) & mask;
     h2 ^= code + BigInt((i % 251) + 1);
@@ -20,6 +38,11 @@ export function buildDeterministicCacheKey(parts: Record<string, unknown>): stri
   }
 
   return `${h1.toString(16).padStart(16, '0')}${h2.toString(16).padStart(16, '0')}`;
+}
+
+export function buildDeterministicCacheKey(parts: Record<string, unknown>): string {
+  const canonical = JSON.stringify(canonicalizeValue(parts));
+  return computeStableTextDigest(canonical);
 }
 
 interface CacheEntry<T> {

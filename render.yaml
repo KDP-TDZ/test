@@ -11,3 +11,11 @@ services:
         value: production
       - key: SUPER_ADMIN_EMAIL
         value: tuankhang2011pm@gmail.com
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: KEY_ENCRYPTION_SECRET
+        sync: false
+      - key: ALLOWED_ORIGIN
+        sync: false

@@ -146,8 +146,61 @@ export interface ExtractedClaim {
   evidences: ReferenceEvidence[];
 }
 
+export type RubricMode = 'fixed_textbook_rubric' | 'scope_guided' | 'unscoped';
+
+export interface RubricCriterion {
+  criterionId: string;
+  concept: string;
+  chapter: string;
+  lesson?: string;
+  importanceWeight: 1 | 2 | 3;
+  referenceChunkId: string;
+  referencePage?: number;
+  referenceExcerpt: string;
+  expectedKeywords: string[];
+}
+
+export interface FixedRubric {
+  rubricId: string;
+  rubricHash: string;
+  rubricMode: RubricMode;
+  subject: SubjectId;
+  grade: GradeLevel;
+  textbookReferenceId: string;
+  textbookTitle: string;
+  selectedChapters: string[];
+  criteria: RubricCriterion[];
+  totalRequiredWeight: number;
+}
+
+export interface GradingAuditMetadata {
+  requestedModel: string;
+  actualModel: string;
+  usedFallback: boolean;
+  usedOverride: boolean;
+  cached: boolean;
+  strictModelLock: boolean;
+  systemFingerprint?: string;
+  promptVersion: string;
+  configVersion: number;
+  inputHash: string;
+  ocrTextHash: string;
+  ocrConfirmed: boolean;
+  rubricMode: RubricMode;
+  rubricHash?: string;
+  rubricItemCount: number;
+  extraCoverageCount: number;
+  chunkIds: string[];
+  truncationApplied: boolean;
+  studentCharCount: number;
+  textbookCharCount: number;
+  webGroundingEnabled: boolean;
+  deterministicSeed: number;
+}
+
 export interface KnowledgeCoverageItem {
   itemId: string;
+  criterionId?: string;
   concept: string;
   chapter: string;
   lesson?: string;
@@ -156,6 +209,7 @@ export interface KnowledgeCoverageItem {
   suggestedAddition: string;
   referenceExcerpt: string;
   referencePage?: number;
+  matchedChunkId?: string;
 }
 
 export interface AnnotationItem {
@@ -213,6 +267,7 @@ export interface AccuracyBreakdown {
     ocrUncertain: number;
     outOfScope: number;
   };
+  gradingAudit?: GradingAuditMetadata;
 }
 
 export interface CompletenessBreakdown {
@@ -222,6 +277,9 @@ export interface CompletenessBreakdown {
   missingCount: number;
   partialCount: number;
   coveredCount: number;
+  rubricMode?: RubricMode;
+  rubricItemCount?: number;
+  extraObservationsCount?: number;
 }
 
 export interface AnalysisRecord {
@@ -682,6 +740,9 @@ export interface AiExecutionLog {
   executionId: string;
   taskType: AiTaskType;
   modelId: string;
+  requestedModel?: string;
+  actualModel?: string;
+  systemFingerprint?: string;
   usedFallback: boolean;
   usedOverride: boolean;
   promptVersion: string;
@@ -761,6 +822,33 @@ export interface CloudflareKeyStatus extends SingleApiKeyStatus {
 export interface ProviderKeysStatus {
   groq: SingleApiKeyStatus;
   cloudflare: CloudflareKeyStatus;
+}
+
+export interface ColdStartProviderReadiness {
+  provider: 'groq' | 'gemini' | 'cloudflare';
+  label: string;
+  envVarNames: string[];
+  envConfigured: boolean;
+  adminOverrideActive: boolean;
+  configuredNow: boolean;
+  survivesColdStartWhenAdminOffline: boolean;
+}
+
+export interface ColdStartReadinessReport {
+  overallStatus: 'ready_24_7' | 'partial_risk' | 'at_risk';
+  runtimePlatform: 'vercel' | 'render' | 'standard';
+  activeModel: string;
+  activeProvider: 'groq' | 'gemini' | 'cloudflare';
+  activeModelCoveredByEnv: boolean;
+  anyProviderCoveredByEnv: boolean;
+  encryptionSecretConfigured: boolean;
+  providers: {
+    groq: ColdStartProviderReadiness;
+    gemini: ColdStartProviderReadiness;
+    cloudflare: ColdStartProviderReadiness;
+  };
+  warnings: string[];
+  envTemplate: string;
 }
 
 export interface AuditLogEntry {

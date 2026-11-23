@@ -60,6 +60,7 @@ export interface CloudflareCompletionResult {
   candidateTokens: number;
   totalTokens: number;
   resolvedModel?: string;
+  systemFingerprint?: string;
 }
 
 type CloudflareMessageContentPart =
@@ -79,53 +80,72 @@ async function executeCloudflareRequest(params: {
   hasImages?: boolean;
   jsonMode?: boolean;
   maxTokens: number;
+  temperature: number;
+  seed?: number;
   signal?: AbortSignal;
 }): Promise<{ ok: true; result: CloudflareCompletionResult } | { ok: false; status: number; errText: string }> {
-  const body: Record<string, unknown> = {
-    model: params.cfModel,
-    messages: params.messages,
-    temperature: 0.15,
-    max_tokens: params.maxTokens,
+  const sendOnce = async (includeSeed: boolean) => {
+    const body: Record<string, unknown> = {
+      model: params.cfModel,
+      messages: params.messages,
+      temperature: params.temperature,
+      max_tokens: params.maxTokens,
+    };
+
+    if (includeSeed && typeof params.seed === 'number' && Number.isFinite(params.seed)) {
+      body.seed = Math.floor(params.seed);
+    }
+
+    if (params.jsonMode && !params.hasImages) {
+      body.response_format = { type: 'json_object' };
+    }
+
+    const res = await fetch(buildCloudflareChatEndpoint(params.accountId), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${params.apiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: params.signal,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      return { ok: false as const, status: res.status, errText };
+    }
+
+    const data = (await res.json()) as {
+      system_fingerprint?: string;
+      choices?: Array<{ message?: { content?: string } }>;
+      result?: { response?: string };
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    };
+
+    const rawText = data.choices?.[0]?.message?.content || data.result?.response || '';
+    const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
+
+    return {
+      ok: true as const,
+      result: {
+        text,
+        promptTokens: data.usage?.prompt_tokens || 0,
+        candidateTokens: data.usage?.completion_tokens || 0,
+        totalTokens: data.usage?.total_tokens || 0,
+        resolvedModel: `cf:${params.cfModel}`,
+        ...(typeof data.system_fingerprint === 'string' && data.system_fingerprint.trim()
+          ? { systemFingerprint: data.system_fingerprint.trim() }
+          : {}),
+      },
+    };
   };
 
-  if (params.jsonMode && !params.hasImages) {
-    body.response_format = { type: 'json_object' };
+  const hasSeed = typeof params.seed === 'number' && Number.isFinite(params.seed);
+  const first = await sendOnce(hasSeed);
+  if (!first.ok && first.status === 400 && hasSeed && first.errText.toLowerCase().includes('seed')) {
+    return sendOnce(false);
   }
-
-  const res = await fetch(buildCloudflareChatEndpoint(params.accountId), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${params.apiToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-    signal: params.signal,
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    return { ok: false, status: res.status, errText };
-  }
-
-  const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    result?: { response?: string };
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-  };
-
-  const rawText = data.choices?.[0]?.message?.content || data.result?.response || '';
-  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
-
-  return {
-    ok: true,
-    result: {
-      text,
-      promptTokens: data.usage?.prompt_tokens || 0,
-      candidateTokens: data.usage?.completion_tokens || 0,
-      totalTokens: data.usage?.total_tokens || 0,
-      resolvedModel: `cf:${params.cfModel}`,
-    },
-  };
+  return first;
 }
 
 export async function callCloudflareChatCompletion(params: {
@@ -136,6 +156,9 @@ export async function callCloudflareChatCompletion(params: {
   jsonMode?: boolean;
   jsonSchemaHint?: string;
   maxOutputTokens?: number;
+  temperature?: number;
+  seed?: number;
+  strictModelLock?: boolean;
   signal?: AbortSignal;
   credentialsOverride?: { accountId: string; apiToken: string };
 }): Promise<CloudflareCompletionResult> {
@@ -188,6 +211,10 @@ export async function callCloudflareChatCompletion(params: {
   }
 
   const maxTokens = Math.min(4096, Math.max(128, params.maxOutputTokens || 2048));
+  const effectiveTemperature =
+    typeof params.temperature === 'number' && Number.isFinite(params.temperature)
+      ? Math.max(0, Math.min(2, params.temperature))
+      : 0;
 
   const firstAttempt = await executeCloudflareRequest({
     accountId,
@@ -197,6 +224,8 @@ export async function callCloudflareChatCompletion(params: {
     hasImages,
     jsonMode: params.jsonMode,
     maxTokens,
+    temperature: effectiveTemperature,
+    seed: params.seed,
     signal: params.signal,
   });
 
@@ -209,15 +238,18 @@ export async function callCloudflareChatCompletion(params: {
   const triedCfModels = new Set<string>([cfModel]);
 
   const fallbackCandidates: string[] = [];
-  if (hasImages) {
-    for (const v of CF_VISION_MODELS) {
-      if (!triedCfModels.has(v)) fallbackCandidates.push(v);
+  if (!params.strictModelLock) {
+    if (hasImages) {
+      for (const v of CF_VISION_MODELS) {
+        if (!triedCfModels.has(v)) fallbackCandidates.push(v);
+      }
+    } else if (CF_FALLBACK_ON_404[cfModel]) {
+      fallbackCandidates.push(CF_FALLBACK_ON_404[cfModel]);
     }
-  } else if (CF_FALLBACK_ON_404[cfModel]) {
-    fallbackCandidates.push(CF_FALLBACK_ON_404[cfModel]);
   }
 
   if (
+    !params.strictModelLock &&
     (firstAttempt.status === 404 ||
       (hasImages &&
         (firstAttempt.status === 400 || firstAttempt.status === 403 || firstAttempt.status === 503))) &&
@@ -234,6 +266,8 @@ export async function callCloudflareChatCompletion(params: {
         hasImages,
         jsonMode: params.jsonMode,
         maxTokens,
+        temperature: effectiveTemperature,
+        seed: params.seed,
         signal: params.signal,
       });
       if (retryAttempt.ok) {

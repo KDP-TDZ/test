@@ -17,6 +17,7 @@ import {
   Loader2,
   Printer,
   ScrollText,
+  ShieldCheck,
   Sparkles,
   TrendingUp,
   XCircle,
@@ -28,6 +29,7 @@ import {
   type VerificationSummaryReport,
 } from '../core/summaryReportBuilder';
 import { SUBJECT_LABELS, type AnalysisRecord, type FeedbackEntry } from '../core/types';
+import { sanitizeExternalHttpUrl } from '../core/urlSecurity';
 import { gsap, MOTION_ALLOWED_MEDIA, ScrollTrigger, useGSAP } from '../lib/gsapSetup';
 import { authorizedFetch, parseApiResponse } from '../services/apiClient';
 import { saveFlashcard, submitFeedback } from '../services/firestoreService';
@@ -85,6 +87,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
   const reportRef = useRef<HTMLDivElement>(null);
   const { user, profile, systemStatus } = useAuth();
   const [showFormula, setShowFormula] = useState(false);
+  const [showAuditTrail, setShowAuditTrail] = useState(false);
 
   // Confirmed Summary Report Export State (strictly null until user explicitly confirms)
   const [summaryModalOpen, setSummaryModalOpen] = useState(false);
@@ -345,7 +348,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       ScrollTrigger.refresh();
     });
     return () => window.cancelAnimationFrame(rafId);
-  }, [showFormula, reportingClaimId, flashcardNotice, feedbackResult, confirmedSummary]);
+  }, [showFormula, showAuditTrail, reportingClaimId, flashcardNotice, feedbackResult, confirmedSummary]);
 
   // Before/After Comparison against an older analysis in the same subject
   const previousComparable = useMemo(() => {
@@ -811,8 +814,10 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
             value={analysis.completenessScore}
             subtitle={
               comp && comp.totalRequiredWeight > 0
-                ? `Đủ ${comp.coveredCount} · Thiếu một phần ${comp.partialCount} · Thiếu ${comp.missingCount}`
-                : 'Chưa chọn phạm vi chương/sách tham chiếu'
+                ? comp.rubricMode === 'fixed_textbook_rubric'
+                  ? `Rubric SGK cố định (${comp.rubricItemCount ?? analysis.coverageItems.length} tiêu chí) · Đủ ${comp.coveredCount} · Thiếu một phần ${comp.partialCount} · Thiếu ${comp.missingCount}`
+                  : `Theo phạm vi chương · Đủ ${comp.coveredCount} · Thiếu một phần ${comp.partialCount} · Thiếu ${comp.missingCount}`
+                : 'Chưa có rubric chuẩn SGK cho phạm vi này (chỉ chấm Độ chính xác)'
             }
             color="sky"
           />
@@ -933,6 +938,89 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
           )}
         </div>
       </SmoothAccordion>
+
+      {/* Deterministic Grading Audit Trail */}
+      {acc?.gradingAudit && (
+        <SmoothAccordion
+          open={showAuditTrail}
+          onToggle={(next) => {
+            setShowAuditTrail(next);
+            window.setTimeout(() => ScrollTrigger.refresh(), 260);
+          }}
+          icon={<ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
+          title={
+            <span className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+              Dấu vết kiểm định & Độ ổn định điểm số ·{' '}
+              <span className="font-mono font-normal text-[#475B78] dark:text-[#B4C7E2]">
+                {acc.gradingAudit.actualModel}
+                {acc.gradingAudit.cached ? ' · Bộ nhớ đệm' : ''}
+                {acc.gradingAudit.strictModelLock ? ' · Khóa model chuẩn' : ''}
+              </span>
+            </span>
+          }
+          className="report-scroll-section glass-panel-subtle !rounded-3xl no-print"
+          triggerClassName="px-4 sm:px-5 py-3.5 hover:bg-white/45 dark:hover:bg-slate-800/45"
+          contentClassName="px-4 sm:px-5 pb-4 pt-3 border-t border-sky-200/60 dark:border-slate-700/70 space-y-3 text-xs text-slate-700 dark:text-slate-300"
+        >
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2.5 leading-[1.6]">
+            <div>
+              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">Model yêu cầu / thực chạy</p>
+              <p className="font-mono text-[#16243E] dark:text-[#E6EFFC] break-all">
+                {acc.gradingAudit.requestedModel === acc.gradingAudit.actualModel
+                  ? acc.gradingAudit.actualModel
+                  : `${acc.gradingAudit.requestedModel} → ${acc.gradingAudit.actualModel}`}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">Cơ chế ổn định & nguồn chạy</p>
+              <p className="text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
+                {acc.gradingAudit.strictModelLock ? 'Khóa model chuẩn' : 'Cho phép dự phòng'} ·{' '}
+                {acc.gradingAudit.usedFallback ? 'Đã dùng dự phòng' : 'Đúng model chính'} ·{' '}
+                {acc.gradingAudit.cached ? 'Trùng bộ nhớ đệm' : 'Chấm trực tiếp'}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">Thang chấm Độ đầy đủ (Rubric)</p>
+              <p className="text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
+                {acc.gradingAudit.rubricMode === 'fixed_textbook_rubric'
+                  ? `Rubric cố định SGK (${acc.gradingAudit.rubricItemCount} tiêu chí)`
+                  : acc.gradingAudit.rubricMode === 'scope_guided'
+                  ? 'Theo phạm vi chương'
+                  : 'Chưa có rubric SGK'}
+                {acc.gradingAudit.chunkIds.length > 0
+                  ? ` · ${acc.gradingAudit.chunkIds.length} đoạn SGK`
+                  : ''}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">Mã băm văn bản OCR / đầu vào</p>
+              <p className="font-mono text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
+                OCR: {acc.gradingAudit.ocrTextHash.slice(0, 12)} · Input: {acc.gradingAudit.inputHash.slice(0, 12)}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">Trạng thái OCR & Độ dài tài liệu</p>
+              <p className="text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
+                {acc.gradingAudit.ocrConfirmed ? 'Đã xác nhận OCR' : 'OCR tự động'} ·{' '}
+                {acc.gradingAudit.studentCharCount.toLocaleString('vi-VN')} ký tự
+                {acc.gradingAudit.truncationApplied ? ' · Có rút gọn ngữ cảnh dài' : ' · Đủ toàn văn'}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">Phiên bản kiểm định & Seed</p>
+              <p className="font-mono text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
+                {acc.gradingAudit.promptVersion} · Seed {acc.gradingAudit.deterministicSeed}
+                {acc.gradingAudit.systemFingerprint ? ` · ${acc.gradingAudit.systemFingerprint}` : ''}
+              </p>
+            </div>
+          </div>
+          {acc.gradingAudit.truncationApplied && (
+            <p className="text-[11px] text-amber-800 dark:text-amber-300 border-t border-amber-200/70 dark:border-amber-800/50 pt-2">
+              Lưu ý: Tài liệu hoặc ngữ cảnh SGK vượt ngưỡng tối đa trong một lượt chấm và đã được rút gọn ở phần cuối. Nên tách tài liệu rất dài theo từng chương để kiểm định chi tiết nhất.
+            </p>
+          )}
+        </SmoothAccordion>
+      )}
 
       {/* Explicit Quiz Offer Banner */}
       <GlassSurface enableRipple className="report-scroll-section rounded-3xl p-4 sm:p-6 border border-sky-200/80 dark:border-sky-800/60 no-print">
@@ -1661,23 +1749,41 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
             </p>
           ) : (
             <div className="space-y-2.5">
-              {analysis.webSources.map((src) => (
-                <a
-                  key={src.evidenceId}
-                  href={src.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block document-paper rounded-2xl p-3.5 text-xs hover:border-sky-400 transition-colors"
-                >
-                  <div className="flex items-center justify-between gap-2 font-semibold text-sky-700 dark:text-sky-400">
-                    <span className="truncate">{src.title}</span>
-                    <ExternalLink className="w-3.5 h-3.5 shrink-0" />
-                  </div>
-                  <p className="text-slate-500 dark:text-slate-400 font-mono text-[11px] mt-1 truncate">
-                    {src.domain || src.url}
-                  </p>
-                </a>
-              ))}
+              {analysis.webSources.map((src) => {
+                const safeUrl = sanitizeExternalHttpUrl(src.url);
+                if (!safeUrl) {
+                  return (
+                    <div
+                      key={src.evidenceId}
+                      className="block document-paper rounded-2xl p-3.5 text-xs"
+                    >
+                      <div className="flex items-center justify-between gap-2 font-semibold text-slate-700 dark:text-slate-300">
+                        <span className="truncate">{src.title}</span>
+                      </div>
+                      <p className="text-slate-500 dark:text-slate-400 font-mono text-[11px] mt-1 truncate">
+                        {src.domain || 'Nguồn tham khảo'}
+                      </p>
+                    </div>
+                  );
+                }
+                return (
+                  <a
+                    key={src.evidenceId}
+                    href={safeUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block document-paper rounded-2xl p-3.5 text-xs hover:border-sky-400 transition-colors"
+                  >
+                    <div className="flex items-center justify-between gap-2 font-semibold text-sky-700 dark:text-sky-400">
+                      <span className="truncate">{src.title}</span>
+                      <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                    </div>
+                    <p className="text-slate-500 dark:text-slate-400 font-mono text-[11px] mt-1 truncate">
+                      {src.domain || safeUrl}
+                    </p>
+                  </a>
+                );
+              })}
             </div>
           )}
         </div>

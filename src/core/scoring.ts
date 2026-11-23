@@ -140,9 +140,17 @@ export function calculateAccuracyScore(
  */
 export function calculateCompletenessScore(
   coverageItems: KnowledgeCoverageItem[],
-  hasValidScope: boolean
+  hasValidScope: boolean,
+  options: {
+    rubricMode?: 'fixed_textbook_rubric' | 'scope_guided' | 'unscoped';
+    rubricItemCount?: number;
+    extraObservationsCount?: number;
+  } = {}
 ): CompletenessBreakdown {
-  if (!hasValidScope || coverageItems.length === 0) {
+  const effectiveRubricMode =
+    options.rubricMode || (hasValidScope ? 'scope_guided' : 'unscoped');
+
+  if (!hasValidScope || effectiveRubricMode === 'unscoped' || coverageItems.length === 0) {
     return {
       completenessScore: null,
       coveredWeight: 0,
@@ -150,6 +158,9 @@ export function calculateCompletenessScore(
       missingCount: 0,
       partialCount: 0,
       coveredCount: 0,
+      rubricMode: 'unscoped',
+      rubricItemCount: 0,
+      extraObservationsCount: options.extraObservationsCount ?? 0,
     };
   }
 
@@ -185,6 +196,9 @@ export function calculateCompletenessScore(
     missingCount,
     partialCount,
     coveredCount,
+    rubricMode: effectiveRubricMode,
+    rubricItemCount: options.rubricItemCount ?? coverageItems.length,
+    extraObservationsCount: options.extraObservationsCount ?? 0,
   };
 }
 

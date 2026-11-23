@@ -20,6 +20,7 @@ import {
   type ExtractedClaim,
   type KnowledgeCoverageItem,
 } from '../core/types';
+import { sanitizeExternalHttpUrl } from '../core/urlSecurity';
 import { PdfPageCanvas } from './PdfPageCanvas';
 
 interface SplitDocumentViewerProps {
@@ -519,17 +520,20 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                               {ev.excerpt}
                             </p>
                           )}
-                          {ev.url && (
-                            <a
-                              href={ev.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-sky-700 dark:text-sky-400 hover:underline font-medium"
-                            >
-                              {ev.domain || ev.url}
-                              <ExternalLink className="w-3 h-3" />
-                            </a>
-                          )}
+                          {(() => {
+                            const safeUrl = sanitizeExternalHttpUrl(ev.url);
+                            return safeUrl ? (
+                              <a
+                                href={safeUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-sky-700 dark:text-sky-400 hover:underline font-medium"
+                              >
+                                {ev.domain || safeUrl}
+                                <ExternalLink className="w-3 h-3" />
+                              </a>
+                            ) : null;
+                          })()}
                         </div>
                       ))}
                     </div>

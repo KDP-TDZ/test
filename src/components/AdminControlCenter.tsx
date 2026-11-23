@@ -3,8 +3,12 @@ import {
   Activity,
   AlertCircle,
   BookOpen,
+  Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   ClipboardCheck,
+  Copy,
   Cpu,
   Edit3,
   FileText,
@@ -22,7 +26,10 @@ import {
   Printer,
   RefreshCw,
   Save,
+  Server,
   Shield,
+  ShieldAlert,
+  ShieldCheck,
   Sliders,
   Sparkles,
   Trash2,
@@ -52,6 +59,7 @@ import {
   type AuditLogEntry,
   type CloudflareKeyStatus,
   type CognitiveLevel,
+  type ColdStartReadinessReport,
   type ExamBlueprint,
   type ExamBlueprintRow,
   type ExamDocument,
@@ -236,6 +244,9 @@ export const AdminControlCenter: React.FC = () => {
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [singleKeyStatus, setSingleKeyStatus] = useState<SingleApiKeyStatus | null>(null);
   const [providerKeys, setProviderKeys] = useState<ProviderKeysStatus | null>(null);
+  const [coldStartReadiness, setColdStartReadiness] = useState<ColdStartReadinessReport | null>(null);
+  const [copiedEnvTemplate, setCopiedEnvTemplate] = useState(false);
+  const [showDeployGuide, setShowDeployGuide] = useState(false);
   const [executionLogs, setExecutionLogs] = useState<AiExecutionLog[]>([]);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogItem[]>(FALLBACK_MODEL_CATALOG);
   const [groqConfigured, setGroqConfigured] = useState<boolean>(false);
@@ -450,6 +461,7 @@ export const AdminControlCenter: React.FC = () => {
       setAuditLogs(data.auditLogs || []);
       setSingleKeyStatus(data.singleKeyStatus || null);
       setProviderKeys(data.providerKeys || null);
+      setColdStartReadiness(data.coldStartReadiness || null);
       setGroqConfigured(Boolean(data.groqConfigured || data.providerKeys?.groq?.configured));
       setCloudflareConfigured(Boolean(data.cloudflareConfigured || data.providerKeys?.cloudflare?.configured));
       setExecutionLogs(data.executionLogs || []);
@@ -514,6 +526,7 @@ export const AdminControlCenter: React.FC = () => {
       });
       const data = await parseApiResponse<any>(res, 'Không thể cập nhật cấu hình.');
       setConfig(data.config);
+      if (data.coldStartReadiness) setColdStartReadiness(data.coldStartReadiness);
       if (data.config?.activeModel) setActiveModel(data.config.activeModel);
       if (data.config?.taskModels) setTaskModelsDraft(data.config.taskModels);
       await refreshSystemStatus();
@@ -615,16 +628,30 @@ export const AdminControlCenter: React.FC = () => {
       });
       const data = await parseApiResponse<any>(res, 'Không thể lưu API key.');
       setSingleKeyStatus(data.singleKeyStatus);
+      if (data.coldStartReadiness) setColdStartReadiness(data.coldStartReadiness);
       setNewRawKey('');
       setTestResult(null);
       setNotice(
-        `Đã lưu & kích hoạt ngay API key (${data.singleKeyStatus.maskedKey}) mà không cần deploy lại.`
+        `Đã lưu & kích hoạt ngay Gemini API key (${data.singleKeyStatus.maskedKey}). Để chạy 24/7 khi máy chủ tự ngủ/reset lúc Admin ngoại tuyến, hãy đặt thêm GEMINI_API_KEY trong biến môi trường Vercel/Render.`
       );
       await loadAllAdminData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Lỗi lưu API key.');
     } finally {
       setSavingKey(false);
+    }
+  };
+
+  const handleCopyEnvTemplate = async () => {
+    const template = coldStartReadiness?.envTemplate;
+    if (!template) return;
+    try {
+      await navigator.clipboard.writeText(template);
+      setCopiedEnvTemplate(true);
+      window.setTimeout(() => setCopiedEnvTemplate(false), 2200);
+    } catch {
+      setShowDeployGuide(true);
+      setNotice('Không thể tự động sao chép vào clipboard. Hãy sao chép trực tiếp từ khung mẫu bên dưới.');
     }
   };
 
@@ -684,7 +711,7 @@ export const AdminControlCenter: React.FC = () => {
       setGroqRawKey('');
       setGroqTestResult(null);
       setNotice(
-        `Đã lưu & kích hoạt ngay Groq API Key (${data.groqStatus?.maskedKey || ''}) mà không cần thêm biến trên Vercel.`
+        `Đã lưu & kích hoạt ngay Groq API Key (${data.groqStatus?.maskedKey || ''}). Để web chạy 24/7 khi Vercel/Render reset lúc Admin ngoại tuyến, hãy đặt thêm GROQ_API_KEY trong biến môi trường máy chủ.`
       );
       await loadAllAdminData();
     } catch (err) {
@@ -774,7 +801,7 @@ export const AdminControlCenter: React.FC = () => {
       setCfApiTokenInput('');
       setCfTestResult(null);
       setNotice(
-        'Đã lưu & kích hoạt ngay Cloudflare Workers AI (Account ID + API Token) mà không cần thêm biến trên Vercel.'
+        'Đã lưu & kích hoạt ngay Cloudflare Workers AI. Để chạy 24/7 khi Vercel/Render reset lúc Admin ngoại tuyến, hãy đặt thêm CLOUDFLARE_ACCOUNT_ID và CLOUDFLARE_API_TOKEN trong biến môi trường máy chủ.'
       );
       await loadAllAdminData();
     } catch (err) {
@@ -1969,6 +1996,42 @@ export const AdminControlCenter: React.FC = () => {
           {/* TAB 1: OVERVIEW & GLOBAL AI SWITCH */}
           {tab === 'overview' && (
             <div className="space-y-6">
+              {coldStartReadiness && coldStartReadiness.overallStatus !== 'ready_24_7' && (
+                <div
+                  className={`rounded-2xl border px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+                    coldStartReadiness.overallStatus === 'at_risk'
+                      ? 'border-rose-200 dark:border-rose-800/70 bg-rose-50/85 dark:bg-rose-950/35 text-rose-950 dark:text-rose-100'
+                      : 'border-amber-200 dark:border-amber-800/70 bg-amber-50/85 dark:bg-amber-950/35 text-amber-950 dark:text-amber-100'
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    {coldStartReadiness.overallStatus === 'at_risk' ? (
+                      <AlertCircle className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                    ) : (
+                      <ShieldAlert className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                    )}
+                    <div className="space-y-0.5">
+                      <p className="text-sm font-semibold">
+                        {coldStartReadiness.overallStatus === 'at_risk'
+                          ? 'Cảnh báo 24/7: AI có nguy cơ lỗi 503 khi máy chủ tự ngủ / khởi động lại lúc Admin ngoại tuyến'
+                          : 'Lưu ý 24/7: Một phần cấu hình khóa API chưa bền vững qua lần khởi động lại máy chủ'}
+                      </p>
+                      <p className="text-xs opacity-90">
+                        {coldStartReadiness.warnings[0] ||
+                          'Hãy đặt khóa API vào biến môi trường máy chủ (Vercel / Render) để học sinh luôn dùng được khi Admin offline.'}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setTab('api_security')}
+                    className="px-4 py-2 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-semibold hover:opacity-90 transition-opacity whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    Kiểm tra cấu hình 24/7
+                  </button>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <GlassSurface className="rounded-3xl p-5">
                   <p className="text-xs text-slate-500 dark:text-slate-400">Trạng thái dịch vụ AI</p>
@@ -2563,6 +2626,208 @@ export const AdminControlCenter: React.FC = () => {
           {/* TAB 3: SINGLE API KEY & ALLOWED ORIGINS */}
           {tab === 'api_security' && (
             <div className="space-y-6">
+              {coldStartReadiness && (
+                <GlassSurface className="rounded-3xl p-6 space-y-5">
+                  <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 pb-4 border-b border-slate-200/70 dark:border-slate-700/70">
+                    <div className="flex items-start gap-3">
+                      {coldStartReadiness.overallStatus === 'ready_24_7' ? (
+                        <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                      ) : coldStartReadiness.overallStatus === 'partial_risk' ? (
+                        <ShieldAlert className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertCircle className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                      )}
+                      <div>
+                        <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                          Trạng thái Sẵn sàng 24/7 (Chống mất API khi Server Reset)
+                        </h2>
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-600 dark:text-slate-300 mt-1">
+                          <span
+                            className={`font-semibold ${
+                              coldStartReadiness.overallStatus === 'ready_24_7'
+                                ? 'text-emerald-700 dark:text-emerald-400'
+                                : coldStartReadiness.overallStatus === 'partial_risk'
+                                  ? 'text-amber-700 dark:text-amber-400'
+                                  : 'text-rose-700 dark:text-rose-400'
+                            }`}
+                          >
+                            {coldStartReadiness.overallStatus === 'ready_24_7'
+                              ? 'Sẵn sàng 24/7'
+                              : coldStartReadiness.overallStatus === 'partial_risk'
+                                ? 'Cần bổ sung dự phòng'
+                                : 'Nguy cơ lỗi 503 khi server reset'}
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span>
+                            Môi trường:{' '}
+                            {coldStartReadiness.runtimePlatform === 'vercel'
+                              ? 'Vercel Serverless'
+                              : coldStartReadiness.runtimePlatform === 'render'
+                                ? 'Render Container'
+                                : 'Node.js Server'}
+                          </span>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-mono text-[11px]">
+                            Model chính: {coldStartReadiness.activeModel}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={handleCopyEnvTemplate}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl glass-control text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        {copiedEnvTemplate ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                            <span>Đã sao chép mẫu</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>Sao chép mẫu biến môi trường</span>
+                          </>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowDeployGuide((prev) => !prev)}
+                        className="inline-flex items-center gap-1 px-3 py-2 rounded-xl glass-control text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        <Server className="w-3.5 h-3.5" />
+                        <span>Hướng dẫn Vercel / Render</span>
+                        {showDeployGuide ? (
+                          <ChevronUp className="w-3.5 h-3.5" />
+                        ) : (
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-200/70 dark:border-slate-700/70 text-slate-500 dark:text-slate-400">
+                          <th className="py-2 pr-4 font-medium">Nhà cung cấp AI</th>
+                          <th className="py-2 pr-4 font-medium">Biến môi trường máy chủ</th>
+                          <th className="py-2 pr-4 font-medium">Nguồn đang chạy</th>
+                          <th className="py-2 font-medium">Khi server reset &amp; Admin offline</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200/50 dark:divide-slate-800/70">
+                        {[
+                          coldStartReadiness.providers.groq,
+                          coldStartReadiness.providers.gemini,
+                          coldStartReadiness.providers.cloudflare,
+                        ].map((item) => {
+                          const isActiveProvider = coldStartReadiness.activeProvider === item.provider;
+                          return (
+                            <tr key={item.provider} className="align-middle">
+                              <td className="py-2.5 pr-4 font-medium text-[#16243E] dark:text-[#E6EFFC]">
+                                {item.label}
+                                {isActiveProvider && (
+                                  <span className="text-[11px] font-normal text-sky-700 dark:text-sky-400 ml-1.5">
+                                    · Đang dùng chính
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2.5 pr-4 font-mono text-[11px] text-slate-600 dark:text-slate-300">
+                                {item.envVarNames.join(' / ')}
+                              </td>
+                              <td className="py-2.5 pr-4 text-slate-600 dark:text-slate-300">
+                                {item.adminOverrideActive && item.envConfigured
+                                  ? 'Key Admin (có Env dự phòng)'
+                                  : item.adminOverrideActive
+                                    ? 'Chỉ Key dán trong Admin'
+                                    : item.envConfigured
+                                      ? 'Biến môi trường máy chủ'
+                                      : 'Chưa cấu hình'}
+                              </td>
+                              <td className="py-2.5 font-medium">
+                                {item.survivesColdStartWhenAdminOffline ? (
+                                  <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400">
+                                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                                    Tự hoạt động 24/7
+                                  </span>
+                                ) : item.adminOverrideActive ? (
+                                  <span className="inline-flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
+                                    <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                                    Mất tạm thời khi reset
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500 dark:text-slate-400">
+                                    Chưa kích hoạt
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200/70 dark:border-slate-700/70 text-xs">
+                    <span className="text-slate-600 dark:text-slate-300">
+                      Khóa mã hóa lưu trữ (<code className="font-mono">KEY_ENCRYPTION_SECRET</code>):
+                    </span>
+                    <span
+                      className={`font-semibold ${
+                        coldStartReadiness.encryptionSecretConfigured
+                          ? 'text-emerald-700 dark:text-emerald-400'
+                          : 'text-amber-700 dark:text-amber-400'
+                      }`}
+                    >
+                      {coldStartReadiness.encryptionSecretConfigured
+                        ? 'Đã cấu hình bền vững qua các lần khởi động lại'
+                        : 'Chưa đặt — khóa dán trong Admin chỉ lưu tạm trong RAM'}
+                    </span>
+                  </div>
+
+                  {coldStartReadiness.warnings.length > 0 && (
+                    <div className="pt-3 border-t border-slate-200/70 dark:border-slate-700/70 space-y-1.5">
+                      <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                        Cần bổ sung để đảm bảo 24/7:
+                      </p>
+                      <ul className="list-disc pl-5 space-y-1 text-xs text-slate-700 dark:text-slate-300">
+                        {coldStartReadiness.warnings.map((w, idx) => (
+                          <li key={idx}>{w}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {showDeployGuide && (
+                    <div className="pt-3 border-t border-slate-200/70 dark:border-slate-700/70 space-y-3 text-xs text-slate-700 dark:text-slate-300">
+                      <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+                        Cách cấu hình chạy 24/7 trên Vercel hoặc Render (3 bước):
+                      </p>
+                      <ol className="list-decimal pl-5 space-y-1">
+                        <li>
+                          Mở mục <strong>Settings → Environment Variables</strong> (trên Vercel) hoặc{' '}
+                          <strong>Environment → Add Environment Variable</strong> (trên Render).
+                        </li>
+                        <li>
+                          Thêm ít nhất khóa AI chính (<code className="font-mono">GROQ_API_KEY</code> hoặc{' '}
+                          <code className="font-mono">GEMINI_API_KEY</code>) cùng 1 chuỗi bí mật ngẫu nhiên 32+ ký tự cho{' '}
+                          <code className="font-mono">KEY_ENCRYPTION_SECRET</code>.
+                        </li>
+                        <li>
+                          Lưu và <strong>Redeploy</strong>. Từ lúc này, dù máy chủ tự ngủ và Admin ngoại tuyến hoàn toàn, mọi yêu cầu của học sinh vẫn chạy bình thường mà không cần mở khóa Firestore.
+                        </li>
+                      </ol>
+                      <pre className="p-3.5 rounded-xl bg-slate-900/95 text-slate-100 font-mono text-[11px] overflow-x-auto leading-relaxed">
+                        {coldStartReadiness.envTemplate}
+                      </pre>
+                    </div>
+                  )}
+                </GlassSurface>
+              )}
+
               <GlassSurface className="rounded-3xl p-6 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -2570,7 +2835,7 @@ export const AdminControlCenter: React.FC = () => {
                       API Key Gemini dùng chung cho toàn bộ tác vụ
                     </h2>
                     <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
-                      Sử dụng <strong>1 API key duy nhất</strong> cho toàn bộ pipeline. Có thể đổi bất cứ lúc nào mà không cần sửa code hoặc deploy lại.
+                      Ghi đè nhanh ngay lập tức trong phiên chạy. Để bền vững 24/7 khi Vercel/Render reset lúc Admin ngoại tuyến, hãy đặt thêm biến <code className="font-mono">GEMINI_API_KEY</code> trên máy chủ.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -2688,7 +2953,7 @@ export const AdminControlCenter: React.FC = () => {
                       API Key Groq Cloud Free (Tăng tốc văn bản/JSON &amp; dự phòng Gemini 429)
                     </h2>
                     <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
-                      Lưu mã hóa AES-256-GCM trên Cloud Firestore (<code className="font-mono">adminSecrets/groq</code>). Có hiệu lực ngay lập tức mà <strong>không cần đặt biến môi trường trên Vercel</strong>.
+                      Dùng để thử nghiệm hoặc đổi nhanh tức thì trong phiên chạy (lưu mã hóa AES-256-GCM trên <code className="font-mono">adminSecrets/groq</code> cho Super Admin). Để chạy <strong>24/7 khi Vercel/Render reset lúc Admin ngoại tuyến</strong>, hãy đặt thêm biến <code className="font-mono">GROQ_API_KEY</code> trên máy chủ.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -2815,7 +3080,7 @@ export const AdminControlCenter: React.FC = () => {
                       Cloudflare Workers AI Free (Account ID &amp; API Token — Tầng dự phòng thứ 3)
                     </h2>
                     <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
-                      Lưu mã hóa AES-256-GCM trên Cloud Firestore (<code className="font-mono">adminSecrets/cloudflare</code>). Dùng trực tiếp trên web mà <strong>không cần cấu hình biến môi trường trên Vercel</strong>.
+                      Dùng để thử nghiệm hoặc ghi đè nhanh (lưu mã hóa trên <code className="font-mono">adminSecrets/cloudflare</code> cho Super Admin). Để tầng dự phòng này tự sống lại <strong>24/7 khi Vercel/Render reset</strong>, hãy đặt thêm <code className="font-mono">CLOUDFLARE_ACCOUNT_ID</code> và <code className="font-mono">CLOUDFLARE_API_TOKEN</code> trên máy chủ.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">

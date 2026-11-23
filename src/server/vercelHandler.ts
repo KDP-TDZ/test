@@ -23,14 +23,10 @@ export default function handler(req: IncomingMessage, res: ServerResponse): void
   if (!app) {
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    const detail =
-      initError instanceof Error
-        ? initError.message
-        : String(initError || 'Unknown server initialization error');
     res.end(
       JSON.stringify({
         code: 'API_INIT_FAILED',
-        error: `Máy chủ API chưa thể khởi tạo: ${detail}`,
+        error: 'Máy chủ API hiện chưa sẵn sàng. Vui lòng thử lại sau ít phút.',
       })
     );
     return;
@@ -46,7 +42,7 @@ export default function handler(req: IncomingMessage, res: ServerResponse): void
       res.end(
         JSON.stringify({
           code: 'API_INVOCATION_ERROR',
-          error: err instanceof Error ? err.message : 'Lỗi thực thi máy chủ API.',
+          error: 'Lỗi thực thi máy chủ API. Vui lòng thử lại sau.',
         })
       );
     }

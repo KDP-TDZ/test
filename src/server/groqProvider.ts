@@ -179,6 +179,7 @@ export interface GroqCompletionResult {
   candidateTokens: number;
   totalTokens: number;
   resolvedModel?: string;
+  systemFingerprint?: string;
 }
 
 type GroqMessageContentPart =
@@ -197,15 +198,21 @@ async function executeGroqRequest(params: {
   hasImages?: boolean;
   jsonMode?: boolean;
   maxTokens: number;
+  temperature: number;
+  seed?: number;
   signal?: AbortSignal;
 }): Promise<{ ok: true; result: GroqCompletionResult } | { ok: false; status: number; errText: string }> {
-  const sendOnce = async (useResponseFormatJson: boolean) => {
+  const sendOnce = async (useResponseFormatJson: boolean, includeSeed: boolean) => {
     const body: Record<string, unknown> = {
       model: params.groqModel,
       messages: params.messages,
-      temperature: 0.15,
+      temperature: params.temperature,
       max_tokens: params.maxTokens,
     };
+
+    if (includeSeed && typeof params.seed === 'number' && Number.isFinite(params.seed)) {
+      body.seed = Math.floor(params.seed);
+    }
 
     if (useResponseFormatJson) {
       body.response_format = { type: 'json_object' };
@@ -227,6 +234,7 @@ async function executeGroqRequest(params: {
     }
 
     const data = (await res.json()) as {
+      system_fingerprint?: string;
       choices?: Array<{ message?: { content?: string; reasoning?: string } }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     };
@@ -243,23 +251,38 @@ async function executeGroqRequest(params: {
         candidateTokens: data.usage?.completion_tokens || 0,
         totalTokens: data.usage?.total_tokens || 0,
         resolvedModel: `groq:${params.groqModel}`,
+        ...(typeof data.system_fingerprint === 'string' && data.system_fingerprint.trim()
+          ? { systemFingerprint: data.system_fingerprint.trim() }
+          : {}),
       },
     };
   };
 
   // For multimodal image requests, some Groq vision models reject response_format: { type: 'json_object' } with HTTP 400
   const useStrictJsonHeaderFirst = Boolean(params.jsonMode) && !params.hasImages;
-  const primary = await sendOnce(useStrictJsonHeaderFirst);
-  if (!primary.ok && primary.status === 400 && useStrictJsonHeaderFirst) {
-    // Only retry same model without response_format if the 400 error isn't model_not_found / model_decommissioned
+  const hasSeed = typeof params.seed === 'number' && Number.isFinite(params.seed);
+  let primary = await sendOnce(useStrictJsonHeaderFirst, hasSeed);
+
+  if (!primary.ok && primary.status === 400) {
     const lowerErr = primary.errText.toLowerCase();
     const isDeadModel =
       lowerErr.includes('model_not_found') ||
       lowerErr.includes('model_decommissioned') ||
       lowerErr.includes('does not exist') ||
       lowerErr.includes('not found');
-    if (!isDeadModel) {
-      const withoutJsonFormat = await sendOnce(false);
+
+    // Safe retry 1: if a specific Groq model rejects the `seed` parameter, retry once without `seed`
+    if (!isDeadModel && hasSeed && lowerErr.includes('seed')) {
+      const withoutSeed = await sendOnce(useStrictJsonHeaderFirst, false);
+      if (withoutSeed.ok) {
+        return withoutSeed;
+      }
+      primary = withoutSeed;
+    }
+
+    // Safe retry 2: retry without response_format json_object if unsupported by this model
+    if (!primary.ok && !isDeadModel && useStrictJsonHeaderFirst) {
+      const withoutJsonFormat = await sendOnce(false, false);
       if (withoutJsonFormat.ok) {
         return withoutJsonFormat;
       }
@@ -276,9 +299,12 @@ export async function callGroqChatCompletion(params: {
   jsonMode?: boolean;
   jsonSchemaHint?: string;
   maxOutputTokens?: number;
+  temperature?: number;
+  seed?: number;
   signal?: AbortSignal;
   apiKeyOverride?: string;
   disableModelAutoFallback?: boolean;
+  strictModelLock?: boolean;
 }): Promise<GroqCompletionResult> {
   const apiKey = (params.apiKeyOverride || '').trim() || getGroqApiKey();
   if (!apiKey) {
@@ -331,6 +357,10 @@ export async function callGroqChatCompletion(params: {
 
   // Reasoning-capable models (e.g. openai/gpt-oss-*) need at least 256 tokens so final content isn't truncated
   const maxTokens = Math.min(8192, Math.max(256, params.maxOutputTokens || 2048));
+  const effectiveTemperature =
+    typeof params.temperature === 'number' && Number.isFinite(params.temperature)
+      ? Math.max(0, Math.min(2, params.temperature))
+      : 0;
 
   const firstAttempt = await executeGroqRequest({
     apiKey,
@@ -339,6 +369,8 @@ export async function callGroqChatCompletion(params: {
     hasImages,
     jsonMode: params.jsonMode,
     maxTokens,
+    temperature: effectiveTemperature,
+    seed: params.seed,
     signal: params.signal,
   });
 
@@ -360,10 +392,12 @@ export async function callGroqChatCompletion(params: {
   let lastErrText = firstAttempt.errText;
   const triedModels: string[] = [groqModel];
 
+  const allowAutoFallback = !params.disableModelAutoFallback && !params.strictModelLock;
+
   // If Groq reports HTTP 404, 400 (model not enabled / decommissioned / unsupported param), or 503, discover active models and try candidates
   if (
     (firstAttempt.status === 404 || firstAttempt.status === 400 || firstAttempt.status === 503) &&
-    !params.disableModelAutoFallback
+    allowAutoFallback
   ) {
     const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal, true);
     const tried = new Set<string>([groqModel.toLowerCase()]);
@@ -406,6 +440,8 @@ export async function callGroqChatCompletion(params: {
         hasImages,
         jsonMode: params.jsonMode,
         maxTokens,
+        temperature: effectiveTemperature,
+        seed: params.seed,
         signal: params.signal,
       });
       if (retryAttempt.ok) {

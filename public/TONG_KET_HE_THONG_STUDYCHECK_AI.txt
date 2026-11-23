@@ -11,7 +11,7 @@ Nền tảng Kiểm định Vở ghi, Đề cương & Luyện thi THPT Chuẩn G
     môi trường Dev (`tsx server.ts`) và Vercel Serverless Function (`api/index.mjs`).
   + Cơ sở dữ liệu & Xác thực: Firebase Authentication (Google + Email xác minh)
     và Cloud Firestore với `firestore.rules` phân quyền chặt chẽ theo `uid` và
-    Super Admin (`duongvantiendat2009@gmail.com`).
+    tài khoản quản trị Super Admin được ủy quyền.
 - Tối ưu hóa Bundle & Tốc độ tải (Code-Splitting v3.2):
   + Đã tách rời các module nặng (`AnalysisReportView` kèm `pdfjs-dist`,
     `AdminControlCenter`, `ExamCenterView`, `LeaderboardView`, `QuizWorkspace`,

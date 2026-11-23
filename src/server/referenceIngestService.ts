@@ -11,6 +11,9 @@ async function assertResolvedHostSafe(urlStr: string): Promise<void> {
   }
   try {
     const records = await dns.promises.lookup(hostname, { all: true });
+    if (!records || records.length === 0) {
+      throw new Error('Từ chối kết nối: Không thể xác minh địa chỉ IP công khai của tên miền.');
+    }
     for (const rec of records) {
       if (isPrivateOrLoopbackHost(rec.address)) {
         throw new Error('Từ chối kết nối: Tên miền phân giải về IP nội bộ hoặc loopback (DNS Rebinding guard).');
@@ -20,7 +23,7 @@ async function assertResolvedHostSafe(urlStr: string): Promise<void> {
     if (err instanceof Error && err.message.startsWith('Từ chối kết nối')) {
       throw err;
     }
-    // If DNS lookup fails in restricted environment, fetch itself will fail or validateReferenceUrl already checked hostname
+    throw new Error('Từ chối kết nối: Không thể phân giải DNS an toàn cho tên miền đích.');
   }
 }
 

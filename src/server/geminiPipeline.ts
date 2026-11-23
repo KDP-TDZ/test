@@ -14,6 +14,11 @@ import {
   retrieveRelevantChunks,
   sanitizeReferenceChunkForFirestore,
 } from '../core/retrieval.js';
+import {
+  buildFixedRubricFromChunks,
+  formatFixedRubricForPrompt,
+  reconcileCoverageAgainstFixedRubric,
+} from '../core/rubric.js';
 import type {
   AiTaskType,
   AnalysisStrength,
@@ -32,6 +37,7 @@ import type {
   ExtractedTextBlock,
   FlashcardItem,
   GradeLevel,
+  GradingAuditMetadata,
   ImprovementSuggestion,
   KnowledgeCoverageItem,
   KnowledgeUnitType,
@@ -40,6 +46,7 @@ import type {
   QuizScope,
   ReferenceChunk,
   ReferenceEvidence,
+  RubricMode,
   SubjectId,
   SystemAiConfig,
 } from '../core/types.js';
@@ -54,6 +61,7 @@ import {
   executeRoutedAiTask,
   generateGeminiContentWithFallback,
   thinkingConfigForModel,
+  type RoutedAiTaskResult,
 } from './modelRouter.js';
 import {
   callGroqChatCompletion,
@@ -188,6 +196,94 @@ function normalizeJsonEscapeAndControlChars(jsonCandidate: string): string {
   return out.replace(/,\s*([}\]])/g, '$1');
 }
 
+export const DETERMINISTIC_GRADING_SEED = 20261123;
+export const GRADING_PROMPT_VERSION = 'v4.0_fixed_rubric_deterministic';
+export const MAX_STUDENT_GRADING_CHARS = 48_000;
+export const MAX_TEXTBOOK_GRADING_CHARS = 24_000;
+
+export interface RawKnowledgeEvalResult {
+  claims?: Array<{
+    blockId?: string;
+    sourcePage: number;
+    sourceText: string;
+    chapter: string;
+    concept: string;
+    importanceWeight: number;
+    knowledgeType?: string;
+    evaluationStatus: string;
+    explanation: string;
+    correctKnowledge: string;
+    suggestedFix?: string;
+    matchedChunkId?: string;
+    matchedExcerpt?: string;
+    matchedPage?: number;
+  }>;
+  coverageItems?: Array<{
+    criterionId?: string;
+    concept: string;
+    chapter: string;
+    importanceWeight?: number;
+    status: string;
+    suggestedAddition?: string;
+    referenceExcerpt?: string;
+    referencePage?: number;
+    matchedChunkId?: string;
+  }>;
+  strengths?: AnalysisStrength[];
+  weaknesses?: Array<{ title: string; detail: string; pageNumber?: number }>;
+  suggestions?: Array<{ priority: number; title: string; description: string }>;
+}
+
+/**
+ * Strictly parses and validates KnowledgeAnalysis JSON output.
+ * Never silently falls back to empty `{ claims: [], coverageItems: [] }` when the model output
+ * is empty, truncated, or malformed — throws a retryable `GRADING_JSON_INVALID` error instead.
+ */
+export function parseAndValidateKnowledgeEvalJson(rawText: string): RawKnowledgeEvalResult {
+  const trimmed = (rawText || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  if (!trimmed || trimmed === '{}') {
+    throw new Error(
+      'GRADING_JSON_INVALID: Mô hình AI trả về phản hồi rỗng khi kiểm định kiến thức. Vui lòng thử chấm lại.'
+    );
+  }
+
+  const candidate = repairJsonLikeText(trimmed);
+  let parsed: unknown = null;
+  let lastParseErr: unknown = null;
+
+  for (const attempt of [candidate, normalizeJsonEscapeAndControlChars(candidate)]) {
+    try {
+      parsed = JSON.parse(attempt);
+      lastParseErr = null;
+      break;
+    } catch (err) {
+      lastParseErr = err;
+    }
+  }
+
+  if (lastParseErr || !parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const detail = lastParseErr instanceof Error ? lastParseErr.message : 'Cấu trúc JSON không hợp lệ';
+    throw new Error(
+      `GRADING_JSON_INVALID: Phản hồi chấm điểm từ AI bị cắt cụt hoặc sai định dạng JSON (${detail.slice(0, 120)}). Hệ thống không trả kết quả rỗng giả — vui lòng thử lại.`
+    );
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  if (!Array.isArray(obj.claims)) {
+    throw new Error(
+      'GRADING_JSON_INVALID: Phản hồi kiểm định thiếu mảng mệnh đề (claims). Vui lòng thử chấm lại.'
+    );
+  }
+
+  if (obj.coverageItems !== undefined && !Array.isArray(obj.coverageItems)) {
+    throw new Error(
+      'GRADING_JSON_INVALID: Trường coverageItems trong phản hồi kiểm định không đúng định dạng mảng.'
+    );
+  }
+
+  return obj as RawKnowledgeEvalResult;
+}
+
 function safeParseModelJson<T>(rawText: string, fallbackJson: string): T {
   const source = (rawText || '').trim() || fallbackJson;
   const candidate = repairJsonLikeText(source);
@@ -261,7 +357,13 @@ function parseOcrResponsePayload(rawText: string): ParsedOcrPayload {
   return { rawText: cleanedPlain, ocrConfidence: 0.85 };
 }
 
-async function generateJsonWithProvider<T>(params: {
+interface ProviderJsonResult<T> {
+  data: T;
+  resolvedModel: string;
+  systemFingerprint?: string;
+}
+
+async function generateJsonWithProviderDetailed<T>(params: {
   modelId: string;
   prompt: string;
   thinkingTier: 'minimal' | 'low' | 'medium';
@@ -270,8 +372,17 @@ async function generateJsonWithProvider<T>(params: {
   geminiSchema: Record<string, unknown>;
   groqSchemaHint: string;
   fallbackJson: string;
+  strictJsonParser?: (rawText: string) => T;
+  temperature?: number;
+  seed?: number;
+  strictModelLock?: boolean;
   tokensOut: TokenTelemetry;
-}): Promise<T> {
+}): Promise<ProviderJsonResult<T>> {
+  const parseOutput = (rawText: string): T =>
+    params.strictJsonParser
+      ? params.strictJsonParser(rawText)
+      : safeParseModelJson<T>(rawText, params.fallbackJson);
+
   if (isGroqModelId(params.modelId)) {
     const resp = await callWithTimeout(
       (signal) =>
@@ -281,12 +392,19 @@ async function generateJsonWithProvider<T>(params: {
           jsonMode: true,
           jsonSchemaHint: params.groqSchemaHint,
           maxOutputTokens: params.maxOutputTokens,
+          temperature: params.temperature ?? 0,
+          seed: params.seed,
+          strictModelLock: params.strictModelLock,
           signal,
         }),
       params.timeoutMs
     );
     accumulateRawTokens(params.tokensOut, resp);
-    return safeParseModelJson<T>(resp.text, params.fallbackJson);
+    return {
+      data: parseOutput(resp.text),
+      resolvedModel: resp.resolvedModel || params.modelId,
+      ...(resp.systemFingerprint ? { systemFingerprint: resp.systemFingerprint } : {}),
+    };
   }
 
   if (isCloudflareModelId(params.modelId)) {
@@ -298,12 +416,19 @@ async function generateJsonWithProvider<T>(params: {
           jsonMode: true,
           jsonSchemaHint: params.groqSchemaHint,
           maxOutputTokens: params.maxOutputTokens,
+          temperature: params.temperature ?? 0,
+          seed: params.seed,
+          strictModelLock: params.strictModelLock,
           signal,
         }),
       params.timeoutMs
     );
     accumulateRawTokens(params.tokensOut, resp);
-    return safeParseModelJson<T>(resp.text, params.fallbackJson);
+    return {
+      data: parseOutput(resp.text),
+      resolvedModel: resp.resolvedModel || params.modelId,
+      ...(resp.systemFingerprint ? { systemFingerprint: resp.systemFingerprint } : {}),
+    };
   }
 
   const ai = await createServerAiClient();
@@ -314,6 +439,9 @@ async function generateJsonWithProvider<T>(params: {
         model: params.modelId,
         contents: params.prompt,
         thinkingTier: params.thinkingTier,
+        temperature: params.temperature,
+        seed: params.seed,
+        strictModelLock: params.strictModelLock,
         config: {
           maxOutputTokens: params.maxOutputTokens,
           abortSignal: signal,
@@ -324,7 +452,30 @@ async function generateJsonWithProvider<T>(params: {
     params.timeoutMs
   );
   accumulateTokens(params.tokensOut, response);
-  return safeParseModelJson<T>(response.text, params.fallbackJson);
+  return {
+    data: parseOutput(response.text),
+    resolvedModel: response.resolvedModel || params.modelId,
+    ...(response.systemFingerprint ? { systemFingerprint: response.systemFingerprint } : {}),
+  };
+}
+
+async function generateJsonWithProvider<T>(params: {
+  modelId: string;
+  prompt: string;
+  thinkingTier: 'minimal' | 'low' | 'medium';
+  maxOutputTokens: number;
+  timeoutMs?: number;
+  geminiSchema: Record<string, unknown>;
+  groqSchemaHint: string;
+  fallbackJson: string;
+  strictJsonParser?: (rawText: string) => T;
+  temperature?: number;
+  seed?: number;
+  strictModelLock?: boolean;
+  tokensOut: TokenTelemetry;
+}): Promise<T> {
+  const res = await generateJsonWithProviderDetailed(params);
+  return res.data;
 }
 
 async function generatePlainTextWithProvider(params: {
@@ -394,10 +545,12 @@ async function runTaskWithRouter<T>(params: {
   bypassCache?: boolean;
   allowGroqRescue?: boolean;
   groqRescueModelId?: string;
+  strictModelLock?: boolean;
+  extractExecutionMeta?: (data: T) => { actualModel?: string; systemFingerprint?: string };
   runWithModel: (modelId: string) => Promise<T>;
-}): Promise<{ data: T; modelId: string }> {
+}): Promise<RoutedAiTaskResult<T>> {
   const cfg = params.config || getAuthoritativeAiConfigSnapshot();
-  const res = await executeRoutedAiTask({
+  return executeRoutedAiTask({
     taskType: params.taskType,
     config: cfg,
     consumeOneTimeOverride: (task) => consumeOneTimeModelOverride(task, params.idToken),
@@ -405,9 +558,10 @@ async function runTaskWithRouter<T>(params: {
     bypassCache: params.bypassCache,
     allowGroqRescue: params.allowGroqRescue,
     groqRescueModelId: params.groqRescueModelId,
+    strictModelLock: params.strictModelLock,
+    extractExecutionMeta: params.extractExecutionMeta,
     runWithModel: params.runWithModel,
   });
-  return { data: res.data, modelId: res.modelId };
 }
 
 export interface InlineScopeSuggestion {
@@ -1007,6 +1161,9 @@ export class KnowledgeAnalysisService {
     scope: string;
     referenceChunks: ReferenceChunk[];
     enableWebGrounding: boolean;
+    strictModelLock?: boolean;
+    ocrConfirmed?: boolean;
+    ocrTextHash?: string;
     tokensOut: TokenTelemetry;
     config?: SystemAiConfig;
     idToken?: string;
@@ -1028,6 +1185,7 @@ export class KnowledgeAnalysisService {
     confidenceReason: string;
     accuracyBreakdown: ReturnType<typeof calculateAccuracyScore>;
     completenessBreakdown: ReturnType<typeof calculateCompletenessScore>;
+    gradingAudit: GradingAuditMetadata;
   }> {
     const {
       pages,
@@ -1039,6 +1197,9 @@ export class KnowledgeAnalysisService {
       scope,
       referenceChunks,
       enableWebGrounding,
+      strictModelLock = true,
+      ocrConfirmed = false,
+      ocrTextHash: providedOcrTextHash,
       tokensOut,
       config,
       idToken,
@@ -1051,19 +1212,48 @@ export class KnowledgeAnalysisService {
         const blocksStr = p.blocks
           .map(
             (b) =>
-              `[blockId=${b.blockId} | page=${p.pageNumber} | ocrConf=${b.confidence}] ${b.extractedText}`
+              `[blockId=${b.blockId} | page=${p.pageNumber} | ocrConf=${ocrConfirmed ? Math.max(b.confidence, 0.95) : b.confidence}] ${b.extractedText}`
           )
           .join('\n');
         return `--- TRANG ${p.pageNumber} ---\n${blocksStr}`;
       })
       .join('\n\n');
 
-    const fullText = pages.map((p) => p.rawText).join('\n');
+    const fullText = pages.map((p) => p.rawText).join('\n').normalize('NFC');
+    const computedOcrTextHash = crypto
+      .createHash('sha256')
+      .update(fullText, 'utf8')
+      .digest('hex')
+      .slice(0, 24);
+    const ocrTextHash = (providedOcrTextHash || '').trim() || computedOcrTextHash;
+
+    // Retrieve up to 16 relevant textbook chunks with deterministic tie-breaking sort
     const retrievedHits = retrieveRelevantChunks(fullText, referenceChunks, {
       referenceId: textbookReferenceId || undefined,
       selectedChapters: selectedChapters.length > 0 ? selectedChapters : undefined,
-      topK: 10,
+      topK: 16,
     });
+    const retrievedChunks = retrievedHits.map((h) => h.chunk);
+    const sortedChunkIds = retrievedChunks.map((c) => c.chunkId).sort();
+
+    // Build pre-grading FixedRubric directly from indexed textbook chunks BEFORE invoking the AI
+    const fixedRubric = buildFixedRubricFromChunks({
+      chunks: retrievedChunks,
+      subject,
+      grade,
+      textbookReferenceId,
+      textbookTitle,
+      selectedChapters,
+      maxCriteria: 24,
+    });
+
+    const hasIndexedTextbookChunks = retrievedHits.length > 0;
+    const rubricMode: RubricMode =
+      fixedRubric.criteria.length > 0
+        ? 'fixed_textbook_rubric'
+        : selectedChapters.length > 0 || scope.trim().length > 0
+        ? 'scope_guided'
+        : 'unscoped';
 
     const textbookContext =
       retrievedHits.length > 0
@@ -1093,7 +1283,7 @@ export class KnowledgeAnalysisService {
           taskType: 'claim_validation',
           config,
           idToken,
-          cacheInput: { webSearchText: fullText.slice(0, 2000), grade, subject, scope },
+          cacheInput: { webSearchTextHash: computedOcrTextHash, grade, subject, scope },
           runWithModel: async (modelId) => {
             const searchModel =
               isGroqModelId(modelId) || isCloudflareModelId(modelId)
@@ -1153,7 +1343,28 @@ export class KnowledgeAnalysisService {
       }
     }
 
-    const hasIndexedTextbookChunks = retrievedHits.length > 0;
+    const studentTruncated = formattedStudentBlocks.length > MAX_STUDENT_GRADING_CHARS;
+    const textbookTruncated = textbookContext.length > MAX_TEXTBOOK_GRADING_CHARS;
+    const truncationApplied = studentTruncated || textbookTruncated;
+    const studentSlice = formattedStudentBlocks.slice(0, MAX_STUDENT_GRADING_CHARS);
+    const textbookSlice = textbookContext.slice(0, MAX_TEXTBOOK_GRADING_CHARS);
+
+    const rubricSection =
+      rubricMode === 'fixed_textbook_rubric'
+        ? [
+            '=== RUBRIC KIỂM ĐỊNH ĐỘ ĐẦY ĐỦ CỐ ĐỊNH (ĐÃ KHÓA TRƯỚC KHI CHẤM) ===',
+            formatFixedRubricForPrompt(fixedRubric),
+            '',
+          ].join('\n')
+        : '';
+
+    const coverageInstruction =
+      rubricMode === 'fixed_textbook_rubric'
+        ? `- ĐÁNH GIÁ ĐỘ ĐẦY ĐỦ (coverageItems): BẮT BUỘC chấm đủ TẤT CẢ ${fixedRubric.criteria.length} tiêu chí KT01..KT${String(fixedRubric.criteria.length).padStart(2, '0')} từ bảng Rubric cố định bên dưới. Ghi đúng trường "criterionId", giữ nguyên "importanceWeight" của rubric, trích dẫn đúng "matchedChunkId" & "referenceExcerpt". KHÔNG giới hạn 10 ý và KHÔNG bỏ sót tiêu chí nào.`
+        : rubricMode === 'scope_guided'
+        ? '- ĐÁNH GIÁ ĐỘ ĐẦY ĐỦ (coverageItems): Đánh giá đầy đủ các ý trọng tâm theo phạm vi chương đã chọn (không tự cắt ngắn khi tài liệu dài), phân loại rõ COVERED / PARTIALLY_COVERED / MISSING.'
+        : '- Không có SGK hay phạm vi chương cố định: chỉ ghi nhận các thiếu sót trực tiếp trong bài viết (như thiếu chú thích ký hiệu/đơn vị của công thức) nếu thực sự tồn tại.';
+
     const analysisPrompt = [
       'Bạn là chuyên gia kiểm định kiến thức giáo dục THPT Việt Nam của StudyCheck AI. Hãy chấm cực kỳ chính xác, chặt chẽ, nhất quán tuyệt đối giữa trạng thái, lời giải thích và đáp án sửa chuẩn.',
       `Môn học: ${subjectName} | Lớp: ${grade} | Sách tham chiếu: ${textbookTitle || 'Chuẩn chương trình GDPT 2018 & kiến thức khoa học phổ thông'} | Phạm vi: ${scope || selectedChapters.join(', ') || 'Theo đúng chủ đề chính trong tài liệu'}`,
@@ -1175,9 +1386,9 @@ export class KnowledgeAnalysisService {
       '',
       'LỚP 3 — KIỂM TRA ĐỘ ĐẦY ĐỦ CHÚ THÍCH KÝ HIỆU & ĐƠN VỊ CỦA MỌI CÔNG THỨC:',
       '- Với MỌI công thức xuất hiện trong tài liệu (ví dụ s = v.t, x = x0 + v.t, F = m.a...), liệt kê TẤT CẢ các ký hiệu/biến số có mặt trong công thức đó và đối chiếu với phần giải thích ("Trong đó...") ngay kế tiếp.',
-      '- Nếu học sinh BỎ SÓT giải thích ý nghĩa HOẶC thiếu đơn vị đo của bất kỳ ký hiệu nào (ví dụ: viết s và v nhưng không giải thích thời gian t và đơn vị giây s; hoặc viết x0 và x nhưng không giải thích vận tốc v trong phương trình chuyển động):',
+      '- Nếu học sinh BỎ SÓT giải thích ý nghĩa HOẶC thiếu đơn vị đo của bất kỳ ký hiệu nào:',
       '  + Đánh giá phần giải thích đó là PARTIALLY_CORRECT (Thiếu thông tin / Điều kiện), nêu ĐÍCH DANH ký hiệu và đơn vị còn thiếu trong explanation, và viết trọn bộ chú thích đầy đủ trong suggestedFix.',
-      '  + BẮT BUỘC thêm từng mục thiếu đó vào coverageItems với status = "MISSING" (hoặc "PARTIALLY_COVERED") và vào weaknesses để hiển thị rõ trong danh sách "Thiếu thông tin".',
+      '  + Ghi nhận thiếu sót tương ứng vào weaknesses để hiển thị rõ trong danh sách "Thiếu thông tin".',
       '',
       'LỚP 4 — TỰ KIỂM CHÉO NHẤT QUÁN TRƯỚC KHI TRẢ KẾT QUẢ:',
       '- Phân loại trạng thái chuẩn:',
@@ -1185,80 +1396,100 @@ export class KnowledgeAnalysisService {
       '  + INCORRECT: sai bản chất kiến thức, sai quan hệ, sai công thức/phép toán.',
       '  + PARTIALLY_CORRECT: có phần đúng nhưng thiếu thông tin quan trọng (thiếu giải thích ký hiệu/đơn vị, thiếu điều kiện áp dụng, phát biểu chưa trọn vẹn).',
       '  + UNVERIFIED: CHỈ dùng khi thông tin riêng lẻ/mơ hồ/không đủ ngữ cảnh để xác minh. KHÔNG dùng cho định nghĩa/công thức phổ thông.',
-      '  + OCR_UNCERTAIN: độ tin cậy OCR < 0.65.',
+      ocrConfirmed
+        ? '  + Lưu ý OCR: Văn bản đã được người dùng kiểm tra/xác nhận nên KHÔNG tự ý gắn OCR_UNCERTAIN trừ khi câu chữ bị mất ký tự không thể hiểu nghĩa.'
+        : '  + OCR_UNCERTAIN: độ tin cậy OCR < 0.65.',
       '  + OUT_OF_SCOPE: nội dung lạc đề hoàn toàn khỏi môn học.',
       '- KIỂM TRA CHÉO: Nếu explanation chỉ ra học sinh viết sai → evaluationStatus BẮT BUỘC là INCORRECT. Nếu explanation chỉ ra học sinh viết thiếu ký hiệu/đơn vị/điều kiện → evaluationStatus BẮT BUỘC là PARTIALLY_CORRECT. CẤM TUYỆT ĐỐI việc giải thích 1 đằng mà chấm trạng thái 1 nẻo.',
-      '- Gán trọng số importanceWeight: 3 (cốt lõi), 2 (hỗ trợ/chú thích ký hiệu), 1 (chi tiết mở rộng).',
+      '- Gán trọng số importanceWeight cho claims theo quy tắc cố định: 3 (định nghĩa/định luật/công thức cốt lõi), 2 (hỗ trợ/chú thích ký hiệu/điều kiện), 1 (chi tiết/ví dụ mở rộng).',
+      coverageInstruction,
       '- Tuyệt đối KHÔNG bịa URL hay số trang SGK nếu không có trong ngữ cảnh.',
-      '- Viết rõ ràng, trực diện, súc tích (mỗi explanation/correctKnowledge/suggestedFix tối đa 2-3 câu ngắn gọn đi thẳng vào điểm sai hoặc điểm thiếu; weaknesses tối đa 8 ý; coverageItems tối đa 10 ý; strengths tối đa 4 ý; suggestions tối đa 4 ý).',
+      '- Viết rõ ràng, trực diện, súc tích (mỗi explanation/correctKnowledge/suggestedFix tối đa 2-3 câu ngắn gọn đi thẳng vào điểm sai hoặc điểm thiếu; weaknesses tối đa 10 ý; strengths tối đa 5 ý; suggestions tối đa 5 ý).',
       '',
+      rubricSection,
       '=== TÀI LIỆU CỦA HỌC SINH ===',
-      formattedStudentBlocks.slice(0, 22000),
+      studentSlice,
       '',
       '=== ĐOẠN TRÍCH SÁCH GIÁO KHOA THAM CHIẾU ===',
-      textbookContext.slice(0, 14000),
+      textbookSlice,
       '',
       webGroundingSummary
         ? `=== TỔNG HỢP NGUỒN INTERNET ĐÃ GROUNDING ===\n${webGroundingSummary.slice(0, 3500)}`
         : '',
     ].join('\n');
 
-    type RawEvalResult = {
-      claims?: Array<{
-        blockId?: string;
-        sourcePage: number;
-        sourceText: string;
-        chapter: string;
-        concept: string;
-        importanceWeight: number;
-        knowledgeType?: string;
-        evaluationStatus: string;
-        explanation: string;
-        correctKnowledge: string;
-        suggestedFix?: string;
-        matchedChunkId?: string;
-        matchedExcerpt?: string;
-        matchedPage?: number;
-      }>;
-      coverageItems?: Array<{
-        concept: string;
-        chapter: string;
-        importanceWeight: number;
-        status: string;
-        suggestedAddition: string;
-        referenceExcerpt: string;
-        referencePage?: number;
-      }>;
-      strengths?: AnalysisStrength[];
-      weaknesses?: Array<{ title: string; detail: string; pageNumber?: number }>;
-      suggestions?: Array<{ priority: number; title: string; description: string }>;
-    };
+    // Full SHA-256 hash covering ENTIRE student text, ENTIRE prompt, fixed rubric, sorted chunks, and grading flags (never truncated to 12,000 chars!)
+    const fullStudentTextHash = crypto
+      .createHash('sha256')
+      .update(formattedStudentBlocks, 'utf8')
+      .digest('hex');
+    const fullPromptHash = crypto
+      .createHash('sha256')
+      .update(analysisPrompt, 'utf8')
+      .digest('hex');
+    const inputHash = crypto
+      .createHash('sha256')
+      .update(
+        JSON.stringify({
+          promptVersion: GRADING_PROMPT_VERSION,
+          fullStudentTextHash,
+          fullPromptHash,
+          ocrTextHash,
+          ocrConfirmed,
+          textbookReferenceId,
+          grade,
+          subject,
+          scope,
+          selectedChapters: [...selectedChapters].sort(),
+          chunkIds: sortedChunkIds,
+          rubricHash: fixedRubric.rubricHash,
+          enableWebGrounding: Boolean(enableWebGrounding),
+          strictModelLock,
+          seed: DETERMINISTIC_GRADING_SEED,
+        }),
+        'utf8'
+      )
+      .digest('hex');
 
-    const { data: rawEval, modelId: modelUsed } = await runTaskWithRouter<RawEvalResult>({
+    const routedResult = await runTaskWithRouter<ProviderJsonResult<RawKnowledgeEvalResult>>({
       taskType: 'knowledge_analysis',
       config,
       idToken,
-      allowGroqRescue: true,
+      strictModelLock,
+      allowGroqRescue: !strictModelLock,
+      extractExecutionMeta: (res) => ({
+        actualModel: res.resolvedModel,
+        systemFingerprint: res.systemFingerprint,
+      }),
       cacheInput: {
-        promptRev: 'v3_audit4layer',
-        studentText: formattedStudentBlocks.slice(0, 12000),
+        promptVersion: GRADING_PROMPT_VERSION,
+        inputHash,
+        fullStudentTextHash,
+        fullPromptHash,
+        rubricHash: fixedRubric.rubricHash,
+        chunkIds: sortedChunkIds,
         textbookRef: textbookReferenceId,
         grade,
         subject,
         scope,
-        chunksDigest: retrievedHits.map((h) => h.chunk.chunkId).join(','),
+        enableWebGrounding: Boolean(enableWebGrounding),
+        ocrConfirmed,
       },
       runWithModel: async (modelId) =>
-        generateJsonWithProvider<RawEvalResult>({
+        generateJsonWithProviderDetailed<RawKnowledgeEvalResult>({
           modelId,
           prompt: analysisPrompt,
           thinkingTier: pages.length <= 2 && formattedStudentBlocks.length <= 3500 ? 'low' : 'medium',
-          maxOutputTokens: pages.length <= 2 ? 4096 : 6144,
-          timeoutMs: 26_000,
+          maxOutputTokens: pages.length <= 2 && fixedRubric.criteria.length <= 10 ? 4096 : 7168,
+          timeoutMs: 32_000,
+          temperature: 0,
+          seed: DETERMINISTIC_GRADING_SEED,
+          strictModelLock,
+          strictJsonParser: parseAndValidateKnowledgeEvalJson,
           tokensOut,
           fallbackJson: '{"claims":[],"coverageItems":[],"strengths":[],"weaknesses":[],"suggestions":[]}',
           groqSchemaHint:
-            '{"claims":[{"blockId":"...","sourcePage":1,"sourceText":"...","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"..."}],"coverageItems":[{"concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}',
+            '{"claims":[{"blockId":"...","sourcePage":1,"sourceText":"...","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"...","matchedChunkId":"...","matchedExcerpt":"...","matchedPage":1}],"coverageItems":[{"criterionId":"KT01","concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1,"matchedChunkId":"..."}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}',
           geminiSchema: {
             type: Type.OBJECT,
             properties: {
@@ -1306,6 +1537,7 @@ export class KnowledgeAnalysisService {
                 items: {
                   type: Type.OBJECT,
                   properties: {
+                    criterionId: { type: Type.STRING },
                     concept: { type: Type.STRING },
                     chapter: { type: Type.STRING },
                     importanceWeight: { type: Type.INTEGER },
@@ -1316,6 +1548,7 @@ export class KnowledgeAnalysisService {
                     suggestedAddition: { type: Type.STRING },
                     referenceExcerpt: { type: Type.STRING },
                     referencePage: { type: Type.INTEGER },
+                    matchedChunkId: { type: Type.STRING },
                   },
                   required: [
                     'concept',
@@ -1370,6 +1603,9 @@ export class KnowledgeAnalysisService {
         }),
     });
 
+    const rawEval = routedResult.data.data;
+    const modelUsed = routedResult.actualModel;
+
     const blockMap = new Map<string, ExtractedTextBlock>();
     for (const p of pages) {
       for (const b of p.blocks) {
@@ -1395,12 +1631,14 @@ export class KnowledgeAnalysisService {
 
     const claims: ExtractedClaim[] = (rawEval.claims || []).map((c, idx) => {
       const matchedBlock = c.blockId ? blockMap.get(c.blockId) : undefined;
-      const ocrConf = matchedBlock ? matchedBlock.confidence : 0.9;
+      const rawOcrConf = matchedBlock ? matchedBlock.confidence : 0.9;
+      const ocrConf = ocrConfirmed ? Math.max(rawOcrConf, 0.95) : rawOcrConf;
       let status: ClaimStatus = validStatuses.has(c.evaluationStatus as ClaimStatus)
         ? (c.evaluationStatus as ClaimStatus)
         : 'UNVERIFIED';
 
-      if (ocrConf < 0.65 && status === 'INCORRECT') {
+      // Only apply raw OCR uncertainty guard when the text has NOT been manually confirmed/edited
+      if (!ocrConfirmed && ocrConf < 0.65 && status === 'INCORRECT') {
         status = 'OCR_UNCERTAIN';
       }
 
@@ -1443,8 +1681,18 @@ export class KnowledgeAnalysisService {
           ? c.correctKnowledge
           : null;
 
+      // Deterministic claim ID derived from index + page + normalized sourceText + concept (never randomBytes!)
+      const claimDigest = crypto
+        .createHash('sha256')
+        .update(
+          `${idx + 1}|${c.sourcePage || matchedBlock?.pageNumber || 1}|${(c.sourceText || '').trim().normalize('NFC')}|${(c.concept || '').trim().normalize('NFC')}`,
+          'utf8'
+        )
+        .digest('hex')
+        .slice(0, 8);
+
       return {
-        claimId: `claim_${idx + 1}_${crypto.randomBytes(2).toString('hex')}`,
+        claimId: `claim_${idx + 1}_${claimDigest}`,
         sourceText: c.sourceText,
         normalizedMeaning: c.sourceText,
         subject,
@@ -1470,37 +1718,86 @@ export class KnowledgeAnalysisService {
       };
     });
 
-    const coverageItems: KnowledgeCoverageItem[] = (rawEval.coverageItems || []).map((item, idx) => {
-      const wRaw = Number(item.importanceWeight);
-      const importanceWeight: 1 | 2 | 3 = wRaw === 3 ? 3 : wRaw === 1 ? 1 : 2;
-      const validCov =
-        item.status === 'COVERED' ||
-        item.status === 'PARTIALLY_COVERED' ||
-        item.status === 'MISSING' ||
-        item.status === 'OUT_OF_SCOPE'
-          ? item.status
-          : 'PARTIALLY_COVERED';
-      return {
-        itemId: `cov_${idx + 1}`,
-        concept: item.concept,
-        chapter: item.chapter,
-        importanceWeight,
-        status: validCov,
-        suggestedAddition: item.suggestedAddition,
-        referenceExcerpt: item.referenceExcerpt,
-        ...(typeof item.referencePage === 'number' && item.referencePage > 0
-          ? { referencePage: item.referencePage }
-          : {}),
-      };
+    // Reconcile coverageItems strictly against the pre-built FixedRubric when textbook rubric exists
+    let coverageItems: KnowledgeCoverageItem[] = [];
+    let extraCoverageCount = 0;
+
+    if (rubricMode === 'fixed_textbook_rubric') {
+      const reconciled = reconcileCoverageAgainstFixedRubric(
+        fixedRubric,
+        rawEval.coverageItems || []
+      );
+      coverageItems = reconciled.coverageItems;
+      extraCoverageCount = reconciled.extraObservations.length;
+    } else {
+      coverageItems = (rawEval.coverageItems || []).map((item, idx) => {
+        const wRaw = Number(item.importanceWeight);
+        const importanceWeight: 1 | 2 | 3 = wRaw === 3 ? 3 : wRaw === 1 ? 1 : 2;
+        const validCov =
+          item.status === 'COVERED' ||
+          item.status === 'PARTIALLY_COVERED' ||
+          item.status === 'MISSING' ||
+          item.status === 'OUT_OF_SCOPE'
+            ? item.status
+            : 'PARTIALLY_COVERED';
+        return {
+          itemId: `cov_${idx + 1}`,
+          concept: item.concept,
+          chapter: item.chapter,
+          importanceWeight,
+          status: validCov,
+          suggestedAddition: item.suggestedAddition || '',
+          referenceExcerpt: item.referenceExcerpt || '',
+          ...(typeof item.referencePage === 'number' && item.referencePage > 0
+            ? { referencePage: item.referencePage }
+            : {}),
+          ...(item.matchedChunkId ? { matchedChunkId: item.matchedChunkId } : {}),
+        };
+      });
+    }
+
+    const hasTextbook = Boolean(textbookReferenceId && retrievedHits.length > 0);
+    const hasValidScope = rubricMode !== 'unscoped';
+
+    const baseAccuracyBreakdown = calculateAccuracyScore(claims, hasTextbook);
+    const completenessBreakdown = calculateCompletenessScore(coverageItems, hasValidScope, {
+      rubricMode,
+      rubricItemCount:
+        rubricMode === 'fixed_textbook_rubric' ? fixedRubric.criteria.length : coverageItems.length,
+      extraObservationsCount: extraCoverageCount,
     });
 
-    const hasTextbook = Boolean(textbookReferenceId && referenceChunks.length > 0);
-    const hasValidScope = Boolean(
-      hasTextbook || selectedChapters.length > 0 || scope.trim().length > 0 || coverageItems.length > 0
-    );
+    const gradingAudit: GradingAuditMetadata = {
+      requestedModel: routedResult.requestedModel,
+      actualModel: routedResult.actualModel,
+      usedFallback: routedResult.usedFallback,
+      usedOverride: routedResult.usedOverride,
+      cached: routedResult.cached,
+      strictModelLock,
+      ...(routedResult.systemFingerprint
+        ? { systemFingerprint: routedResult.systemFingerprint }
+        : {}),
+      promptVersion: GRADING_PROMPT_VERSION,
+      configVersion: routedResult.configVersion,
+      inputHash: inputHash.slice(0, 24),
+      ocrTextHash,
+      ocrConfirmed,
+      rubricMode,
+      ...(fixedRubric.criteria.length > 0 ? { rubricHash: fixedRubric.rubricHash.slice(0, 24) } : {}),
+      rubricItemCount: fixedRubric.criteria.length,
+      extraCoverageCount,
+      chunkIds: sortedChunkIds,
+      truncationApplied,
+      studentCharCount: formattedStudentBlocks.length,
+      textbookCharCount: textbookContext.length,
+      webGroundingEnabled: Boolean(enableWebGrounding),
+      deterministicSeed: DETERMINISTIC_GRADING_SEED,
+    };
 
-    const accuracyBreakdown = calculateAccuracyScore(claims, hasTextbook);
-    const completenessBreakdown = calculateCompletenessScore(coverageItems, hasValidScope);
+    const accuracyBreakdown = {
+      ...baseAccuracyBreakdown,
+      gradingAudit,
+    };
 
     const annotations: AnnotationItem[] = [];
     for (const claim of claims) {
@@ -1562,6 +1859,7 @@ export class KnowledgeAnalysisService {
       confidenceReason: accuracyBreakdown.confidenceReason,
       accuracyBreakdown,
       completenessBreakdown,
+      gradingAudit,
     };
   }
 }

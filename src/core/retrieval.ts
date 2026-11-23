@@ -211,13 +211,18 @@ export function retrieveRelevantChunks(
     return {
       chunk,
       lexicalScore: Math.round(normalized * 100) / 100,
-      matchedKeywords: Array.from(new Set(matchedKeywords)),
+      matchedKeywords: Array.from(new Set(matchedKeywords)).sort(),
     };
   });
 
   return scored
     .filter((item) => item.lexicalScore > 0)
-    .sort((a, b) => b.lexicalScore - a.lexicalScore)
+    .sort(
+      (a, b) =>
+        b.lexicalScore - a.lexicalScore ||
+        a.chunk.pageNumber - b.chunk.pageNumber ||
+        a.chunk.chunkId.localeCompare(b.chunk.chunkId)
+    )
     .slice(0, topK);
 }
 

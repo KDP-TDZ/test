@@ -33,6 +33,7 @@ import {
   clearCloudflareCredentials,
   clearGroqApiKey,
   clearSingleGeminiApiKey,
+  evaluateColdStartReadiness,
   getProviderKeysStatus,
   getSingleKeyStatus,
   hydrateSingleKeyForSuperAdmin,
@@ -98,6 +99,7 @@ import {
   validateUploadFileSize,
 } from '../core/uploadBatching.js';
 import { repairUtf8Mojibake } from '../core/textEncoding.js';
+import { isAllowedCorsOrigin, isValidFirestoreDocId } from '../core/urlSecurity.js';
 
 const filenameScopeServerCache = new Map<
   string,
@@ -159,15 +161,15 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
       });
       return;
     }
-    await hydrateSingleKeyForSuperAdmin(authUser.idToken);
+    if (authUser.isSuperAdmin) {
+      await hydrateSingleKeyForSuperAdmin(authUser.idToken);
+    }
     req.authUser = authUser;
     next();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Unauthorized';
+  } catch {
     res.status(401).json({
       code: 'UNAUTHORIZED',
       error: 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.',
-      detail: msg,
     });
   }
 }
@@ -196,12 +198,15 @@ async function requireSuperAdmin(req: Request, res: Response, next: NextFunction
   }
 }
 
-function mapGeminiErrorResponse(err: unknown): {
+function mapGeminiErrorResponse(
+  err: unknown,
+  includeDebug = false
+): {
   status: number;
   code: string;
   error: string;
-  technicalDetail: string;
-  debug: {
+  technicalDetail?: string;
+  debug?: {
     activeModel: string;
     configuredProviders: { groq: boolean; gemini: boolean; cloudflare: boolean };
     recentExecutions: ReturnType<typeof getRecentExecutionLogs>;
@@ -215,30 +220,52 @@ function mapGeminiErrorResponse(err: unknown): {
     gemini: isGeminiConfigured(),
     cloudflare: isCloudflareConfigured(),
   };
-  const debug = {
-    activeModel: cfg.activeModel,
-    configuredProviders,
-    recentExecutions: getRecentExecutionLogs().slice(0, 6),
-    timestamp: new Date().toISOString(),
-  };
+  const debugExtras = includeDebug
+    ? {
+        technicalDetail: msg,
+        debug: {
+          activeModel: cfg.activeModel,
+          configuredProviders,
+          recentExecutions: getRecentExecutionLogs().slice(0, 6),
+          timestamp: new Date().toISOString(),
+        },
+      }
+    : {};
 
+  if (msg.includes('GRADING_JSON_INVALID')) {
+    return {
+      status: 502,
+      code: 'GRADING_JSON_INVALID',
+      error:
+        'Phản hồi kiểm định từ AI bị cắt cụt hoặc sai định dạng JSON. Hệ thống đã chặn kết quả rỗng giả để tránh chấm sai — vui lòng bấm Thử lại.',
+      ...debugExtras,
+    };
+  }
+  if (msg.includes('STRICT_GRADING_MODEL_UNAVAILABLE')) {
+    return {
+      status: 503,
+      code: 'STRICT_GRADING_MODEL_UNAVAILABLE',
+      error:
+        'Model chấm điểm cố định đang tạm bận hoặc quá tải. Hệ thống đã khóa không tự ý đổi sang model khác để đảm bảo tính nhất quán điểm số — vui lòng thử lại sau vài giây.',
+      ...debugExtras,
+    };
+  }
   if (msg.includes('vượt quá thời gian chờ') || msg.includes('AbortError') || msg.includes('timed out')) {
     return {
       status: 504,
       code: 'AI_TIMEOUT',
       error: 'AI phản hồi quá thời gian chờ nên hệ thống đã tự động ngắt để bảo vệ kết nối. Vui lòng thử lại.',
-      technicalDetail: msg,
-      debug,
+      ...debugExtras,
     };
   }
   if (msg.includes('GROQ_API_KEY_UNCONFIGURED') || msg.includes('Chưa cấu hình Groq API Key')) {
     return {
       status: 503,
       code: 'GROQ_KEY_MISSING',
-      error:
-        'Hệ thống chưa có Groq API Key. Quản trị viên vui lòng vào Quản trị hệ thống → API Key & Bảo mật để dán Groq API Key (gsk_...).',
-      technicalDetail: msg,
-      debug,
+      error: includeDebug
+        ? 'Chưa có Groq API Key trên máy chủ. Hãy thêm biến môi trường GROQ_API_KEY trên Vercel/Render để chạy 24/7 hoặc dán khóa tạm tại Quản trị hệ thống → API Key & Bảo mật.'
+        : 'Hệ thống AI vừa khởi động lại và đang chờ cấu hình khóa kết nối. Vui lòng thử lại sau ít phút hoặc báo cho quản trị viên.',
+      ...debugExtras,
     };
   }
   if (
@@ -248,29 +275,30 @@ function mapGeminiErrorResponse(err: unknown): {
     return {
       status: 503,
       code: 'CLOUDFLARE_KEY_MISSING',
-      error:
-        'Hệ thống chưa cấu hình Cloudflare Workers AI. Quản trị viên vui lòng vào Quản trị hệ thống → API Key & Bảo mật để thêm Account ID & Token.',
-      technicalDetail: msg,
-      debug,
+      error: includeDebug
+        ? 'Chưa cấu hình Cloudflare Workers AI. Hãy đặt biến CLOUDFLARE_ACCOUNT_ID và CLOUDFLARE_API_TOKEN trên máy chủ để chạy 24/7 hoặc nhập tại Quản trị hệ thống → API Key & Bảo mật.'
+        : 'Hệ thống AI vừa khởi động lại và đang chờ cấu hình khóa kết nối. Vui lòng thử lại sau ít phút hoặc báo cho quản trị viên.',
+      ...debugExtras,
     };
   }
   if (msg.includes('GEMINI_API_KEY_UNCONFIGURED')) {
     return {
       status: 503,
       code: 'GEMINI_KEY_MISSING',
-      error:
-        'Chưa cấu hình khóa API cho AI đang chọn (ưu tiên thêm Groq API Key hoặc Gemini API Key tại Quản trị hệ thống → API Key & Bảo mật).',
-      technicalDetail: msg,
-      debug,
+      error: includeDebug
+        ? 'Chưa cấu hình khóa API cho AI đang chọn. Để web chạy 24/7 khi máy chủ reset, hãy đặt GROQ_API_KEY hoặc GEMINI_API_KEY trong biến môi trường Vercel/Render.'
+        : 'Hệ thống AI vừa khởi động lại và đang chờ cấu hình khóa kết nối. Vui lòng thử lại sau ít phút hoặc báo cho quản trị viên.',
+      ...debugExtras,
     };
   }
   if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
     return {
       status: 429,
       code: 'PROVIDER_QUOTA_EXCEEDED',
-      error: `Dịch vụ AI tạm thời đạt giới hạn lưu lượng (429). Chi tiết: ${msg.slice(0, 180)}`,
-      technicalDetail: msg,
-      debug,
+      error: includeDebug
+        ? `Dịch vụ AI tạm thời đạt giới hạn lưu lượng (429). Chi tiết: ${msg.slice(0, 180)}`
+        : 'Dịch vụ AI tạm thời đạt giới hạn lưu lượng (429). Vui lòng thử lại sau ít phút.',
+      ...debugExtras,
     };
   }
   if (msg.includes('NOT_FOUND') || msg.includes('404')) {
@@ -287,54 +315,76 @@ function mapGeminiErrorResponse(err: unknown): {
     return {
       status: 502,
       code: 'MODEL_UNAVAILABLE',
-      error: hasSecondaryAuthErr
-        ? `Model AI mặc định không khả dụng và nhà cung cấp dự phòng gặp lỗi xác thực/quyền truy cập (Provider: ${activeProvidersList}). Chi tiết: ${msg.slice(0, 480)}`
-        : `Không tìm thấy model AI khả dụng trên khóa hiện tại (Provider đã cấu hình: ${activeProvidersList}). Chi tiết kỹ thuật: ${msg.slice(0, 480)}`,
-      technicalDetail: msg,
-      debug,
+      error: includeDebug
+        ? hasSecondaryAuthErr
+          ? `Model AI mặc định không khả dụng và nhà cung cấp dự phòng gặp lỗi xác thực/quyền truy cập (Provider: ${activeProvidersList}). Chi tiết: ${msg.slice(0, 480)}`
+          : `Không tìm thấy model AI khả dụng trên khóa hiện tại (Provider đã cấu hình: ${activeProvidersList}). Chi tiết kỹ thuật: ${msg.slice(0, 480)}`
+        : 'Dịch vụ mô hình AI tạm thời không khả dụng. Vui lòng thử lại sau hoặc báo quản trị viên.',
+      ...debugExtras,
     };
   }
   if (msg.includes('API_KEY_INVALID') || msg.includes('PERMISSION_DENIED') || msg.includes('403') || msg.includes('401')) {
     return {
       status: 502,
       code: 'PROVIDER_AUTH_ERROR',
-      error: `Khóa API AI hiện tại không hợp lệ hoặc không có quyền truy cập model. Chi tiết: ${msg.slice(0, 480)}`,
-      technicalDetail: msg,
-      debug,
+      error: includeDebug
+        ? `Khóa API AI hiện tại không hợp lệ hoặc không có quyền truy cập model. Chi tiết: ${msg.slice(0, 480)}`
+        : 'Dịch vụ AI gặp lỗi cấu hình xác thực. Vui lòng liên hệ quản trị viên.',
+      ...debugExtras,
     };
   }
   return {
     status: 500,
     code: 'AI_PROCESSING_ERROR',
-    error: `Không thể hoàn tất xử lý tài liệu: ${msg.slice(0, 260)}`,
-    technicalDetail: msg,
-    debug,
+    error: includeDebug
+      ? `Không thể hoàn tất xử lý tài liệu: ${msg.slice(0, 260)}`
+      : 'Không thể hoàn tất xử lý tài liệu do lỗi máy chủ tạm thời. Vui lòng thử lại.',
+    ...debugExtras,
   };
 }
 
 export function createApiApp(): express.Express {
   const app = express();
+  app.disable('x-powered-by');
   app.use(express.json({ limit: '15mb' }));
+
+  // Baseline HTTP security headers (iframe-safe: omits X-Frame-Options for embedded preview)
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
+    res.setHeader(
+      'Content-Security-Policy-Report-Only',
+      "default-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; script-src 'self' 'unsafe-inline' https://apis.google.com https://*.firebaseapp.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; worker-src 'self' blob:; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://*.firebaseapp.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com"
+    );
+    const forwardedProto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
+    if (req.secure || forwardedProto === 'https' || process.env.NODE_ENV === 'production') {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+    next();
+  });
 
   const envAllowedOrigins = (process.env.ALLOWED_ORIGIN || '')
     .split(',')
     .map((o) => o.trim())
     .filter(Boolean);
 
-  // Live dynamic CORS combining env var + Admin-managed systemConfig.allowedOrigins (no redeploy required!)
+  // Strict dynamic CORS: permits same-origin requests or explicitly allowlisted origins (never reflects arbitrary origins or '*')
   app.use(async (req, res, next) => {
     try {
       const origin = req.headers.origin;
-      const cfg = await loadAuthoritativeAiConfig();
-      const combined = Array.from(
-        new Set([...envAllowedOrigins, ...(cfg.allowedOrigins || [])].map((o) => o.trim()).filter(Boolean))
-      );
-
-      if (origin && (combined.length === 0 || combined.includes('*') || combined.includes(origin))) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-        res.setHeader('Vary', 'Origin');
-        res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+      if (origin) {
+        const cfg = await loadAuthoritativeAiConfig();
+        const combined = Array.from(
+          new Set([...envAllowedOrigins, ...(cfg.allowedOrigins || [])].map((o) => o.trim()).filter(Boolean))
+        );
+        const requestHost = String(req.headers['x-forwarded-host'] || req.headers.host || '');
+        if (isAllowedCorsOrigin(origin, requestHost, combined)) {
+          res.setHeader('Access-Control-Allow-Origin', origin);
+          res.setHeader('Vary', 'Origin');
+          res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+        }
       }
       if (req.method === 'OPTIONS') {
         res.status(204).end();
@@ -445,12 +495,17 @@ export function createApiApp(): express.Express {
         .map((name) => name.replace(/\.[^.]+$/, '').replace(/[_\-.]+/g, ' ').trim())
         .join(', ');
 
-      const cfg = await loadAuthoritativeAiConfig(user.idToken);
-      if (!cfg.enabled) {
+      const guard = await checkAiRequestGuard({
+        uid: user.uid,
+        email: user.email,
+        idToken: user.idToken,
+        requestType: 'detect',
+      });
+      if (!guard.allowed) {
         res.json({
           suggestedGrade: heuristic.grade || fallbackGrade,
           suggestedSubject: heuristic.subject || 'auto',
-          source: 'heuristic',
+          source: 'heuristic_rate_limited',
         });
         return;
       }
@@ -458,7 +513,7 @@ export function createApiApp(): express.Express {
       const aiScope = await SubjectDetectionService.detectScope(
         `Tên tệp tài liệu học tập THPT: ${meaningfulText}`,
         tokens,
-        { config: cfg, idToken: user.idToken }
+        { config: guard.config, idToken: user.idToken }
       );
 
       const finalResult: {
@@ -671,7 +726,7 @@ export function createApiApp(): express.Express {
 
       res.json({ pages, scopeSuggestion, tokenUsage: tokens });
     } catch (err) {
-      const mapped = mapGeminiErrorResponse(err);
+      const mapped = mapGeminiErrorResponse(err, user.isSuperAdmin);
       recordUsageEvent({
         uid: user.uid,
         email: user.email,
@@ -697,6 +752,9 @@ export function createApiApp(): express.Express {
       scope,
       referenceChunks,
       enableWebGrounding,
+      strictModelLock,
+      ocrConfirmed,
+      ocrTextHash,
     } = req.body as {
       idempotencyKey?: string;
       pages: ExtractedPage[];
@@ -708,6 +766,9 @@ export function createApiApp(): express.Express {
       scope?: string;
       referenceChunks?: ReferenceChunk[];
       enableWebGrounding?: boolean;
+      strictModelLock?: boolean;
+      ocrConfirmed?: boolean;
+      ocrTextHash?: string;
     };
 
     if (idempotencyKey) {
@@ -760,6 +821,11 @@ export function createApiApp(): express.Express {
         scope: scope || '',
         referenceChunks: referenceChunks || [],
         enableWebGrounding: enableWebGrounding === true,
+        strictModelLock: strictModelLock !== false,
+        ocrConfirmed: ocrConfirmed === true,
+        ...(typeof ocrTextHash === 'string' && ocrTextHash.trim()
+          ? { ocrTextHash: ocrTextHash.trim().slice(0, 64) }
+          : {}),
         tokensOut: tokens,
         config: guard.config,
         idToken: user.idToken,
@@ -787,7 +853,7 @@ export function createApiApp(): express.Express {
       if (guardPassed) {
         rollbackAiRequestGuard(user.uid, 'analysis');
       }
-      const mapped = mapGeminiErrorResponse(err);
+      const mapped = mapGeminiErrorResponse(err, user.isSuperAdmin);
       recordUsageEvent({
         uid: user.uid,
         email: user.email,
@@ -897,7 +963,7 @@ export function createApiApp(): express.Express {
 
       res.json(payload);
     } catch (err) {
-      const mapped = mapGeminiErrorResponse(err);
+      const mapped = mapGeminiErrorResponse(err, user.isSuperAdmin);
       recordUsageEvent({
         uid: user.uid,
         email: user.email,
@@ -959,7 +1025,7 @@ export function createApiApp(): express.Express {
       void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.json({ cards, tokenUsage: tokens });
     } catch (err) {
-      const mapped = mapGeminiErrorResponse(err);
+      const mapped = mapGeminiErrorResponse(err, user.isSuperAdmin);
       recordUsageEvent({
         uid: user.uid,
         email: user.email,
@@ -975,20 +1041,33 @@ export function createApiApp(): express.Express {
 
   app.post('/api/feedback/classify', requireAuth, async (req, res) => {
     const user = req.authUser!;
-    const { targetType, category, note } = req.body as {
-      targetType: string;
-      category: string;
-      note: string;
+    const { targetType, category, note } = (req.body || {}) as {
+      targetType?: string;
+      category?: string;
+      note?: string;
     };
     const tokens: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
     try {
-      const cfg = await loadAuthoritativeAiConfig(user.idToken);
+      const guard = await checkAiRequestGuard({
+        uid: user.uid,
+        email: user.email,
+        idToken: user.idToken,
+        requestType: 'detect',
+      });
+      if (!guard.allowed) {
+        res.status(guard.httpStatus || 429).json({ code: guard.code, error: guard.message });
+        return;
+      }
+      const safeTargetType =
+        targetType === 'claim' || targetType === 'quiz_question' || targetType === 'exam_question'
+          ? targetType
+          : 'claim';
       const classification = await FeedbackAnalysisService.classifyFeedback({
-        targetType: targetType || 'claim',
-        category: category || '',
-        note: note || '',
+        targetType: safeTargetType,
+        category: typeof category === 'string' ? category.slice(0, 120) : '',
+        note: typeof note === 'string' ? note.slice(0, 1500) : '',
         tokensOut: tokens,
-        config: cfg,
+        config: guard.config,
         idToken: user.idToken,
       });
       res.json({ classification });
@@ -1059,6 +1138,7 @@ export function createApiApp(): express.Express {
         auditLogs,
         singleKeyStatus,
         providerKeys,
+        coldStartReadiness: evaluateColdStartReadiness(config.activeModel),
         groqConfigured: isGroqConfigured(),
         cloudflareConfigured: isCloudflareConfigured(),
         executionLogs: getRecentExecutionLogs(),
@@ -1097,7 +1177,10 @@ export function createApiApp(): express.Express {
         user.email,
         user.idToken
       );
-      res.json({ config: updated });
+      res.json({
+        config: updated,
+        coldStartReadiness: evaluateColdStartReadiness(updated.activeModel),
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể cập nhật cấu hình dịch vụ AI.' });
     }
@@ -1437,6 +1520,11 @@ export function createApiApp(): express.Express {
         }
       }
 
+      if (!isValidFirestoreDocId(targetUid)) {
+        res.status(400).json({ error: 'UID tài khoản không hợp lệ.' });
+        return;
+      }
+
       const now = new Date().toISOString();
       const record = {
         uid: targetUid,
@@ -1468,8 +1556,8 @@ export function createApiApp(): express.Express {
   app.delete('/api/admin/roles/:uid', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
     const targetUid = req.params.uid;
-    if (!targetUid) {
-      res.status(400).json({ error: 'Thiếu UID cần thu hồi.' });
+    if (!targetUid || !isValidFirestoreDocId(targetUid)) {
+      res.status(400).json({ error: 'UID cần thu hồi không hợp lệ.' });
       return;
     }
     if (targetUid === user.uid) {
@@ -1517,7 +1605,11 @@ export function createApiApp(): express.Express {
     const user = req.authUser!;
     try {
       const singleKeyStatus = await getSingleKeyStatus(user.idToken);
-      res.json({ singleKeyStatus });
+      const cfg = getAuthoritativeAiConfigSnapshot();
+      res.json({
+        singleKeyStatus,
+        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Không kiểm tra được trạng thái API key.' });
     }
@@ -1542,7 +1634,11 @@ export function createApiApp(): express.Express {
         res.status(400).json({ error: result.error });
         return;
       }
-      res.json({ singleKeyStatus: result.status });
+      const cfg = getAuthoritativeAiConfigSnapshot();
+      res.json({
+        singleKeyStatus: result.status,
+        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể lưu Gemini API key.' });
     }
@@ -1579,7 +1675,11 @@ export function createApiApp(): express.Express {
         actorEmail: user.email,
         idToken: user.idToken,
       });
-      res.json({ singleKeyStatus: result.status });
+      const cfg = getAuthoritativeAiConfigSnapshot();
+      res.json({
+        singleKeyStatus: result.status,
+        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể xóa Gemini API key.' });
     }
@@ -1590,8 +1690,10 @@ export function createApiApp(): express.Express {
     const user = req.authUser!;
     try {
       const providerKeys = await getProviderKeysStatus(user.idToken);
+      const cfg = getAuthoritativeAiConfigSnapshot();
       res.json({
         providerKeys,
+        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
         groqConfigured: isGroqConfigured(),
         cloudflareConfigured: isCloudflareConfigured(),
       });
@@ -1966,6 +2068,15 @@ export function createApiApp(): express.Express {
         res.status(400).json({ error: 'Không có trang ảnh nào được gửi lên để đọc OCR.' });
         return;
       }
+      const allowedImageMimes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+      for (const f of rawFiles) {
+        if (!allowedImageMimes.has(f.mimetype) || !hasValidMagicSignature(f.buffer, f.mimetype)) {
+          res.status(400).json({
+            error: 'Chỉ chấp nhận tệp ảnh JPG, PNG hoặc WEBP hợp lệ khi đọc OCR sách tham chiếu.',
+          });
+          return;
+        }
+      }
 
       const { pageNumbers: rawPageNumbers, grade, subject, textbookSeries } = req.body as {
         pageNumbers?: string;
@@ -2264,7 +2375,7 @@ export function createApiApp(): express.Express {
 
     console.error('Unhandled Express API error:', err);
     res.status(500).json({
-      error: err instanceof Error ? err.message : 'Lỗi máy chủ nội bộ.',
+      error: 'Lỗi máy chủ nội bộ. Vui lòng thử lại sau.',
     });
   });
 

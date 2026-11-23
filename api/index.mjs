@@ -515,20 +515,41 @@ var init_modelDefaults = __esm({
 });
 
 // src/core/cache.ts
-function buildDeterministicCacheKey(parts) {
-  const canonical = JSON.stringify(parts, Object.keys(parts).sort());
+function canonicalizeValue(value) {
+  if (value === null || value === void 0) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalizeValue(item));
+  }
+  if (typeof value === "object") {
+    const obj = value;
+    const sorted = {};
+    for (const key of Object.keys(obj).sort()) {
+      if (obj[key] !== void 0) {
+        sorted[key] = canonicalizeValue(obj[key]);
+      }
+    }
+    return sorted;
+  }
+  return value;
+}
+function computeStableTextDigest(input) {
+  const normalized = (input || "").normalize("NFC");
   let h1 = 0xcbf29ce484222325n;
   let h2 = 0x84222325cbf29ce4n;
   const prime = 0x100000001b3n;
   const mask = 0xffffffffffffffffn;
-  for (let i = 0; i < canonical.length; i += 1) {
-    const code = BigInt(canonical.charCodeAt(i));
+  for (let i = 0; i < normalized.length; i += 1) {
+    const code = BigInt(normalized.charCodeAt(i));
     h1 ^= code;
     h1 = h1 * prime & mask;
     h2 ^= code + BigInt(i % 251 + 1);
     h2 = h2 * prime & mask;
   }
   return `${h1.toString(16).padStart(16, "0")}${h2.toString(16).padStart(16, "0")}`;
+}
+function buildDeterministicCacheKey(parts) {
+  const canonical = JSON.stringify(canonicalizeValue(parts));
+  return computeStableTextDigest(canonical);
 }
 var BoundedTtlCache;
 var init_cache = __esm({
@@ -597,41 +618,53 @@ function buildCloudflareChatEndpoint(accountId) {
   return `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/ai/v1/chat/completions`;
 }
 async function executeCloudflareRequest(params) {
-  const body = {
-    model: params.cfModel,
-    messages: params.messages,
-    temperature: 0.15,
-    max_tokens: params.maxTokens
-  };
-  if (params.jsonMode && !params.hasImages) {
-    body.response_format = { type: "json_object" };
-  }
-  const res = await fetch(buildCloudflareChatEndpoint(params.accountId), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${params.apiToken}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body),
-    signal: params.signal
-  });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    return { ok: false, status: res.status, errText };
-  }
-  const data = await res.json();
-  const rawText = data.choices?.[0]?.message?.content || data.result?.response || "";
-  const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
-  return {
-    ok: true,
-    result: {
-      text,
-      promptTokens: data.usage?.prompt_tokens || 0,
-      candidateTokens: data.usage?.completion_tokens || 0,
-      totalTokens: data.usage?.total_tokens || 0,
-      resolvedModel: `cf:${params.cfModel}`
+  const sendOnce = async (includeSeed) => {
+    const body = {
+      model: params.cfModel,
+      messages: params.messages,
+      temperature: params.temperature,
+      max_tokens: params.maxTokens
+    };
+    if (includeSeed && typeof params.seed === "number" && Number.isFinite(params.seed)) {
+      body.seed = Math.floor(params.seed);
     }
+    if (params.jsonMode && !params.hasImages) {
+      body.response_format = { type: "json_object" };
+    }
+    const res = await fetch(buildCloudflareChatEndpoint(params.accountId), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${params.apiToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal: params.signal
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      return { ok: false, status: res.status, errText };
+    }
+    const data = await res.json();
+    const rawText = data.choices?.[0]?.message?.content || data.result?.response || "";
+    const text = params.jsonMode ? extractJsonStringFromModelOutput(rawText) : rawText.trim();
+    return {
+      ok: true,
+      result: {
+        text,
+        promptTokens: data.usage?.prompt_tokens || 0,
+        candidateTokens: data.usage?.completion_tokens || 0,
+        totalTokens: data.usage?.total_tokens || 0,
+        resolvedModel: `cf:${params.cfModel}`,
+        ...typeof data.system_fingerprint === "string" && data.system_fingerprint.trim() ? { systemFingerprint: data.system_fingerprint.trim() } : {}
+      }
+    };
   };
+  const hasSeed = typeof params.seed === "number" && Number.isFinite(params.seed);
+  const first = await sendOnce(hasSeed);
+  if (!first.ok && first.status === 400 && hasSeed && first.errText.toLowerCase().includes("seed")) {
+    return sendOnce(false);
+  }
+  return first;
 }
 async function callCloudflareChatCompletion(params) {
   const activeCreds = params.credentialsOverride || getCloudflareCredentials();
@@ -678,6 +711,7 @@ ${params.prompt}` : params.prompt;
     messages.push({ role: "user", content: params.prompt });
   }
   const maxTokens = Math.min(4096, Math.max(128, params.maxOutputTokens || 2048));
+  const effectiveTemperature = typeof params.temperature === "number" && Number.isFinite(params.temperature) ? Math.max(0, Math.min(2, params.temperature)) : 0;
   const firstAttempt = await executeCloudflareRequest({
     accountId,
     apiToken,
@@ -686,6 +720,8 @@ ${params.prompt}` : params.prompt;
     hasImages,
     jsonMode: params.jsonMode,
     maxTokens,
+    temperature: effectiveTemperature,
+    seed: params.seed,
     signal: params.signal
   });
   if (firstAttempt.ok) {
@@ -695,14 +731,16 @@ ${params.prompt}` : params.prompt;
   let lastErrText = firstAttempt.errText;
   const triedCfModels = /* @__PURE__ */ new Set([cfModel]);
   const fallbackCandidates = [];
-  if (hasImages) {
-    for (const v of CF_VISION_MODELS) {
-      if (!triedCfModels.has(v)) fallbackCandidates.push(v);
+  if (!params.strictModelLock) {
+    if (hasImages) {
+      for (const v of CF_VISION_MODELS) {
+        if (!triedCfModels.has(v)) fallbackCandidates.push(v);
+      }
+    } else if (CF_FALLBACK_ON_404[cfModel]) {
+      fallbackCandidates.push(CF_FALLBACK_ON_404[cfModel]);
     }
-  } else if (CF_FALLBACK_ON_404[cfModel]) {
-    fallbackCandidates.push(CF_FALLBACK_ON_404[cfModel]);
   }
-  if ((firstAttempt.status === 404 || hasImages && (firstAttempt.status === 400 || firstAttempt.status === 403 || firstAttempt.status === 503)) && fallbackCandidates.length > 0) {
+  if (!params.strictModelLock && (firstAttempt.status === 404 || hasImages && (firstAttempt.status === 400 || firstAttempt.status === 403 || firstAttempt.status === 503)) && fallbackCandidates.length > 0) {
     for (const candidate of fallbackCandidates) {
       if (triedCfModels.has(candidate)) continue;
       triedCfModels.add(candidate);
@@ -714,6 +752,8 @@ ${params.prompt}` : params.prompt;
         hasImages,
         jsonMode: params.jsonMode,
         maxTokens,
+        temperature: effectiveTemperature,
+        seed: params.seed,
         signal: params.signal
       });
       if (retryAttempt.ok) {
@@ -904,6 +944,9 @@ async function fetchPublicGeminiGenerateModels(apiKey, signal) {
     return [];
   }
 }
+function isGemini4ModelId(modelId) {
+  return /gemini-4/i.test(modelId || "");
+}
 async function generateGeminiContentWithFallback(params) {
   const apiKey = (params.apiKeyOverride || "").trim() || await resolveActiveGeminiApiKey();
   const keyHash = crypto2.createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
@@ -916,11 +959,15 @@ async function generateGeminiContentWithFallback(params) {
     }
   });
   const requestedModel = sanitizeGeminiModelId(params.model);
-  const cachedWorking = workingGeminiModelPerKey.get(keyHash);
+  const cachedWorking = params.strictModelLock ? void 0 : workingGeminiModelPerKey.get(keyHash);
   const candidates = [];
-  for (const m of [cachedWorking, requestedModel, ...GEMINI_FALLBACK_CANDIDATES]) {
-    if (m && !candidates.includes(m)) {
-      candidates.push(m);
+  if (params.strictModelLock) {
+    candidates.push(requestedModel);
+  } else {
+    for (const m of [cachedWorking, requestedModel, ...GEMINI_FALLBACK_CANDIDATES]) {
+      if (m && !candidates.includes(m)) {
+        candidates.push(m);
+      }
     }
   }
   let lastErr = null;
@@ -950,6 +997,17 @@ async function generateGeminiContentWithFallback(params) {
     triedList.push(candidateModel);
     const baseConfig = { ...params.config || {} };
     delete baseConfig.thinkingConfig;
+    if (isGemini4ModelId(candidateModel)) {
+      delete baseConfig.temperature;
+      delete baseConfig.topP;
+      delete baseConfig.topK;
+      delete baseConfig.candidateCount;
+    } else if (typeof params.temperature === "number" && Number.isFinite(params.temperature)) {
+      baseConfig.temperature = Math.max(0, Math.min(2, params.temperature));
+    }
+    if (typeof params.seed === "number" && Number.isFinite(params.seed)) {
+      baseConfig.seed = Math.floor(params.seed);
+    }
     const tc = params.thinkingTier ? thinkingConfigForModel(candidateModel, params.thinkingTier) : void 0;
     if (tc) {
       baseConfig.thinkingConfig = tc;
@@ -960,7 +1018,9 @@ async function generateGeminiContentWithFallback(params) {
         contents: params.contents,
         config: baseConfig
       });
-      workingGeminiModelPerKey.set(keyHash, candidateModel);
+      if (!params.strictModelLock) {
+        workingGeminiModelPerKey.set(keyHash, candidateModel);
+      }
       return {
         text: normalizeOutputText(resp.text || ""),
         usageMetadata: resp.usageMetadata,
@@ -968,7 +1028,26 @@ async function generateGeminiContentWithFallback(params) {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const is400OrParamErr = msg.includes("400") || msg.includes("INVALID_ARGUMENT") || msg.includes("thinking") || msg.includes("Thinking") || msg.includes("response_schema") || msg.includes("responseSchema");
+      const is400OrParamErr = msg.includes("400") || msg.includes("INVALID_ARGUMENT") || msg.includes("thinking") || msg.includes("Thinking") || msg.includes("seed") || msg.includes("response_schema") || msg.includes("responseSchema");
+      if (baseConfig.seed !== void 0 && is400OrParamErr && msg.toLowerCase().includes("seed")) {
+        delete baseConfig.seed;
+        try {
+          const retrySeedResp = await ai.models.generateContent({
+            model: candidateModel,
+            contents: params.contents,
+            config: baseConfig
+          });
+          if (!params.strictModelLock) {
+            workingGeminiModelPerKey.set(keyHash, candidateModel);
+          }
+          return {
+            text: normalizeOutputText(retrySeedResp.text || ""),
+            usageMetadata: retrySeedResp.usageMetadata,
+            resolvedModel: candidateModel
+          };
+        } catch {
+        }
+      }
       if (tc && is400OrParamErr) {
         delete baseConfig.thinkingConfig;
         try {
@@ -977,7 +1056,9 @@ async function generateGeminiContentWithFallback(params) {
             contents: params.contents,
             config: baseConfig
           });
-          workingGeminiModelPerKey.set(keyHash, candidateModel);
+          if (!params.strictModelLock) {
+            workingGeminiModelPerKey.set(keyHash, candidateModel);
+          }
           return {
             text: normalizeOutputText(retryResp.text || ""),
             usageMetadata: retryResp.usageMetadata,
@@ -999,7 +1080,9 @@ async function generateGeminiContentWithFallback(params) {
           contents: params.contents,
           config: schemaLessConfig
         });
-        workingGeminiModelPerKey.set(keyHash, candidateModel);
+        if (!params.strictModelLock) {
+          workingGeminiModelPerKey.set(keyHash, candidateModel);
+        }
         return {
           text: normalizeOutputText(retryResp2.text || ""),
           usageMetadata: retryResp2.usageMetadata,
@@ -1027,12 +1110,12 @@ async function generateGeminiContentWithFallback(params) {
         sawNotFound = true;
       }
       const isFatalKeyError = msg.includes("API_KEY_INVALID") || msg.includes("API key not valid") || msg.includes("SERVICE_DISABLED") || msg.includes("API has not been used");
-      if (isFatalKeyError) {
+      if (isFatalKeyError || params.strictModelLock) {
         throw err;
       }
     }
   }
-  if (!signal?.aborted) {
+  if (!signal?.aborted && !params.strictModelLock) {
     const discovered = await fetchPublicGeminiGenerateModels(apiKey, signal);
     for (const disc of discovered) {
       if (signal?.aborted) break;
@@ -1137,15 +1220,19 @@ async function executeRoutedAiTask(params) {
     bypassCache,
     allowGroqRescue = true,
     groqRescueModelId,
+    strictModelLock = false,
+    extractExecutionMeta,
     runWithModel
   } = params;
   let overrideConsumed = false;
   const decision = resolveModelForTask(taskType, config, () => {
     overrideConsumed = true;
   });
+  const requestedModel = decision.modelId;
   const cacheKey = cacheInput && !bypassCache ? buildDeterministicCacheKey({
     taskType,
-    modelId: decision.modelId,
+    modelId: requestedModel,
+    strictModelLock,
     promptVersion: decision.promptVersion,
     configVersion: decision.configVersion,
     ...cacheInput
@@ -1156,22 +1243,30 @@ async function executeRoutedAiTask(params) {
       appendExecutionLog({
         executionId: `exec_${Date.now()}_${crypto2.randomBytes(2).toString("hex")}`,
         taskType,
-        modelId: decision.modelId,
-        usedFallback: false,
-        usedOverride: decision.usedOverride,
-        promptVersion: decision.promptVersion,
-        configVersion: decision.configVersion,
+        modelId: hit.actualModel,
+        requestedModel: hit.requestedModel,
+        actualModel: hit.actualModel,
+        ...hit.systemFingerprint ? { systemFingerprint: hit.systemFingerprint } : {},
+        usedFallback: hit.usedFallback,
+        usedOverride: hit.usedOverride,
+        promptVersion: hit.promptVersion,
+        configVersion: hit.configVersion,
         status: "success",
         durationMs: 0,
         cached: true,
         timestamp: (/* @__PURE__ */ new Date()).toISOString()
       });
       return {
-        data: hit,
-        modelId: decision.modelId,
-        usedFallback: false,
-        usedOverride: decision.usedOverride,
-        cached: true
+        data: hit.data,
+        modelId: hit.actualModel,
+        requestedModel: hit.requestedModel,
+        actualModel: hit.actualModel,
+        usedFallback: hit.usedFallback,
+        usedOverride: hit.usedOverride,
+        cached: true,
+        ...hit.systemFingerprint ? { systemFingerprint: hit.systemFingerprint } : {},
+        promptVersion: hit.promptVersion,
+        configVersion: hit.configVersion
       };
     }
     const pending = inFlightTasks.get(cacheKey);
@@ -1179,180 +1274,145 @@ async function executeRoutedAiTask(params) {
       const shared = await pending;
       return {
         data: shared.data,
-        modelId: shared.modelId,
+        modelId: shared.actualModel,
+        requestedModel: shared.requestedModel,
+        actualModel: shared.actualModel,
         usedFallback: shared.usedFallback,
         usedOverride: shared.usedOverride,
-        cached: true
+        cached: true,
+        ...shared.systemFingerprint ? { systemFingerprint: shared.systemFingerprint } : {},
+        promptVersion: shared.promptVersion,
+        configVersion: shared.configVersion
       };
     }
   }
-  const canFallback = Boolean(decision.fallbackModelId) && decision.fallbackModelId !== decision.modelId && isModelProviderConfigured(decision.fallbackModelId);
-  const primaryUnconfigured = !isModelProviderConfigured(decision.modelId);
+  const canFallback = !strictModelLock && decision.enableFallback && Boolean(decision.fallbackModelId) && decision.fallbackModelId !== requestedModel && isModelProviderConfigured(decision.fallbackModelId);
+  const primaryUnconfigured = !isModelProviderConfigured(requestedModel);
+  const finalizeSuccess = (result, executedModel, usedFallback, startMs) => {
+    const meta = extractExecutionMeta?.(result);
+    const actualModel = (meta?.actualModel || executedModel).trim();
+    const systemFingerprint = meta?.systemFingerprint;
+    const effectiveFallback = usedFallback || actualModel !== requestedModel;
+    if (cacheKey) {
+      aiResponseCache.set(cacheKey, {
+        data: result,
+        requestedModel,
+        actualModel,
+        usedFallback: effectiveFallback,
+        usedOverride: decision.usedOverride,
+        ...systemFingerprint ? { systemFingerprint } : {},
+        promptVersion: decision.promptVersion,
+        configVersion: decision.configVersion
+      });
+    }
+    appendExecutionLog({
+      executionId: `exec_${Date.now()}_${crypto2.randomBytes(2).toString("hex")}`,
+      taskType,
+      modelId: actualModel,
+      requestedModel,
+      actualModel,
+      ...systemFingerprint ? { systemFingerprint } : {},
+      usedFallback: effectiveFallback,
+      usedOverride: decision.usedOverride,
+      promptVersion: decision.promptVersion,
+      configVersion: decision.configVersion,
+      status: "success",
+      durationMs: Date.now() - startMs,
+      cached: false,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    return {
+      data: result,
+      modelId: actualModel,
+      requestedModel,
+      actualModel,
+      usedFallback: effectiveFallback,
+      usedOverride: decision.usedOverride,
+      cached: false,
+      ...systemFingerprint ? { systemFingerprint } : {},
+      promptVersion: decision.promptVersion,
+      configVersion: decision.configVersion
+    };
+  };
   const executeTask = async () => {
     const start = Date.now();
     try {
-      if (primaryUnconfigured && canFallback) {
+      if (primaryUnconfigured) {
         throw new Error(
-          isGroqModelId(decision.modelId) ? "GROQ_API_KEY_UNCONFIGURED" : isCloudflareModelId(decision.modelId) ? "CLOUDFLARE_CREDENTIALS_UNCONFIGURED" : "GEMINI_API_KEY_UNCONFIGURED"
+          isGroqModelId(requestedModel) ? "GROQ_API_KEY_UNCONFIGURED" : isCloudflareModelId(requestedModel) ? "CLOUDFLARE_CREDENTIALS_UNCONFIGURED" : "GEMINI_API_KEY_UNCONFIGURED"
         );
       }
       const primaryRetries = canFallback ? 0 : 1;
-      const result = await withExponentialBackoff(() => runWithModel(decision.modelId), primaryRetries);
+      const result = await withExponentialBackoff(() => runWithModel(requestedModel), primaryRetries);
       if (overrideConsumed && consumeOneTimeOverride) {
         await consumeOneTimeOverride(taskType);
       }
-      if (cacheKey) {
-        aiResponseCache.set(cacheKey, result);
-      }
-      appendExecutionLog({
-        executionId: `exec_${Date.now()}_${crypto2.randomBytes(2).toString("hex")}`,
-        taskType,
-        modelId: decision.modelId,
-        usedFallback: false,
-        usedOverride: decision.usedOverride,
-        promptVersion: decision.promptVersion,
-        configVersion: decision.configVersion,
-        status: "success",
-        durationMs: Date.now() - start,
-        cached: false,
-        timestamp: (/* @__PURE__ */ new Date()).toISOString()
-      });
-      return {
-        data: result,
-        modelId: decision.modelId,
-        usedFallback: false,
-        usedOverride: decision.usedOverride,
-        cached: false
-      };
+      return finalizeSuccess(result, requestedModel, false, start);
     } catch (primaryErr) {
       let lastErr = primaryErr;
+      if (strictModelLock) {
+        const reason = primaryErr instanceof Error ? primaryErr.message.slice(0, 220) : String(primaryErr).slice(0, 220);
+        appendExecutionLog({
+          executionId: `exec_${Date.now()}_${crypto2.randomBytes(2).toString("hex")}`,
+          taskType,
+          modelId: requestedModel,
+          requestedModel,
+          actualModel: requestedModel,
+          usedFallback: false,
+          usedOverride: decision.usedOverride,
+          promptVersion: decision.promptVersion,
+          configVersion: decision.configVersion,
+          status: "failed",
+          error: `STRICT_LOCK: ${reason}`.slice(0, 180),
+          durationMs: Date.now() - start,
+          timestamp: (/* @__PURE__ */ new Date()).toISOString()
+        });
+        if (reason.includes("GRADING_JSON_INVALID") || reason.includes("GROQ_API_KEY_UNCONFIGURED") || reason.includes("GEMINI_API_KEY_UNCONFIGURED") || reason.includes("CLOUDFLARE_CREDENTIALS_UNCONFIGURED")) {
+          throw primaryErr;
+        }
+        throw new Error(
+          `STRICT_GRADING_MODEL_UNAVAILABLE: Model ch\u1EA5m \u0111i\u1EC3m c\u1ED1 \u0111\u1ECBnh (${requestedModel}) t\u1EA1m th\u1EDDi kh\xF4ng ph\u1EA3n h\u1ED3i v\xE0 h\u1EC7 th\u1ED1ng \u0111\xE3 kh\xF3a chuy\u1EC3n \u0111\u1ED5i ch\xE9o model \u0111\u1EC3 b\u1EA3o v\u1EC7 t\xEDnh nh\u1EA5t qu\xE1n \u0111i\u1EC3m s\u1ED1. Chi ti\u1EBFt: ${reason}`
+        );
+      }
       if (canFallback) {
         try {
           const fbResult = await withExponentialBackoff(() => runWithModel(decision.fallbackModelId), 1);
           if (overrideConsumed && consumeOneTimeOverride) {
             await consumeOneTimeOverride(taskType);
           }
-          if (cacheKey) {
-            aiResponseCache.set(cacheKey, fbResult);
-          }
-          appendExecutionLog({
-            executionId: `exec_${Date.now()}_${crypto2.randomBytes(2).toString("hex")}`,
-            taskType,
-            modelId: decision.fallbackModelId,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            promptVersion: decision.promptVersion,
-            configVersion: decision.configVersion,
-            status: "success",
-            durationMs: Date.now() - start,
-            cached: false,
-            timestamp: (/* @__PURE__ */ new Date()).toISOString()
-          });
-          return {
-            data: fbResult,
-            modelId: decision.fallbackModelId,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            cached: false
-          };
+          return finalizeSuccess(fbResult, decision.fallbackModelId, true, start);
         } catch (fbErr) {
           lastErr = fbErr;
         }
       }
       const rescueModel = groqRescueModelId || defaultGroqRescueModelForTask(taskType);
-      const canGroqRescue = allowGroqRescue && isGroqConfigured() && !isGroqModelId(decision.modelId) && !(canFallback && isGroqModelId(decision.fallbackModelId));
+      const canGroqRescue = allowGroqRescue && isGroqConfigured() && !isGroqModelId(requestedModel) && !(canFallback && isGroqModelId(decision.fallbackModelId));
       if (canGroqRescue) {
         try {
           const rescueResult = await withExponentialBackoff(() => runWithModel(rescueModel), 1);
-          if (cacheKey) {
-            aiResponseCache.set(cacheKey, rescueResult);
-          }
-          appendExecutionLog({
-            executionId: `exec_${Date.now()}_${crypto2.randomBytes(2).toString("hex")}`,
-            taskType,
-            modelId: rescueModel,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            promptVersion: decision.promptVersion,
-            configVersion: decision.configVersion,
-            status: "success",
-            durationMs: Date.now() - start,
-            cached: false,
-            timestamp: (/* @__PURE__ */ new Date()).toISOString()
-          });
-          return {
-            data: rescueResult,
-            modelId: rescueModel,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            cached: false
-          };
+          return finalizeSuccess(rescueResult, rescueModel, true, start);
         } catch (rescueErr) {
           lastErr = rescueErr;
         }
       }
       const cfRescueModel = defaultCloudflareRescueModelForTask(taskType);
-      const canCloudflareRescue = allowGroqRescue && isCloudflareConfigured() && !isCloudflareModelId(decision.modelId) && !(canFallback && isCloudflareModelId(decision.fallbackModelId));
+      const canCloudflareRescue = allowGroqRescue && isCloudflareConfigured() && !isCloudflareModelId(requestedModel) && !(canFallback && isCloudflareModelId(decision.fallbackModelId));
       if (canCloudflareRescue) {
         try {
           const cfResult = await withExponentialBackoff(() => runWithModel(cfRescueModel), 1);
-          if (cacheKey) {
-            aiResponseCache.set(cacheKey, cfResult);
-          }
-          appendExecutionLog({
-            executionId: `exec_${Date.now()}_${crypto2.randomBytes(2).toString("hex")}`,
-            taskType,
-            modelId: cfRescueModel,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            promptVersion: decision.promptVersion,
-            configVersion: decision.configVersion,
-            status: "success",
-            durationMs: Date.now() - start,
-            cached: false,
-            timestamp: (/* @__PURE__ */ new Date()).toISOString()
-          });
-          return {
-            data: cfResult,
-            modelId: cfRescueModel,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            cached: false
-          };
+          return finalizeSuccess(cfResult, cfRescueModel, true, start);
         } catch (cfErr) {
           lastErr = cfErr;
         }
       }
-      const isPrimaryGemini = !isGroqModelId(decision.modelId) && !isCloudflareModelId(decision.modelId);
+      const isPrimaryGemini = !isGroqModelId(requestedModel) && !isCloudflareModelId(requestedModel);
       const isFallbackGemini = canFallback && !isGroqModelId(decision.fallbackModelId) && !isCloudflareModelId(decision.fallbackModelId);
       const canGeminiRescue = isGeminiConfigured() && !isPrimaryGemini && !isFallbackGemini;
       if (canGeminiRescue) {
         const geminiRescueModel = "gemini-2.5-flash";
         try {
           const gemResult = await withExponentialBackoff(() => runWithModel(geminiRescueModel), 1);
-          if (cacheKey) {
-            aiResponseCache.set(cacheKey, gemResult);
-          }
-          appendExecutionLog({
-            executionId: `exec_${Date.now()}_${crypto2.randomBytes(2).toString("hex")}`,
-            taskType,
-            modelId: geminiRescueModel,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            promptVersion: decision.promptVersion,
-            configVersion: decision.configVersion,
-            status: "success",
-            durationMs: Date.now() - start,
-            cached: false,
-            timestamp: (/* @__PURE__ */ new Date()).toISOString()
-          });
-          return {
-            data: gemResult,
-            modelId: geminiRescueModel,
-            usedFallback: true,
-            usedOverride: decision.usedOverride,
-            cached: false
-          };
+          return finalizeSuccess(gemResult, geminiRescueModel, true, start);
         } catch (gemErr) {
           lastErr = gemErr;
         }
@@ -1360,7 +1420,9 @@ async function executeRoutedAiTask(params) {
       appendExecutionLog({
         executionId: `exec_${Date.now()}_${crypto2.randomBytes(2).toString("hex")}`,
         taskType,
-        modelId: canFallback ? decision.fallbackModelId : decision.modelId,
+        modelId: canFallback ? decision.fallbackModelId : requestedModel,
+        requestedModel,
+        actualModel: canFallback ? decision.fallbackModelId : requestedModel,
         usedFallback: canFallback,
         usedOverride: decision.usedOverride,
         promptVersion: decision.promptVersion,
@@ -1379,10 +1441,7 @@ async function executeRoutedAiTask(params) {
   const taskPromise = executeTask().finally(() => {
     inFlightTasks.delete(cacheKey);
   });
-  inFlightTasks.set(
-    cacheKey,
-    taskPromise
-  );
+  inFlightTasks.set(cacheKey, taskPromise);
   return taskPromise;
 }
 async function testModelConnectivity(modelId) {
@@ -1508,9 +1567,26 @@ import crypto3 from "node:crypto";
 import fs2 from "node:fs";
 import os from "node:os";
 import path2 from "node:path";
+function isPersistentEncryptionSecretConfigured() {
+  return Boolean(
+    process.env.KEY_ENCRYPTION_SECRET?.trim() || process.env.ADMIN_KEY_ENCRYPTION_SECRET?.trim()
+  );
+}
 function deriveAesKey() {
-  const seed = process.env.KEY_ENCRYPTION_SECRET || process.env.ADMIN_KEY_ENCRYPTION_SECRET || `${firebaseConfig.projectId}:${firebaseConfig.apiKey}:studycheck-single-key-v1`;
-  return crypto3.createHash("sha256").update(seed).digest();
+  const configuredSeed = process.env.KEY_ENCRYPTION_SECRET?.trim() || process.env.ADMIN_KEY_ENCRYPTION_SECRET?.trim();
+  if (configuredSeed) {
+    return crypto3.createHash("sha256").update(`studycheck-aes-v2:${configuredSeed}`).digest();
+  }
+  if (!ephemeralProcessAesKey) {
+    ephemeralProcessAesKey = crypto3.randomBytes(32);
+    if (!warnedMissingEncryptionSecret) {
+      warnedMissingEncryptionSecret = true;
+      console.warn(
+        "Security notice: KEY_ENCRYPTION_SECRET is not set. Using an ephemeral in-memory encryption key for this process; configure KEY_ENCRYPTION_SECRET in server environment variables before deploying."
+      );
+    }
+  }
+  return ephemeralProcessAesKey;
 }
 function encryptSecretPayload(rawValue) {
   const iv = crypto3.randomBytes(12);
@@ -2667,7 +2743,117 @@ function resolveActiveCloudflareCredentials() {
   }
   return getEnvFallbackCloudflareCredentials() || { accountId: "", apiToken: "" };
 }
-var DATA_DIR, ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE, FIRESTORE_SECRET_DOC, GROQ_ENCRYPTED_KEY_FILE, TMP_GROQ_ENCRYPTED_KEY_FILE, FIRESTORE_GROQ_DOC, CF_ENCRYPTED_KEY_FILE, TMP_CF_ENCRYPTED_KEY_FILE, FIRESTORE_CF_DOC, cachedSingleKey, cachedGroqKey, cachedCloudflareCreds;
+function getColdStartEnvTemplate() {
+  return [
+    "# Bi\u1EBFn m\xF4i tr\u01B0\u1EDDng b\u1EAFt bu\u1ED9c \u0111\u1EC3 AI ch\u1EA1y 24/7 khi Vercel / Render t\u1EF1 ng\u1EE7 ho\u1EB7c kh\u1EDFi \u0111\u1ED9ng l\u1EA1i",
+    "GROQ_API_KEY=",
+    "GEMINI_API_KEY=",
+    "# Kh\xF3a b\xED m\u1EADt ng\u1EABu nhi\xEAn (t\u1ED1i thi\u1EC3u 32 k\xFD t\u1EF1) \u0111\u1EC3 gi\u1EEF kh\xF3a nh\u1EADp tr\xEAn Admin UI kh\xF4ng b\u1ECB m\u1EA5t sau restart",
+    "KEY_ENCRYPTION_SECRET=",
+    "# T\xEAn mi\u1EC1n web production c\u1EE7a b\u1EA1n (n\u1EBFu frontend v\xE0 backend kh\xE1c domain)",
+    "ALLOWED_ORIGIN=",
+    "# T\xF9y ch\u1ECDn: T\u1EA7ng d\u1EF1 ph\xF2ng th\u1EE9 3 (Cloudflare Workers AI)",
+    "CLOUDFLARE_ACCOUNT_ID=",
+    "CLOUDFLARE_API_TOKEN="
+  ].join("\n");
+}
+function detectProviderFromModelId(modelId) {
+  const lower = (modelId || "").trim().toLowerCase();
+  if (lower.startsWith("groq:")) return "groq";
+  if (lower.startsWith("cf:")) return "cloudflare";
+  return "gemini";
+}
+function buildColdStartReadinessReport(input) {
+  const activeProvider = detectProviderFromModelId(input.activeModel);
+  const groq = {
+    provider: "groq",
+    label: "Groq Cloud Free",
+    envVarNames: ["GROQ_API_KEY"],
+    envConfigured: input.groqEnvConfigured,
+    adminOverrideActive: input.groqAdminOverrideActive,
+    configuredNow: input.groqEnvConfigured || input.groqAdminOverrideActive,
+    survivesColdStartWhenAdminOffline: input.groqEnvConfigured
+  };
+  const gemini = {
+    provider: "gemini",
+    label: "Google Gemini",
+    envVarNames: ["GEMINI_API_KEY"],
+    envConfigured: input.geminiEnvConfigured,
+    adminOverrideActive: input.geminiAdminOverrideActive,
+    configuredNow: input.geminiEnvConfigured || input.geminiAdminOverrideActive,
+    survivesColdStartWhenAdminOffline: input.geminiEnvConfigured
+  };
+  const cloudflare = {
+    provider: "cloudflare",
+    label: "Cloudflare Workers AI",
+    envVarNames: ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+    envConfigured: input.cloudflareEnvConfigured,
+    adminOverrideActive: input.cloudflareAdminOverrideActive,
+    configuredNow: input.cloudflareEnvConfigured || input.cloudflareAdminOverrideActive,
+    survivesColdStartWhenAdminOffline: input.cloudflareEnvConfigured
+  };
+  const providers = { groq, gemini, cloudflare };
+  const activeProviderInfo = providers[activeProvider];
+  const activeModelCoveredByEnv = activeProviderInfo.envConfigured;
+  const anyProviderCoveredByEnv = groq.envConfigured || gemini.envConfigured || cloudflare.envConfigured;
+  const warnings = [];
+  if (!anyProviderCoveredByEnv) {
+    warnings.push(
+      "Ch\u01B0a c\xF3 API key n\xE0o trong bi\u1EBFn m\xF4i tr\u01B0\u1EDDng m\xE1y ch\u1EE7 (GROQ_API_KEY / GEMINI_API_KEY / CLOUDFLARE_*). Khi Vercel ho\u1EB7c Render t\u1EF1 ng\u1EE7 v\xE0 kh\u1EDFi \u0111\u1ED9ng l\u1EA1i l\xFAc Admin ngo\u1EA1i tuy\u1EBFn, h\u1ECDc sinh s\u1EBD g\u1EB7p l\u1ED7i 503."
+    );
+  } else if (!activeModelCoveredByEnv) {
+    warnings.push(
+      `Model m\u1EB7c \u0111\u1ECBnh \u0111ang ch\u1ECDn (${activeProviderInfo.label}) ch\u01B0a c\xF3 bi\u1EBFn m\xF4i tr\u01B0\u1EDDng ${activeProviderInfo.envVarNames.join(" / ")} tr\xEAn m\xE1y ch\u1EE7. Khi server reset l\xFAc Admin ngo\u1EA1i tuy\u1EBFn, h\u1EC7 th\u1ED1ng s\u1EBD ph\u1EA3i chuy\u1EC3n sang nh\xE0 cung c\u1EA5p d\u1EF1 ph\xF2ng.`
+    );
+  }
+  if (!input.encryptionSecretConfigured) {
+    warnings.push(
+      "Ch\u01B0a c\u1EA5u h\xECnh KEY_ENCRYPTION_SECRET tr\xEAn m\xE1y ch\u1EE7. M\u1ECDi API key d\xE1n tr\u1EF1c ti\u1EBFp trong trang Admin ch\u1EC9 c\xF3 t\xE1c d\u1EE5ng t\u1EA1m th\u1EDDi trong RAM v\xE0 s\u1EBD kh\xF4ng gi\u1EA3i m\xE3 \u0111\u01B0\u1EE3c sau khi server kh\u1EDFi \u0111\u1ED9ng l\u1EA1i."
+    );
+  }
+  const anyAdminOnlyWithoutEnv = groq.adminOverrideActive && !groq.envConfigured || gemini.adminOverrideActive && !gemini.envConfigured || cloudflare.adminOverrideActive && !cloudflare.envConfigured;
+  if (anyAdminOnlyWithoutEnv && anyProviderCoveredByEnv) {
+    const missingEnvLabels = [groq, gemini, cloudflare].filter((p) => p.adminOverrideActive && !p.envConfigured).map((p) => `${p.label} (${p.envVarNames.join(" + ")})`);
+    warnings.push(
+      `C\xE1c kh\xF3a \u0111ang d\xE1n trong Admin nh\u01B0ng ch\u01B0a c\xF3 bi\u1EBFn m\xF4i tr\u01B0\u1EDDng d\u1EF1 ph\xF2ng tr\xEAn server: ${missingEnvLabels.join(", ")}.`
+    );
+  }
+  let overallStatus = "ready_24_7";
+  if (!anyProviderCoveredByEnv) {
+    overallStatus = "at_risk";
+  } else if (!activeModelCoveredByEnv || !input.encryptionSecretConfigured) {
+    overallStatus = "partial_risk";
+  }
+  return {
+    overallStatus,
+    runtimePlatform: input.runtimePlatform,
+    activeModel: input.activeModel,
+    activeProvider,
+    activeModelCoveredByEnv,
+    anyProviderCoveredByEnv,
+    encryptionSecretConfigured: input.encryptionSecretConfigured,
+    providers,
+    warnings,
+    envTemplate: getColdStartEnvTemplate()
+  };
+}
+function evaluateColdStartReadiness(activeModel) {
+  const runtimePlatform = process.env.VERCEL === "1" ? "vercel" : process.env.RENDER === "true" || Boolean(process.env.RENDER_SERVICE_ID) ? "render" : "standard";
+  return buildColdStartReadinessReport({
+    activeModel,
+    runtimePlatform,
+    encryptionSecretConfigured: isPersistentEncryptionSecretConfigured(),
+    groqEnvConfigured: Boolean(getEnvFallbackGroqKey()),
+    groqAdminOverrideActive: Boolean(cachedGroqKey?.rawKey),
+    geminiEnvConfigured: Boolean(getEnvFallbackKey()),
+    geminiAdminOverrideActive: Boolean(cachedSingleKey?.rawKey),
+    cloudflareEnvConfigured: Boolean(getEnvFallbackCloudflareCredentials()),
+    cloudflareAdminOverrideActive: Boolean(
+      cachedCloudflareCreds?.accountId && cachedCloudflareCreds?.apiToken
+    )
+  });
+}
+var DATA_DIR, ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE, FIRESTORE_SECRET_DOC, GROQ_ENCRYPTED_KEY_FILE, TMP_GROQ_ENCRYPTED_KEY_FILE, FIRESTORE_GROQ_DOC, CF_ENCRYPTED_KEY_FILE, TMP_CF_ENCRYPTED_KEY_FILE, FIRESTORE_CF_DOC, ephemeralProcessAesKey, warnedMissingEncryptionSecret, cachedSingleKey, cachedGroqKey, cachedCloudflareCreds;
 var init_singleKeyService = __esm({
   "src/server/singleKeyService.ts"() {
     init_firebaseServer();
@@ -2683,6 +2869,8 @@ var init_singleKeyService = __esm({
     CF_ENCRYPTED_KEY_FILE = path2.join(DATA_DIR, "cloudflare-ai-key.enc");
     TMP_CF_ENCRYPTED_KEY_FILE = path2.join(os.tmpdir(), "studycheck-cloudflare-ai-key.enc");
     FIRESTORE_CF_DOC = "adminSecrets/cloudflare";
+    ephemeralProcessAesKey = null;
+    warnedMissingEncryptionSecret = false;
     cachedSingleKey = null;
     cachedGroqKey = null;
     cachedCloudflareCreds = null;
@@ -2782,13 +2970,16 @@ function extractJsonStringFromModelOutput(raw) {
   return trimmed;
 }
 async function executeGroqRequest(params) {
-  const sendOnce = async (useResponseFormatJson) => {
+  const sendOnce = async (useResponseFormatJson, includeSeed) => {
     const body = {
       model: params.groqModel,
       messages: params.messages,
-      temperature: 0.15,
+      temperature: params.temperature,
       max_tokens: params.maxTokens
     };
+    if (includeSeed && typeof params.seed === "number" && Number.isFinite(params.seed)) {
+      body.seed = Math.floor(params.seed);
+    }
     if (useResponseFormatJson) {
       body.response_format = { type: "json_object" };
     }
@@ -2816,17 +3007,26 @@ async function executeGroqRequest(params) {
         promptTokens: data.usage?.prompt_tokens || 0,
         candidateTokens: data.usage?.completion_tokens || 0,
         totalTokens: data.usage?.total_tokens || 0,
-        resolvedModel: `groq:${params.groqModel}`
+        resolvedModel: `groq:${params.groqModel}`,
+        ...typeof data.system_fingerprint === "string" && data.system_fingerprint.trim() ? { systemFingerprint: data.system_fingerprint.trim() } : {}
       }
     };
   };
   const useStrictJsonHeaderFirst = Boolean(params.jsonMode) && !params.hasImages;
-  const primary = await sendOnce(useStrictJsonHeaderFirst);
-  if (!primary.ok && primary.status === 400 && useStrictJsonHeaderFirst) {
+  const hasSeed = typeof params.seed === "number" && Number.isFinite(params.seed);
+  let primary = await sendOnce(useStrictJsonHeaderFirst, hasSeed);
+  if (!primary.ok && primary.status === 400) {
     const lowerErr = primary.errText.toLowerCase();
     const isDeadModel = lowerErr.includes("model_not_found") || lowerErr.includes("model_decommissioned") || lowerErr.includes("does not exist") || lowerErr.includes("not found");
-    if (!isDeadModel) {
-      const withoutJsonFormat = await sendOnce(false);
+    if (!isDeadModel && hasSeed && lowerErr.includes("seed")) {
+      const withoutSeed = await sendOnce(useStrictJsonHeaderFirst, false);
+      if (withoutSeed.ok) {
+        return withoutSeed;
+      }
+      primary = withoutSeed;
+    }
+    if (!primary.ok && !isDeadModel && useStrictJsonHeaderFirst) {
+      const withoutJsonFormat = await sendOnce(false, false);
       if (withoutJsonFormat.ok) {
         return withoutJsonFormat;
       }
@@ -2878,6 +3078,7 @@ ${params.prompt}` : params.prompt;
     messages.push({ role: "user", content: params.prompt });
   }
   const maxTokens = Math.min(8192, Math.max(256, params.maxOutputTokens || 2048));
+  const effectiveTemperature = typeof params.temperature === "number" && Number.isFinite(params.temperature) ? Math.max(0, Math.min(2, params.temperature)) : 0;
   const firstAttempt = await executeGroqRequest({
     apiKey,
     groqModel,
@@ -2885,6 +3086,8 @@ ${params.prompt}` : params.prompt;
     hasImages,
     jsonMode: params.jsonMode,
     maxTokens,
+    temperature: effectiveTemperature,
+    seed: params.seed,
     signal: params.signal
   });
   if (firstAttempt.ok) {
@@ -2897,7 +3100,8 @@ ${params.prompt}` : params.prompt;
   let lastStatus = firstAttempt.status;
   let lastErrText = firstAttempt.errText;
   const triedModels = [groqModel];
-  if ((firstAttempt.status === 404 || firstAttempt.status === 400 || firstAttempt.status === 503) && !params.disableModelAutoFallback) {
+  const allowAutoFallback = !params.disableModelAutoFallback && !params.strictModelLock;
+  if ((firstAttempt.status === 404 || firstAttempt.status === 400 || firstAttempt.status === 503) && allowAutoFallback) {
     const availableModels = await fetchAvailableGroqChatModels(apiKey, params.signal, true);
     const tried = /* @__PURE__ */ new Set([groqModel.toLowerCase()]);
     const candidatePool = [];
@@ -2936,6 +3140,8 @@ ${params.prompt}` : params.prompt;
         hasImages,
         jsonMode: params.jsonMode,
         maxTokens,
+        temperature: effectiveTemperature,
+        seed: params.seed,
         signal: params.signal
       });
       if (retryAttempt.ok) {
@@ -3625,10 +3831,12 @@ function retrieveRelevantChunks(queryText, chunks, options = {}) {
     return {
       chunk,
       lexicalScore: Math.round(normalized * 100) / 100,
-      matchedKeywords: Array.from(new Set(matchedKeywords))
+      matchedKeywords: Array.from(new Set(matchedKeywords)).sort()
     };
   });
-  return scored.filter((item) => item.lexicalScore > 0).sort((a, b) => b.lexicalScore - a.lexicalScore).slice(0, topK);
+  return scored.filter((item) => item.lexicalScore > 0).sort(
+    (a, b) => b.lexicalScore - a.lexicalScore || a.chunk.pageNumber - b.chunk.pageNumber || a.chunk.chunkId.localeCompare(b.chunk.chunkId)
+  ).slice(0, topK);
 }
 function buildChunksFromPages(params) {
   const {
@@ -3700,19 +3908,39 @@ var init_retrieval = __esm({
 });
 
 // src/core/urlSecurity.ts
+function isPrivateIpv4(ip) {
+  return PRIVATE_IPV4_RANGES.some((regex) => regex.test(ip));
+}
+function extractMappedIpv4FromIpv6(cleanIpv6) {
+  const dottedMatch = cleanIpv6.match(/^(?:::ffff:|0:0:0:0:0:ffff:)(\d{1,3}(?:\.\d{1,3}){3})$/i);
+  if (dottedMatch) {
+    return dottedMatch[1];
+  }
+  const hexMatch = cleanIpv6.match(/^(?:::ffff:|0:0:0:0:0:ffff:)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+  if (hexMatch) {
+    const hi = parseInt(hexMatch[1], 16);
+    const lo = parseInt(hexMatch[2], 16);
+    if (!Number.isNaN(hi) && !Number.isNaN(lo)) {
+      return `${hi >> 8 & 255}.${hi & 255}.${lo >> 8 & 255}.${lo & 255}`;
+    }
+  }
+  return null;
+}
 function isPrivateOrLoopbackHost(hostOrIp) {
   const hostname = hostOrIp.trim().toLowerCase().replace(/^\[|\]$/g, "");
   if (!hostname) return true;
   if (BLOCKED_HOSTNAMES.has(hostname) || hostname.endsWith(".local") || hostname.endsWith(".internal")) {
     return true;
   }
-  for (const regex of PRIVATE_IPV4_RANGES) {
-    if (regex.test(hostname)) {
-      return true;
-    }
+  if (isPrivateIpv4(hostname)) {
+    return true;
   }
   if (hostname.includes(":")) {
-    if (hostname === "::1" || hostname.startsWith("fe80:") || hostname.startsWith("fc") || hostname.startsWith("fd") || hostname.includes("127.0.0.1") || hostname.includes("169.254.")) {
+    const mappedIpv4 = extractMappedIpv4FromIpv6(hostname);
+    if (mappedIpv4 && isPrivateIpv4(mappedIpv4)) {
+      return true;
+    }
+    if (hostname === "::1" || hostname === "::" || /^fe[89ab][0-9a-f]?:/i.test(hostname) || hostname.startsWith("fc") || hostname.startsWith("fd") || hostname.includes("127.0.0.1") || hostname.includes("169.254.")) {
       return true;
     }
   }
@@ -3736,21 +3964,45 @@ function validateReferenceUrl(rawUrl) {
     return { valid: false, reason: "URL kh\xF4ng \u0111\u01B0\u1EE3c ch\u1EE9a th\xF4ng tin \u0111\u0103ng nh\u1EADp nh\xFAng." };
   }
   const hostname = parsed.hostname.toLowerCase();
-  if (BLOCKED_HOSTNAMES.has(hostname) || hostname.endsWith(".local") || hostname.endsWith(".internal")) {
+  if (isPrivateOrLoopbackHost(hostname)) {
     return { valid: false, reason: "Kh\xF4ng \u0111\u01B0\u1EE3c ph\xE9p truy c\u1EADp \u0111\u1ECBa ch\u1EC9 n\u1ED9i b\u1ED9 ho\u1EB7c metadata endpoint." };
   }
-  for (const regex of PRIVATE_IPV4_RANGES) {
-    if (regex.test(hostname)) {
-      return { valid: false, reason: "Kh\xF4ng \u0111\u01B0\u1EE3c ph\xE9p truy c\u1EADp d\u1EA3i IP n\u1ED9i b\u1ED9." };
-    }
-  }
-  if (hostname.startsWith("[") || hostname.includes(":")) {
-    const clean = hostname.replace(/^\[|\]$/g, "");
-    if (clean === "::1" || clean.startsWith("fe80:") || clean.startsWith("fc") || clean.startsWith("fd") || clean.includes("127.0.0.1") || clean.includes("169.254.")) {
-      return { valid: false, reason: "Kh\xF4ng \u0111\u01B0\u1EE3c ph\xE9p truy c\u1EADp \u0111\u1ECBa ch\u1EC9 IPv6 n\u1ED9i b\u1ED9." };
-    }
-  }
   return { valid: true, normalizedUrl: parsed.toString() };
+}
+function isAllowedCorsOrigin(origin, requestHost, allowlist) {
+  if (!origin) return false;
+  let parsedOrigin;
+  try {
+    parsedOrigin = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (parsedOrigin.protocol !== "http:" && parsedOrigin.protocol !== "https:") {
+    return false;
+  }
+  const normalizedOrigin = parsedOrigin.origin.toLowerCase();
+  const normalizedHost = (requestHost || "").split(",")[0].trim().toLowerCase();
+  if (normalizedHost && parsedOrigin.host.toLowerCase() === normalizedHost) {
+    return true;
+  }
+  for (const rawAllowed of allowlist) {
+    const entry = rawAllowed.trim();
+    if (!entry || entry === "*") continue;
+    try {
+      const parsedAllowed = new URL(entry);
+      if (parsedAllowed.origin.toLowerCase() === normalizedOrigin) {
+        return true;
+      }
+    } catch {
+      if (entry.toLowerCase().replace(/\/+$/, "") === normalizedOrigin) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+function isValidFirestoreDocId(id) {
+  return typeof id === "string" && id.length >= 1 && id.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(id);
 }
 var PRIVATE_IPV4_RANGES, BLOCKED_HOSTNAMES;
 var init_urlSecurity = __esm({
@@ -3772,6 +4024,10 @@ var init_urlSecurity = __esm({
       "169.254.169.254",
       "::1",
       "[::1]",
+      "::",
+      "[::]",
+      "0:0:0:0:0:0:0:1",
+      "0:0:0:0:0:0:0:0",
       "0.0.0.0"
     ]);
   }
@@ -3795,6 +4051,9 @@ async function assertResolvedHostSafe(urlStr) {
   }
   try {
     const records = await dns.promises.lookup(hostname, { all: true });
+    if (!records || records.length === 0) {
+      throw new Error("T\u1EEB ch\u1ED1i k\u1EBFt n\u1ED1i: Kh\xF4ng th\u1EC3 x\xE1c minh \u0111\u1ECBa ch\u1EC9 IP c\xF4ng khai c\u1EE7a t\xEAn mi\u1EC1n.");
+    }
     for (const rec of records) {
       if (isPrivateOrLoopbackHost(rec.address)) {
         throw new Error("T\u1EEB ch\u1ED1i k\u1EBFt n\u1ED1i: T\xEAn mi\u1EC1n ph\xE2n gi\u1EA3i v\u1EC1 IP n\u1ED9i b\u1ED9 ho\u1EB7c loopback (DNS Rebinding guard).");
@@ -3804,6 +4063,7 @@ async function assertResolvedHostSafe(urlStr) {
     if (err instanceof Error && err.message.startsWith("T\u1EEB ch\u1ED1i k\u1EBFt n\u1ED1i")) {
       throw err;
     }
+    throw new Error("T\u1EEB ch\u1ED1i k\u1EBFt n\u1ED1i: Kh\xF4ng th\u1EC3 ph\xE2n gi\u1EA3i DNS an to\xE0n cho t\xEAn mi\u1EC1n \u0111\xEDch.");
   }
 }
 async function extractPdfPagesFromBuffer(buffer) {
@@ -4139,15 +4399,19 @@ function calculateAccuracyScore(claims, hasReferenceTextbook) {
     counts
   };
 }
-function calculateCompletenessScore(coverageItems, hasValidScope) {
-  if (!hasValidScope || coverageItems.length === 0) {
+function calculateCompletenessScore(coverageItems, hasValidScope, options = {}) {
+  const effectiveRubricMode = options.rubricMode || (hasValidScope ? "scope_guided" : "unscoped");
+  if (!hasValidScope || effectiveRubricMode === "unscoped" || coverageItems.length === 0) {
     return {
       completenessScore: null,
       coveredWeight: 0,
       totalRequiredWeight: 0,
       missingCount: 0,
       partialCount: 0,
-      coveredCount: 0
+      coveredCount: 0,
+      rubricMode: "unscoped",
+      rubricItemCount: 0,
+      extraObservationsCount: options.extraObservationsCount ?? 0
     };
   }
   let totalRequiredWeight = 0;
@@ -4176,7 +4440,10 @@ function calculateCompletenessScore(coverageItems, hasValidScope) {
     totalRequiredWeight,
     missingCount,
     partialCount,
-    coveredCount
+    coveredCount,
+    rubricMode: effectiveRubricMode,
+    rubricItemCount: options.rubricItemCount ?? coverageItems.length,
+    extraObservationsCount: options.extraObservationsCount ?? 0
   };
 }
 
@@ -4338,6 +4605,278 @@ function distributeExamQuestionScores(questions, totalScore) {
 // src/server/geminiPipeline.ts
 init_retrieval();
 
+// src/core/rubric.ts
+init_cache();
+function normalizeConceptKey(text) {
+  return (text || "").toLowerCase().normalize("NFC").replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+}
+function tokenizeWords(text) {
+  return normalizeConceptKey(text).split(" ").filter((w) => w.length >= 2);
+}
+function inferDeterministicCriterionWeight(concept, sourceKind) {
+  const norm = normalizeConceptKey(concept);
+  const coreSignals = [
+    "kh\xE1i ni\u1EC7m",
+    "\u0111\u1ECBnh ngh\u0129a",
+    "\u0111\u1ECBnh lu\u1EADt",
+    "\u0111\u1ECBnh l\xED",
+    "\u0111\u1ECBnh l\xFD",
+    "c\xF4ng th\u1EE9c",
+    "ph\u01B0\u01A1ng tr\xECnh",
+    "b\u1EA3n ch\u1EA5t",
+    "c\u1EA5u t\u1EA1o",
+    "nguy\xEAn l\xED",
+    "nguy\xEAn l\xFD",
+    "quy lu\u1EADt",
+    "vai tr\xF2",
+    "c\u01A1 ch\u1EBF",
+    "t\xEDnh ch\u1EA5t",
+    "\u0111i\u1EC1u ki\u1EC7n",
+    "\u0111\u1EB7c \u0111i\u1EC3m",
+    "ph\xE2n lo\u1EA1i"
+  ];
+  const detailSignals = [
+    "v\xED d\u1EE5",
+    "l\u01B0u \xFD",
+    "m\u1EDF r\u1ED9ng",
+    "v\u1EADn d\u1EE5ng",
+    "li\xEAn h\u1EC7",
+    "th\u1EF1c t\u1EBF",
+    "ghi ch\xFA",
+    "em c\xF3 bi\u1EBFt",
+    "b\xE0i t\u1EADp"
+  ];
+  if (detailSignals.some((s) => norm.includes(s))) {
+    return 1;
+  }
+  if (coreSignals.some((s) => norm.includes(s))) {
+    return 3;
+  }
+  if (sourceKind === "objective") {
+    return 3;
+  }
+  if (sourceKind === "section") {
+    return 2;
+  }
+  return 2;
+}
+function buildFixedRubricFromChunks(params) {
+  const {
+    chunks,
+    subject,
+    grade,
+    textbookReferenceId,
+    textbookTitle,
+    selectedChapters = [],
+    maxCriteria = 24
+  } = params;
+  const sortedChunks = [...chunks].sort(
+    (a, b) => a.pageNumber - b.pageNumber || a.chunkId.localeCompare(b.chunkId)
+  );
+  const seenKeys = /* @__PURE__ */ new Set();
+  const rawCriteria = [];
+  const tryAddCriterion = (candidate) => {
+    if (rawCriteria.length >= maxCriteria) return;
+    const key = normalizeConceptKey(candidate.concept);
+    if (!key || key.length < 3) return;
+    if (seenKeys.has(key)) return;
+    seenKeys.add(key);
+    rawCriteria.push(candidate);
+  };
+  for (const chunk of sortedChunks) {
+    const objectives = Array.isArray(chunk.learningObjectives) ? chunk.learningObjectives : [];
+    for (const obj of objectives) {
+      const clean = (obj || "").trim();
+      if (!clean) continue;
+      tryAddCriterion({
+        concept: clean.slice(0, 180),
+        chapter: chunk.chapter,
+        lesson: chunk.lesson,
+        importanceWeight: inferDeterministicCriterionWeight(clean, "objective"),
+        referenceChunkId: chunk.chunkId,
+        referencePage: chunk.pageNumber,
+        referenceExcerpt: chunk.content.slice(0, 280),
+        expectedKeywords: Array.from(
+          /* @__PURE__ */ new Set([...tokenizeWords(clean), ...(chunk.conceptTags || []).map(normalizeConceptKey)])
+        ).filter(Boolean).slice(0, 10)
+      });
+    }
+  }
+  for (const chunk of sortedChunks) {
+    const section = (chunk.sectionTitle || "").trim();
+    const isGenericSection = !section || normalizeConceptKey(section) === "noi dung chinh" || normalizeConceptKey(section) === "n\u1ED9i dung ch\xEDnh" || normalizeConceptKey(section) === "n\u1ED9i dung chu\u1EA9n sgk";
+    const label = !isGenericSection ? section : (chunk.lesson || "").trim();
+    if (!label) continue;
+    tryAddCriterion({
+      concept: label.slice(0, 180),
+      chapter: chunk.chapter,
+      lesson: chunk.lesson,
+      importanceWeight: inferDeterministicCriterionWeight(label, "section"),
+      referenceChunkId: chunk.chunkId,
+      referencePage: chunk.pageNumber,
+      referenceExcerpt: chunk.content.slice(0, 280),
+      expectedKeywords: Array.from(
+        /* @__PURE__ */ new Set([...tokenizeWords(label), ...(chunk.keywords || []).map(normalizeConceptKey)])
+      ).filter(Boolean).slice(0, 10)
+    });
+  }
+  if (rawCriteria.length < 4) {
+    for (const chunk of sortedChunks) {
+      for (const tag of chunk.conceptTags || []) {
+        const clean = (tag || "").trim();
+        if (!clean || clean.length < 3) continue;
+        tryAddCriterion({
+          concept: clean.slice(0, 140),
+          chapter: chunk.chapter,
+          lesson: chunk.lesson,
+          importanceWeight: inferDeterministicCriterionWeight(clean, "concept_tag"),
+          referenceChunkId: chunk.chunkId,
+          referencePage: chunk.pageNumber,
+          referenceExcerpt: chunk.content.slice(0, 280),
+          expectedKeywords: tokenizeWords(clean).slice(0, 8)
+        });
+      }
+    }
+  }
+  const criteria = rawCriteria.map((item, idx) => ({
+    ...item,
+    criterionId: `KT${String(idx + 1).padStart(2, "0")}`
+  }));
+  const totalRequiredWeight = criteria.reduce((sum, c) => sum + c.importanceWeight, 0);
+  const rubricMode = criteria.length > 0 ? "fixed_textbook_rubric" : selectedChapters.length > 0 ? "scope_guided" : "unscoped";
+  const rubricHash = buildDeterministicCacheKey({
+    rubricMode,
+    subject,
+    grade,
+    textbookReferenceId,
+    selectedChapters: [...selectedChapters].sort(),
+    criteria: criteria.map((c) => ({
+      criterionId: c.criterionId,
+      concept: c.concept,
+      chapter: c.chapter,
+      importanceWeight: c.importanceWeight,
+      referenceChunkId: c.referenceChunkId
+    }))
+  });
+  return {
+    rubricId: `rub_${rubricHash.slice(0, 12)}`,
+    rubricHash,
+    rubricMode,
+    subject,
+    grade,
+    textbookReferenceId,
+    textbookTitle,
+    selectedChapters,
+    criteria,
+    totalRequiredWeight
+  };
+}
+function formatFixedRubricForPrompt(rubric) {
+  if (rubric.criteria.length === 0) {
+    return "Kh\xF4ng c\xF3 b\u1EA3ng rubric SGK c\u1ED1 \u0111\u1ECBnh cho ph\u1EA1m vi n\xE0y.";
+  }
+  const lines = [
+    `B\u1EA2NG RUBRIC C\u1ED0 \u0110\u1ECANH B\u1EAET BU\u1ED8C (${rubric.criteria.length} ti\xEAu ch\xED | t\u1ED5ng tr\u1ECDng s\u1ED1 ${rubric.totalRequiredWeight} | m\xE3 rubric ${rubric.rubricId}):`,
+    "B\u1EAET BU\u1ED8C \u0111\xE1nh gi\xE1 \u0110\u1EA6Y \u0110\u1EE6 T\u1EA4T C\u1EA2 c\xE1c ti\xEAu ch\xED t\u1EEB KT01 \u0111\u1EBFn KT" + String(rubric.criteria.length).padStart(2, "0") + " trong m\u1EA3ng coverageItems. KH\xD4NG \u0111\u01B0\u1EE3c x\xF3a ti\xEAu ch\xED, KH\xD4NG \u0111\u01B0\u1EE3c t\u1EF1 \u0111\u1ED5i importanceWeight, v\xE0 PH\u1EA2I ghi \u0111\xFAng criterionId."
+  ];
+  for (const c of rubric.criteria) {
+    lines.push(
+      `- [${c.criterionId} | weight=${c.importanceWeight} | chunkId=${c.referenceChunkId} | Tr.${c.referencePage ?? "?"}] ${c.concept} (${c.chapter}${c.lesson ? ` - ${c.lesson}` : ""})`
+    );
+  }
+  return lines.join("\n");
+}
+function normalizeCoverageStatus(rawStatus) {
+  if (rawStatus === "COVERED" || rawStatus === "PARTIALLY_COVERED" || rawStatus === "MISSING" || rawStatus === "OUT_OF_SCOPE") {
+    return rawStatus;
+  }
+  return "MISSING";
+}
+function computeConceptOverlap(a, b) {
+  const wordsA = new Set(tokenizeWords(a));
+  const wordsB = new Set(tokenizeWords(b));
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+  let shared = 0;
+  for (const w of wordsA) {
+    if (wordsB.has(w)) shared += 1;
+  }
+  return shared / Math.max(wordsA.size, wordsB.size);
+}
+function reconcileCoverageAgainstFixedRubric(fixedRubric, aiCoverageItems) {
+  const usedAiIndices = /* @__PURE__ */ new Set();
+  const coverageItems = [];
+  for (const criterion of fixedRubric.criteria) {
+    let matchedIdx = aiCoverageItems.findIndex(
+      (item, idx) => !usedAiIndices.has(idx) && typeof item.criterionId === "string" && item.criterionId.trim().toUpperCase() === criterion.criterionId.toUpperCase()
+    );
+    if (matchedIdx < 0) {
+      let bestScore = 0;
+      let bestIdx = -1;
+      for (let i = 0; i < aiCoverageItems.length; i += 1) {
+        if (usedAiIndices.has(i)) continue;
+        const score = computeConceptOverlap(criterion.concept, aiCoverageItems[i].concept || "");
+        if (score >= 0.45 && score > bestScore) {
+          bestScore = score;
+          bestIdx = i;
+        }
+      }
+      matchedIdx = bestIdx;
+    }
+    if (matchedIdx >= 0) {
+      usedAiIndices.add(matchedIdx);
+      const aiItem = aiCoverageItems[matchedIdx];
+      const status = normalizeCoverageStatus(aiItem.status);
+      const safeStatus = status === "OUT_OF_SCOPE" ? "MISSING" : status;
+      coverageItems.push({
+        itemId: criterion.criterionId,
+        criterionId: criterion.criterionId,
+        concept: criterion.concept,
+        chapter: criterion.chapter,
+        ...criterion.lesson ? { lesson: criterion.lesson } : {},
+        importanceWeight: criterion.importanceWeight,
+        // Locked by fixed rubric!
+        status: safeStatus,
+        suggestedAddition: safeStatus === "COVERED" ? (aiItem.suggestedAddition || "").trim() : (aiItem.suggestedAddition || "").trim() || `B\u1ED5 sung \u0111\u1EA7y \u0111\u1EE7 n\u1ED9i dung chu\u1EA9n SGK cho ti\xEAu ch\xED "${criterion.concept}".`,
+        referenceExcerpt: (aiItem.referenceExcerpt || "").trim() || criterion.referenceExcerpt,
+        ...typeof criterion.referencePage === "number" && criterion.referencePage > 0 ? { referencePage: criterion.referencePage } : {},
+        matchedChunkId: criterion.referenceChunkId
+      });
+    } else {
+      coverageItems.push({
+        itemId: criterion.criterionId,
+        criterionId: criterion.criterionId,
+        concept: criterion.concept,
+        chapter: criterion.chapter,
+        ...criterion.lesson ? { lesson: criterion.lesson } : {},
+        importanceWeight: criterion.importanceWeight,
+        status: "MISSING",
+        suggestedAddition: `B\u1ED5 sung n\u1ED9i dung chu\u1EA9n SGK cho ti\xEAu ch\xED "${criterion.concept}".`,
+        referenceExcerpt: criterion.referenceExcerpt,
+        ...typeof criterion.referencePage === "number" && criterion.referencePage > 0 ? { referencePage: criterion.referencePage } : {},
+        matchedChunkId: criterion.referenceChunkId
+      });
+    }
+  }
+  const extraObservations = [];
+  aiCoverageItems.forEach((item, idx) => {
+    if (usedAiIndices.has(idx)) return;
+    if (!item.concept || !item.concept.trim()) return;
+    const wRaw = Number(item.importanceWeight);
+    const w = wRaw === 3 ? 3 : wRaw === 1 ? 1 : 2;
+    extraObservations.push({
+      itemId: `extra_${extraObservations.length + 1}`,
+      concept: item.concept.trim(),
+      chapter: (item.chapter || fixedRubric.selectedChapters[0] || "Ghi nh\u1EADn b\u1ED5 sung").trim(),
+      importanceWeight: w,
+      status: normalizeCoverageStatus(item.status),
+      suggestedAddition: (item.suggestedAddition || "").trim(),
+      referenceExcerpt: (item.referenceExcerpt || "").trim(),
+      ...typeof item.referencePage === "number" && item.referencePage > 0 ? { referencePage: item.referencePage } : {}
+    });
+  });
+  return { coverageItems, extraObservations };
+}
+
 // src/core/types.ts
 var SUBJECT_LABELS = {
   toan: "To\xE1n h\u1ECDc",
@@ -4446,6 +4985,48 @@ function normalizeJsonEscapeAndControlChars(jsonCandidate) {
   }
   return out.replace(/,\s*([}\]])/g, "$1");
 }
+var DETERMINISTIC_GRADING_SEED = 20261123;
+var GRADING_PROMPT_VERSION = "v4.0_fixed_rubric_deterministic";
+var MAX_STUDENT_GRADING_CHARS = 48e3;
+var MAX_TEXTBOOK_GRADING_CHARS = 24e3;
+function parseAndValidateKnowledgeEvalJson(rawText) {
+  const trimmed = (rawText || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  if (!trimmed || trimmed === "{}") {
+    throw new Error(
+      "GRADING_JSON_INVALID: M\xF4 h\xECnh AI tr\u1EA3 v\u1EC1 ph\u1EA3n h\u1ED3i r\u1ED7ng khi ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c. Vui l\xF2ng th\u1EED ch\u1EA5m l\u1EA1i."
+    );
+  }
+  const candidate = repairJsonLikeText(trimmed);
+  let parsed = null;
+  let lastParseErr = null;
+  for (const attempt of [candidate, normalizeJsonEscapeAndControlChars(candidate)]) {
+    try {
+      parsed = JSON.parse(attempt);
+      lastParseErr = null;
+      break;
+    } catch (err) {
+      lastParseErr = err;
+    }
+  }
+  if (lastParseErr || !parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    const detail = lastParseErr instanceof Error ? lastParseErr.message : "C\u1EA5u tr\xFAc JSON kh\xF4ng h\u1EE3p l\u1EC7";
+    throw new Error(
+      `GRADING_JSON_INVALID: Ph\u1EA3n h\u1ED3i ch\u1EA5m \u0111i\u1EC3m t\u1EEB AI b\u1ECB c\u1EAFt c\u1EE5t ho\u1EB7c sai \u0111\u1ECBnh d\u1EA1ng JSON (${detail.slice(0, 120)}). H\u1EC7 th\u1ED1ng kh\xF4ng tr\u1EA3 k\u1EBFt qu\u1EA3 r\u1ED7ng gi\u1EA3 \u2014 vui l\xF2ng th\u1EED l\u1EA1i.`
+    );
+  }
+  const obj = parsed;
+  if (!Array.isArray(obj.claims)) {
+    throw new Error(
+      "GRADING_JSON_INVALID: Ph\u1EA3n h\u1ED3i ki\u1EC3m \u0111\u1ECBnh thi\u1EBFu m\u1EA3ng m\u1EC7nh \u0111\u1EC1 (claims). Vui l\xF2ng th\u1EED ch\u1EA5m l\u1EA1i."
+    );
+  }
+  if (obj.coverageItems !== void 0 && !Array.isArray(obj.coverageItems)) {
+    throw new Error(
+      "GRADING_JSON_INVALID: Tr\u01B0\u1EDDng coverageItems trong ph\u1EA3n h\u1ED3i ki\u1EC3m \u0111\u1ECBnh kh\xF4ng \u0111\xFAng \u0111\u1ECBnh d\u1EA1ng m\u1EA3ng."
+    );
+  }
+  return obj;
+}
 function safeParseModelJson(rawText, fallbackJson) {
   const source = (rawText || "").trim() || fallbackJson;
   const candidate = repairJsonLikeText(source);
@@ -4488,7 +5069,8 @@ function parseOcrResponsePayload(rawText) {
   }
   return { rawText: cleanedPlain, ocrConfidence: 0.85 };
 }
-async function generateJsonWithProvider(params) {
+async function generateJsonWithProviderDetailed(params) {
+  const parseOutput = (rawText) => params.strictJsonParser ? params.strictJsonParser(rawText) : safeParseModelJson(rawText, params.fallbackJson);
   if (isGroqModelId(params.modelId)) {
     const resp = await callWithTimeout(
       (signal) => callGroqChatCompletion({
@@ -4497,12 +5079,19 @@ async function generateJsonWithProvider(params) {
         jsonMode: true,
         jsonSchemaHint: params.groqSchemaHint,
         maxOutputTokens: params.maxOutputTokens,
+        temperature: params.temperature ?? 0,
+        seed: params.seed,
+        strictModelLock: params.strictModelLock,
         signal
       }),
       params.timeoutMs
     );
     accumulateRawTokens(params.tokensOut, resp);
-    return safeParseModelJson(resp.text, params.fallbackJson);
+    return {
+      data: parseOutput(resp.text),
+      resolvedModel: resp.resolvedModel || params.modelId,
+      ...resp.systemFingerprint ? { systemFingerprint: resp.systemFingerprint } : {}
+    };
   }
   if (isCloudflareModelId(params.modelId)) {
     const resp = await callWithTimeout(
@@ -4512,12 +5101,19 @@ async function generateJsonWithProvider(params) {
         jsonMode: true,
         jsonSchemaHint: params.groqSchemaHint,
         maxOutputTokens: params.maxOutputTokens,
+        temperature: params.temperature ?? 0,
+        seed: params.seed,
+        strictModelLock: params.strictModelLock,
         signal
       }),
       params.timeoutMs
     );
     accumulateRawTokens(params.tokensOut, resp);
-    return safeParseModelJson(resp.text, params.fallbackJson);
+    return {
+      data: parseOutput(resp.text),
+      resolvedModel: resp.resolvedModel || params.modelId,
+      ...resp.systemFingerprint ? { systemFingerprint: resp.systemFingerprint } : {}
+    };
   }
   const ai = await createServerAiClient();
   const response = await callWithTimeout(
@@ -4526,6 +5122,9 @@ async function generateJsonWithProvider(params) {
       model: params.modelId,
       contents: params.prompt,
       thinkingTier: params.thinkingTier,
+      temperature: params.temperature,
+      seed: params.seed,
+      strictModelLock: params.strictModelLock,
       config: {
         maxOutputTokens: params.maxOutputTokens,
         abortSignal: signal,
@@ -4536,7 +5135,15 @@ async function generateJsonWithProvider(params) {
     params.timeoutMs
   );
   accumulateTokens(params.tokensOut, response);
-  return safeParseModelJson(response.text, params.fallbackJson);
+  return {
+    data: parseOutput(response.text),
+    resolvedModel: response.resolvedModel || params.modelId,
+    ...response.systemFingerprint ? { systemFingerprint: response.systemFingerprint } : {}
+  };
+}
+async function generateJsonWithProvider(params) {
+  const res = await generateJsonWithProviderDetailed(params);
+  return res.data;
 }
 async function generatePlainTextWithProvider(params) {
   if (isGroqModelId(params.modelId)) {
@@ -4586,7 +5193,7 @@ async function generatePlainTextWithProvider(params) {
 }
 async function runTaskWithRouter(params) {
   const cfg = params.config || getAuthoritativeAiConfigSnapshot();
-  const res = await executeRoutedAiTask({
+  return executeRoutedAiTask({
     taskType: params.taskType,
     config: cfg,
     consumeOneTimeOverride: (task) => consumeOneTimeModelOverride(task, params.idToken),
@@ -4594,9 +5201,10 @@ async function runTaskWithRouter(params) {
     bypassCache: params.bypassCache,
     allowGroqRescue: params.allowGroqRescue,
     groqRescueModelId: params.groqRescueModelId,
+    strictModelLock: params.strictModelLock,
+    extractExecutionMeta: params.extractExecutionMeta,
     runWithModel: params.runWithModel
   });
-  return { data: res.data, modelId: res.modelId };
 }
 var OCR_FAST_TIMEOUT_MS = 3e4;
 function buildExtractedBlocksFromRawText(rawText, pageNumber, confidence) {
@@ -5036,6 +5644,9 @@ var KnowledgeAnalysisService = class {
       scope,
       referenceChunks,
       enableWebGrounding,
+      strictModelLock = true,
+      ocrConfirmed = false,
+      ocrTextHash: providedOcrTextHash,
       tokensOut,
       config,
       idToken
@@ -5043,17 +5654,32 @@ var KnowledgeAnalysisService = class {
     const subjectName = SUBJECT_LABELS[subject];
     const formattedStudentBlocks = pages.map((p) => {
       const blocksStr = p.blocks.map(
-        (b) => `[blockId=${b.blockId} | page=${p.pageNumber} | ocrConf=${b.confidence}] ${b.extractedText}`
+        (b) => `[blockId=${b.blockId} | page=${p.pageNumber} | ocrConf=${ocrConfirmed ? Math.max(b.confidence, 0.95) : b.confidence}] ${b.extractedText}`
       ).join("\n");
       return `--- TRANG ${p.pageNumber} ---
 ${blocksStr}`;
     }).join("\n\n");
-    const fullText = pages.map((p) => p.rawText).join("\n");
+    const fullText = pages.map((p) => p.rawText).join("\n").normalize("NFC");
+    const computedOcrTextHash = crypto6.createHash("sha256").update(fullText, "utf8").digest("hex").slice(0, 24);
+    const ocrTextHash = (providedOcrTextHash || "").trim() || computedOcrTextHash;
     const retrievedHits = retrieveRelevantChunks(fullText, referenceChunks, {
       referenceId: textbookReferenceId || void 0,
       selectedChapters: selectedChapters.length > 0 ? selectedChapters : void 0,
-      topK: 10
+      topK: 16
     });
+    const retrievedChunks = retrievedHits.map((h) => h.chunk);
+    const sortedChunkIds = retrievedChunks.map((c) => c.chunkId).sort();
+    const fixedRubric = buildFixedRubricFromChunks({
+      chunks: retrievedChunks,
+      subject,
+      grade,
+      textbookReferenceId,
+      textbookTitle,
+      selectedChapters,
+      maxCriteria: 24
+    });
+    const hasIndexedTextbookChunks = retrievedHits.length > 0;
+    const rubricMode = fixedRubric.criteria.length > 0 ? "fixed_textbook_rubric" : selectedChapters.length > 0 || scope.trim().length > 0 ? "scope_guided" : "unscoped";
     const textbookContext = retrievedHits.length > 0 ? retrievedHits.map(
       (h) => `[chunkId=${h.chunk.chunkId} | Trang ${h.chunk.pageNumber} | ${h.chunk.chapter} - ${h.chunk.lesson} | ${h.chunk.sectionTitle}]
 ${h.chunk.content}`
@@ -5074,7 +5700,7 @@ ${h.chunk.content}`
           taskType: "claim_validation",
           config,
           idToken,
-          cacheInput: { webSearchText: fullText.slice(0, 2e3), grade, subject, scope },
+          cacheInput: { webSearchTextHash: computedOcrTextHash, grade, subject, scope },
           runWithModel: async (modelId) => {
             const searchModel = isGroqModelId(modelId) || isCloudflareModelId(modelId) ? "gemini-2.5-flash" : modelId;
             const resp = await callWithTimeout(
@@ -5128,7 +5754,17 @@ ${h.chunk.content}`
         webGroundingNotice = `Kh\xF4ng th\u1EC3 truy v\u1EA5n Google Search Grounding (${msg.slice(0, 90)}). \u0110\xE1nh gi\xE1 d\u1EF1a tr\xEAn kho s\xE1ch tham chi\u1EBFu.`;
       }
     }
-    const hasIndexedTextbookChunks = retrievedHits.length > 0;
+    const studentTruncated = formattedStudentBlocks.length > MAX_STUDENT_GRADING_CHARS;
+    const textbookTruncated = textbookContext.length > MAX_TEXTBOOK_GRADING_CHARS;
+    const truncationApplied = studentTruncated || textbookTruncated;
+    const studentSlice = formattedStudentBlocks.slice(0, MAX_STUDENT_GRADING_CHARS);
+    const textbookSlice = textbookContext.slice(0, MAX_TEXTBOOK_GRADING_CHARS);
+    const rubricSection = rubricMode === "fixed_textbook_rubric" ? [
+      "=== RUBRIC KI\u1EC2M \u0110\u1ECANH \u0110\u1ED8 \u0110\u1EA6Y \u0110\u1EE6 C\u1ED0 \u0110\u1ECANH (\u0110\xC3 KH\xD3A TR\u01AF\u1EDAC KHI CH\u1EA4M) ===",
+      formatFixedRubricForPrompt(fixedRubric),
+      ""
+    ].join("\n") : "";
+    const coverageInstruction = rubricMode === "fixed_textbook_rubric" ? `- \u0110\xC1NH GI\xC1 \u0110\u1ED8 \u0110\u1EA6Y \u0110\u1EE6 (coverageItems): B\u1EAET BU\u1ED8C ch\u1EA5m \u0111\u1EE7 T\u1EA4T C\u1EA2 ${fixedRubric.criteria.length} ti\xEAu ch\xED KT01..KT${String(fixedRubric.criteria.length).padStart(2, "0")} t\u1EEB b\u1EA3ng Rubric c\u1ED1 \u0111\u1ECBnh b\xEAn d\u01B0\u1EDBi. Ghi \u0111\xFAng tr\u01B0\u1EDDng "criterionId", gi\u1EEF nguy\xEAn "importanceWeight" c\u1EE7a rubric, tr\xEDch d\u1EABn \u0111\xFAng "matchedChunkId" & "referenceExcerpt". KH\xD4NG gi\u1EDBi h\u1EA1n 10 \xFD v\xE0 KH\xD4NG b\u1ECF s\xF3t ti\xEAu ch\xED n\xE0o.` : rubricMode === "scope_guided" ? "- \u0110\xC1NH GI\xC1 \u0110\u1ED8 \u0110\u1EA6Y \u0110\u1EE6 (coverageItems): \u0110\xE1nh gi\xE1 \u0111\u1EA7y \u0111\u1EE7 c\xE1c \xFD tr\u1ECDng t\xE2m theo ph\u1EA1m vi ch\u01B0\u01A1ng \u0111\xE3 ch\u1ECDn (kh\xF4ng t\u1EF1 c\u1EAFt ng\u1EAFn khi t\xE0i li\u1EC7u d\xE0i), ph\xE2n lo\u1EA1i r\xF5 COVERED / PARTIALLY_COVERED / MISSING." : "- Kh\xF4ng c\xF3 SGK hay ph\u1EA1m vi ch\u01B0\u01A1ng c\u1ED1 \u0111\u1ECBnh: ch\u1EC9 ghi nh\u1EADn c\xE1c thi\u1EBFu s\xF3t tr\u1EF1c ti\u1EBFp trong b\xE0i vi\u1EBFt (nh\u01B0 thi\u1EBFu ch\xFA th\xEDch k\xFD hi\u1EC7u/\u0111\u01A1n v\u1ECB c\u1EE7a c\xF4ng th\u1EE9c) n\u1EBFu th\u1EF1c s\u1EF1 t\u1ED3n t\u1EA1i.";
     const analysisPrompt = [
       "B\u1EA1n l\xE0 chuy\xEAn gia ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c gi\xE1o d\u1EE5c THPT Vi\u1EC7t Nam c\u1EE7a StudyCheck AI. H\xE3y ch\u1EA5m c\u1EF1c k\u1EF3 ch\xEDnh x\xE1c, ch\u1EB7t ch\u1EBD, nh\u1EA5t qu\xE1n tuy\u1EC7t \u0111\u1ED1i gi\u1EEFa tr\u1EA1ng th\xE1i, l\u1EDDi gi\u1EA3i th\xEDch v\xE0 \u0111\xE1p \xE1n s\u1EEDa chu\u1EA9n.",
       `M\xF4n h\u1ECDc: ${subjectName} | L\u1EDBp: ${grade} | S\xE1ch tham chi\u1EBFu: ${textbookTitle || "Chu\u1EA9n ch\u01B0\u01A1ng tr\xECnh GDPT 2018 & ki\u1EBFn th\u1EE9c khoa h\u1ECDc ph\u1ED5 th\xF4ng"} | Ph\u1EA1m vi: ${scope || selectedChapters.join(", ") || "Theo \u0111\xFAng ch\u1EE7 \u0111\u1EC1 ch\xEDnh trong t\xE0i li\u1EC7u"}`,
@@ -5148,9 +5784,9 @@ ${h.chunk.content}`
       "",
       "L\u1EDAP 3 \u2014 KI\u1EC2M TRA \u0110\u1ED8 \u0110\u1EA6Y \u0110\u1EE6 CH\xDA TH\xCDCH K\xDD HI\u1EC6U & \u0110\u01A0N V\u1ECA C\u1EE6A M\u1ECCI C\xD4NG TH\u1EE8C:",
       '- V\u1EDBi M\u1ECCI c\xF4ng th\u1EE9c xu\u1EA5t hi\u1EC7n trong t\xE0i li\u1EC7u (v\xED d\u1EE5 s = v.t, x = x0 + v.t, F = m.a...), li\u1EC7t k\xEA T\u1EA4T C\u1EA2 c\xE1c k\xFD hi\u1EC7u/bi\u1EBFn s\u1ED1 c\xF3 m\u1EB7t trong c\xF4ng th\u1EE9c \u0111\xF3 v\xE0 \u0111\u1ED1i chi\u1EBFu v\u1EDBi ph\u1EA7n gi\u1EA3i th\xEDch ("Trong \u0111\xF3...") ngay k\u1EBF ti\u1EBFp.',
-      "- N\u1EBFu h\u1ECDc sinh B\u1ECE S\xD3T gi\u1EA3i th\xEDch \xFD ngh\u0129a HO\u1EB6C thi\u1EBFu \u0111\u01A1n v\u1ECB \u0111o c\u1EE7a b\u1EA5t k\u1EF3 k\xFD hi\u1EC7u n\xE0o (v\xED d\u1EE5: vi\u1EBFt s v\xE0 v nh\u01B0ng kh\xF4ng gi\u1EA3i th\xEDch th\u1EDDi gian t v\xE0 \u0111\u01A1n v\u1ECB gi\xE2y s; ho\u1EB7c vi\u1EBFt x0 v\xE0 x nh\u01B0ng kh\xF4ng gi\u1EA3i th\xEDch v\u1EADn t\u1ED1c v trong ph\u01B0\u01A1ng tr\xECnh chuy\u1EC3n \u0111\u1ED9ng):",
+      "- N\u1EBFu h\u1ECDc sinh B\u1ECE S\xD3T gi\u1EA3i th\xEDch \xFD ngh\u0129a HO\u1EB6C thi\u1EBFu \u0111\u01A1n v\u1ECB \u0111o c\u1EE7a b\u1EA5t k\u1EF3 k\xFD hi\u1EC7u n\xE0o:",
       "  + \u0110\xE1nh gi\xE1 ph\u1EA7n gi\u1EA3i th\xEDch \u0111\xF3 l\xE0 PARTIALLY_CORRECT (Thi\u1EBFu th\xF4ng tin / \u0110i\u1EC1u ki\u1EC7n), n\xEAu \u0110\xCDCH DANH k\xFD hi\u1EC7u v\xE0 \u0111\u01A1n v\u1ECB c\xF2n thi\u1EBFu trong explanation, v\xE0 vi\u1EBFt tr\u1ECDn b\u1ED9 ch\xFA th\xEDch \u0111\u1EA7y \u0111\u1EE7 trong suggestedFix.",
-      '  + B\u1EAET BU\u1ED8C th\xEAm t\u1EEBng m\u1EE5c thi\u1EBFu \u0111\xF3 v\xE0o coverageItems v\u1EDBi status = "MISSING" (ho\u1EB7c "PARTIALLY_COVERED") v\xE0 v\xE0o weaknesses \u0111\u1EC3 hi\u1EC3n th\u1ECB r\xF5 trong danh s\xE1ch "Thi\u1EBFu th\xF4ng tin".',
+      '  + Ghi nh\u1EADn thi\u1EBFu s\xF3t t\u01B0\u01A1ng \u1EE9ng v\xE0o weaknesses \u0111\u1EC3 hi\u1EC3n th\u1ECB r\xF5 trong danh s\xE1ch "Thi\u1EBFu th\xF4ng tin".',
       "",
       "L\u1EDAP 4 \u2014 T\u1EF0 KI\u1EC2M CH\xC9O NH\u1EA4T QU\xC1N TR\u01AF\u1EDAC KHI TR\u1EA2 K\u1EBET QU\u1EA2:",
       "- Ph\xE2n lo\u1EA1i tr\u1EA1ng th\xE1i chu\u1EA9n:",
@@ -5158,45 +5794,83 @@ ${h.chunk.content}`
       "  + INCORRECT: sai b\u1EA3n ch\u1EA5t ki\u1EBFn th\u1EE9c, sai quan h\u1EC7, sai c\xF4ng th\u1EE9c/ph\xE9p to\xE1n.",
       "  + PARTIALLY_CORRECT: c\xF3 ph\u1EA7n \u0111\xFAng nh\u01B0ng thi\u1EBFu th\xF4ng tin quan tr\u1ECDng (thi\u1EBFu gi\u1EA3i th\xEDch k\xFD hi\u1EC7u/\u0111\u01A1n v\u1ECB, thi\u1EBFu \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng, ph\xE1t bi\u1EC3u ch\u01B0a tr\u1ECDn v\u1EB9n).",
       "  + UNVERIFIED: CH\u1EC8 d\xF9ng khi th\xF4ng tin ri\xEAng l\u1EBB/m\u01A1 h\u1ED3/kh\xF4ng \u0111\u1EE7 ng\u1EEF c\u1EA3nh \u0111\u1EC3 x\xE1c minh. KH\xD4NG d\xF9ng cho \u0111\u1ECBnh ngh\u0129a/c\xF4ng th\u1EE9c ph\u1ED5 th\xF4ng.",
-      "  + OCR_UNCERTAIN: \u0111\u1ED9 tin c\u1EADy OCR < 0.65.",
+      ocrConfirmed ? "  + L\u01B0u \xFD OCR: V\u0103n b\u1EA3n \u0111\xE3 \u0111\u01B0\u1EE3c ng\u01B0\u1EDDi d\xF9ng ki\u1EC3m tra/x\xE1c nh\u1EADn n\xEAn KH\xD4NG t\u1EF1 \xFD g\u1EAFn OCR_UNCERTAIN tr\u1EEB khi c\xE2u ch\u1EEF b\u1ECB m\u1EA5t k\xFD t\u1EF1 kh\xF4ng th\u1EC3 hi\u1EC3u ngh\u0129a." : "  + OCR_UNCERTAIN: \u0111\u1ED9 tin c\u1EADy OCR < 0.65.",
       "  + OUT_OF_SCOPE: n\u1ED9i dung l\u1EA1c \u0111\u1EC1 ho\xE0n to\xE0n kh\u1ECFi m\xF4n h\u1ECDc.",
       "- KI\u1EC2M TRA CH\xC9O: N\u1EBFu explanation ch\u1EC9 ra h\u1ECDc sinh vi\u1EBFt sai \u2192 evaluationStatus B\u1EAET BU\u1ED8C l\xE0 INCORRECT. N\u1EBFu explanation ch\u1EC9 ra h\u1ECDc sinh vi\u1EBFt thi\u1EBFu k\xFD hi\u1EC7u/\u0111\u01A1n v\u1ECB/\u0111i\u1EC1u ki\u1EC7n \u2192 evaluationStatus B\u1EAET BU\u1ED8C l\xE0 PARTIALLY_CORRECT. C\u1EA4M TUY\u1EC6T \u0110\u1ED0I vi\u1EC7c gi\u1EA3i th\xEDch 1 \u0111\u1EB1ng m\xE0 ch\u1EA5m tr\u1EA1ng th\xE1i 1 n\u1EBBo.",
-      "- G\xE1n tr\u1ECDng s\u1ED1 importanceWeight: 3 (c\u1ED1t l\xF5i), 2 (h\u1ED7 tr\u1EE3/ch\xFA th\xEDch k\xFD hi\u1EC7u), 1 (chi ti\u1EBFt m\u1EDF r\u1ED9ng).",
+      "- G\xE1n tr\u1ECDng s\u1ED1 importanceWeight cho claims theo quy t\u1EAFc c\u1ED1 \u0111\u1ECBnh: 3 (\u0111\u1ECBnh ngh\u0129a/\u0111\u1ECBnh lu\u1EADt/c\xF4ng th\u1EE9c c\u1ED1t l\xF5i), 2 (h\u1ED7 tr\u1EE3/ch\xFA th\xEDch k\xFD hi\u1EC7u/\u0111i\u1EC1u ki\u1EC7n), 1 (chi ti\u1EBFt/v\xED d\u1EE5 m\u1EDF r\u1ED9ng).",
+      coverageInstruction,
       "- Tuy\u1EC7t \u0111\u1ED1i KH\xD4NG b\u1ECBa URL hay s\u1ED1 trang SGK n\u1EBFu kh\xF4ng c\xF3 trong ng\u1EEF c\u1EA3nh.",
-      "- Vi\u1EBFt r\xF5 r\xE0ng, tr\u1EF1c di\u1EC7n, s\xFAc t\xEDch (m\u1ED7i explanation/correctKnowledge/suggestedFix t\u1ED1i \u0111a 2-3 c\xE2u ng\u1EAFn g\u1ECDn \u0111i th\u1EB3ng v\xE0o \u0111i\u1EC3m sai ho\u1EB7c \u0111i\u1EC3m thi\u1EBFu; weaknesses t\u1ED1i \u0111a 8 \xFD; coverageItems t\u1ED1i \u0111a 10 \xFD; strengths t\u1ED1i \u0111a 4 \xFD; suggestions t\u1ED1i \u0111a 4 \xFD).",
+      "- Vi\u1EBFt r\xF5 r\xE0ng, tr\u1EF1c di\u1EC7n, s\xFAc t\xEDch (m\u1ED7i explanation/correctKnowledge/suggestedFix t\u1ED1i \u0111a 2-3 c\xE2u ng\u1EAFn g\u1ECDn \u0111i th\u1EB3ng v\xE0o \u0111i\u1EC3m sai ho\u1EB7c \u0111i\u1EC3m thi\u1EBFu; weaknesses t\u1ED1i \u0111a 10 \xFD; strengths t\u1ED1i \u0111a 5 \xFD; suggestions t\u1ED1i \u0111a 5 \xFD).",
       "",
+      rubricSection,
       "=== T\xC0I LI\u1EC6U C\u1EE6A H\u1ECCC SINH ===",
-      formattedStudentBlocks.slice(0, 22e3),
+      studentSlice,
       "",
       "=== \u0110O\u1EA0N TR\xCDCH S\xC1CH GI\xC1O KHOA THAM CHI\u1EBEU ===",
-      textbookContext.slice(0, 14e3),
+      textbookSlice,
       "",
       webGroundingSummary ? `=== T\u1ED4NG H\u1EE2P NGU\u1ED2N INTERNET \u0110\xC3 GROUNDING ===
 ${webGroundingSummary.slice(0, 3500)}` : ""
     ].join("\n");
-    const { data: rawEval, modelId: modelUsed } = await runTaskWithRouter({
+    const fullStudentTextHash = crypto6.createHash("sha256").update(formattedStudentBlocks, "utf8").digest("hex");
+    const fullPromptHash = crypto6.createHash("sha256").update(analysisPrompt, "utf8").digest("hex");
+    const inputHash = crypto6.createHash("sha256").update(
+      JSON.stringify({
+        promptVersion: GRADING_PROMPT_VERSION,
+        fullStudentTextHash,
+        fullPromptHash,
+        ocrTextHash,
+        ocrConfirmed,
+        textbookReferenceId,
+        grade,
+        subject,
+        scope,
+        selectedChapters: [...selectedChapters].sort(),
+        chunkIds: sortedChunkIds,
+        rubricHash: fixedRubric.rubricHash,
+        enableWebGrounding: Boolean(enableWebGrounding),
+        strictModelLock,
+        seed: DETERMINISTIC_GRADING_SEED
+      }),
+      "utf8"
+    ).digest("hex");
+    const routedResult = await runTaskWithRouter({
       taskType: "knowledge_analysis",
       config,
       idToken,
-      allowGroqRescue: true,
+      strictModelLock,
+      allowGroqRescue: !strictModelLock,
+      extractExecutionMeta: (res) => ({
+        actualModel: res.resolvedModel,
+        systemFingerprint: res.systemFingerprint
+      }),
       cacheInput: {
-        promptRev: "v3_audit4layer",
-        studentText: formattedStudentBlocks.slice(0, 12e3),
+        promptVersion: GRADING_PROMPT_VERSION,
+        inputHash,
+        fullStudentTextHash,
+        fullPromptHash,
+        rubricHash: fixedRubric.rubricHash,
+        chunkIds: sortedChunkIds,
         textbookRef: textbookReferenceId,
         grade,
         subject,
         scope,
-        chunksDigest: retrievedHits.map((h) => h.chunk.chunkId).join(",")
+        enableWebGrounding: Boolean(enableWebGrounding),
+        ocrConfirmed
       },
-      runWithModel: async (modelId) => generateJsonWithProvider({
+      runWithModel: async (modelId) => generateJsonWithProviderDetailed({
         modelId,
         prompt: analysisPrompt,
         thinkingTier: pages.length <= 2 && formattedStudentBlocks.length <= 3500 ? "low" : "medium",
-        maxOutputTokens: pages.length <= 2 ? 4096 : 6144,
-        timeoutMs: 26e3,
+        maxOutputTokens: pages.length <= 2 && fixedRubric.criteria.length <= 10 ? 4096 : 7168,
+        timeoutMs: 32e3,
+        temperature: 0,
+        seed: DETERMINISTIC_GRADING_SEED,
+        strictModelLock,
+        strictJsonParser: parseAndValidateKnowledgeEvalJson,
         tokensOut,
         fallbackJson: '{"claims":[],"coverageItems":[],"strengths":[],"weaknesses":[],"suggestions":[]}',
-        groqSchemaHint: '{"claims":[{"blockId":"...","sourcePage":1,"sourceText":"...","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"..."}],"coverageItems":[{"concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}',
+        groqSchemaHint: '{"claims":[{"blockId":"...","sourcePage":1,"sourceText":"...","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"...","matchedChunkId":"...","matchedExcerpt":"...","matchedPage":1}],"coverageItems":[{"criterionId":"KT01","concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1,"matchedChunkId":"..."}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}',
         geminiSchema: {
           type: Type.OBJECT,
           properties: {
@@ -5243,6 +5917,7 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
               items: {
                 type: Type.OBJECT,
                 properties: {
+                  criterionId: { type: Type.STRING },
                   concept: { type: Type.STRING },
                   chapter: { type: Type.STRING },
                   importanceWeight: { type: Type.INTEGER },
@@ -5252,7 +5927,8 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
                   },
                   suggestedAddition: { type: Type.STRING },
                   referenceExcerpt: { type: Type.STRING },
-                  referencePage: { type: Type.INTEGER }
+                  referencePage: { type: Type.INTEGER },
+                  matchedChunkId: { type: Type.STRING }
                 },
                 required: [
                   "concept",
@@ -5306,6 +5982,8 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
         }
       })
     });
+    const rawEval = routedResult.data.data;
+    const modelUsed = routedResult.actualModel;
     const blockMap = /* @__PURE__ */ new Map();
     for (const p of pages) {
       for (const b of p.blocks) {
@@ -5328,9 +6006,10 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
     ]);
     const claims = (rawEval.claims || []).map((c, idx) => {
       const matchedBlock = c.blockId ? blockMap.get(c.blockId) : void 0;
-      const ocrConf = matchedBlock ? matchedBlock.confidence : 0.9;
+      const rawOcrConf = matchedBlock ? matchedBlock.confidence : 0.9;
+      const ocrConf = ocrConfirmed ? Math.max(rawOcrConf, 0.95) : rawOcrConf;
       let status = validStatuses.has(c.evaluationStatus) ? c.evaluationStatus : "UNVERIFIED";
-      if (ocrConf < 0.65 && status === "INCORRECT") {
+      if (!ocrConfirmed && ocrConf < 0.65 && status === "INCORRECT") {
         status = "OCR_UNCERTAIN";
       }
       const wRaw = Number(c.importanceWeight);
@@ -5363,8 +6042,12 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
         evidences.push(webSources[0]);
       }
       const resolvedSuggestedFix = c.suggestedFix && c.suggestedFix.trim() ? c.suggestedFix.trim() : status !== "CORRECT" && c.correctKnowledge ? c.correctKnowledge : null;
+      const claimDigest = crypto6.createHash("sha256").update(
+        `${idx + 1}|${c.sourcePage || matchedBlock?.pageNumber || 1}|${(c.sourceText || "").trim().normalize("NFC")}|${(c.concept || "").trim().normalize("NFC")}`,
+        "utf8"
+      ).digest("hex").slice(0, 8);
       return {
-        claimId: `claim_${idx + 1}_${crypto6.randomBytes(2).toString("hex")}`,
+        claimId: `claim_${idx + 1}_${claimDigest}`,
         sourceText: c.sourceText,
         normalizedMeaning: c.sourceText,
         subject,
@@ -5384,27 +6067,69 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
         evidences
       };
     });
-    const coverageItems = (rawEval.coverageItems || []).map((item, idx) => {
-      const wRaw = Number(item.importanceWeight);
-      const importanceWeight = wRaw === 3 ? 3 : wRaw === 1 ? 1 : 2;
-      const validCov = item.status === "COVERED" || item.status === "PARTIALLY_COVERED" || item.status === "MISSING" || item.status === "OUT_OF_SCOPE" ? item.status : "PARTIALLY_COVERED";
-      return {
-        itemId: `cov_${idx + 1}`,
-        concept: item.concept,
-        chapter: item.chapter,
-        importanceWeight,
-        status: validCov,
-        suggestedAddition: item.suggestedAddition,
-        referenceExcerpt: item.referenceExcerpt,
-        ...typeof item.referencePage === "number" && item.referencePage > 0 ? { referencePage: item.referencePage } : {}
-      };
+    let coverageItems = [];
+    let extraCoverageCount = 0;
+    if (rubricMode === "fixed_textbook_rubric") {
+      const reconciled = reconcileCoverageAgainstFixedRubric(
+        fixedRubric,
+        rawEval.coverageItems || []
+      );
+      coverageItems = reconciled.coverageItems;
+      extraCoverageCount = reconciled.extraObservations.length;
+    } else {
+      coverageItems = (rawEval.coverageItems || []).map((item, idx) => {
+        const wRaw = Number(item.importanceWeight);
+        const importanceWeight = wRaw === 3 ? 3 : wRaw === 1 ? 1 : 2;
+        const validCov = item.status === "COVERED" || item.status === "PARTIALLY_COVERED" || item.status === "MISSING" || item.status === "OUT_OF_SCOPE" ? item.status : "PARTIALLY_COVERED";
+        return {
+          itemId: `cov_${idx + 1}`,
+          concept: item.concept,
+          chapter: item.chapter,
+          importanceWeight,
+          status: validCov,
+          suggestedAddition: item.suggestedAddition || "",
+          referenceExcerpt: item.referenceExcerpt || "",
+          ...typeof item.referencePage === "number" && item.referencePage > 0 ? { referencePage: item.referencePage } : {},
+          ...item.matchedChunkId ? { matchedChunkId: item.matchedChunkId } : {}
+        };
+      });
+    }
+    const hasTextbook = Boolean(textbookReferenceId && retrievedHits.length > 0);
+    const hasValidScope = rubricMode !== "unscoped";
+    const baseAccuracyBreakdown = calculateAccuracyScore(claims, hasTextbook);
+    const completenessBreakdown = calculateCompletenessScore(coverageItems, hasValidScope, {
+      rubricMode,
+      rubricItemCount: rubricMode === "fixed_textbook_rubric" ? fixedRubric.criteria.length : coverageItems.length,
+      extraObservationsCount: extraCoverageCount
     });
-    const hasTextbook = Boolean(textbookReferenceId && referenceChunks.length > 0);
-    const hasValidScope = Boolean(
-      hasTextbook || selectedChapters.length > 0 || scope.trim().length > 0 || coverageItems.length > 0
-    );
-    const accuracyBreakdown = calculateAccuracyScore(claims, hasTextbook);
-    const completenessBreakdown = calculateCompletenessScore(coverageItems, hasValidScope);
+    const gradingAudit = {
+      requestedModel: routedResult.requestedModel,
+      actualModel: routedResult.actualModel,
+      usedFallback: routedResult.usedFallback,
+      usedOverride: routedResult.usedOverride,
+      cached: routedResult.cached,
+      strictModelLock,
+      ...routedResult.systemFingerprint ? { systemFingerprint: routedResult.systemFingerprint } : {},
+      promptVersion: GRADING_PROMPT_VERSION,
+      configVersion: routedResult.configVersion,
+      inputHash: inputHash.slice(0, 24),
+      ocrTextHash,
+      ocrConfirmed,
+      rubricMode,
+      ...fixedRubric.criteria.length > 0 ? { rubricHash: fixedRubric.rubricHash.slice(0, 24) } : {},
+      rubricItemCount: fixedRubric.criteria.length,
+      extraCoverageCount,
+      chunkIds: sortedChunkIds,
+      truncationApplied,
+      studentCharCount: formattedStudentBlocks.length,
+      textbookCharCount: textbookContext.length,
+      webGroundingEnabled: Boolean(enableWebGrounding),
+      deterministicSeed: DETERMINISTIC_GRADING_SEED
+    };
+    const accuracyBreakdown = {
+      ...baseAccuracyBreakdown,
+      gradingAudit
+    };
     const annotations = [];
     for (const claim of claims) {
       if (claim.evaluationStatus === "MISSING" || claim.evaluationStatus === "OUT_OF_SCOPE") continue;
@@ -5451,7 +6176,8 @@ ${webGroundingSummary.slice(0, 3500)}` : ""
       confidenceLevel: accuracyBreakdown.confidenceLevel,
       confidenceReason: accuracyBreakdown.confidenceReason,
       accuracyBreakdown,
-      completenessBreakdown
+      completenessBreakdown,
+      gradingAudit
     };
   }
 };
@@ -6918,6 +7644,7 @@ function repairUtf8Mojibake(value) {
 }
 
 // src/server/app.ts
+init_urlSecurity();
 var filenameScopeServerCache = /* @__PURE__ */ new Map();
 var ALLOWED_UPLOAD_MIMES = /* @__PURE__ */ new Set([
   "application/pdf",
@@ -6963,15 +7690,15 @@ async function requireAuth(req, res, next) {
       });
       return;
     }
-    await hydrateSingleKeyForSuperAdmin(authUser.idToken);
+    if (authUser.isSuperAdmin) {
+      await hydrateSingleKeyForSuperAdmin(authUser.idToken);
+    }
     req.authUser = authUser;
     next();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Unauthorized";
+  } catch {
     res.status(401).json({
       code: "UNAUTHORIZED",
-      error: "Phi\xEAn \u0111\u0103ng nh\u1EADp kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c \u0111\xE3 h\u1EBFt h\u1EA1n. Vui l\xF2ng \u0111\u0103ng nh\u1EADp l\u1EA1i.",
-      detail: msg
+      error: "Phi\xEAn \u0111\u0103ng nh\u1EADp kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c \u0111\xE3 h\u1EBFt h\u1EA1n. Vui l\xF2ng \u0111\u0103ng nh\u1EADp l\u1EA1i."
     });
   }
 }
@@ -6998,7 +7725,7 @@ async function requireSuperAdmin(req, res, next) {
     });
   }
 }
-function mapGeminiErrorResponse(err) {
+function mapGeminiErrorResponse(err, includeDebug = false) {
   const msg = err instanceof Error ? err.message : String(err);
   const cfg = getAuthoritativeAiConfigSnapshot();
   const configuredProviders = {
@@ -7006,55 +7733,69 @@ function mapGeminiErrorResponse(err) {
     gemini: isGeminiConfigured(),
     cloudflare: isCloudflareConfigured()
   };
-  const debug = {
-    activeModel: cfg.activeModel,
-    configuredProviders,
-    recentExecutions: getRecentExecutionLogs().slice(0, 6),
-    timestamp: (/* @__PURE__ */ new Date()).toISOString()
-  };
+  const debugExtras = includeDebug ? {
+    technicalDetail: msg,
+    debug: {
+      activeModel: cfg.activeModel,
+      configuredProviders,
+      recentExecutions: getRecentExecutionLogs().slice(0, 6),
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    }
+  } : {};
+  if (msg.includes("GRADING_JSON_INVALID")) {
+    return {
+      status: 502,
+      code: "GRADING_JSON_INVALID",
+      error: "Ph\u1EA3n h\u1ED3i ki\u1EC3m \u0111\u1ECBnh t\u1EEB AI b\u1ECB c\u1EAFt c\u1EE5t ho\u1EB7c sai \u0111\u1ECBnh d\u1EA1ng JSON. H\u1EC7 th\u1ED1ng \u0111\xE3 ch\u1EB7n k\u1EBFt qu\u1EA3 r\u1ED7ng gi\u1EA3 \u0111\u1EC3 tr\xE1nh ch\u1EA5m sai \u2014 vui l\xF2ng b\u1EA5m Th\u1EED l\u1EA1i.",
+      ...debugExtras
+    };
+  }
+  if (msg.includes("STRICT_GRADING_MODEL_UNAVAILABLE")) {
+    return {
+      status: 503,
+      code: "STRICT_GRADING_MODEL_UNAVAILABLE",
+      error: "Model ch\u1EA5m \u0111i\u1EC3m c\u1ED1 \u0111\u1ECBnh \u0111ang t\u1EA1m b\u1EADn ho\u1EB7c qu\xE1 t\u1EA3i. H\u1EC7 th\u1ED1ng \u0111\xE3 kh\xF3a kh\xF4ng t\u1EF1 \xFD \u0111\u1ED5i sang model kh\xE1c \u0111\u1EC3 \u0111\u1EA3m b\u1EA3o t\xEDnh nh\u1EA5t qu\xE1n \u0111i\u1EC3m s\u1ED1 \u2014 vui l\xF2ng th\u1EED l\u1EA1i sau v\xE0i gi\xE2y.",
+      ...debugExtras
+    };
+  }
   if (msg.includes("v\u01B0\u1EE3t qu\xE1 th\u1EDDi gian ch\u1EDD") || msg.includes("AbortError") || msg.includes("timed out")) {
     return {
       status: 504,
       code: "AI_TIMEOUT",
       error: "AI ph\u1EA3n h\u1ED3i qu\xE1 th\u1EDDi gian ch\u1EDD n\xEAn h\u1EC7 th\u1ED1ng \u0111\xE3 t\u1EF1 \u0111\u1ED9ng ng\u1EAFt \u0111\u1EC3 b\u1EA3o v\u1EC7 k\u1EBFt n\u1ED1i. Vui l\xF2ng th\u1EED l\u1EA1i.",
-      technicalDetail: msg,
-      debug
+      ...debugExtras
     };
   }
   if (msg.includes("GROQ_API_KEY_UNCONFIGURED") || msg.includes("Ch\u01B0a c\u1EA5u h\xECnh Groq API Key")) {
     return {
       status: 503,
       code: "GROQ_KEY_MISSING",
-      error: "H\u1EC7 th\u1ED1ng ch\u01B0a c\xF3 Groq API Key. Qu\u1EA3n tr\u1ECB vi\xEAn vui l\xF2ng v\xE0o Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt \u0111\u1EC3 d\xE1n Groq API Key (gsk_...).",
-      technicalDetail: msg,
-      debug
+      error: includeDebug ? "Ch\u01B0a c\xF3 Groq API Key tr\xEAn m\xE1y ch\u1EE7. H\xE3y th\xEAm bi\u1EBFn m\xF4i tr\u01B0\u1EDDng GROQ_API_KEY tr\xEAn Vercel/Render \u0111\u1EC3 ch\u1EA1y 24/7 ho\u1EB7c d\xE1n kh\xF3a t\u1EA1m t\u1EA1i Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt." : "H\u1EC7 th\u1ED1ng AI v\u1EEBa kh\u1EDFi \u0111\u1ED9ng l\u1EA1i v\xE0 \u0111ang ch\u1EDD c\u1EA5u h\xECnh kh\xF3a k\u1EBFt n\u1ED1i. Vui l\xF2ng th\u1EED l\u1EA1i sau \xEDt ph\xFAt ho\u1EB7c b\xE1o cho qu\u1EA3n tr\u1ECB vi\xEAn.",
+      ...debugExtras
     };
   }
   if (msg.includes("CLOUDFLARE_CREDENTIALS_UNCONFIGURED") || msg.includes("Ch\u01B0a c\u1EA5u h\xECnh Cloudflare")) {
     return {
       status: 503,
       code: "CLOUDFLARE_KEY_MISSING",
-      error: "H\u1EC7 th\u1ED1ng ch\u01B0a c\u1EA5u h\xECnh Cloudflare Workers AI. Qu\u1EA3n tr\u1ECB vi\xEAn vui l\xF2ng v\xE0o Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt \u0111\u1EC3 th\xEAm Account ID & Token.",
-      technicalDetail: msg,
-      debug
+      error: includeDebug ? "Ch\u01B0a c\u1EA5u h\xECnh Cloudflare Workers AI. H\xE3y \u0111\u1EB7t bi\u1EBFn CLOUDFLARE_ACCOUNT_ID v\xE0 CLOUDFLARE_API_TOKEN tr\xEAn m\xE1y ch\u1EE7 \u0111\u1EC3 ch\u1EA1y 24/7 ho\u1EB7c nh\u1EADp t\u1EA1i Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt." : "H\u1EC7 th\u1ED1ng AI v\u1EEBa kh\u1EDFi \u0111\u1ED9ng l\u1EA1i v\xE0 \u0111ang ch\u1EDD c\u1EA5u h\xECnh kh\xF3a k\u1EBFt n\u1ED1i. Vui l\xF2ng th\u1EED l\u1EA1i sau \xEDt ph\xFAt ho\u1EB7c b\xE1o cho qu\u1EA3n tr\u1ECB vi\xEAn.",
+      ...debugExtras
     };
   }
   if (msg.includes("GEMINI_API_KEY_UNCONFIGURED")) {
     return {
       status: 503,
       code: "GEMINI_KEY_MISSING",
-      error: "Ch\u01B0a c\u1EA5u h\xECnh kh\xF3a API cho AI \u0111ang ch\u1ECDn (\u01B0u ti\xEAn th\xEAm Groq API Key ho\u1EB7c Gemini API Key t\u1EA1i Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt).",
-      technicalDetail: msg,
-      debug
+      error: includeDebug ? "Ch\u01B0a c\u1EA5u h\xECnh kh\xF3a API cho AI \u0111ang ch\u1ECDn. \u0110\u1EC3 web ch\u1EA1y 24/7 khi m\xE1y ch\u1EE7 reset, h\xE3y \u0111\u1EB7t GROQ_API_KEY ho\u1EB7c GEMINI_API_KEY trong bi\u1EBFn m\xF4i tr\u01B0\u1EDDng Vercel/Render." : "H\u1EC7 th\u1ED1ng AI v\u1EEBa kh\u1EDFi \u0111\u1ED9ng l\u1EA1i v\xE0 \u0111ang ch\u1EDD c\u1EA5u h\xECnh kh\xF3a k\u1EBFt n\u1ED1i. Vui l\xF2ng th\u1EED l\u1EA1i sau \xEDt ph\xFAt ho\u1EB7c b\xE1o cho qu\u1EA3n tr\u1ECB vi\xEAn.",
+      ...debugExtras
     };
   }
   if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes("429")) {
     return {
       status: 429,
       code: "PROVIDER_QUOTA_EXCEEDED",
-      error: `D\u1ECBch v\u1EE5 AI t\u1EA1m th\u1EDDi \u0111\u1EA1t gi\u1EDBi h\u1EA1n l\u01B0u l\u01B0\u1EE3ng (429). Chi ti\u1EBFt: ${msg.slice(0, 180)}`,
-      technicalDetail: msg,
-      debug
+      error: includeDebug ? `D\u1ECBch v\u1EE5 AI t\u1EA1m th\u1EDDi \u0111\u1EA1t gi\u1EDBi h\u1EA1n l\u01B0u l\u01B0\u1EE3ng (429). Chi ti\u1EBFt: ${msg.slice(0, 180)}` : "D\u1ECBch v\u1EE5 AI t\u1EA1m th\u1EDDi \u0111\u1EA1t gi\u1EDBi h\u1EA1n l\u01B0u l\u01B0\u1EE3ng (429). Vui l\xF2ng th\u1EED l\u1EA1i sau \xEDt ph\xFAt.",
+      ...debugExtras
     };
   }
   if (msg.includes("NOT_FOUND") || msg.includes("404")) {
@@ -7067,44 +7808,59 @@ function mapGeminiErrorResponse(err) {
     return {
       status: 502,
       code: "MODEL_UNAVAILABLE",
-      error: hasSecondaryAuthErr ? `Model AI m\u1EB7c \u0111\u1ECBnh kh\xF4ng kh\u1EA3 d\u1EE5ng v\xE0 nh\xE0 cung c\u1EA5p d\u1EF1 ph\xF2ng g\u1EB7p l\u1ED7i x\xE1c th\u1EF1c/quy\u1EC1n truy c\u1EADp (Provider: ${activeProvidersList}). Chi ti\u1EBFt: ${msg.slice(0, 480)}` : `Kh\xF4ng t\xECm th\u1EA5y model AI kh\u1EA3 d\u1EE5ng tr\xEAn kh\xF3a hi\u1EC7n t\u1EA1i (Provider \u0111\xE3 c\u1EA5u h\xECnh: ${activeProvidersList}). Chi ti\u1EBFt k\u1EF9 thu\u1EADt: ${msg.slice(0, 480)}`,
-      technicalDetail: msg,
-      debug
+      error: includeDebug ? hasSecondaryAuthErr ? `Model AI m\u1EB7c \u0111\u1ECBnh kh\xF4ng kh\u1EA3 d\u1EE5ng v\xE0 nh\xE0 cung c\u1EA5p d\u1EF1 ph\xF2ng g\u1EB7p l\u1ED7i x\xE1c th\u1EF1c/quy\u1EC1n truy c\u1EADp (Provider: ${activeProvidersList}). Chi ti\u1EBFt: ${msg.slice(0, 480)}` : `Kh\xF4ng t\xECm th\u1EA5y model AI kh\u1EA3 d\u1EE5ng tr\xEAn kh\xF3a hi\u1EC7n t\u1EA1i (Provider \u0111\xE3 c\u1EA5u h\xECnh: ${activeProvidersList}). Chi ti\u1EBFt k\u1EF9 thu\u1EADt: ${msg.slice(0, 480)}` : "D\u1ECBch v\u1EE5 m\xF4 h\xECnh AI t\u1EA1m th\u1EDDi kh\xF4ng kh\u1EA3 d\u1EE5ng. Vui l\xF2ng th\u1EED l\u1EA1i sau ho\u1EB7c b\xE1o qu\u1EA3n tr\u1ECB vi\xEAn.",
+      ...debugExtras
     };
   }
   if (msg.includes("API_KEY_INVALID") || msg.includes("PERMISSION_DENIED") || msg.includes("403") || msg.includes("401")) {
     return {
       status: 502,
       code: "PROVIDER_AUTH_ERROR",
-      error: `Kh\xF3a API AI hi\u1EC7n t\u1EA1i kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp model. Chi ti\u1EBFt: ${msg.slice(0, 480)}`,
-      technicalDetail: msg,
-      debug
+      error: includeDebug ? `Kh\xF3a API AI hi\u1EC7n t\u1EA1i kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c kh\xF4ng c\xF3 quy\u1EC1n truy c\u1EADp model. Chi ti\u1EBFt: ${msg.slice(0, 480)}` : "D\u1ECBch v\u1EE5 AI g\u1EB7p l\u1ED7i c\u1EA5u h\xECnh x\xE1c th\u1EF1c. Vui l\xF2ng li\xEAn h\u1EC7 qu\u1EA3n tr\u1ECB vi\xEAn.",
+      ...debugExtras
     };
   }
   return {
     status: 500,
     code: "AI_PROCESSING_ERROR",
-    error: `Kh\xF4ng th\u1EC3 ho\xE0n t\u1EA5t x\u1EED l\xFD t\xE0i li\u1EC7u: ${msg.slice(0, 260)}`,
-    technicalDetail: msg,
-    debug
+    error: includeDebug ? `Kh\xF4ng th\u1EC3 ho\xE0n t\u1EA5t x\u1EED l\xFD t\xE0i li\u1EC7u: ${msg.slice(0, 260)}` : "Kh\xF4ng th\u1EC3 ho\xE0n t\u1EA5t x\u1EED l\xFD t\xE0i li\u1EC7u do l\u1ED7i m\xE1y ch\u1EE7 t\u1EA1m th\u1EDDi. Vui l\xF2ng th\u1EED l\u1EA1i.",
+    ...debugExtras
   };
 }
 function createApiApp() {
   const app = express();
+  app.disable("x-powered-by");
   app.use(express.json({ limit: "15mb" }));
+  app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Permissions-Policy", "camera=(self), microphone=(), geolocation=()");
+    res.setHeader(
+      "Content-Security-Policy-Report-Only",
+      "default-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; script-src 'self' 'unsafe-inline' https://apis.google.com https://*.firebaseapp.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; worker-src 'self' blob:; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://*.firebaseapp.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com"
+    );
+    const forwardedProto = String(req.headers["x-forwarded-proto"] || "").toLowerCase();
+    if (req.secure || forwardedProto === "https" || process.env.NODE_ENV === "production") {
+      res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
+    next();
+  });
   const envAllowedOrigins = (process.env.ALLOWED_ORIGIN || "").split(",").map((o) => o.trim()).filter(Boolean);
   app.use(async (req, res, next) => {
     try {
       const origin = req.headers.origin;
-      const cfg = await loadAuthoritativeAiConfig();
-      const combined = Array.from(
-        new Set([...envAllowedOrigins, ...cfg.allowedOrigins || []].map((o) => o.trim()).filter(Boolean))
-      );
-      if (origin && (combined.length === 0 || combined.includes("*") || combined.includes(origin))) {
-        res.setHeader("Access-Control-Allow-Origin", origin);
-        res.setHeader("Vary", "Origin");
-        res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+      if (origin) {
+        const cfg = await loadAuthoritativeAiConfig();
+        const combined = Array.from(
+          new Set([...envAllowedOrigins, ...cfg.allowedOrigins || []].map((o) => o.trim()).filter(Boolean))
+        );
+        const requestHost = String(req.headers["x-forwarded-host"] || req.headers.host || "");
+        if (isAllowedCorsOrigin(origin, requestHost, combined)) {
+          res.setHeader("Access-Control-Allow-Origin", origin);
+          res.setHeader("Vary", "Origin");
+          res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+          res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
+        }
       }
       if (req.method === "OPTIONS") {
         res.status(204).end();
@@ -7197,19 +7953,24 @@ function createApiApp() {
         return;
       }
       const meaningfulText = fileNames.map((name) => name.replace(/\.[^.]+$/, "").replace(/[_\-.]+/g, " ").trim()).join(", ");
-      const cfg = await loadAuthoritativeAiConfig(user.idToken);
-      if (!cfg.enabled) {
+      const guard = await checkAiRequestGuard({
+        uid: user.uid,
+        email: user.email,
+        idToken: user.idToken,
+        requestType: "detect"
+      });
+      if (!guard.allowed) {
         res.json({
           suggestedGrade: heuristic.grade || fallbackGrade,
           suggestedSubject: heuristic.subject || "auto",
-          source: "heuristic"
+          source: "heuristic_rate_limited"
         });
         return;
       }
       const aiScope = await SubjectDetectionService.detectScope(
         `T\xEAn t\u1EC7p t\xE0i li\u1EC7u h\u1ECDc t\u1EADp THPT: ${meaningfulText}`,
         tokens,
-        { config: cfg, idToken: user.idToken }
+        { config: guard.config, idToken: user.idToken }
       );
       const finalResult = {
         suggestedGrade: heuristic.grade || aiScope.suggestedGrade || fallbackGrade,
@@ -7390,7 +8151,7 @@ function createApiApp() {
       void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.json({ pages, scopeSuggestion, tokenUsage: tokens });
     } catch (err) {
-      const mapped = mapGeminiErrorResponse(err);
+      const mapped = mapGeminiErrorResponse(err, user.isSuperAdmin);
       recordUsageEvent({
         uid: user.uid,
         email: user.email,
@@ -7414,7 +8175,10 @@ function createApiApp() {
       selectedChapters,
       scope,
       referenceChunks,
-      enableWebGrounding
+      enableWebGrounding,
+      strictModelLock,
+      ocrConfirmed,
+      ocrTextHash
     } = req.body;
     if (idempotencyKey) {
       const cached = getIdempotentResult(`${user.uid}:analyze:${idempotencyKey}`);
@@ -7461,6 +8225,9 @@ function createApiApp() {
         scope: scope || "",
         referenceChunks: referenceChunks || [],
         enableWebGrounding: enableWebGrounding === true,
+        strictModelLock: strictModelLock !== false,
+        ocrConfirmed: ocrConfirmed === true,
+        ...typeof ocrTextHash === "string" && ocrTextHash.trim() ? { ocrTextHash: ocrTextHash.trim().slice(0, 64) } : {},
         tokensOut: tokens,
         config: guard.config,
         idToken: user.idToken
@@ -7485,7 +8252,7 @@ function createApiApp() {
       if (guardPassed) {
         rollbackAiRequestGuard(user.uid, "analysis");
       }
-      const mapped = mapGeminiErrorResponse(err);
+      const mapped = mapGeminiErrorResponse(err, user.isSuperAdmin);
       recordUsageEvent({
         uid: user.uid,
         email: user.email,
@@ -7573,7 +8340,7 @@ function createApiApp() {
       void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.json(payload);
     } catch (err) {
-      const mapped = mapGeminiErrorResponse(err);
+      const mapped = mapGeminiErrorResponse(err, user.isSuperAdmin);
       recordUsageEvent({
         uid: user.uid,
         email: user.email,
@@ -7625,7 +8392,7 @@ function createApiApp() {
       void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
       res.json({ cards, tokenUsage: tokens });
     } catch (err) {
-      const mapped = mapGeminiErrorResponse(err);
+      const mapped = mapGeminiErrorResponse(err, user.isSuperAdmin);
       recordUsageEvent({
         uid: user.uid,
         email: user.email,
@@ -7640,16 +8407,26 @@ function createApiApp() {
   });
   app.post("/api/feedback/classify", requireAuth, async (req, res) => {
     const user = req.authUser;
-    const { targetType, category, note } = req.body;
+    const { targetType, category, note } = req.body || {};
     const tokens = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
     try {
-      const cfg = await loadAuthoritativeAiConfig(user.idToken);
+      const guard = await checkAiRequestGuard({
+        uid: user.uid,
+        email: user.email,
+        idToken: user.idToken,
+        requestType: "detect"
+      });
+      if (!guard.allowed) {
+        res.status(guard.httpStatus || 429).json({ code: guard.code, error: guard.message });
+        return;
+      }
+      const safeTargetType = targetType === "claim" || targetType === "quiz_question" || targetType === "exam_question" ? targetType : "claim";
       const classification = await FeedbackAnalysisService.classifyFeedback({
-        targetType: targetType || "claim",
-        category: category || "",
-        note: note || "",
+        targetType: safeTargetType,
+        category: typeof category === "string" ? category.slice(0, 120) : "",
+        note: typeof note === "string" ? note.slice(0, 1500) : "",
         tokensOut: tokens,
-        config: cfg,
+        config: guard.config,
         idToken: user.idToken
       });
       res.json({ classification });
@@ -7718,6 +8495,7 @@ function createApiApp() {
         auditLogs,
         singleKeyStatus,
         providerKeys,
+        coldStartReadiness: evaluateColdStartReadiness(config.activeModel),
         groqConfigured: isGroqConfigured(),
         cloudflareConfigured: isCloudflareConfigured(),
         executionLogs: getRecentExecutionLogs(),
@@ -7753,7 +8531,10 @@ function createApiApp() {
         user.email,
         user.idToken
       );
-      res.json({ config: updated });
+      res.json({
+        config: updated,
+        coldStartReadiness: evaluateColdStartReadiness(updated.activeModel)
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 c\u1EADp nh\u1EADt c\u1EA5u h\xECnh d\u1ECBch v\u1EE5 AI." });
     }
@@ -8057,6 +8838,10 @@ function createApiApp() {
           targetUid = matchedUser.uid;
         }
       }
+      if (!isValidFirestoreDocId(targetUid)) {
+        res.status(400).json({ error: "UID t\xE0i kho\u1EA3n kh\xF4ng h\u1EE3p l\u1EC7." });
+        return;
+      }
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const record = {
         uid: targetUid,
@@ -8087,8 +8872,8 @@ function createApiApp() {
   app.delete("/api/admin/roles/:uid", requireSuperAdmin, async (req, res) => {
     const user = req.authUser;
     const targetUid = req.params.uid;
-    if (!targetUid) {
-      res.status(400).json({ error: "Thi\u1EBFu UID c\u1EA7n thu h\u1ED3i." });
+    if (!targetUid || !isValidFirestoreDocId(targetUid)) {
+      res.status(400).json({ error: "UID c\u1EA7n thu h\u1ED3i kh\xF4ng h\u1EE3p l\u1EC7." });
       return;
     }
     if (targetUid === user.uid) {
@@ -8131,7 +8916,11 @@ function createApiApp() {
     const user = req.authUser;
     try {
       const singleKeyStatus = await getSingleKeyStatus(user.idToken);
-      res.json({ singleKeyStatus });
+      const cfg = getAuthoritativeAiConfigSnapshot();
+      res.json({
+        singleKeyStatus,
+        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel)
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : "Kh\xF4ng ki\u1EC3m tra \u0111\u01B0\u1EE3c tr\u1EA1ng th\xE1i API key." });
     }
@@ -8155,7 +8944,11 @@ function createApiApp() {
         res.status(400).json({ error: result.error });
         return;
       }
-      res.json({ singleKeyStatus: result.status });
+      const cfg = getAuthoritativeAiConfigSnapshot();
+      res.json({
+        singleKeyStatus: result.status,
+        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel)
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 l\u01B0u Gemini API key." });
     }
@@ -8190,7 +8983,11 @@ function createApiApp() {
         actorEmail: user.email,
         idToken: user.idToken
       });
-      res.json({ singleKeyStatus: result.status });
+      const cfg = getAuthoritativeAiConfigSnapshot();
+      res.json({
+        singleKeyStatus: result.status,
+        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel)
+      });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 x\xF3a Gemini API key." });
     }
@@ -8199,8 +8996,10 @@ function createApiApp() {
     const user = req.authUser;
     try {
       const providerKeys = await getProviderKeysStatus(user.idToken);
+      const cfg = getAuthoritativeAiConfigSnapshot();
       res.json({
         providerKeys,
+        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
         groqConfigured: isGroqConfigured(),
         cloudflareConfigured: isCloudflareConfigured()
       });
@@ -8515,6 +9314,15 @@ function createApiApp() {
         res.status(400).json({ error: "Kh\xF4ng c\xF3 trang \u1EA3nh n\xE0o \u0111\u01B0\u1EE3c g\u1EEDi l\xEAn \u0111\u1EC3 \u0111\u1ECDc OCR." });
         return;
       }
+      const allowedImageMimes = /* @__PURE__ */ new Set(["image/jpeg", "image/png", "image/webp"]);
+      for (const f of rawFiles) {
+        if (!allowedImageMimes.has(f.mimetype) || !hasValidMagicSignature(f.buffer, f.mimetype)) {
+          res.status(400).json({
+            error: "Ch\u1EC9 ch\u1EA5p nh\u1EADn t\u1EC7p \u1EA3nh JPG, PNG ho\u1EB7c WEBP h\u1EE3p l\u1EC7 khi \u0111\u1ECDc OCR s\xE1ch tham chi\u1EBFu."
+          });
+          return;
+        }
+      }
       const { pageNumbers: rawPageNumbers, grade, subject, textbookSeries } = req.body;
       let parsedPageNums = [];
       try {
@@ -8766,7 +9574,7 @@ function createApiApp() {
     }
     console.error("Unhandled Express API error:", err);
     res.status(500).json({
-      error: err instanceof Error ? err.message : "L\u1ED7i m\xE1y ch\u1EE7 n\u1ED9i b\u1ED9."
+      error: "L\u1ED7i m\xE1y ch\u1EE7 n\u1ED9i b\u1ED9. Vui l\xF2ng th\u1EED l\u1EA1i sau."
     });
   });
   return app;
@@ -8792,11 +9600,10 @@ function handler(req, res) {
   if (!app) {
     res.statusCode = 500;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
-    const detail = initError instanceof Error ? initError.message : String(initError || "Unknown server initialization error");
     res.end(
       JSON.stringify({
         code: "API_INIT_FAILED",
-        error: `M\xE1y ch\u1EE7 API ch\u01B0a th\u1EC3 kh\u1EDFi t\u1EA1o: ${detail}`
+        error: "M\xE1y ch\u1EE7 API hi\u1EC7n ch\u01B0a s\u1EB5n s\xE0ng. Vui l\xF2ng th\u1EED l\u1EA1i sau \xEDt ph\xFAt."
       })
     );
     return;
@@ -8811,7 +9618,7 @@ function handler(req, res) {
       res.end(
         JSON.stringify({
           code: "API_INVOCATION_ERROR",
-          error: err instanceof Error ? err.message : "L\u1ED7i th\u1EF1c thi m\xE1y ch\u1EE7 API."
+          error: "L\u1ED7i th\u1EF1c thi m\xE1y ch\u1EE7 API. Vui l\xF2ng th\u1EED l\u1EA1i sau."
         })
       );
     }

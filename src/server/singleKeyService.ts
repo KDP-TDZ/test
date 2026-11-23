@@ -5,12 +5,13 @@ import path from 'node:path';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import type {
   CloudflareKeyStatus,
+  ColdStartProviderReadiness,
+  ColdStartReadinessReport,
   KeyTestStatus,
   ProviderKeysStatus,
   SingleApiKeyStatus,
 } from '../core/types.js';
 import {
-  firebaseConfig,
   firestoreRestDelete,
   firestoreRestGet,
   firestoreRestSet,
@@ -70,12 +71,31 @@ const CF_ENCRYPTED_KEY_FILE = path.join(DATA_DIR, 'cloudflare-ai-key.enc');
 const TMP_CF_ENCRYPTED_KEY_FILE = path.join(os.tmpdir(), 'studycheck-cloudflare-ai-key.enc');
 const FIRESTORE_CF_DOC = 'adminSecrets/cloudflare';
 
+let ephemeralProcessAesKey: Buffer | null = null;
+let warnedMissingEncryptionSecret = false;
+
+export function isPersistentEncryptionSecretConfigured(): boolean {
+  return Boolean(
+    process.env.KEY_ENCRYPTION_SECRET?.trim() || process.env.ADMIN_KEY_ENCRYPTION_SECRET?.trim()
+  );
+}
+
 function deriveAesKey(): Buffer {
-  const seed =
-    process.env.KEY_ENCRYPTION_SECRET ||
-    process.env.ADMIN_KEY_ENCRYPTION_SECRET ||
-    `${firebaseConfig.projectId}:${firebaseConfig.apiKey}:studycheck-single-key-v1`;
-  return crypto.createHash('sha256').update(seed).digest();
+  const configuredSeed =
+    process.env.KEY_ENCRYPTION_SECRET?.trim() || process.env.ADMIN_KEY_ENCRYPTION_SECRET?.trim();
+  if (configuredSeed) {
+    return crypto.createHash('sha256').update(`studycheck-aes-v2:${configuredSeed}`).digest();
+  }
+  if (!ephemeralProcessAesKey) {
+    ephemeralProcessAesKey = crypto.randomBytes(32);
+    if (!warnedMissingEncryptionSecret) {
+      warnedMissingEncryptionSecret = true;
+      console.warn(
+        'Security notice: KEY_ENCRYPTION_SECRET is not set. Using an ephemeral in-memory encryption key for this process; configure KEY_ENCRYPTION_SECRET in server environment variables before deploying.'
+      );
+    }
+  }
+  return ephemeralProcessAesKey;
 }
 
 export function encryptSecretPayload(rawValue: string): { ciphertext: string; iv: string; authTag: string } {
@@ -1485,4 +1505,155 @@ export function resolveActiveCloudflareCredentials(): { accountId: string; apiTo
     };
   }
   return getEnvFallbackCloudflareCredentials() || { accountId: '', apiToken: '' };
+}
+
+export function getColdStartEnvTemplate(): string {
+  return [
+    '# Biến môi trường bắt buộc để AI chạy 24/7 khi Vercel / Render tự ngủ hoặc khởi động lại',
+    'GROQ_API_KEY=',
+    'GEMINI_API_KEY=',
+    '# Khóa bí mật ngẫu nhiên (tối thiểu 32 ký tự) để giữ khóa nhập trên Admin UI không bị mất sau restart',
+    'KEY_ENCRYPTION_SECRET=',
+    '# Tên miền web production của bạn (nếu frontend và backend khác domain)',
+    'ALLOWED_ORIGIN=',
+    '# Tùy chọn: Tầng dự phòng thứ 3 (Cloudflare Workers AI)',
+    'CLOUDFLARE_ACCOUNT_ID=',
+    'CLOUDFLARE_API_TOKEN=',
+  ].join('\n');
+}
+
+export function detectProviderFromModelId(modelId: string): 'groq' | 'gemini' | 'cloudflare' {
+  const lower = (modelId || '').trim().toLowerCase();
+  if (lower.startsWith('groq:')) return 'groq';
+  if (lower.startsWith('cf:')) return 'cloudflare';
+  return 'gemini';
+}
+
+export interface ColdStartReadinessInput {
+  activeModel: string;
+  runtimePlatform: 'vercel' | 'render' | 'standard';
+  encryptionSecretConfigured: boolean;
+  groqEnvConfigured: boolean;
+  groqAdminOverrideActive: boolean;
+  geminiEnvConfigured: boolean;
+  geminiAdminOverrideActive: boolean;
+  cloudflareEnvConfigured: boolean;
+  cloudflareAdminOverrideActive: boolean;
+}
+
+export function buildColdStartReadinessReport(
+  input: ColdStartReadinessInput
+): ColdStartReadinessReport {
+  const activeProvider = detectProviderFromModelId(input.activeModel);
+
+  const groq: ColdStartProviderReadiness = {
+    provider: 'groq',
+    label: 'Groq Cloud Free',
+    envVarNames: ['GROQ_API_KEY'],
+    envConfigured: input.groqEnvConfigured,
+    adminOverrideActive: input.groqAdminOverrideActive,
+    configuredNow: input.groqEnvConfigured || input.groqAdminOverrideActive,
+    survivesColdStartWhenAdminOffline: input.groqEnvConfigured,
+  };
+
+  const gemini: ColdStartProviderReadiness = {
+    provider: 'gemini',
+    label: 'Google Gemini',
+    envVarNames: ['GEMINI_API_KEY'],
+    envConfigured: input.geminiEnvConfigured,
+    adminOverrideActive: input.geminiAdminOverrideActive,
+    configuredNow: input.geminiEnvConfigured || input.geminiAdminOverrideActive,
+    survivesColdStartWhenAdminOffline: input.geminiEnvConfigured,
+  };
+
+  const cloudflare: ColdStartProviderReadiness = {
+    provider: 'cloudflare',
+    label: 'Cloudflare Workers AI',
+    envVarNames: ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN'],
+    envConfigured: input.cloudflareEnvConfigured,
+    adminOverrideActive: input.cloudflareAdminOverrideActive,
+    configuredNow: input.cloudflareEnvConfigured || input.cloudflareAdminOverrideActive,
+    survivesColdStartWhenAdminOffline: input.cloudflareEnvConfigured,
+  };
+
+  const providers = { groq, gemini, cloudflare };
+  const activeProviderInfo = providers[activeProvider];
+  const activeModelCoveredByEnv = activeProviderInfo.envConfigured;
+  const anyProviderCoveredByEnv =
+    groq.envConfigured || gemini.envConfigured || cloudflare.envConfigured;
+
+  const warnings: string[] = [];
+
+  if (!anyProviderCoveredByEnv) {
+    warnings.push(
+      'Chưa có API key nào trong biến môi trường máy chủ (GROQ_API_KEY / GEMINI_API_KEY / CLOUDFLARE_*). Khi Vercel hoặc Render tự ngủ và khởi động lại lúc Admin ngoại tuyến, học sinh sẽ gặp lỗi 503.'
+    );
+  } else if (!activeModelCoveredByEnv) {
+    warnings.push(
+      `Model mặc định đang chọn (${activeProviderInfo.label}) chưa có biến môi trường ${activeProviderInfo.envVarNames.join(' / ')} trên máy chủ. Khi server reset lúc Admin ngoại tuyến, hệ thống sẽ phải chuyển sang nhà cung cấp dự phòng.`
+    );
+  }
+
+  if (!input.encryptionSecretConfigured) {
+    warnings.push(
+      'Chưa cấu hình KEY_ENCRYPTION_SECRET trên máy chủ. Mọi API key dán trực tiếp trong trang Admin chỉ có tác dụng tạm thời trong RAM và sẽ không giải mã được sau khi server khởi động lại.'
+    );
+  }
+
+  const anyAdminOnlyWithoutEnv =
+    (groq.adminOverrideActive && !groq.envConfigured) ||
+    (gemini.adminOverrideActive && !gemini.envConfigured) ||
+    (cloudflare.adminOverrideActive && !cloudflare.envConfigured);
+
+  if (anyAdminOnlyWithoutEnv && anyProviderCoveredByEnv) {
+    const missingEnvLabels = [groq, gemini, cloudflare]
+      .filter((p) => p.adminOverrideActive && !p.envConfigured)
+      .map((p) => `${p.label} (${p.envVarNames.join(' + ')})`);
+    warnings.push(
+      `Các khóa đang dán trong Admin nhưng chưa có biến môi trường dự phòng trên server: ${missingEnvLabels.join(', ')}.`
+    );
+  }
+
+  let overallStatus: ColdStartReadinessReport['overallStatus'] = 'ready_24_7';
+  if (!anyProviderCoveredByEnv) {
+    overallStatus = 'at_risk';
+  } else if (!activeModelCoveredByEnv || !input.encryptionSecretConfigured) {
+    overallStatus = 'partial_risk';
+  }
+
+  return {
+    overallStatus,
+    runtimePlatform: input.runtimePlatform,
+    activeModel: input.activeModel,
+    activeProvider,
+    activeModelCoveredByEnv,
+    anyProviderCoveredByEnv,
+    encryptionSecretConfigured: input.encryptionSecretConfigured,
+    providers,
+    warnings,
+    envTemplate: getColdStartEnvTemplate(),
+  };
+}
+
+export function evaluateColdStartReadiness(activeModel: string): ColdStartReadinessReport {
+  const runtimePlatform: ColdStartReadinessReport['runtimePlatform'] =
+    process.env.VERCEL === '1'
+      ? 'vercel'
+      : process.env.RENDER === 'true' || Boolean(process.env.RENDER_SERVICE_ID)
+        ? 'render'
+        : 'standard';
+
+  return buildColdStartReadinessReport({
+    activeModel,
+    runtimePlatform,
+    encryptionSecretConfigured: isPersistentEncryptionSecretConfigured(),
+    groqEnvConfigured: Boolean(getEnvFallbackGroqKey()),
+    groqAdminOverrideActive: Boolean(cachedGroqKey?.rawKey),
+    geminiEnvConfigured: Boolean(getEnvFallbackKey()),
+    geminiAdminOverrideActive: Boolean(cachedSingleKey?.rawKey),
+    cloudflareEnvConfigured: Boolean(getEnvFallbackCloudflareCredentials()),
+    cloudflareAdminOverrideActive: Boolean(
+      cachedCloudflareCreds?.accountId && cachedCloudflareCreds?.apiToken
+    ),
+  });
 }
