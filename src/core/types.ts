@@ -135,6 +135,9 @@ export interface ExtractedClaim {
   importanceWeight: 1 | 2 | 3;
   sourcePage: number;
   blockId?: string;
+  blockIds?: string[];
+  errorSpan?: string;
+  shortFix?: string;
   boundingBox?: NormalizedBoundingBox | null;
   ocrConfidence: number;
   knowledgeType: 'textbook_core' | 'advanced_extension' | 'insufficient_evidence';
@@ -216,7 +219,9 @@ export interface AnnotationItem {
   annotationId: string;
   pageNumber: number;
   blockId?: string;
+  blockIds?: string[];
   textExcerpt: string;
+  errorSpan?: string;
   claimId: string;
   referenceId?: string;
   boundingBox?: NormalizedBoundingBox | null;

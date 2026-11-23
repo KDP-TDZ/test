@@ -106,10 +106,13 @@ test('MODEL_CATALOG prioritizes Groq (including Qwen 3.8 27B Vision) and unifies
   }
 
   // All 11 default tasks share 1 unified Groq primary model and a Groq fallback model (zero Gemini key required)
-  for (const cfg of Object.values(DEFAULT_TASK_MODELS)) {
+  for (const [taskType, cfg] of Object.entries(DEFAULT_TASK_MODELS)) {
     assert.equal(cfg.defaultModel, 'groq:openai/gpt-oss-120b');
     assert.equal(cfg.fallbackModel, 'groq:qwen/qwen3.8-27b');
-    assert.equal(cfg.promptVersion, 'v3.2');
+    assert.equal(
+      cfg.promptVersion,
+      taskType === 'knowledge_analysis' ? 'v4.1_semantic_inline_deterministic' : 'v3.2'
+    );
     assert.equal(cfg.enableFallback, true);
   }
 });

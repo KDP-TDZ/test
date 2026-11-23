@@ -19,6 +19,10 @@ import {
   formatFixedRubricForPrompt,
   reconcileCoverageAgainstFixedRubric,
 } from '../core/rubric.js';
+import {
+  groupRawTextIntoSemanticBlocks,
+  isNonGradableLeadInClaim,
+} from '../core/semanticBlocks.js';
 import type {
   AiTaskType,
   AnalysisStrength,
@@ -197,15 +201,18 @@ function normalizeJsonEscapeAndControlChars(jsonCandidate: string): string {
 }
 
 export const DETERMINISTIC_GRADING_SEED = 20261123;
-export const GRADING_PROMPT_VERSION = 'v4.0_fixed_rubric_deterministic';
+export const GRADING_PROMPT_VERSION = 'v4.1_semantic_inline_deterministic';
 export const MAX_STUDENT_GRADING_CHARS = 48_000;
 export const MAX_TEXTBOOK_GRADING_CHARS = 24_000;
 
 export interface RawKnowledgeEvalResult {
   claims?: Array<{
     blockId?: string;
+    blockIds?: string[];
     sourcePage: number;
     sourceText: string;
+    errorSpan?: string;
+    shortFix?: string;
     chapter: string;
     concept: string;
     importanceWeight: number;
@@ -578,33 +585,7 @@ function buildExtractedBlocksFromRawText(
   pageNumber: number,
   confidence: number
 ): ExtractedTextBlock[] {
-  const safeConf = Math.max(0.1, Math.min(1, Number(confidence) || 0.92));
-  const lines = (rawText || '')
-    .split(/\r?\n+/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-
-  return lines.map((line, idx) => {
-    let textType: ExtractedTextBlock['textType'] = 'paragraph';
-    if (idx === 0 && line.length < 95) {
-      textType = 'heading';
-    } else if (/^([-*+•]|\d+[.)]|[a-zA-Z][.)])\s+/.test(line)) {
-      textType = 'list';
-    } else if (/[=≈≠≤≥±×÷]|(\b[a-zA-Z]\s*=\s*[a-zA-Z0-9])/i.test(line) && line.length < 120) {
-      textType = 'formula';
-    }
-
-    return {
-      blockId: `p${pageNumber}_b${idx + 1}`,
-      pageNumber,
-      extractedText: line,
-      textType,
-      confidence: safeConf,
-      readingOrder: idx + 1,
-      ...(textType === 'formula' ? { formulaText: line } : {}),
-      boundingBox: null,
-    };
-  });
+  return groupRawTextIntoSemanticBlocks(rawText, pageNumber, confidence);
 }
 
 const recentInlineScopeByTextHash = new Map<string, InlineScopeSuggestion>();
@@ -680,6 +661,8 @@ export class DocumentExtractionService {
                     jsonMode: true,
                     jsonSchemaHint: jsonHint,
                     maxOutputTokens: 2048,
+                    temperature: 0,
+                    seed: DETERMINISTIC_GRADING_SEED,
                     signal,
                   }),
                 OCR_FAST_TIMEOUT_MS
@@ -698,6 +681,8 @@ export class DocumentExtractionService {
                     jsonMode: true,
                     jsonSchemaHint: jsonHint,
                     maxOutputTokens: 2048,
+                    temperature: 0,
+                    seed: DETERMINISTIC_GRADING_SEED,
                     signal,
                   }),
                 OCR_FAST_TIMEOUT_MS
@@ -718,6 +703,8 @@ export class DocumentExtractionService {
                     ai,
                     model: visionModel,
                     thinkingTier: 'minimal',
+                    temperature: 0,
+                    seed: DETERMINISTIC_GRADING_SEED,
                     contents: [
                       {
                         role: 'user',
@@ -891,19 +878,7 @@ export class DocumentExtractionService {
       const totalChars = textPages.reduce((sum, p) => sum + p.text.trim().length, 0);
       if (totalChars >= 12) {
         return textPages.map((p) => {
-          const paragraphs = p.text
-            .split(/\n+/)
-            .map((t) => t.trim())
-            .filter(Boolean);
-          const blocks: ExtractedTextBlock[] = paragraphs.map((line, i) => ({
-            blockId: `p${p.pageNumber}_b${i + 1}`,
-            pageNumber: p.pageNumber,
-            extractedText: line,
-            textType: i === 0 && line.length < 90 ? 'heading' : 'paragraph',
-            confidence: 0.98,
-            readingOrder: i + 1,
-            boundingBox: null,
-          }));
+          const blocks = buildExtractedBlocksFromRawText(p.text, p.pageNumber, 0.98);
           return {
             pageNumber: p.pageNumber,
             rawText: p.text,
@@ -939,7 +914,7 @@ export class DocumentExtractionService {
       taskType: 'curriculum_extraction',
       config: opts?.config,
       idToken: opts?.idToken,
-      cacheInput: { ocrKind: 'pdf_scan_v2', sha256: pdfHash },
+      cacheInput: { ocrKind: 'pdf_scan_v3', sha256: pdfHash },
       runWithModel: async (modelId) => {
         const ai = await createServerAiClient();
         const visionModel =
@@ -953,6 +928,8 @@ export class DocumentExtractionService {
               ai,
               model: visionModel,
               thinkingTier: 'minimal',
+              temperature: 0,
+              seed: DETERMINISTIC_GRADING_SEED,
               contents: [
                 {
                   role: 'user',
@@ -1049,18 +1026,11 @@ export class DocumentExtractionService {
     for (let i = 0; i < paragraphs.length; i += pageSize) {
       const pageNum = Math.floor(i / pageSize) + 1;
       const slice = paragraphs.slice(i, i + pageSize);
-      const blocks: ExtractedTextBlock[] = slice.map((text, idx) => ({
-        blockId: `p${pageNum}_b${idx + 1}`,
-        pageNumber: pageNum,
-        extractedText: text,
-        textType: idx === 0 && text.length < 90 ? 'heading' : 'paragraph',
-        confidence: 0.99,
-        readingOrder: idx + 1,
-        boundingBox: null,
-      }));
+      const rawSlice = slice.join('\n');
+      const blocks = buildExtractedBlocksFromRawText(rawSlice, pageNum, 0.99);
       pages.push({
         pageNumber: pageNum,
-        rawText: slice.join('\n'),
+        rawText: rawSlice,
         blocks,
         ocrAverageConfidence: 0.99,
       });
@@ -1375,19 +1345,21 @@ export class KnowledgeAnalysisService {
         : '- Hiện chưa có đoạn trích SGK trong kho cho bài này. BẮT BUỘC dùng chuẩn kiến thức khoa học chính thống và chương trình GDPT 2018 của Bộ GD&ĐT để kiểm định dứt khoát mọi định nghĩa, định luật, công thức, tính chất và đơn vị đo. TUYỆT ĐỐI KHÔNG đánh UNVERIFIED với lỗi sai kiến thức hay sai công thức phổ thông rõ ràng (ví dụ: sai "tốc độ thay đổi" trong chuyển động thẳng đều, sai "tỉ lệ nghịch", sai phép toán "s = v + t").',
       '',
       'QUY TRÌNH KIỂM ĐỊNH 4 LỚP BẮT BUỘC:',
-      'LỚP 1 — TÁCH MỆNH ĐỀ & RÀ TỪNG CÂU / TỪNG VẾ:',
-      '- Tách tài liệu học sinh thành từng đơn vị kiến thức độc lập theo đúng từng câu, từng công thức và từng đoạn giải thích "Trong đó..." (không gộp nhiều lỗi khác nhau vào chung 1 claim).',
+      'LỚP 1 — TÁCH MỆNH ĐỀ NGỮ NGHĨA & CẤM CHẤM TIÊU ĐỀ DẪN NHẬP:',
+      '- Tách tài liệu học sinh thành từng đơn vị kiến thức độc lập theo đúng từng câu, từng cụm công thức (nhãn dẫn nhập + công thức) và từng cụm giải thích "Trong đó: ..." (không gộp nhiều lỗi khác nhau vào chung 1 claim).',
+      '- TUYỆT ĐỐI KHÔNG tạo claim độc lập cho dòng nhãn dẫn nhập / tiêu đề ngắn kết thúc bằng dấu hai chấm (ví dụ: "Công thức tính quãng đường:", "Phương trình chuyển động thẳng đều:", "Trong đó:", "Định nghĩa:"). Hãy giữ nhãn dẫn nhập gắn liền với công thức hoặc nội dung phía sau thành 1 claim duy nhất để không bơm điểm Chính xác ảo.',
       '- Kiểm tra kỹ mọi từ khóa mang tính bản chất: "không đổi" vs "thay đổi", "tỉ lệ thuận" vs "tỉ lệ nghịch", "tăng" vs "giảm", "cùng chiều" vs "ngược chiều", "bảo toàn" vs "không bảo toàn", điều kiện áp dụng.',
       '- Đối chiếu theo nghĩa học thuật (không bắt bẻ cách diễn đạt tương đương nếu đúng bản chất).',
       '',
-      'LỚP 2 — SOI TỪNG CÔNG THỨC & PHÉP TOÁN:',
+      'LỚP 2 — SOI TỪNG CÔNG THỨC, PHÉP TOÁN & TRÍCH CHÍNH XÁC CỤM SAI (errorSpan):',
       '- Kiểm tra từng dấu phép toán (+, -, ×, ., /, ^), dấu âm/dương, hệ số, chỉ số dưới và kiểm tra thứ nguyên vật lý/toán học (ví dụ: v [m/s] không thể cộng với t [s] trong s = v + t; công thức đúng phải là s = v.t).',
-      '- Tách riêng claim cho công thức và claim cho phần chú thích "Trong đó..." đi kèm để phân biệt rõ: công thức đúng nhưng thiếu giải thích biến số khác với công thức viết sai.',
+      '- Tách riêng claim cho cụm công thức và claim cho cụm chú thích "Trong đó: ..." đi kèm để phân biệt rõ: công thức đúng nhưng thiếu giải thích biến số khác với công thức viết sai.',
+      '- Với MỌI claim có trạng thái INCORRECT hoặc PARTIALLY_CORRECT: BẮT BUỘC điền trường "errorSpan" trích NGUYÊN VĂN cụm từ/vế/công thức bị sai hoặc thiếu bên trong sourceText (ví dụ: "tốc độ thay đổi theo thời gian", "tỉ lệ nghịch", "s = v + t") để hệ thống gạch chân/tô đỏ chính xác vị trí lỗi, và điền trường "shortFix" (1 câu thật ngắn gọn, trực diện cách sửa nhanh, tối đa 15–20 từ).',
       '',
       'LỚP 3 — KIỂM TRA ĐỘ ĐẦY ĐỦ CHÚ THÍCH KÝ HIỆU & ĐƠN VỊ CỦA MỌI CÔNG THỨC:',
-      '- Với MỌI công thức xuất hiện trong tài liệu (ví dụ s = v.t, x = x0 + v.t, F = m.a...), liệt kê TẤT CẢ các ký hiệu/biến số có mặt trong công thức đó và đối chiếu với phần giải thích ("Trong đó...") ngay kế tiếp.',
+      '- Với MỌI công thức xuất hiện trong tài liệu (ví dụ s = v.t, x = x0 + v.t, F = m.a...), liệt kê TẤT CẢ các ký hiệu/biến số có mặt trong công thức đó và đối chiếu với cụm chú thích ("Trong đó: ...") ngay kế tiếp.',
       '- Nếu học sinh BỎ SÓT giải thích ý nghĩa HOẶC thiếu đơn vị đo của bất kỳ ký hiệu nào:',
-      '  + Đánh giá phần giải thích đó là PARTIALLY_CORRECT (Thiếu thông tin / Điều kiện), nêu ĐÍCH DANH ký hiệu và đơn vị còn thiếu trong explanation, và viết trọn bộ chú thích đầy đủ trong suggestedFix.',
+      '  + Đánh giá cụm chú thích đó là PARTIALLY_CORRECT (Thiếu thông tin / Điều kiện), nêu ĐÍCH DANH ký hiệu và đơn vị còn thiếu trong explanation, ghi rõ cách bổ sung ngắn gọn trong shortFix và trọn bộ chú thích đầy đủ trong suggestedFix.',
       '  + Ghi nhận thiếu sót tương ứng vào weaknesses để hiển thị rõ trong danh sách "Thiếu thông tin".',
       '',
       'LỚP 4 — TỰ KIỂM CHÉO NHẤT QUÁN TRƯỚC KHI TRẢ KẾT QUẢ:',
@@ -1404,7 +1376,7 @@ export class KnowledgeAnalysisService {
       '- Gán trọng số importanceWeight cho claims theo quy tắc cố định: 3 (định nghĩa/định luật/công thức cốt lõi), 2 (hỗ trợ/chú thích ký hiệu/điều kiện), 1 (chi tiết/ví dụ mở rộng).',
       coverageInstruction,
       '- Tuyệt đối KHÔNG bịa URL hay số trang SGK nếu không có trong ngữ cảnh.',
-      '- Viết rõ ràng, trực diện, súc tích (mỗi explanation/correctKnowledge/suggestedFix tối đa 2-3 câu ngắn gọn đi thẳng vào điểm sai hoặc điểm thiếu; weaknesses tối đa 10 ý; strengths tối đa 5 ý; suggestions tối đa 5 ý).',
+      '- Viết rõ ràng, trực diện, súc tích (mỗi shortFix tối đa 1 câu ngắn gọn; explanation/correctKnowledge/suggestedFix tối đa 2-3 câu đi thẳng vào bản chất khái niệm; weaknesses tối đa 10 ý; strengths tối đa 5 ý; suggestions tối đa 5 ý).',
       '',
       rubricSection,
       '=== TÀI LIỆU CỦA HỌC SINH ===',
@@ -1489,7 +1461,7 @@ export class KnowledgeAnalysisService {
           tokensOut,
           fallbackJson: '{"claims":[],"coverageItems":[],"strengths":[],"weaknesses":[],"suggestions":[]}',
           groqSchemaHint:
-            '{"claims":[{"blockId":"...","sourcePage":1,"sourceText":"...","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"...","matchedChunkId":"...","matchedExcerpt":"...","matchedPage":1}],"coverageItems":[{"criterionId":"KT01","concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1,"matchedChunkId":"..."}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}',
+            '{"claims":[{"blockId":"...","blockIds":["..."],"sourcePage":1,"sourceText":"...","errorSpan":"cụm từ/công thức sai trích nguyên văn từ sourceText","shortFix":"câu sửa ngắn gọn 1 dòng","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"...","matchedChunkId":"...","matchedExcerpt":"...","matchedPage":1}],"coverageItems":[{"criterionId":"KT01","concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1,"matchedChunkId":"..."}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}',
           geminiSchema: {
             type: Type.OBJECT,
             properties: {
@@ -1499,8 +1471,11 @@ export class KnowledgeAnalysisService {
                   type: Type.OBJECT,
                   properties: {
                     blockId: { type: Type.STRING },
+                    blockIds: { type: Type.ARRAY, items: { type: Type.STRING } },
                     sourcePage: { type: Type.INTEGER },
                     sourceText: { type: Type.STRING },
+                    errorSpan: { type: Type.STRING },
+                    shortFix: { type: Type.STRING },
                     chapter: { type: Type.STRING },
                     concept: { type: Type.STRING },
                     importanceWeight: { type: Type.INTEGER, description: '1 | 2 | 3' },
@@ -1629,8 +1604,19 @@ export class KnowledgeAnalysisService {
       'OUT_OF_SCOPE',
     ]);
 
-    const claims: ExtractedClaim[] = (rawEval.claims || []).map((c, idx) => {
-      const matchedBlock = c.blockId ? blockMap.get(c.blockId) : undefined;
+    // Filter out non-gradable standalone lead-in headers (e.g. "Công thức tính quãng đường:", "Trong đó:")
+    // so bare labels can never be scored as CORRECT and inflate accuracyScore.
+    const filteredRawClaims = (rawEval.claims || []).filter(
+      (c) => !isNonGradableLeadInClaim(c.sourceText || '')
+    );
+
+    const claims: ExtractedClaim[] = filteredRawClaims.map((c, idx) => {
+      const normalizedBlockIds = Array.isArray(c.blockIds)
+        ? c.blockIds.filter((id): id is string => typeof id === 'string' && blockMap.has(id))
+        : [];
+      const primaryBlockId =
+        (c.blockId && blockMap.has(c.blockId) ? c.blockId : normalizedBlockIds[0]) || undefined;
+      const matchedBlock = primaryBlockId ? blockMap.get(primaryBlockId) : undefined;
       const rawOcrConf = matchedBlock ? matchedBlock.confidence : 0.9;
       const ocrConf = ocrConfirmed ? Math.max(rawOcrConf, 0.95) : rawOcrConf;
       let status: ClaimStatus = validStatuses.has(c.evaluationStatus as ClaimStatus)
@@ -1681,6 +1667,15 @@ export class KnowledgeAnalysisService {
           ? c.correctKnowledge
           : null;
 
+      const resolvedErrorSpan =
+        typeof c.errorSpan === 'string' && c.errorSpan.trim().length >= 2
+          ? c.errorSpan.trim()
+          : undefined;
+      const resolvedShortFix =
+        typeof c.shortFix === 'string' && c.shortFix.trim().length > 0
+          ? c.shortFix.trim()
+          : undefined;
+
       // Deterministic claim ID derived from index + page + normalized sourceText + concept (never randomBytes!)
       const claimDigest = crypto
         .createHash('sha256')
@@ -1702,6 +1697,9 @@ export class KnowledgeAnalysisService {
         importanceWeight,
         sourcePage: c.sourcePage || matchedBlock?.pageNumber || 1,
         ...(matchedBlock?.blockId ? { blockId: matchedBlock.blockId } : {}),
+        ...(normalizedBlockIds.length > 0 ? { blockIds: normalizedBlockIds } : {}),
+        ...(resolvedErrorSpan ? { errorSpan: resolvedErrorSpan } : {}),
+        ...(resolvedShortFix ? { shortFix: resolvedShortFix } : {}),
         boundingBox: matchedBlock?.boundingBox || null,
         ocrConfidence: ocrConf,
         knowledgeType:
@@ -1817,7 +1815,9 @@ export class KnowledgeAnalysisService {
         annotationId: `ann_${claim.claimId}`,
         pageNumber: claim.sourcePage,
         ...(claim.blockId ? { blockId: claim.blockId } : {}),
+        ...(claim.blockIds && claim.blockIds.length > 0 ? { blockIds: claim.blockIds } : {}),
         textExcerpt: claim.sourceText,
+        ...(claim.errorSpan ? { errorSpan: claim.errorSpan } : {}),
         claimId: claim.claimId,
         ...(claim.evidences[0]?.referenceId ? { referenceId: claim.evidences[0].referenceId } : {}),
         boundingBox: claim.boundingBox || null,

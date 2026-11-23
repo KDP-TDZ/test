@@ -106,7 +106,7 @@ export const DEFAULT_TASK_MODELS: Record<AiTaskType, TaskModelConfig> = {
     fallbackModel: UNIFIED_FALLBACK_MODEL,
     enableFallback: true,
     oneTimeOverrideModel: null,
-    promptVersion: 'v3.2',
+    promptVersion: 'v4.1_semantic_inline_deterministic',
   },
   completeness_analysis: {
     defaultModel: UNIFIED_PRIMARY_MODEL,

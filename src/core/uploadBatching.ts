@@ -200,11 +200,20 @@ const SUBJECT_KEYWORD_RULES: Array<{
 export function isGenericCameraFileNames(fileNames: string[]): boolean {
   const clean = fileNames.map((n) => (n || '').trim()).filter(Boolean);
   if (clean.length === 0) return true;
-  return clean.every((name) =>
-    /^(img|dsc|screenshot|image|photo|page|trang|scan|cam|whatsapp|viber|zalo|pxl|mvimg|z\d+)[\s_\-\d().a-f]*(\.[a-z0-9]+)?$/i.test(
-      name
-    ) || /^[\d_\-\s().]+(\.[a-z0-9]+)?$/i.test(name)
-  );
+  return clean.every((name) => {
+    const stem = name.replace(/\.[a-z0-9]{1,8}$/i, '').trim();
+    if (!stem) return true;
+    return (
+      /^(img|dsc|screenshot|image|photo|page|trang|scan|cam|whatsapp|viber|zalo|pxl|mvimg|z\d+)[\s_\-\d().a-f]*$/i.test(
+        stem
+      ) ||
+      /^[\d_\-\s().]+$/i.test(stem) ||
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:[_-][0-9a-f]{4,16})?$/i.test(
+        stem
+      ) ||
+      /^[0-9a-f_\-]{12,}$/i.test(stem)
+    );
+  });
 }
 
 export function buildFileNameSuggestionCacheKey(
