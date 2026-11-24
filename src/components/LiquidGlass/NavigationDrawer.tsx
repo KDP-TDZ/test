@@ -1,6 +1,5 @@
 import React, { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { gsap, MOTION_ALLOWED_MEDIA, REDUCED_MOTION_MEDIA, useGSAP } from '../../lib/gsapSetup';
 
 interface HamburgerButtonProps {
   open: boolean;
@@ -75,10 +74,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
   children,
   footer,
 }) => {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const scrimRef = useRef<HTMLDivElement>(null);
   const internalPanelRef = useRef<HTMLElement>(null);
-  const hasMountedRef = useRef(false);
   const wasOpenRef = useRef(false);
 
   const setPanelRef = (node: HTMLElement | null) => {
@@ -164,98 +160,24 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
     }
   }, [open, triggerRef]);
 
-  // Slide-in / slide-out off-canvas animation from left over scrim
-  useGSAP(
-    () => {
-      if (!scrimRef.current || !internalPanelRef.current) return;
-
-      if (!hasMountedRef.current) {
-        hasMountedRef.current = true;
-        if (!open) {
-          gsap.set(scrimRef.current, { autoAlpha: 0 });
-          gsap.set(internalPanelRef.current, { xPercent: -100, autoAlpha: 0 });
-          return;
-        }
-      }
-
-      const mm = gsap.matchMedia();
-      mm.add(MOTION_ALLOWED_MEDIA, () => {
-        if (open) {
-          const tl = gsap.timeline({ defaults: { overwrite: 'auto' } });
-          tl.fromTo(
-            scrimRef.current,
-            { autoAlpha: 0 },
-            {
-              autoAlpha: 1,
-              duration: 0.22,
-              ease: 'power2.out',
-            }
-          ).fromTo(
-            internalPanelRef.current,
-            { xPercent: -100, autoAlpha: 0 },
-            {
-              xPercent: 0,
-              autoAlpha: 1,
-              duration: 0.28,
-              ease: 'power3.out',
-            },
-            0
-          );
-        } else {
-          const tl = gsap.timeline({ defaults: { overwrite: 'auto' } });
-          tl.fromTo(
-            internalPanelRef.current,
-            { xPercent: 0, autoAlpha: 1 },
-            {
-              xPercent: -100,
-              autoAlpha: 0,
-              duration: 0.2,
-              ease: 'power2.in',
-            }
-          ).fromTo(
-            scrimRef.current,
-            { autoAlpha: 1 },
-            {
-              autoAlpha: 0,
-              duration: 0.18,
-              ease: 'power2.out',
-            },
-            0
-          );
-        }
-      });
-
-      mm.add(REDUCED_MOTION_MEDIA, () => {
-        if (open) {
-          gsap.set(scrimRef.current, { autoAlpha: 1 });
-          gsap.set(internalPanelRef.current, { xPercent: 0, autoAlpha: 1 });
-        } else {
-          gsap.set(scrimRef.current, { autoAlpha: 0 });
-          gsap.set(internalPanelRef.current, { xPercent: -100, autoAlpha: 0 });
-        }
-      });
-    },
-    { scope: rootRef, dependencies: [open] }
-  );
-
   if (typeof document === 'undefined') return null;
 
   return createPortal(
     <div
-      ref={rootRef}
       className={`fixed top-[52px] md:top-16 inset-x-0 bottom-0 z-[44] no-print ${
         open ? 'pointer-events-auto' : 'pointer-events-none'
       }`}
     >
-      {/* Scrim */}
+      {/* Compositor-only scrim fade (zero GSAP dependency on landing bundle) */}
       <div
-        ref={scrimRef}
         aria-hidden="true"
         onClick={onClose}
-        className="absolute inset-0 bg-[#09111E]/45 backdrop-blur-[2px] opacity-0 invisible"
+        className={`absolute inset-0 bg-[#09111E]/45 backdrop-blur-[2px] transition-[opacity,visibility] duration-200 ease-out motion-reduce:transition-none ${
+          open ? 'opacity-100 visible' : 'opacity-0 invisible'
+        }`}
       />
 
-      {/* Off-canvas <nav> panel sliding in from the left edge below header */}
+      {/* Off-canvas <nav> panel sliding smoothly via GPU translateX */}
       <nav
         ref={setPanelRef}
         id={id}
@@ -263,7 +185,11 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
         aria-hidden={!open}
         inert={!open}
         tabIndex={-1}
-        className="absolute inset-y-0 left-0 w-[min(80vw,272px)] max-w-full flex flex-col glass-surface border-t-0 border-l-0 border-b-0 border-r border-sky-200/75 dark:border-slate-700/70 shadow-2xl outline-none opacity-0 invisible"
+        className={`absolute inset-y-0 left-0 w-[min(80vw,272px)] max-w-full flex flex-col glass-surface border-t-0 border-l-0 border-b-0 border-r border-sky-200/75 dark:border-slate-700/70 shadow-2xl outline-none transition-[transform,opacity,visibility] duration-250 ease-out motion-reduce:transition-none will-change-transform ${
+          open
+            ? 'translate-x-0 opacity-100 visible'
+            : '-translate-x-full opacity-0 invisible'
+        }`}
       >
         <div className="flex-1 overflow-y-auto px-3 py-4">{children}</div>
 

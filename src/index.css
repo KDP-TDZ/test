@@ -583,7 +583,12 @@ html.dark .water-drop-ring-primary {
   .hero-float-slow,
   .ethereal-orbit-slow,
   .ethereal-orbit-reverse,
-  .typewriter-caret-blink {
+  .typewriter-caret-blink,
+  .landing-slide-enter-next,
+  .landing-slide-enter-prev,
+  .landing-fade-up,
+  .landing-modal-enter,
+  .landing-backdrop-enter {
     animation: none !important;
   }
   .glass-card-hover:hover,
@@ -594,6 +599,80 @@ html.dark .water-drop-ring-primary {
   * {
     scroll-behavior: auto !important;
   }
+}
+
+/* Compositor-only Landing Transitions (0KB runtime animation overhead) */
+@keyframes landing-slide-in-next {
+  from {
+    opacity: 0;
+    transform: translate3d(16px, 0, 0) scale(1.1);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes landing-slide-in-prev {
+  from {
+    opacity: 0;
+    transform: translate3d(-16px, 0, 0) scale(1.1);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes landing-fade-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes landing-modal-pop {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 16px, 0) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes landing-backdrop-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.landing-slide-enter-next {
+  animation: landing-slide-in-next 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.landing-slide-enter-prev {
+  animation: landing-slide-in-prev 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.landing-fade-up {
+  animation: landing-fade-up 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.landing-modal-enter {
+  animation: landing-modal-pop 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.landing-backdrop-enter {
+  animation: landing-backdrop-fade 180ms ease-out both;
 }
 
 /* Typewriter caret (compositor-only opacity) */

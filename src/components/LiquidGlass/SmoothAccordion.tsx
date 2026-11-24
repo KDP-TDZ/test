@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 
 interface SmoothAccordionProps {
   title: React.ReactNode;
@@ -16,7 +15,7 @@ interface SmoothAccordionProps {
 }
 
 /**
- * Standardized smooth expand/collapse accordion (220ms cubic-bezier)
+ * Standardized smooth expand/collapse accordion (compositor-only CSS)
  * with synchronized rotating chevron icon and reduced-motion compliance.
  */
 export const SmoothAccordion: React.FC<SmoothAccordionProps> = ({
@@ -32,7 +31,6 @@ export const SmoothAccordion: React.FC<SmoothAccordionProps> = ({
   contentClassName = '',
 }) => {
   const [internalOpen, setInternalOpen] = useState(defaultOpen);
-  const prefersReduced = useReducedMotion();
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : internalOpen;
@@ -64,32 +62,21 @@ export const SmoothAccordion: React.FC<SmoothAccordionProps> = ({
             )}
           </div>
         </div>
-        <motion.span
+        <span
           aria-hidden="true"
-          animate={{ rotate: isOpen ? 180 : 0 }}
-          transition={{ duration: prefersReduced ? 0 : 0.18, ease: [0.16, 1, 0.3, 1] }}
-          className="shrink-0 text-[#475B78] dark:text-[#B4C7E2] inline-flex items-center justify-center"
+          className={`shrink-0 text-[#475B78] dark:text-[#B4C7E2] inline-flex items-center justify-center transition-transform duration-200 ease-out motion-reduce:transition-none ${
+            isOpen ? 'rotate-180' : 'rotate-0'
+          }`}
         >
           <ChevronDown className="size-4" />
-        </motion.span>
+        </span>
       </button>
 
-      <AnimatePresence initial={false}>
-        {isOpen && (
-          <motion.div
-            key="accordion-body"
-            initial={prefersReduced ? { opacity: 1 } : { opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={prefersReduced ? { opacity: 0 } : { opacity: 0, y: -3 }}
-            transition={{
-              duration: prefersReduced ? 0 : 0.18,
-              ease: [0.16, 1, 0.3, 1],
-            }}
-          >
-            <div className={contentClassName}>{children}</div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {isOpen && (
+        <div className="landing-fade-up">
+          <div className={contentClassName}>{children}</div>
+        </div>
+      )}
     </div>
   );
 };

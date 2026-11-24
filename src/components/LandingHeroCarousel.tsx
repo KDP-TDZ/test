@@ -9,7 +9,6 @@ import {
   Menu,
   X,
 } from 'lucide-react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { BRAND_CONFIG } from '../config/brand';
 import {
   computeProgressPercent,
@@ -22,11 +21,25 @@ import { NavigationDrawer } from './LiquidGlass/NavigationDrawer';
 import { ThemeToggle } from './LiquidGlass/ThemeToggle';
 import { UiModeSwitcher } from './LiquidGlass/UiModeSwitcher';
 
-import heroSgkLibraryImg from '../assets/images/hero_sgk_library_1795494418542.jpg';
-import heroOcrNotebookImg from '../assets/images/hero_ocr_notebook_1795494420958.jpg';
-import heroExamStudioImg from '../assets/images/hero_exam_studio_1795494420382.jpg';
-import heroFlashcardDeckImg from '../assets/images/hero_flashcard_deck_1795494420543.jpg';
-import heroProgressPavilionImg from '../assets/images/hero_progress_pavilion_1795494421110.jpg';
+import heroSgkLibraryDesktop from '../assets/images/optimized/hero_sgk_library_1795494418542_desktop.webp';
+import heroSgkLibraryMobile from '../assets/images/optimized/hero_sgk_library_1795494418542_mobile.webp';
+import heroSgkLibraryThumb from '../assets/images/optimized/hero_sgk_library_1795494418542_thumb.webp';
+
+import heroOcrNotebookDesktop from '../assets/images/optimized/hero_ocr_notebook_1795494420958_desktop.webp';
+import heroOcrNotebookMobile from '../assets/images/optimized/hero_ocr_notebook_1795494420958_mobile.webp';
+import heroOcrNotebookThumb from '../assets/images/optimized/hero_ocr_notebook_1795494420958_thumb.webp';
+
+import heroExamStudioDesktop from '../assets/images/optimized/hero_exam_studio_1795494420382_desktop.webp';
+import heroExamStudioMobile from '../assets/images/optimized/hero_exam_studio_1795494420382_mobile.webp';
+import heroExamStudioThumb from '../assets/images/optimized/hero_exam_studio_1795494420382_thumb.webp';
+
+import heroFlashcardDeckDesktop from '../assets/images/optimized/hero_flashcard_deck_1795494420543_desktop.webp';
+import heroFlashcardDeckMobile from '../assets/images/optimized/hero_flashcard_deck_1795494420543_mobile.webp';
+import heroFlashcardDeckThumb from '../assets/images/optimized/hero_flashcard_deck_1795494420543_thumb.webp';
+
+import heroProgressPavilionDesktop from '../assets/images/optimized/hero_progress_pavilion_1795494421110_desktop.webp';
+import heroProgressPavilionMobile from '../assets/images/optimized/hero_progress_pavilion_1795494421110_mobile.webp';
+import heroProgressPavilionThumb from '../assets/images/optimized/hero_progress_pavilion_1795494421110_thumb.webp';
 
 export interface HeroSlideItem {
   id: string;
@@ -35,6 +48,8 @@ export interface HeroSlideItem {
   titleLines: [string, string];
   shortDescription: string;
   image: string;
+  imageMobile: string;
+  imageThumb: string;
   imageAlt: string;
   targetSectionId: 'specimen' | 'workspace-preview' | 'faq';
   targetSectionLabel: string;
@@ -55,7 +70,9 @@ export const HERO_SLIDES: readonly HeroSlideItem[] = [
     titleLines: ['KIỂM ĐỊNH', 'CHUẨN SGK'],
     shortDescription:
       'Tải ảnh chụp vở viết tay, PDF hoặc DOCX để đối chiếu trực tiếp kho sách giáo khoa chuẩn, tách bạch lỗi sai bản chất khỏi ý còn thiếu.',
-    image: heroSgkLibraryImg,
+    image: heroSgkLibraryDesktop,
+    imageMobile: heroSgkLibraryMobile,
+    imageThumb: heroSgkLibraryThumb,
     imageAlt: 'Không gian thư viện đại học tràn ánh nắng giờ vàng với sách giáo khoa mở trên bàn gỗ',
     targetSectionId: 'specimen',
     targetSectionLabel: 'Xem mẫu đối chiếu SGK',
@@ -92,7 +109,9 @@ export const HERO_SLIDES: readonly HeroSlideItem[] = [
     titleLines: ['DUYỆT OCR', 'VỞ VIẾT TAY'],
     shortDescription:
       'Quét chính xác chữ viết tay, phương trình hóa học và công thức vật lý. Tự động mở bước rà soát khi ảnh mờ để tránh chấm oan.',
-    image: heroOcrNotebookImg,
+    image: heroOcrNotebookDesktop,
+    imageMobile: heroOcrNotebookMobile,
+    imageThumb: heroOcrNotebookThumb,
     imageAlt: 'Bàn học gỗ bên cửa sổ núi lúc chạng vạng với vở viết tay sơ đồ hình học dưới ánh đèn đồng',
     targetSectionId: 'specimen',
     targetSectionLabel: 'Xem kết quả sau khi duyệt OCR',
@@ -129,7 +148,9 @@ export const HERO_SLIDES: readonly HeroSlideItem[] = [
     titleLines: ['ĐỀ THI THỬ', 'CHUẨN 2025'],
     shortDescription:
       'Luyện đề đủ 3 dạng thức mới: Trắc nghiệm ABCD, Đúng/Sai tính điểm lũy tiến và Trả lời ngắn kèm đồng hồ bấm giờ phòng thi.',
-    image: heroExamStudioImg,
+    image: heroExamStudioDesktop,
+    imageMobile: heroExamStudioMobile,
+    imageThumb: heroExamStudioThumb,
     imageAlt: 'Phòng học kiến trúc hiện đại lúc hoàng hôn với đèn bàn vàng ấm và tập đề thi ngăn nắp',
     targetSectionId: 'workspace-preview',
     targetSectionLabel: 'Thử ngay câu Đúng/Sai 2025',
@@ -166,7 +187,9 @@ export const HERO_SLIDES: readonly HeroSlideItem[] = [
     titleLines: ['FLASHCARD 3D', 'ÔN NGẮT QUÃNG'],
     shortDescription:
       'Mỗi lỗi sai sau khi kiểm định tự động chuyển thành bộ thẻ lật 3D cá nhân hóa, nhắc ôn đúng thời điểm vàng trước khi bạn quên.',
-    image: heroFlashcardDeckImg,
+    image: heroFlashcardDeckDesktop,
+    imageMobile: heroFlashcardDeckMobile,
+    imageThumb: heroFlashcardDeckThumb,
     imageAlt: 'Bộ thẻ ghi nhớ bằng giấy kem xếp ngay ngắn trên bàn gỗ óc chó dưới ánh nắng chiều qua cửa sổ',
     targetSectionId: 'workspace-preview',
     targetSectionLabel: 'Xem trước không gian luyện tập',
@@ -203,7 +226,9 @@ export const HERO_SLIDES: readonly HeroSlideItem[] = [
     titleLines: ['ĐUA TOP &', 'PHÂN TÍCH LỖI'],
     shortDescription:
       'Theo dõi biểu đồ tiến độ theo từng chương học, gom nhóm lỗ hổng kiến thức trọng tâm và thi đua minh bạch theo từng khối lớp.',
-    image: heroProgressPavilionImg,
+    image: heroProgressPavilionDesktop,
+    imageMobile: heroProgressPavilionMobile,
+    imageThumb: heroProgressPavilionThumb,
     imageAlt: 'Thư viện gỗ kính trên đồi lúc hoàng hôn với đèn học ấm áp nhìn ra rặng núi xanh thẫm',
     targetSectionId: 'workspace-preview',
     targetSectionLabel: 'Xem bảng xếp hạng theo khối',
@@ -248,10 +273,23 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
   onScrollToSection,
   onOpenAuth,
 }) => {
-  const prefersReduced = useReducedMotion();
+  const [prefersReduced, setPrefersReduced] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      : false
+  );
   const [activeIndex, setActiveIndex] = useState(0);
   const [prevIndex, setPrevIndex] = useState(0);
   const [direction, setDirection] = useState<1 | -1>(1);
+  const [hasInteracted, setHasInteracted] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const onChange = (e: MediaQueryListEvent) => setPrefersReduced(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
   const [isHoverPaused, setIsHoverPaused] = useState(false);
   const [bookmarkedIds, setBookmarkedIds] = useState<string[]>(['sgk-verify']);
   const [detailSlideId, setDetailSlideId] = useState<string | null>(null);
@@ -274,18 +312,28 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
     ? HERO_SLIDES.find((s) => s.id === detailSlideId) ?? null
     : null;
 
-  // Preload all 5 hero images so expanding transitions never flash or stall
+  // Defer preloading only the next upcoming slide after LCP settles so bandwidth stays focused on slide 0
   useEffect(() => {
-    HERO_SLIDES.forEach((slide) => {
+    const nextIdx = stepSlideIndex(activeIndex, totalSlides, 1);
+    const nextSlide = HERO_SLIDES[nextIdx];
+    if (!nextSlide) return;
+
+    const preloadNext = () => {
       const img = new Image();
-      img.src = slide.image;
-    });
-  }, []);
+      img.decoding = 'async';
+      img.src = window.innerWidth < 768 ? nextSlide.imageMobile : nextSlide.image;
+    };
+
+    const delayMs = activeIndex === 0 ? 2200 : 250;
+    const timer = window.setTimeout(preloadNext, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [activeIndex, totalSlides]);
 
   const navigateToIndex = useCallback(
     (nextIndex: number, dir: 1 | -1) => {
       setActiveIndex((current) => {
         if (current === nextIndex) return current;
+        setHasInteracted(true);
         setPrevIndex(current);
         setDirection(dir);
         return nextIndex;
@@ -297,6 +345,7 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
   const handleNext = useCallback(() => {
     setActiveIndex((current) => {
       const next = stepSlideIndex(current, totalSlides, 1);
+      setHasInteracted(true);
       setPrevIndex(current);
       setDirection(1);
       return next;
@@ -306,6 +355,7 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
   const handlePrev = useCallback(() => {
     setActiveIndex((current) => {
       const next = stepSlideIndex(current, totalSlides, -1);
+      setHasInteracted(true);
       setPrevIndex(current);
       setDirection(-1);
       return next;
@@ -419,62 +469,56 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
           1. FULL-BLEED ANIMATED BACKDROP LAYER (Smooth Expanding Card -> Stage)
          ===================================================================== */}
       <div aria-hidden="true" className="absolute inset-0 z-0 overflow-hidden bg-[#0A0F1A]">
-        {/* Persistent previous backdrop underneath prevents any dark flash */}
-        {!failedImages[previousSlide.id] ? (
-          <img
-            src={previousSlide.image}
-            alt=""
-            referrerPolicy="no-referrer"
-            data-no-privacy-blur="true"
-            className="absolute inset-0 w-full h-full object-cover object-center scale-[1.02]"
-          />
-        ) : (
-          <div className="absolute inset-0 bg-gradient-to-br from-[#0F1A2E] via-[#1B2A4A] to-[#090E18]" />
-        )}
+        {/* Persistent previous backdrop only rendered during/after transitions (avoids duplicate initial LCP decode) */}
+        {prevIndex !== activeIndex &&
+          (!failedImages[previousSlide.id] ? (
+            <img
+              src={previousSlide.image}
+              srcSet={`${previousSlide.imageMobile} 720w, ${previousSlide.image} 1280w`}
+              sizes="100vw"
+              width={1280}
+              height={714}
+              alt=""
+              decoding="async"
+              referrerPolicy="no-referrer"
+              data-no-privacy-blur="true"
+              className="absolute inset-0 w-full h-full object-cover object-center scale-[1.02]"
+            />
+          ) : (
+            <div className="absolute inset-0 bg-gradient-to-br from-[#0F1A2E] via-[#1B2A4A] to-[#090E18]" />
+          ))}
 
-        {/* Incoming active slide smoothly glides & scales from the right card zone to fullscreen (GPU compositor-only) */}
-        <AnimatePresence initial={false} mode="sync">
-          <motion.div
-            key={activeSlide.id}
-            initial={
-              prefersReduced
-                ? { opacity: 0 }
-                : {
-                    opacity: 0,
-                    scale: 1.07,
-                    x: direction === 1 ? 42 : -42,
-                  }
-            }
-            animate={{
-              opacity: 1,
-              scale: 1,
-              x: 0,
-            }}
-            exit={{
-              opacity: 0,
-              scale: 1.02,
-              transition: { duration: 0.38, ease: 'easeOut' },
-            }}
-            transition={{
-              duration: prefersReduced ? 0.2 : 0.68,
-              ease: [0.22, 1, 0.36, 1],
-            }}
-            className="absolute inset-0 will-change-transform"
-          >
-            {!failedImages[activeSlide.id] ? (
-              <img
-                src={activeSlide.image}
-                alt={activeSlide.imageAlt}
-                referrerPolicy="no-referrer"
-                data-no-privacy-blur="true"
-                onError={() => markImageFailed(activeSlide.id)}
-                className="w-full h-full object-cover object-center"
-              />
-            ) : (
-              <div className="w-full h-full bg-gradient-to-br from-[#16233D] via-[#1E293B] to-[#0A0F1A]" />
-            )}
-          </motion.div>
-        </AnimatePresence>
+        {/* Incoming active slide smoothly glides & scales on slide change (no initial fade delay for fast LCP!) */}
+        <div
+          key={activeSlide.id}
+          className={`absolute inset-0 will-change-transform ${
+            hasInteracted && !prefersReduced
+              ? direction === 1
+                ? 'landing-slide-enter-next'
+                : 'landing-slide-enter-prev'
+              : ''
+          }`}
+        >
+          {!failedImages[activeSlide.id] ? (
+            <img
+              src={activeSlide.image}
+              srcSet={`${activeSlide.imageMobile} 720w, ${activeSlide.image} 1280w`}
+              sizes="100vw"
+              width={1280}
+              height={714}
+              alt={activeSlide.imageAlt}
+              loading="eager"
+              decoding={activeIndex === 0 ? 'sync' : 'async'}
+              fetchPriority={activeIndex === 0 ? 'high' : 'auto'}
+              referrerPolicy="no-referrer"
+              data-no-privacy-blur="true"
+              onError={() => markImageFailed(activeSlide.id)}
+              className="w-full h-full object-cover object-center"
+            />
+          ) : (
+            <div className="w-full h-full bg-gradient-to-br from-[#16233D] via-[#1E293B] to-[#0A0F1A]" />
+          )}
+        </div>
 
         {/* Measured Cinematic Contrast Scrims: luminous upper-center architecture + rich left & bottom legibility */}
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[#070B14]/56 via-transparent to-[#070B14]/72" />
@@ -641,14 +685,10 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
         <div className="w-full grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-6 items-end">
           {/* LEFT COLUMN: Short Rule + Kicker + Condensed Headline + Concise Copy + Bookmark & "Xem thêm" */}
           <div className="lg:col-span-5 xl:col-span-5 flex flex-col justify-end lg:pb-10 select-text">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={activeSlide.id}
-                initial={prefersReduced ? { opacity: 0 } : { opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={prefersReduced ? { opacity: 0 } : { opacity: 0, y: -14 }}
-                transition={{ duration: prefersReduced ? 0.16 : 0.4, ease: [0.22, 1, 0.36, 1] }}
-              >
+            <div
+              key={activeSlide.id}
+              className={hasInteracted && !prefersReduced ? 'landing-fade-up' : ''}
+            >
                 {/* Signature Short Horizontal White Bar */}
                 <div
                   aria-hidden="true"
@@ -713,8 +753,7 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
                     <ArrowRight className="w-3.5 h-3.5" />
                   </button>
                 </div>
-              </motion.div>
-            </AnimatePresence>
+            </div>
           </div>
 
           {/* RIGHT COLUMN: Overlapping Vertical Poster Cards + Bottom Nav/Progress/Counter Rail */}
@@ -729,16 +768,12 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
                 const card = HERO_SLIDES[slideIdx];
                 const isNextUp = position === 0;
                 return (
-                  <motion.button
+                  <button
                     key={card.id}
-                    layout={!prefersReduced}
                     type="button"
                     onClick={() => navigateToIndex(slideIdx, 1)}
                     aria-label={`Chuyển sang ${card.titleLines.join(' ')}`}
-                    transition={{
-                      layout: { duration: 0.52, ease: [0.22, 1, 0.36, 1] },
-                    }}
-                    className={`group relative shrink-0 w-[160px] h-[228px] sm:w-[192px] sm:h-[274px] xl:w-[214px] xl:h-[304px] rounded-2xl overflow-hidden text-left shadow-[0_24px_54px_-16px_rgba(0,0,0,0.72)] border transition-all duration-300 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623] ${
+                    className={`group relative shrink-0 w-[160px] h-[228px] sm:w-[192px] sm:h-[274px] xl:w-[214px] xl:h-[304px] rounded-2xl overflow-hidden text-left shadow-[0_24px_54px_-16px_rgba(0,0,0,0.72)] border transition-[transform,border-color] duration-300 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623] ${
                       isNextUp
                         ? 'border-white/35 hover:border-[#F5A623] hover:-translate-y-2'
                         : 'border-white/15 hover:border-white/45 hover:-translate-y-1.5'
@@ -746,8 +781,13 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
                   >
                     {!failedImages[card.id] ? (
                       <img
-                        src={card.image}
+                        src={card.imageThumb}
                         alt={card.imageAlt}
+                        width={214}
+                        height={304}
+                        loading="lazy"
+                        decoding="async"
+                        fetchPriority="low"
                         referrerPolicy="no-referrer"
                         data-no-privacy-blur="true"
                         onError={() => markImageFailed(card.id)}
@@ -780,7 +820,7 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
                         <span className="block">{card.titleLines[1]}</span>
                       </span>
                     </div>
-                  </motion.button>
+                  </button>
                 );
               })}
             </div>
@@ -806,16 +846,14 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
                 </button>
               </div>
 
-              {/* Sleek Horizontal Progress Track with Golden-Amber Fill */}
+              {/* Sleek Horizontal Progress Track with GPU-composited scaleX fill */}
               <div
                 aria-hidden="true"
                 className="flex-1 h-[2.5px] bg-white/25 rounded-full overflow-hidden"
               >
-                <motion.div
-                  className="h-full bg-[#F5A623] rounded-full"
-                  initial={false}
-                  animate={{ width: `${progressPercent}%` }}
-                  transition={{ duration: prefersReduced ? 0.15 : 0.52, ease: [0.22, 1, 0.36, 1] }}
+                <div
+                  className="h-full w-full origin-left bg-[#F5A623] rounded-full will-change-transform transition-transform duration-500 ease-out motion-reduce:duration-150"
+                  style={{ transform: `scaleX(${progressPercent / 100})` }}
                 />
               </div>
 
@@ -836,33 +874,27 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
       {/* =====================================================================
           4. "XEM THÊM" FEATURE DETAIL MODAL (Anti-Cramming Disclosure)
          ===================================================================== */}
-      <AnimatePresence>
-        {detailSlide && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            onClick={() => setDetailSlideId(null)}
-            className="fixed inset-0 z-50 bg-[#050811]/80 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 select-text"
+      {detailSlide && (
+        <div
+          onClick={() => setDetailSlideId(null)}
+          className="landing-backdrop-enter fixed inset-0 z-50 bg-[#050811]/80 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 select-text"
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="slide-detail-modal-title"
+            onClick={(e) => e.stopPropagation()}
+            className="landing-modal-enter w-full max-w-2xl rounded-3xl bg-[#0F172A] border border-white/15 text-white shadow-[0_32px_90px_-20px_rgba(0,0,0,0.85)] overflow-hidden flex flex-col max-h-[88dvh]"
           >
-            <motion.div
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="slide-detail-modal-title"
-              initial={prefersReduced ? { opacity: 0 } : { opacity: 0, y: 20, scale: 0.97 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={prefersReduced ? { opacity: 0 } : { opacity: 0, y: 12, scale: 0.98 }}
-              transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-2xl rounded-3xl bg-[#0F172A] border border-white/15 text-white shadow-[0_32px_90px_-20px_rgba(0,0,0,0.85)] overflow-hidden flex flex-col max-h-[88dvh]"
-            >
               {/* Modal Banner Header */}
               <div className="relative h-44 sm:h-52 shrink-0 overflow-hidden bg-slate-900">
                 {!failedImages[detailSlide.id] && (
                   <img
-                    src={detailSlide.image}
+                    src={detailSlide.imageMobile}
                     alt={detailSlide.imageAlt}
+                    width={720}
+                    height={402}
+                    decoding="async"
                     referrerPolicy="no-referrer"
                     data-no-privacy-blur="true"
                     className="w-full h-full object-cover object-center"
@@ -980,10 +1012,9 @@ export const LandingHeroCarousel: React.FC<LandingHeroCarouselProps> = ({
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
               </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            </div>
+          </div>
+      )}
     </section>
   );
 };

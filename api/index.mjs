@@ -4601,6 +4601,306 @@ function distributeExamQuestionScores(questions, totalScore) {
     };
   });
 }
+function normalizeQuizQuestionOrigin(rawOrigin, isExternalAdvanced, fallbackOrigin) {
+  if (isExternalAdvanced || rawOrigin === "external_advanced") {
+    return "external_advanced";
+  }
+  if (rawOrigin === "upload" || rawOrigin === "mistake_variation" || rawOrigin === "textbook_supplement") {
+    return rawOrigin;
+  }
+  return fallbackOrigin;
+}
+function normalizeJsonEscapesForSalvage(input) {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  const isHex = (ch) => /^[0-9a-fA-F]$/.test(ch);
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (inString) {
+      if (escaped) {
+        out += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        const next = input[i + 1] || "";
+        const isStandardEscape = next === '"' || next === "\\" || next === "/" || next === "b" || next === "f" || next === "n" || next === "r" || next === "t" || next === "u" && i + 5 < input.length && isHex(input[i + 2]) && isHex(input[i + 3]) && isHex(input[i + 4]) && isHex(input[i + 5]);
+        if (isStandardEscape) {
+          out += ch;
+          escaped = true;
+        } else {
+          out += "\\\\";
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+        out += ch;
+        continue;
+      }
+      if (ch === "\n") {
+        out += "\\n";
+        continue;
+      }
+      if (ch === "\r") {
+        out += "\\r";
+        continue;
+      }
+      if (ch === "	") {
+        out += "\\t";
+        continue;
+      }
+      if (ch.charCodeAt(0) < 32) {
+        out += " ";
+        continue;
+      }
+      out += ch;
+    } else {
+      if (ch === '"') inString = true;
+      out += ch;
+    }
+  }
+  return out.replace(/,\s*([}\]])/g, "$1");
+}
+function salvageQuestionsFromTruncatedJson(rawText) {
+  const stripped = (rawText || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  if (!stripped) return [];
+  const fenced = stripped.match(/```(?:json)?\s*([\s\S]*?)(?:```|$)/i);
+  const body = (fenced && fenced[1] ? fenced[1] : stripped).trim();
+  const candidates = [body];
+  const fb = body.indexOf("{");
+  const lb = body.lastIndexOf("}");
+  if (fb >= 0 && lb > fb) {
+    candidates.push(body.slice(fb, lb + 1));
+  }
+  for (const cand of candidates) {
+    for (const attempt of [cand, normalizeJsonEscapesForSalvage(cand)]) {
+      try {
+        const parsed = JSON.parse(attempt);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((item) => Boolean(item) && typeof item === "object");
+        }
+        if (parsed && typeof parsed === "object") {
+          const obj = parsed;
+          if (Array.isArray(obj.questions)) {
+            return obj.questions.filter(
+              (item) => Boolean(item) && typeof item === "object"
+            );
+          }
+        }
+      } catch {
+      }
+    }
+  }
+  const qKeyMatch = /"questions"\s*:\s*\[/i.exec(body);
+  const arrayStart = qKeyMatch ? qKeyMatch.index + qKeyMatch[0].length - 1 : body.indexOf("[");
+  if (arrayStart < 0) return [];
+  const salvaged = [];
+  let inString = false;
+  let escaped = false;
+  let braceDepth = 0;
+  let objStart = -1;
+  for (let i = arrayStart + 1; i < body.length; i += 1) {
+    const ch = body[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (braceDepth === 0) objStart = i;
+      braceDepth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      if (braceDepth > 0) {
+        braceDepth -= 1;
+        if (braceDepth === 0 && objStart >= 0) {
+          const slice = body.slice(objStart, i + 1);
+          objStart = -1;
+          for (const attempt of [slice, normalizeJsonEscapesForSalvage(slice)]) {
+            try {
+              const item = JSON.parse(attempt);
+              if (item && typeof item === "object" && !Array.isArray(item)) {
+                salvaged.push(item);
+                break;
+              }
+            } catch {
+            }
+          }
+        }
+      }
+      continue;
+    }
+    if (ch === "]" && braceDepth === 0) {
+      break;
+    }
+  }
+  return salvaged;
+}
+function resolveQuizScopeStrategy(params) {
+  const { scope, baseTargetCount, claims, coverageItems, chapterFilter } = params;
+  const safeBase = Math.max(1, baseTargetCount);
+  const countDistinct = (cList, mList) => new Set(
+    [
+      ...cList.map((c) => normalizeVietnameseText(c.concept || c.sourceText.slice(0, 40))),
+      ...mList.map((m) => normalizeVietnameseText(m.concept || ""))
+    ].filter(Boolean)
+  ).size;
+  const allMissingOrPartial = coverageItems.filter(
+    (i) => i.status === "MISSING" || i.status === "PARTIALLY_COVERED"
+  );
+  if (scope === "incorrect" || scope === "partial" || scope === "missing") {
+    const targetClaims2 = scope === "incorrect" ? claims.filter((c) => c.evaluationStatus === "INCORRECT") : scope === "partial" ? claims.filter((c) => c.evaluationStatus === "PARTIALLY_CORRECT") : [];
+    const missingItems2 = scope === "missing" ? allMissingOrPartial : scope === "partial" ? coverageItems.filter((i) => i.status === "PARTIALLY_COVERED") : [];
+    const hasTargetedData = targetClaims2.length > 0 || missingItems2.length > 0;
+    if (hasTargetedData) {
+      const distinctConceptCount2 = Math.max(1, countDistinct(targetClaims2, missingItems2));
+      return {
+        mode: "mistake_variation",
+        targetClaims: targetClaims2,
+        missingItems: missingItems2,
+        distinctConceptCount: distinctConceptCount2,
+        needsTextbookSupplement: false,
+        expectedUploadSlots: safeBase,
+        expectedSupplementSlots: 0
+      };
+    }
+    const fallbackDistinct = countDistinct(claims, allMissingOrPartial);
+    return {
+      mode: "empty_scope_fallback",
+      targetClaims: claims,
+      missingItems: allMissingOrPartial,
+      distinctConceptCount: fallbackDistinct,
+      needsTextbookSupplement: fallbackDistinct < safeBase,
+      expectedUploadSlots: Math.min(safeBase, fallbackDistinct),
+      expectedSupplementSlots: Math.max(0, safeBase - fallbackDistinct)
+    };
+  }
+  let targetClaims = claims;
+  let missingItems = allMissingOrPartial;
+  if (scope === "chapter" && chapterFilter?.trim()) {
+    const needle = chapterFilter.trim().toLowerCase();
+    const filteredClaims = claims.filter((c) => (c.chapter || "").toLowerCase().includes(needle));
+    const filteredMissing = allMissingOrPartial.filter(
+      (m) => (m.chapter || "").toLowerCase().includes(needle)
+    );
+    if (filteredClaims.length === 0 && filteredMissing.length === 0) {
+      const fallbackDistinct = countDistinct(claims, allMissingOrPartial);
+      return {
+        mode: "empty_scope_fallback",
+        targetClaims: claims,
+        missingItems: allMissingOrPartial,
+        distinctConceptCount: fallbackDistinct,
+        needsTextbookSupplement: fallbackDistinct < safeBase,
+        expectedUploadSlots: Math.min(safeBase, fallbackDistinct),
+        expectedSupplementSlots: Math.max(0, safeBase - fallbackDistinct)
+      };
+    }
+    targetClaims = filteredClaims;
+    missingItems = filteredMissing;
+  }
+  const distinctConceptCount = countDistinct(targetClaims, missingItems);
+  const needsTextbookSupplement = distinctConceptCount < safeBase;
+  return {
+    mode: needsTextbookSupplement ? "upload_plus_textbook" : "upload_sufficient",
+    targetClaims,
+    missingItems,
+    distinctConceptCount,
+    needsTextbookSupplement,
+    expectedUploadSlots: Math.min(safeBase, distinctConceptCount),
+    expectedSupplementSlots: Math.max(0, safeBase - distinctConceptCount)
+  };
+}
+function mergeQuizQuestionsWithQuota(params) {
+  const { existing, incoming, baseTargetCount, advancedTargetCount } = params;
+  const safeBaseTarget = Math.max(1, baseTargetCount);
+  const safeAdvTarget = Math.max(0, advancedTargetCount);
+  const normalizedIncoming = incoming.map((q) => {
+    if (safeAdvTarget === 0 && q.isExternalAdvanced) {
+      return {
+        ...q,
+        isExternalAdvanced: false,
+        questionOrigin: q.questionOrigin === "external_advanced" ? "textbook_supplement" : q.questionOrigin
+      };
+    }
+    return q;
+  });
+  const validated = validateQuizQuestionSet([...existing, ...normalizedIncoming]);
+  const baseQuestions = [];
+  const advancedQuestions = [];
+  for (const q of validated.questions) {
+    if (safeAdvTarget > 0 && q.isExternalAdvanced) {
+      if (advancedQuestions.length < safeAdvTarget) {
+        advancedQuestions.push(q);
+      }
+    } else if (baseQuestions.length < safeBaseTarget) {
+      baseQuestions.push(q);
+    }
+  }
+  return {
+    questions: [...baseQuestions, ...advancedQuestions],
+    baseQuestions,
+    advancedQuestions,
+    missingBase: Math.max(0, safeBaseTarget - baseQuestions.length),
+    missingAdvanced: Math.max(0, safeAdvTarget - advancedQuestions.length)
+  };
+}
+async function runQuizGenerationWithTopUp(params) {
+  const maxTopUpPasses = Math.max(0, Math.min(3, params.maxTopUpPasses ?? 2));
+  let merged = mergeQuizQuestionsWithQuota({
+    existing: [],
+    incoming: [],
+    baseTargetCount: params.baseTargetCount,
+    advancedTargetCount: params.advancedTargetCount
+  });
+  let modelUsed = "";
+  let attemptsUsed = 0;
+  for (let attempt = 0; attempt <= maxTopUpPasses; attempt += 1) {
+    if (attempt > 0 && merged.missingBase === 0 && merged.missingAdvanced === 0) {
+      break;
+    }
+    attemptsUsed += 1;
+    try {
+      const batch = await params.generateBatch({
+        attempt,
+        missingBase: merged.missingBase,
+        missingAdvanced: merged.missingAdvanced,
+        existingQuestions: merged.questions
+      });
+      if (batch.modelUsed && !modelUsed) {
+        modelUsed = batch.modelUsed;
+      }
+      merged = mergeQuizQuestionsWithQuota({
+        existing: merged.questions,
+        incoming: batch.questions,
+        baseTargetCount: params.baseTargetCount,
+        advancedTargetCount: params.advancedTargetCount
+      });
+    } catch (err) {
+      if (attempt === 0 && merged.questions.length === 0) {
+        throw err;
+      }
+      break;
+    }
+  }
+  return {
+    ...merged,
+    attemptsUsed,
+    topUpPassesUsed: Math.max(0, attemptsUsed - 1),
+    modelUsed
+  };
+}
 
 // src/server/geminiPipeline.ts
 init_retrieval();
@@ -6374,186 +6674,298 @@ var QuizGenerationService = class {
       config,
       idToken
     } = params;
-    let targetClaims = claims;
-    if (scope === "incorrect") {
-      targetClaims = claims.filter((c) => c.evaluationStatus === "INCORRECT");
-    } else if (scope === "partial") {
-      targetClaims = claims.filter((c) => c.evaluationStatus === "PARTIALLY_CORRECT");
-    } else if (scope === "chapter" && chapterFilter) {
-      targetClaims = claims.filter((c) => c.chapter.toLowerCase().includes(chapterFilter.toLowerCase()));
-    }
-    const missingItems = scope === "missing" || scope === "all" ? coverageItems.filter((i) => i.status === "MISSING" || i.status === "PARTIALLY_COVERED") : [];
-    const distinctUploadConcepts = new Set([
-      ...targetClaims.map((c) => (c.concept || c.sourceText.slice(0, 35)).toLowerCase()),
-      ...missingItems.map((m) => (m.concept || "").toLowerCase())
-    ].filter(Boolean));
-    const needsTextbookSupplement = distinctUploadConcepts.size < 5;
     const safeAdvancedExtra = advancedEnabled ? Math.min(6, Math.max(1, Number(advancedCount) || 2)) : 0;
     const baseTargetCount = Math.min(20, Math.max(5, Number(count) || 5));
-    const supplementChunks = needsTextbookSupplement ? referenceChunks.filter((rc) => rc.grade === grade && rc.subject === subject).slice(0, 8) : [];
-    const contextLines = [
-      ...targetClaims.map(
-        (c) => `[UploadClaim ${c.claimId} | ${c.evaluationStatus} | ${c.chapter} | ${c.concept}] H\u1ECDc sinh vi\u1EBFt: "${c.sourceText}" | Chu\u1EA9n: "${c.correctKnowledge}" | Gi\u1EA3i th\xEDch: "${c.explanation}"`
-      ),
-      ...missingItems.map(
-        (m) => `[UploadMissing | ${m.chapter} | ${m.concept}] G\u1EE3i \xFD: "${m.suggestedAddition}" | Tr\xEDch d\u1EABn: "${m.referenceExcerpt}"`
-      ),
-      ...supplementChunks.map(
-        (ch) => `[TextbookSupplement | ${ch.chapter} - ${ch.lesson} | Tr.${ch.pageNumber}] ${ch.content.slice(0, 450)}`
-      )
-    ];
-    const effectiveContext = contextLines.length > 0 ? contextLines.join("\n") : claims.map((c) => `${c.concept}: ${c.correctKnowledge}`).join("\n");
-    const diffLabel = difficulty === "basic" ? "C\u01A1 b\u1EA3n (Nh\u1EADn bi\u1EBFt, Th\xF4ng hi\u1EC3u)" : difficulty === "medium" ? "Trung b\xECnh (Th\xF4ng hi\u1EC3u, V\u1EADn d\u1EE5ng)" : difficulty === "advanced" ? "N\xE2ng cao (V\u1EADn d\u1EE5ng, V\u1EADn d\u1EE5ng cao)" : "H\u1ED7n h\u1EE3p c\xE2n b\u1EB1ng (Nh\u1EADn bi\u1EBFt 30% - Th\xF4ng hi\u1EC3u 30% - V\u1EADn d\u1EE5ng 25% - V\u1EADn d\u1EE5ng cao 15%)";
-    const prompt = [
-      `So\u1EA1n ${baseTargetCount} c\xE2u h\u1ECFi tr\u1EAFc nghi\u1EC7m ABCD c\u1ED1t l\xF5i cho h\u1ECDc sinh l\u1EDBp ${grade}, m\xF4n ${SUBJECT_LABELS[subject]}.`,
-      needsTextbookSupplement ? `L\u01AFU \xDD \u0110\u1EB6C BI\u1EC6T: N\u1ED9i dung t\u1EA3i l\xEAn ch\u1EC9 c\xF3 ${distinctUploadConcepts.size} \u0111\u01A1n v\u1ECB ki\u1EBFn th\u1EE9c kh\xE1c nhau (< 5). H\xE3y t\u1EA1o t\u1ED1i \u0111a s\u1ED1 c\xE2u h\u1ECFi b\xE1m s\xE1t n\u1ED9i dung t\u1EA3i l\xEAn, V\xC0 T\u1EF0 \u0110\u1ED8NG B\u1ED4 SUNG ph\u1EA7n c\xF2n l\u1EA1i t\u1EEB ki\u1EBFn th\u1EE9c \u0111\xE3 ho\xE0n thi\u1EC7n c\u1EE7a ch\u01B0\u01A1ng/s\xE1ch gi\xE1o khoa (${textbookTitle || SUBJECT_LABELS[subject] + " l\u1EDBp " + grade}) \u0111\u1EC3 \u0111\u1EE7 ${baseTargetCount} c\xE2u ch\u1EA5t l\u01B0\u1EE3ng kh\xF4ng tr\xF9ng l\u1EB7p.` : `T\u1EA5t c\u1EA3 ${baseTargetCount} c\xE2u c\u1ED1t l\xF5i b\xE1m s\xE1t n\u1ED9i dung \u0111\xE3 t\u1EA3i l\xEAn v\xE0 ph\u1EA7n ki\u1EBFn th\u1EE9c c\u1EA7n c\u1EE7ng c\u1ED1.`,
-      safeAdvancedExtra > 0 ? `Y\xCAU C\u1EA6U M\u1EDE R\u1ED8NG N\xC2NG CAO: Ngo\xE0i ${baseTargetCount} c\xE2u tr\xEAn, H\xC3Y T\u1EA0O TH\xCAM \u0110\xDANG ${safeAdvancedExtra} c\xE2u h\u1ECFi N\xC2NG CAO B\xCAN NGO\xC0I (isExternalAdvanced = true, m\u1EE9c V\u1EADn d\u1EE5ng / V\u1EADn d\u1EE5ng cao) ki\u1EC3m tra t\u01B0 duy s\xE2u h\u01A1n \u1EDF c\xF9ng ch\u1EE7 \u0111\u1EC1 m\xF4n h\u1ECDc.` : "",
-      `\u0110\u1ED9 kh\xF3: ${diffLabel}. Ngu\u1ED3n tham chi\u1EBFu: ${textbookTitle || "Ki\u1EBFn th\u1EE9c chu\u1EA9n GDPT 2018"}.`,
-      "Y\xCAU C\u1EA6U CH\u1EA4T L\u01AF\u1EE2NG NGHI\xCAM NG\u1EB6T:",
-      "- M\u1ED7i c\xE2u CH\u1EC8 C\xD3 DUY NH\u1EA4T 1 \u0111\xE1p \xE1n \u0111\xFAng (A, B, C ho\u1EB7c D).",
-      "- \u0110\u1ED9 d\xE0i 4 l\u1EF1a ch\u1ECDn A/B/C/D t\u01B0\u01A1ng \u0111\u1ED3ng h\u1EE3p l\xFD, kh\xF4ng l\u1ED9 \u0111\xE1p \xE1n \u0111\xFAng b\u1EB1ng \u0111\u1ED9 d\xE0i qu\xE1 v\u01B0\u1EE3t tr\u1ED9i.",
-      "- Ph\xE2n lo\u1EA1i \u0111\xFAng cognitiveLevel (nhan_biet | thong_hieu | van_dung | van_dung_cao) v\xE0 knowledgeUnitType (concept | mechanism | condition | characteristic | formula | problem_type).",
-      "- Vi\u1EBFt th\u1EADt ng\u1EAFn g\u1ECDn: explanation t\u1ED1i \u0111a 2 c\xE2u; m\u1ED7i distractorA/B/C/D t\u1ED1i \u0111a 1 c\xE2u ng\u1EAFn gi\u1EA3i th\xEDch v\xEC sao l\u1EF1a ch\u1ECDn \u0111\xF3 \u0111\xFAng/sai.",
-      "",
-      "NG\u1EEE C\u1EA2NH KI\u1EBEN TH\u1EE8C:",
-      effectiveContext.slice(0, 18e3)
-    ].filter(Boolean).join("\n");
     const totalWanted = baseTargetCount + safeAdvancedExtra;
-    const quizMaxTokens = Math.min(4096, Math.max(1536, totalWanted * 220));
-    const { data: parsed, modelId: modelUsed } = await runTaskWithRouter({
-      taskType: "quiz_generation",
-      config,
-      idToken,
-      allowGroqRescue: true,
-      cacheInput: {
-        subject,
-        grade,
-        baseTargetCount,
-        safeAdvancedExtra,
-        difficulty,
-        scope,
-        chapterFilter: chapterFilter || "",
-        ctx: effectiveContext.slice(0, 8e3)
-      },
-      runWithModel: async (modelId) => generateJsonWithProvider({
-        modelId,
-        prompt,
-        thinkingTier: "low",
-        maxOutputTokens: quizMaxTokens,
-        tokensOut,
-        fallbackJson: '{"questions":[]}',
-        groqSchemaHint: '{"questions":[{"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","explanation":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","chapter":"...","concept":"...","sourceReference":"..."}]}',
-        geminiSchema: {
-          type: Type.OBJECT,
-          properties: {
-            questions: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  questionText: { type: Type.STRING },
-                  optionA: { type: Type.STRING },
-                  optionB: { type: Type.STRING },
-                  optionC: { type: Type.STRING },
-                  optionD: { type: Type.STRING },
-                  correctAnswer: { type: Type.STRING, description: "A | B | C | D" },
-                  explanation: { type: Type.STRING },
-                  distractorA: { type: Type.STRING },
-                  distractorB: { type: Type.STRING },
-                  distractorC: { type: Type.STRING },
-                  distractorD: { type: Type.STRING },
-                  cognitiveLevel: {
-                    type: Type.STRING,
-                    description: "nhan_biet | thong_hieu | van_dung | van_dung_cao"
-                  },
-                  knowledgeUnitType: {
-                    type: Type.STRING,
-                    description: "concept | mechanism | condition | characteristic | formula | problem_type"
-                  },
-                  chapter: { type: Type.STRING },
-                  concept: { type: Type.STRING },
-                  sourceReference: { type: Type.STRING },
-                  isExternalAdvanced: { type: Type.BOOLEAN }
-                },
-                required: [
-                  "questionText",
-                  "optionA",
-                  "optionB",
-                  "optionC",
-                  "optionD",
-                  "correctAnswer",
-                  "explanation",
-                  "cognitiveLevel",
-                  "chapter",
-                  "concept",
-                  "sourceReference"
-                ]
+    const strategy = resolveQuizScopeStrategy({
+      scope,
+      baseTargetCount,
+      claims,
+      coverageItems,
+      chapterFilter
+    });
+    const querySeedText = [
+      chapterFilter || "",
+      ...strategy.targetClaims.map((c) => `${c.chapter} ${c.concept} ${c.correctKnowledge}`),
+      ...strategy.missingItems.map((m) => `${m.chapter} ${m.concept} ${m.suggestedAddition}`)
+    ].join(" ").trim();
+    const sameSubjectChunks = referenceChunks.filter(
+      (rc) => rc.grade === grade && rc.subject === subject
+    );
+    const retrievedSupplementHits = sameSubjectChunks.length > 0 && querySeedText ? retrieveRelevantChunks(querySeedText, sameSubjectChunks, {
+      selectedChapters: chapterFilter?.trim() ? [chapterFilter.trim()] : void 0,
+      topK: 10
+    }) : [];
+    const supplementChunks = retrievedSupplementHits.length > 0 ? retrievedSupplementHits.map((h) => h.chunk) : sameSubjectChunks.slice(0, 10);
+    const buildContextText = (includeTextbookChunks) => {
+      const lines = [
+        ...strategy.targetClaims.map(
+          (c) => `[UploadClaim ${c.claimId} | ${c.evaluationStatus} | ${c.chapter} | ${c.concept}] H\u1ECDc sinh vi\u1EBFt: "${c.sourceText}" | Chu\u1EA9n: "${c.correctKnowledge}" | Gi\u1EA3i th\xEDch: "${c.explanation}"`
+        ),
+        ...strategy.missingItems.map(
+          (m) => `[UploadMissing | ${m.chapter} | ${m.concept}] G\u1EE3i \xFD: "${m.suggestedAddition}" | Tr\xEDch d\u1EABn: "${m.referenceExcerpt}"`
+        ),
+        ...includeTextbookChunks ? supplementChunks.map(
+          (ch) => `[TextbookSupplement | ${ch.chapter} - ${ch.lesson} | Tr.${ch.pageNumber}] ${ch.content.slice(0, 420)}`
+        ) : []
+      ];
+      if (lines.length > 0) return lines.join("\n").slice(0, 18e3);
+      return claims.map((c) => `[FallbackClaim | ${c.chapter} | ${c.concept}] ${c.correctKnowledge}`).join("\n").slice(0, 18e3);
+    };
+    const diffLabel = difficulty === "basic" ? "C\u01A1 b\u1EA3n (Nh\u1EADn bi\u1EBFt, Th\xF4ng hi\u1EC3u)" : difficulty === "medium" ? "Trung b\xECnh (Th\xF4ng hi\u1EC3u, V\u1EADn d\u1EE5ng)" : difficulty === "advanced" ? "N\xE2ng cao (V\u1EADn d\u1EE5ng, V\u1EADn d\u1EE5ng cao)" : "H\u1ED7n h\u1EE3p c\xE2n b\u1EB1ng (Nh\u1EADn bi\u1EBFt 30% - Th\xF4ng hi\u1EC3u 30% - V\u1EADn d\u1EE5ng 25% - V\u1EADn d\u1EE5ng cao 15%)";
+    const scopeHumanLabel = scope === "incorrect" ? "ch\u1ED7 l\xE0m sai" : scope === "partial" ? "ph\u1EA7n thi\u1EBFu \u0111i\u1EC1u ki\u1EC7n" : scope === "missing" ? "ph\u1EA7n ki\u1EBFn th\u1EE9c c\xF2n thi\u1EBFu" : scope === "chapter" && chapterFilter?.trim() ? `ch\u01B0\u01A1ng "${chapterFilter.trim()}"` : "to\xE0n b\u1ED9 n\u1ED9i dung \u0111\xE3 ph\xE2n t\xEDch";
+    const quizGeminiSchema = {
+      type: Type.OBJECT,
+      properties: {
+        questions: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              questionText: { type: Type.STRING },
+              optionA: { type: Type.STRING },
+              optionB: { type: Type.STRING },
+              optionC: { type: Type.STRING },
+              optionD: { type: Type.STRING },
+              correctAnswer: { type: Type.STRING, description: "A | B | C | D" },
+              explanation: { type: Type.STRING },
+              distractorA: { type: Type.STRING },
+              distractorB: { type: Type.STRING },
+              distractorC: { type: Type.STRING },
+              distractorD: { type: Type.STRING },
+              cognitiveLevel: {
+                type: Type.STRING,
+                description: "nhan_biet | thong_hieu | van_dung | van_dung_cao"
+              },
+              knowledgeUnitType: {
+                type: Type.STRING,
+                description: "concept | mechanism | condition | characteristic | formula | problem_type"
+              },
+              chapter: { type: Type.STRING },
+              concept: { type: Type.STRING },
+              sourceReference: { type: Type.STRING },
+              isExternalAdvanced: { type: Type.BOOLEAN },
+              questionOrigin: {
+                type: Type.STRING,
+                description: "upload | mistake_variation | textbook_supplement | external_advanced"
               }
-            }
-          },
-          required: ["questions"]
+            },
+            required: [
+              "questionText",
+              "optionA",
+              "optionB",
+              "optionC",
+              "optionD",
+              "correctAnswer",
+              "explanation",
+              "cognitiveLevel",
+              "chapter",
+              "concept",
+              "sourceReference",
+              "questionOrigin"
+            ]
+          }
         }
-      })
-    });
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    const mapped = (parsed.questions || []).slice(0, totalWanted + 2).map((q, idx) => {
-      const ans = q.correctAnswer === "A" || q.correctAnswer === "B" || q.correctAnswer === "C" || q.correctAnswer === "D" ? q.correctAnswer : "A";
-      const fallbackDiff = difficulty === "basic" || difficulty === "advanced" ? difficulty : "medium";
-      const cog = normalizeCognitiveLevel(q.cognitiveLevel, fallbackDiff);
-      const diff = cog === "nhan_biet" ? "basic" : cog === "thong_hieu" ? "medium" : "advanced";
-      const unitTypes = /* @__PURE__ */ new Set([
-        "concept",
-        "mechanism",
-        "condition",
-        "characteristic",
-        "formula",
-        "problem_type"
-      ]);
-      return {
-        questionId: `q_${Date.now()}_${idx + 1}_${crypto6.randomBytes(2).toString("hex")}`,
-        questionText: q.questionText,
-        optionA: q.optionA,
-        optionB: q.optionB,
-        optionC: q.optionC,
-        optionD: q.optionD,
-        correctAnswer: ans,
-        explanation: q.explanation,
-        distractorExplanations: q.distractorA || q.distractorB || q.distractorC || q.distractorD ? {
-          A: q.distractorA,
-          B: q.distractorB,
-          C: q.distractorC,
-          D: q.distractorD
-        } : void 0,
-        difficulty: diff,
-        cognitiveLevel: cog,
-        knowledgeUnitType: unitTypes.has(q.knowledgeUnitType) ? q.knowledgeUnitType : "concept",
-        subject,
-        grade,
-        chapter: q.chapter || chapterFilter || "T\u1ED5ng h\u1EE3p",
-        concept: q.concept || "Kh\xE1i ni\u1EC7m tr\u1ECDng t\xE2m",
-        sourceReference: q.sourceReference || textbookTitle || "T\xE0i li\u1EC7u tham chi\u1EBFu",
-        sourceType: q.isExternalAdvanced ? "external_extension" : "textbook_reference",
-        modelId: modelUsed,
-        isExternalAdvanced: Boolean(q.isExternalAdvanced),
-        createdAt: now
-      };
-    });
-    const validation = validateQuizQuestionSet(mapped);
-    const hasActualTextbookChunks = needsTextbookSupplement && supplementChunks.length > 0;
-    const finalQuestions = validation.questions.slice(0, totalWanted);
-    let supplementNotice;
-    if (needsTextbookSupplement) {
-      if (hasActualTextbookChunks) {
-        supplementNotice = `N\u1ED9i dung t\u1EA3i l\xEAn ch\u1EC9 c\xF3 ${distinctUploadConcepts.size} \u0111\u01A1n v\u1ECB ki\u1EBFn th\u1EE9c kh\xE1c nhau (< 5). H\u1EC7 th\u1ED1ng \u0111\xE3 t\u1EF1 \u0111\u1ED9ng b\u1ED5 sung th\xEAm t\u1EEB s\xE1ch gi\xE1o khoa tham chi\u1EBFu (${textbookTitle || "Th\u01B0 vi\u1EC7n SGK"}) \u0111\u1EC3 \u0111\u1EE7 ${Math.min(finalQuestions.length, baseTargetCount)} c\xE2u.`;
-      } else {
-        supplementNotice = `Ph\u1EA1m vi l\u1ECDc hi\u1EC7n t\u1EA1i ch\u1EC9 c\xF3 ${distinctUploadConcepts.size} \u0111\u01A1n v\u1ECB ki\u1EBFn th\u1EE9c (< 5). H\u1EC7 th\u1ED1ng \u0111\xE3 t\u1EF1 \u0111\u1ED9ng m\u1EDF r\u1ED9ng c\xE2u h\u1ECFi d\u1EF1a tr\xEAn to\xE0n b\u1ED9 t\xE0i li\u1EC7u t\u1EA3i l\xEAn v\xE0 chu\u1EA9n ch\u01B0\u01A1ng tr\xECnh GDPT 2018 m\xF4n ${SUBJECT_LABELS[subject]} L\u1EDBp ${grade} \u0111\u1EC3 \u0111\u1EE7 ${Math.min(finalQuestions.length, baseTargetCount)} c\xE2u.`;
+      },
+      required: ["questions"]
+    };
+    const quizGroqSchemaHint = '{"questions":[{"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","explanation":"...","distractorA":"...","distractorB":"...","distractorC":"...","distractorD":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","chapter":"...","concept":"...","sourceReference":"...","isExternalAdvanced":false,"questionOrigin":"upload|mistake_variation|textbook_supplement|external_advanced"}]}';
+    const unitTypes = /* @__PURE__ */ new Set([
+      "concept",
+      "mechanism",
+      "condition",
+      "characteristic",
+      "formula",
+      "problem_type"
+    ]);
+    const refLabel = textbookTitle || `SGK & chu\u1EA9n ch\u01B0\u01A1ng tr\xECnh GDPT 2018 m\xF4n ${SUBJECT_LABELS[subject]} L\u1EDBp ${grade}`;
+    const runResult = await runQuizGenerationWithTopUp({
+      baseTargetCount,
+      advancedTargetCount: safeAdvancedExtra,
+      maxTopUpPasses: 2,
+      generateBatch: async ({ attempt, missingBase, missingAdvanced, existingQuestions }) => {
+        const batchTotal = missingBase + missingAdvanced;
+        const allowTextbookOnThisPass = strategy.needsTextbookSupplement || strategy.mode === "empty_scope_fallback" || strategy.mode === "mistake_variation" && attempt >= 2 || strategy.mode !== "mistake_variation" && attempt >= 1;
+        const effectiveContext = buildContextText(allowTextbookOnThisPass);
+        let strategyInstruction = "";
+        if (strategy.mode === "mistake_variation") {
+          if (attempt < 2) {
+            strategyInstruction = [
+              `CHI\u1EBEN L\u01AF\u1EE2C PH\u1EA0M VI (${scopeHumanLabel}): \u01AFu ti\xEAn T\u1EA0O C\xC1C C\xC2U H\u1ECEI BI\u1EBEN TH\u1EC2 \u0110A G\xD3C \u0110\u1ED8 xoay quanh ch\xEDnh c\xE1c l\u1ED7i sai/\xFD thi\u1EBFu trong ng\u1EEF c\u1EA3nh (v\xED d\u1EE5: nh\u1EADn di\u1EC7n ph\xE1t bi\u1EC3u \u0111\xFAng/sai v\u1EC1 l\u1ED7i \u0111\xF3, s\u1EEDa sai c\xF4ng th\u1EE9c/\u0111i\u1EC1u ki\u1EC7n, gi\u1EA3i th\xEDch b\u1EA3n ch\u1EA5t, b\xE0i t\u1EADp t\xEDnh to\xE1n/v\u1EADn d\u1EE5ng ng\u1EAFn v\u1EDBi s\u1ED1 li\u1EC7u m\u1EDBi, t\xECnh hu\u1ED1ng g\xE2y nh\u1EA7m l\u1EABn t\u01B0\u01A1ng t\u1EF1) \u0111\u1EC3 \u0111\u1EA1t CH\xCDNH X\xC1C ${missingBase} c\xE2u c\u01A1 b\u1EA3n.`,
+              'G\xE1n questionOrigin = "mistake_variation" cho c\xE1c c\xE2u bi\u1EBFn th\u1EC3 t\u1EEB l\u1ED7i sai/\xFD thi\u1EBFu.'
+            ].join("\n");
+          } else {
+            strategyInstruction = [
+              `L\u01AF\u1EE2T B\u1ED4 SUNG CU\u1ED0I (${scopeHumanLabel}): Ti\u1EBFp t\u1EE5c t\u1EA1o bi\u1EBFn th\u1EC3 m\u1EDBi t\u1EEB l\u1ED7i sai/\xFD thi\u1EBFu (questionOrigin = "mistake_variation"). N\u1EBFu \u0111\xE3 khai th\xE1c h\u1EBFt c\xE1c g\xF3c \u0111\u1ED9 bi\u1EBFn th\u1EC3 t\u1EF1 nhi\xEAn, \u0111\u01B0\u1EE3c ph\xE9p b\u1ED5 sung ph\u1EA7n c\xF2n thi\u1EBFu t\u1EEB ki\u1EBFn th\u1EE9c c\xF9ng b\xE0i trong ${refLabel} v\xE0 g\xE1n questionOrigin = "textbook_supplement" \u0111\u1EC3 \u0111\u1EA1t \u0110\xDANG ${missingBase} c\xE2u c\u01A1 b\u1EA3n.`
+            ].join("\n");
+          }
+        } else if (strategy.mode === "upload_plus_textbook" || strategy.mode === "empty_scope_fallback") {
+          strategyInstruction = attempt === 0 ? [
+            `CHI\u1EBEN L\u01AF\u1EE2C PH\u1EA0M VI (${scopeHumanLabel}): T\xE0i li\u1EC7u t\u1EA3i l\xEAn hi\u1EC7n c\xF3 ${strategy.distinctConceptCount} \u0111\u01A1n v\u1ECB ki\u1EBFn th\u1EE9c (\xEDt h\u01A1n ${baseTargetCount} c\xE2u c\u1EA7n t\u1EA1o).`,
+            `- Tr\u01B0\u1EDBc ti\xEAn, khai th\xE1c t\u1ED1i \u0111a c\xE1c \xFD trong t\xE0i li\u1EC7u t\u1EA3i l\xEAn (g\xE1n questionOrigin = "upload").`,
+            `- T\u1EF1 \u0111\u1ED9ng b\u1ED5 sung c\xE1c c\xE2u c\xF2n l\u1EA1i t\u1EEB ${refLabel} \u0111\xFAng ch\u1EE7 \u0111\u1EC1/ch\u01B0\u01A1ng \u0111ang h\u1ECDc (g\xE1n questionOrigin = "textbook_supplement") sao cho T\u1ED4NG S\u1ED0 C\xC2U C\u01A0 B\u1EA2N \u0111\u1EA1t CH\xCDNH X\xC1C ${missingBase} c\xE2u.`
+          ].join("\n") : [
+            `L\u01AF\u1EE2T SINH B\xD9 ${attempt}: T\u1EA1o th\xEAm CH\xCDNH X\xC1C ${missingBase} c\xE2u c\u01A1 b\u1EA3n m\u1EDBi ho\xE0n to\xE0n (kh\xF4ng tr\xF9ng c\xE2u \u0111\xE3 c\xF3), \u01B0u ti\xEAn \xFD ch\u01B0a h\u1ECFi trong t\xE0i li\u1EC7u (questionOrigin = "upload") v\xE0 b\u1ED5 sung t\u1EEB ${refLabel} (questionOrigin = "textbook_supplement").`
+          ].join("\n");
+        } else {
+          strategyInstruction = attempt === 0 ? `CHI\u1EBEN L\u01AF\u1EE2C PH\u1EA0M VI (${scopeHumanLabel}): T\u1EA1o CH\xCDNH X\xC1C ${missingBase} c\xE2u c\u1ED1t l\xF5i b\xE1m s\xE1t to\xE0n b\u1ED9 n\u1ED9i dung t\xE0i li\u1EC7u t\u1EA3i l\xEAn (g\xE1n questionOrigin = "upload"). N\u1EBFu v\u1EABn c\u1EA7n m\u1EDF r\u1ED9ng th\xEAm \u0111\u1EC3 tr\xE1nh tr\xF9ng \xFD, b\u1ED5 sung t\u1EEB ${refLabel} v\xE0 g\xE1n questionOrigin = "textbook_supplement".` : `L\u01AF\u1EE2T SINH B\xD9 ${attempt}: T\u1EA1o th\xEAm CH\xCDNH X\xC1C ${missingBase} c\xE2u c\u01A1 b\u1EA3n m\u1EDBi ho\xE0n to\xE0n (kh\xF4ng tr\xF9ng c\xE2u \u0111\xE3 c\xF3) t\u1EEB c\xE1c \xFD ch\u01B0a khai th\xE1c trong t\xE0i li\u1EC7u (questionOrigin = "upload") ho\u1EB7c b\u1ED5 sung t\u1EEB ${refLabel} (questionOrigin = "textbook_supplement").`;
+        }
+        const existingExclusionBlock = existingQuestions.length > 0 ? [
+          "DANH S\xC1CH C\xC2U H\u1ECEI \u0110\xC3 T\u1EA0O (TUY\u1EC6T \u0110\u1ED0I KH\xD4NG \u0110\u01AF\u1EE2C L\u1EB6P L\u1EA0I C\xC2U H\u1ECEI HO\u1EB6C \xDD H\u1ECEI T\u01AF\u01A0NG T\u1EF0):",
+          ...existingQuestions.map(
+            (q, i) => `${i + 1}. [${q.concept}] ${q.questionText.slice(0, 140)}`
+          )
+        ].join("\n") : "";
+        const countRequirementLines = [];
+        if (missingBase > 0) {
+          countRequirementLines.push(
+            `- PH\u1EA2I T\u1EA0O \u0110\xDANG ${missingBase} c\xE2u h\u1ECFi c\u01A1 b\u1EA3n (isExternalAdvanced = false).`
+          );
+        }
+        if (missingAdvanced > 0) {
+          countRequirementLines.push(
+            `- PH\u1EA2I T\u1EA0O \u0110\xDANG ${missingAdvanced} c\xE2u h\u1ECFi N\xC2NG CAO B\xCAN NGO\xC0I (isExternalAdvanced = true, questionOrigin = "external_advanced", m\u1EE9c V\u1EADn d\u1EE5ng / V\u1EADn d\u1EE5ng cao, m\u1EDF r\u1ED9ng t\u01B0 duy gi\u1EA3i quy\u1EBFt v\u1EA5n \u0111\u1EC1 \u1EDF c\xF9ng ch\u1EE7 \u0111\u1EC1 m\xF4n h\u1ECDc).`
+          );
+        }
+        const prompt = [
+          `So\u1EA1n CH\xCDNH X\xC1C ${batchTotal} c\xE2u h\u1ECFi tr\u1EAFc nghi\u1EC7m ABCD cho h\u1ECDc sinh l\u1EDBp ${grade}, m\xF4n ${SUBJECT_LABELS[subject]}.`,
+          `QUY T\u1EAEC S\u1ED0 L\u01AF\u1EE2NG B\u1EAET BU\u1ED8C: M\u1EA3ng "questions" trong JSON PH\u1EA2I C\xD3 \u0110\xDANG ${batchTotal} PH\u1EA6N T\u1EEC, TUY\u1EC6T \u0110\u1ED0I KH\xD4NG \xCDT H\u01A0N.`,
+          ...countRequirementLines,
+          missingBase > 0 ? strategyInstruction : "",
+          `\u0110\u1ED9 kh\xF3: ${diffLabel}. Ngu\u1ED3n tham chi\u1EBFu: ${refLabel}.`,
+          "Y\xCAU C\u1EA6U CH\u1EA4T L\u01AF\u1EE2NG & C\xD4 \u0110\u1ECCNG:",
+          "- M\u1ED7i c\xE2u CH\u1EC8 C\xD3 DUY NH\u1EA4T 1 \u0111\xE1p \xE1n \u0111\xFAng (A, B, C ho\u1EB7c D); 4 ph\u01B0\u01A1ng \xE1n A/B/C/D kh\xE1c nhau r\xF5 r\xE0ng v\xE0 c\xF3 \u0111\u1ED9 d\xE0i t\u01B0\u01A1ng \u0111\u1ED3ng h\u1EE3p l\xFD.",
+          "- Ph\xE2n lo\u1EA1i \u0111\xFAng cognitiveLevel (nhan_biet | thong_hieu | van_dung | van_dung_cao), knowledgeUnitType v\xE0 questionOrigin.",
+          "- Gi\u1EEF v\u0103n phong ng\u1EAFn g\u1ECDn \u0111\u1EC3 b\u1EA3o \u0111\u1EA3m \u0111\u1EE7 s\u1ED1 c\xE2u: explanation t\u1ED1i \u0111a 1-2 c\xE2u; m\u1ED7i distractorA/B/C/D t\u1ED1i \u0111a 1 c\xE2u th\u1EADt ng\u1EAFn (<= 14 t\u1EEB).",
+          existingExclusionBlock,
+          "",
+          "NG\u1EEE C\u1EA2NH KI\u1EBEN TH\u1EE8C:",
+          effectiveContext
+        ].filter(Boolean).join("\n");
+        const quizMaxTokens = Math.min(8192, Math.max(3072, batchTotal * 520));
+        const { data: parsed, modelId: batchModelUsed } = await runTaskWithRouter({
+          taskType: "quiz_generation",
+          config,
+          idToken,
+          allowGroqRescue: true,
+          bypassCache: attempt > 0,
+          cacheInput: attempt === 0 ? {
+            rev: "v4_scope_adaptive_topup",
+            subject,
+            grade,
+            baseTargetCount,
+            safeAdvancedExtra,
+            difficulty,
+            scope,
+            chapterFilter: chapterFilter || "",
+            ctx: effectiveContext.slice(0, 8e3)
+          } : void 0,
+          runWithModel: async (modelId) => generateJsonWithProvider({
+            modelId,
+            prompt,
+            thinkingTier: "minimal",
+            maxOutputTokens: quizMaxTokens,
+            tokensOut,
+            fallbackJson: '{"questions":[]}',
+            strictJsonParser: (rawText) => {
+              const salvaged = salvageQuestionsFromTruncatedJson(rawText);
+              if (salvaged.length === 0) {
+                throw new Error(
+                  "QUIZ_EMPTY_RESPONSE: M\xF4 h\xECnh AI tr\u1EA3 v\u1EC1 danh s\xE1ch c\xE2u h\u1ECFi r\u1ED7ng ho\u1EB7c JSON b\u1ECB l\u1ED7i."
+                );
+              }
+              return { questions: salvaged };
+            },
+            groqSchemaHint: quizGroqSchemaHint,
+            geminiSchema: quizGeminiSchema
+          })
+        });
+        const now = (/* @__PURE__ */ new Date()).toISOString();
+        const defaultBaseOrigin = strategy.mode === "mistake_variation" ? attempt >= 2 ? "textbook_supplement" : "mistake_variation" : strategy.mode === "upload_sufficient" && attempt === 0 ? "upload" : "textbook_supplement";
+        const mapped = (parsed.questions || []).slice(0, batchTotal + 4).map((q, idx) => {
+          const ans = q.correctAnswer === "A" || q.correctAnswer === "B" || q.correctAnswer === "C" || q.correctAnswer === "D" ? q.correctAnswer : "A";
+          const fallbackDiff = difficulty === "basic" || difficulty === "advanced" ? difficulty : "medium";
+          const cog = normalizeCognitiveLevel(q.cognitiveLevel, fallbackDiff);
+          const diff = cog === "nhan_biet" ? "basic" : cog === "thong_hieu" ? "medium" : "advanced";
+          const isAdv = missingBase === 0 && missingAdvanced > 0 ? true : missingAdvanced === 0 ? false : Boolean(q.isExternalAdvanced || q.questionOrigin === "external_advanced");
+          const fallbackOriginForIdx = isAdv ? "external_advanced" : attempt === 0 && strategy.mode === "upload_plus_textbook" && idx < strategy.expectedUploadSlots ? "upload" : defaultBaseOrigin;
+          const origin = normalizeQuizQuestionOrigin(
+            q.questionOrigin,
+            isAdv,
+            fallbackOriginForIdx
+          );
+          return {
+            questionId: `q_${Date.now()}_${attempt}_${idx + 1}_${crypto6.randomBytes(2).toString("hex")}`,
+            questionText: q.questionText,
+            optionA: q.optionA,
+            optionB: q.optionB,
+            optionC: q.optionC,
+            optionD: q.optionD,
+            correctAnswer: ans,
+            explanation: q.explanation,
+            distractorExplanations: q.distractorA || q.distractorB || q.distractorC || q.distractorD ? {
+              A: q.distractorA,
+              B: q.distractorB,
+              C: q.distractorC,
+              D: q.distractorD
+            } : void 0,
+            difficulty: diff,
+            cognitiveLevel: cog,
+            knowledgeUnitType: unitTypes.has(q.knowledgeUnitType) ? q.knowledgeUnitType : "concept",
+            subject,
+            grade,
+            chapter: q.chapter || chapterFilter || "T\u1ED5ng h\u1EE3p",
+            concept: q.concept || "Kh\xE1i ni\u1EC7m tr\u1ECDng t\xE2m",
+            sourceReference: q.sourceReference || textbookTitle || "T\xE0i li\u1EC7u tham chi\u1EBFu",
+            sourceType: origin === "external_advanced" ? "external_extension" : "textbook_reference",
+            questionOrigin: origin,
+            modelId: batchModelUsed,
+            isExternalAdvanced: isAdv,
+            createdAt: now
+          };
+        });
+        return {
+          questions: mapped,
+          modelUsed: batchModelUsed
+        };
       }
+    });
+    const finalQuestions = runResult.questions;
+    const baseFinal = runResult.baseQuestions;
+    const uploadCount = baseFinal.filter((q) => q.questionOrigin === "upload").length;
+    const variationCount = baseFinal.filter((q) => q.questionOrigin === "mistake_variation").length;
+    const supplementCount = baseFinal.filter((q) => q.questionOrigin === "textbook_supplement").length;
+    const noticeParts = [];
+    if (strategy.mode === "empty_scope_fallback") {
+      noticeParts.push(
+        `B\xE0i ph\xE2n t\xEDch kh\xF4ng c\xF3 m\u1EE5c n\xE0o kh\u1EDBp b\u1ED9 l\u1ECDc "${scopeHumanLabel}". H\u1EC7 th\u1ED1ng \u0111\xE3 t\u1EF1 \u0111\u1ED9ng t\u1ED5ng h\u1EE3p t\u1EEB to\xE0n b\u1ED9 t\xE0i li\u1EC7u v\xE0 ${refLabel} \u0111\u1EC3 t\u1EA1o ${baseFinal.length} c\xE2u c\u01A1 b\u1EA3n.`
+      );
+    } else if (strategy.mode === "mistake_variation") {
+      if (supplementCount > 0) {
+        noticeParts.push(
+          `\u0110\xE3 t\u1EA1o ${variationCount} c\xE2u bi\u1EBFn th\u1EC3 \u0111a g\xF3c \u0111\u1ED9 t\u1EEB ${scopeHumanLabel} v\xE0 b\u1ED5 sung ${supplementCount} c\xE2u c\xF9ng ch\u1EE7 \u0111\u1EC1 t\u1EEB ${refLabel} \u0111\u1EC3 \u0111\u1EE7 ${baseFinal.length} c\xE2u c\u01A1 b\u1EA3n.`
+        );
+      } else if (variationCount > 0) {
+        noticeParts.push(
+          `\u0110\xE3 t\u1EA1o ${variationCount} c\xE2u h\u1ECFi bi\u1EBFn th\u1EC3 \u0111a g\xF3c \u0111\u1ED9 xoay quanh \u0111\xFAng ${scopeHumanLabel} trong b\xE0i ph\xE2n t\xEDch \u0111\u1EC3 gi\xFAp b\u1EA1n kh\u1EAFc ph\u1EE5c tri\u1EC7t \u0111\u1EC3 l\u1ED7 h\u1ED5ng.`
+        );
+      }
+    } else if (supplementCount > 0) {
+      noticeParts.push(
+        `N\u1ED9i dung t\u1EA3i l\xEAn c\xF3 ${strategy.distinctConceptCount} \u0111\u01A1n v\u1ECB ki\u1EBFn th\u1EE9c. B\u1ED9 \u0111\u1EC1 g\u1ED3m ${uploadCount} c\xE2u b\xE1m s\xE1t t\xE0i li\u1EC7u t\u1EA3i l\xEAn v\xE0 ${supplementCount} c\xE2u b\u1ED5 sung t\u1EEB ${refLabel} \u0111\u1EC3 \u0111\u1EE7 ${baseFinal.length} c\xE2u c\u01A1 b\u1EA3n.`
+      );
     }
+    if (finalQuestions.length < totalWanted) {
+      noticeParts.push(
+        `H\u1EC7 th\u1ED1ng \u0111\xE3 t\u1EF1 \u0111\u1ED9ng sinh b\xF9 ${runResult.topUpPassesUsed} l\u01B0\u1EE3t nh\u01B0ng ch\u1EC9 thu \u0111\u01B0\u1EE3c ${finalQuestions.length}/${totalWanted} c\xE2u h\u1EE3p l\u1EC7 kh\xF4ng tr\xF9ng l\u1EB7p.`
+      );
+    }
+    const supplementNotice = noticeParts.length > 0 ? noticeParts.join(" ") : void 0;
     return {
       questions: finalQuestions,
-      supplementedFromTextbook: hasActualTextbookChunks,
+      supplementedFromTextbook: supplementCount > 0 || Boolean(supplementNotice),
       supplementNotice,
-      modelUsed
+      modelUsed: runResult.modelUsed || "unknown"
     };
   }
 };

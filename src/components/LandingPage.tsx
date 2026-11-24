@@ -6,7 +6,6 @@ import {
   ChevronDown,
   XCircle,
 } from 'lucide-react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { BRAND_CONFIG } from '../config/brand';
 import { LandingHeroCarousel } from './LandingHeroCarousel';
 import { LandingWorkspacePreview } from './LandingWorkspacePreview';
@@ -152,7 +151,10 @@ const STATUS_META = {
 } as const;
 
 export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
-  const prefersReduced = useReducedMotion();
+  const prefersReduced =
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const [activeSection, setActiveSection] = useState<string>('top');
   const [selectedSpecimenId, setSelectedSpecimenId] = useState<string>('err-1');
   // Collapsed by default so specimen cards stay clean & concise (anti-cramming rule)
@@ -320,15 +322,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
 
             {/* Right Zone: Concise Verification Card + "Xem thêm trích dẫn SGK" Toggle */}
             <div className="lg:col-span-6 rounded-3xl bg-white dark:bg-[#111B30] border border-[#E6ECF5] dark:border-slate-800 p-5 sm:p-7 flex flex-col justify-between">
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={activeSpecimen.id}
-                  initial={prefersReduced ? false : { opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={prefersReduced ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                  transition={{ duration: 0.18 }}
-                  className="space-y-4"
-                >
+              <div key={activeSpecimen.id} className="landing-fade-up space-y-4">
                   <div className={`rounded-2xl border p-4 ${activeMeta.resultHeaderBg}`}>
                     <div className="flex items-center gap-2">
                       <ActiveStatusIcon className={`w-4 h-4 shrink-0 ${activeMeta.iconClass}`} />
@@ -381,38 +375,29 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                       />
                     </button>
 
-                    <AnimatePresence initial={false}>
-                      {specimenDetailsExpanded && (
-                        <motion.div
-                          initial={prefersReduced ? { opacity: 0 } : { opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: 'auto' }}
-                          exit={prefersReduced ? { opacity: 0 } : { opacity: 0, height: 0 }}
-                          transition={{ duration: 0.22 }}
-                          className="overflow-hidden"
-                        >
-                          <div className="mt-2.5 rounded-2xl border border-[#E6ECF5] dark:border-slate-800 bg-[#F8FAFC] dark:bg-slate-900/60 p-4 space-y-2.5 text-xs text-[#5A677D] dark:text-slate-300 leading-[1.65]">
-                            <div>
-                              <span className="font-semibold text-[#172033] dark:text-white">
-                                Lý giải học thuật:{' '}
-                              </span>
-                              <span>{activeSpecimen.reason}</span>
-                            </div>
-                            <div className="pt-2 border-t border-[#E6ECF5] dark:border-slate-800">
-                              <p className="font-semibold text-[#172033] dark:text-white mb-1">
-                                {activeSpecimen.sourceBook}
-                              </p>
-                              <p className="italic text-[#172033] dark:text-slate-100">
-                                {activeSpecimen.sourceExcerpt}
-                              </p>
-                              <p className="mt-1.5">{activeSpecimen.verificationRule}</p>
-                            </div>
+                    {specimenDetailsExpanded && (
+                      <div className="landing-fade-up">
+                        <div className="mt-2.5 rounded-2xl border border-[#E6ECF5] dark:border-slate-800 bg-[#F8FAFC] dark:bg-slate-900/60 p-4 space-y-2.5 text-xs text-[#5A677D] dark:text-slate-300 leading-[1.65]">
+                          <div>
+                            <span className="font-semibold text-[#172033] dark:text-white">
+                              Lý giải học thuật:{' '}
+                            </span>
+                            <span>{activeSpecimen.reason}</span>
                           </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                          <div className="pt-2 border-t border-[#E6ECF5] dark:border-slate-800">
+                            <p className="font-semibold text-[#172033] dark:text-white mb-1">
+                              {activeSpecimen.sourceBook}
+                            </p>
+                            <p className="italic text-[#172033] dark:text-slate-100">
+                              {activeSpecimen.sourceExcerpt}
+                            </p>
+                            <p className="mt-1.5">{activeSpecimen.verificationRule}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </motion.div>
-              </AnimatePresence>
+                </div>
             </div>
           </div>
         </section>
@@ -556,6 +541,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
               <img
                 src={BRAND_CONFIG.signatureImageUrl}
                 alt={`Chữ ký ${BRAND_CONFIG.authorName}`}
+                width={144}
+                height={44}
+                loading="lazy"
+                decoding="async"
                 data-no-privacy-blur="true"
                 className="w-full h-full object-contain scale-[2.3] select-none pointer-events-none mix-blend-multiply dark:invert dark:mix-blend-screen"
               />

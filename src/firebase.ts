@@ -1,9 +1,6 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore, initializeFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
-
-const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+import { auth, firebaseApp as app } from './firebaseAuth';
 
 function createFirestoreInstance() {
   try {
@@ -19,7 +16,7 @@ function createFirestoreInstance() {
 
 export const db = createFirestoreInstance();
 
-export const auth = getAuth(app);
+export { auth };
 
 export enum OperationType {
   CREATE = 'create',
@@ -89,5 +86,3 @@ export async function testConnection(): Promise<boolean> {
     return true;
   }
 }
-
-void testConnection();

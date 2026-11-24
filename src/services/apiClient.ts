@@ -1,4 +1,4 @@
-import { auth } from '../firebase';
+import { auth } from '../firebaseAuth';
 
 const API_BASE = ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL || '')
   .trim()

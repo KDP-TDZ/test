@@ -10,7 +10,6 @@ import {
   Trophy,
   XCircle,
 } from 'lucide-react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 
 interface LandingWorkspacePreviewProps {
   onOpenAuth: (mode: 'login' | 'register') => void;
@@ -234,7 +233,6 @@ const LEADERBOARD_PREVIEW_DATA: Record<LeaderboardScope, readonly LeaderboardPre
 export const LandingWorkspacePreview: React.FC<LandingWorkspacePreviewProps> = ({
   onOpenAuth,
 }) => {
-  const prefersReduced = useReducedMotion();
   const [activeExamPart, setActiveExamPart] = useState<ExamPartTab>('part2_tf');
   const [leaderboardScope, setLeaderboardScope] = useState<LeaderboardScope>('11');
 
@@ -278,7 +276,7 @@ export const LandingWorkspacePreview: React.FC<LandingWorkspacePreviewProps> = (
             Làm đề cấu trúc mới 2025 và cạnh tranh thứ hạng minh bạch toàn trường
           </h2>
         </div>
-        <p className="text-sm text-[#778196] dark:text-slate-300 max-w-md leading-[1.6]">
+        <p className="text-sm text-[#525E75] dark:text-slate-300 max-w-md leading-[1.6]">
           Chấm điểm tự động theo đúng quy chế mới của Bộ GD&amp;ĐT (ABCD, Đúng/Sai lũy tiến 4 ý, Trả lời ngắn) và chỉ ghi nhận điểm Đua Top ở lượt làm chính thức đầu tiên.
         </p>
       </div>
@@ -328,7 +326,7 @@ export const LandingWorkspacePreview: React.FC<LandingWorkspacePreviewProps> = (
                     <span className="block text-xs font-bold truncate">{tab.label}</span>
                     <span
                       className={`block text-[10px] font-mono tabular-nums truncate ${
-                        active ? 'text-blue-100' : 'text-[#778196] dark:text-slate-400'
+                        active ? 'text-blue-100' : 'text-[#525E75] dark:text-slate-400'
                       }`}
                     >
                       {tab.sub}
@@ -339,15 +337,7 @@ export const LandingWorkspacePreview: React.FC<LandingWorkspacePreviewProps> = (
             </div>
 
             {/* Interactive Question Content */}
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={activeExamPart}
-                initial={prefersReduced ? false : { opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={prefersReduced ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                transition={{ duration: 0.16 }}
-                className="space-y-3.5"
-              >
+            <div key={activeExamPart} className="landing-fade-up space-y-3.5">
                 {activeExamPart === 'part2_tf' && (
                   <div className="space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -526,12 +516,11 @@ export const LandingWorkspacePreview: React.FC<LandingWorkspacePreviewProps> = (
                     </div>
                   </div>
                 )}
-              </motion.div>
-            </AnimatePresence>
+            </div>
           </div>
 
           {/* Anti-Cheat & Fairness Footer inside Left Exam Card */}
-          <div className="pt-3.5 border-t border-[#E8EDF4] dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs text-[#778196] dark:text-slate-400">
+          <div className="pt-3.5 border-t border-[#E8EDF4] dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs text-[#525E75] dark:text-slate-400">
             <span className="inline-flex items-center gap-1.5">
               <Lock className="w-3.5 h-3.5 text-[#2563EB] dark:text-sky-400 shrink-0" />
               <span>Khóa in đáp án cho tới khi nộp xong lượt thi đầu tiên</span>
@@ -599,11 +588,11 @@ export const LandingWorkspacePreview: React.FC<LandingWorkspacePreviewProps> = (
                     <span
                       className={`size-8 rounded-full font-mono text-xs font-bold tabular-nums inline-flex items-center justify-center shrink-0 ${
                         row.rank === 1
-                          ? 'bg-amber-500 text-white'
+                          ? 'bg-amber-500 text-[#0A0F1A]'
                           : row.rank === 2
                           ? 'bg-slate-300 dark:bg-slate-700 text-slate-900 dark:text-white'
                           : row.rank === 3
-                          ? 'bg-amber-700/85 text-white'
+                          ? 'bg-amber-800 text-white'
                           : 'bg-slate-100 dark:bg-slate-800 text-[#475B78] dark:text-slate-300'
                       }`}
                     >
@@ -614,7 +603,7 @@ export const LandingWorkspacePreview: React.FC<LandingWorkspacePreviewProps> = (
                       <p className="text-xs sm:text-sm font-bold text-[#172033] dark:text-white truncate">
                         {row.studentName}
                       </p>
-                      <p className="text-[11px] text-[#778196] dark:text-slate-400 truncate">
+                      <p className="text-[11px] text-[#525E75] dark:text-slate-400 truncate">
                         {row.gradeLabel} · {row.examsCompleted} đề chính thức · {row.streakText}
                       </p>
                     </div>
@@ -640,7 +629,7 @@ export const LandingWorkspacePreview: React.FC<LandingWorkspacePreviewProps> = (
                   <p className="font-bold text-[#172033] dark:text-white">
                     Chống cày điểm ảo
                   </p>
-                  <p className="text-[#778196] dark:text-slate-400 mt-0.5 leading-relaxed">
+                  <p className="text-[#525E75] dark:text-slate-400 mt-0.5 leading-relaxed">
                     Chỉ lượt làm đầu tiên của mỗi mã đề được cộng vào Bảng xếp hạng Đua Top; các lượt thi lại dùng để ôn tập.
                   </p>
                 </div>
@@ -652,7 +641,7 @@ export const LandingWorkspacePreview: React.FC<LandingWorkspacePreviewProps> = (
                   <p className="font-bold text-[#172033] dark:text-white">
                     Xếp hạng độc lập theo Khối
                   </p>
-                  <p className="text-[#778196] dark:text-slate-400 mt-0.5 leading-relaxed">
+                  <p className="text-[#525E75] dark:text-slate-400 mt-0.5 leading-relaxed">
                     Học sinh Lớp 10, 11, 12 đua thứ hạng công bằng trong đúng khối lớp của mình và bảng vinh danh toàn trường.
                   </p>
                 </div>
@@ -662,7 +651,7 @@ export const LandingWorkspacePreview: React.FC<LandingWorkspacePreviewProps> = (
 
           {/* Bottom Direct Entry CTA */}
           <div className="pt-3.5 border-t border-[#E8EDF4] dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <span className="text-xs text-[#778196] dark:text-slate-400">
+            <span className="text-xs text-[#525E75] dark:text-slate-400">
               Đăng nhập để nhận đề thi đúng khối lớp và ghi danh lên Bảng xếp hạng.
             </span>
             <button
