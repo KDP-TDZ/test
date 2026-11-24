@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {
   distributeExamQuestionScores,
   generateShuffledExamVariant,
+  resolveQuizScopeStrategy,
+  runQuizGenerationWithTopUp,
+  salvageQuestionsFromTruncatedJson,
   validateExamBlueprint,
   validateQuizQuestionSet,
 } from './quizValidation';
@@ -13,7 +16,14 @@ import {
   gradeExamSubmission,
 } from './examScoring';
 import { BoundedTtlCache, buildDeterministicCacheKey } from './cache';
-import type { AnalysisRecord, ExamBlueprint, ExamDocument, QuizQuestion } from './types';
+import type {
+  AnalysisRecord,
+  ExamBlueprint,
+  ExamDocument,
+  ExtractedClaim,
+  KnowledgeCoverageItem,
+  QuizQuestion,
+} from './types';
 
 function makeQuizQuestion(overrides: Partial<QuizQuestion> = {}): QuizQuestion {
   return {
@@ -459,3 +469,194 @@ test('gradeExamSubmission supports fraction short answers and prevents "0" from 
   ]);
   assert.equal(resExact.earnedScore, 2);
 });
+
+test('salvageQuestionsFromTruncatedJson recovers complete items from truncated JSON array', () => {
+  const truncated = `{
+    "questions": [
+      {"questionText": "Chuyển động thẳng đều có quỹ đạo là gì?", "optionA": "Đường thẳng", "optionB": "Đường tròn", "optionC": "Parabol", "optionD": "Elip", "correctAnswer": "A"},
+      {"questionText": "Công thức quãng đường trong chuyển động thẳng đều?", "optionA": "s = v.t", "optionB": "s = v/t", "optionC": "s = \\Delta v", "optionD": "s = a.t^2", "correctAnswer": "A"},
+      {"questionText": "Câu bị cắt ngang khi hết token`;
+  const salvaged = salvageQuestionsFromTruncatedJson<{ questionText: string }>(truncated);
+  assert.equal(salvaged.length, 2);
+  assert.equal(salvaged[0].questionText, 'Chuyển động thẳng đều có quỹ đạo là gì?');
+  assert.equal(salvaged[1].questionText, 'Công thức quãng đường trong chuyển động thẳng đều?');
+});
+
+test('resolveQuizScopeStrategy adapts to scope: mistake variations for incorrect, textbook supplement for short all-content', () => {
+  const claims: ExtractedClaim[] = [
+    {
+      claimId: 'c1',
+      sourceText: 'Chuyển động thẳng đều có tốc độ thay đổi',
+      normalizedMeaning: 'Sai về tốc độ',
+      subject: 'vat_ly',
+      chapter: 'Động học',
+      concept: 'Tốc độ không đổi',
+      importanceLevel: 'core',
+      importanceWeight: 3,
+      sourcePage: 1,
+      ocrConfidence: 0.95,
+      knowledgeType: 'textbook_core',
+      evaluationStatus: 'INCORRECT',
+      explanation: 'Tốc độ không đổi theo thời gian.',
+      correctKnowledge: 'Tốc độ không đổi trên mọi quãng đường.',
+      evidences: [],
+    },
+    {
+      claimId: 'c2',
+      sourceText: 'Quỹ đạo là đường thẳng',
+      normalizedMeaning: 'Đúng quỹ đạo',
+      subject: 'vat_ly',
+      chapter: 'Động học',
+      concept: 'Quỹ đạo thẳng',
+      importanceLevel: 'core',
+      importanceWeight: 2,
+      sourcePage: 1,
+      ocrConfidence: 0.95,
+      knowledgeType: 'textbook_core',
+      evaluationStatus: 'CORRECT',
+      explanation: 'Chính xác.',
+      correctKnowledge: 'Quỹ đạo là đường thẳng.',
+      evidences: [],
+    },
+    {
+      claimId: 'c3',
+      sourceText: 's = v.t',
+      normalizedMeaning: 'Công thức quãng đường',
+      subject: 'vat_ly',
+      chapter: 'Động học',
+      concept: 'Công thức quãng đường',
+      importanceLevel: 'core',
+      importanceWeight: 3,
+      sourcePage: 1,
+      ocrConfidence: 0.95,
+      knowledgeType: 'textbook_core',
+      evaluationStatus: 'CORRECT',
+      explanation: 'Đúng.',
+      correctKnowledge: 's = v.t',
+      evidences: [],
+    },
+    {
+      claimId: 'c4',
+      sourceText: 'Đồ thị d-t là đường thẳng xiên góc',
+      normalizedMeaning: 'Đồ thị độ dịch chuyển',
+      subject: 'vat_ly',
+      chapter: 'Động học',
+      concept: 'Đồ thị d-t',
+      importanceLevel: 'supporting',
+      importanceWeight: 2,
+      sourcePage: 1,
+      ocrConfidence: 0.95,
+      knowledgeType: 'textbook_core',
+      evaluationStatus: 'CORRECT',
+      explanation: 'Đúng.',
+      correctKnowledge: 'Đồ thị d-t là đường thẳng.',
+      evidences: [],
+    },
+    {
+      claimId: 'c5',
+      sourceText: 'v = d/t',
+      normalizedMeaning: 'Vận tốc',
+      subject: 'vat_ly',
+      chapter: 'Động học',
+      concept: 'Công thức vận tốc',
+      importanceLevel: 'core',
+      importanceWeight: 3,
+      sourcePage: 1,
+      ocrConfidence: 0.95,
+      knowledgeType: 'textbook_core',
+      evaluationStatus: 'CORRECT',
+      explanation: 'Đúng.',
+      correctKnowledge: 'v = d/t',
+      evidences: [],
+    },
+  ];
+  const coverage: KnowledgeCoverageItem[] = [];
+
+  // Scope 'all' with 5 concepts but requesting 10 questions MUST trigger textbook supplement (no hardcoded < 5 cap!)
+  const allStrategy = resolveQuizScopeStrategy({
+    scope: 'all',
+    baseTargetCount: 10,
+    claims,
+    coverageItems: coverage,
+  });
+  assert.equal(allStrategy.mode, 'upload_plus_textbook');
+  assert.equal(allStrategy.needsTextbookSupplement, true);
+  assert.equal(allStrategy.expectedUploadSlots, 5);
+  assert.equal(allStrategy.expectedSupplementSlots, 5);
+
+  // Scope 'incorrect' with 1 incorrect claim MUST prioritize mistake_variation instead of immediately switching to textbook
+  const incorrectStrategy = resolveQuizScopeStrategy({
+    scope: 'incorrect',
+    baseTargetCount: 10,
+    claims,
+    coverageItems: coverage,
+  });
+  assert.equal(incorrectStrategy.mode, 'mistake_variation');
+  assert.equal(incorrectStrategy.targetClaims.length, 1);
+  assert.equal(incorrectStrategy.needsTextbookSupplement, false);
+});
+
+test('runQuizGenerationWithTopUp automatically tops up from 4 questions to full 10 + 2 advanced without duplicates', async () => {
+  const calls: Array<{ attempt: number; missingBase: number; missingAdvanced: number }> = [];
+
+  const result = await runQuizGenerationWithTopUp({
+    baseTargetCount: 10,
+    advancedTargetCount: 2,
+    maxTopUpPasses: 2,
+    generateBatch: async ({ attempt, missingBase, missingAdvanced }) => {
+      calls.push({ attempt, missingBase, missingAdvanced });
+      if (attempt === 0) {
+        // Simulate initial pass returning only 4 base questions (plus 1 duplicate)
+        return {
+          modelUsed: 'groq:openai/gpt-oss-120b',
+          questions: [
+            makeQuizQuestion({ questionId: 'b1', questionText: 'Câu hỏi cơ bản số 1 về chuyển động thẳng đều?' }),
+            makeQuizQuestion({ questionId: 'b2', questionText: 'Câu hỏi cơ bản số 2 về vận tốc trung bình?' }),
+            makeQuizQuestion({ questionId: 'b3', questionText: 'Câu hỏi cơ bản số 3 về đồ thị độ dịch chuyển?' }),
+            makeQuizQuestion({ questionId: 'b4', questionText: 'Câu hỏi cơ bản số 4 về công thức quãng đường?' }),
+            makeQuizQuestion({ questionId: 'b4dup', questionText: 'Câu hỏi cơ bản số 4 về công thức quãng đường?' }),
+          ],
+        };
+      }
+      if (attempt === 1) {
+        // Top-up pass 1 fills the remaining 6 base + 2 advanced questions
+        return {
+          modelUsed: 'groq:openai/gpt-oss-120b',
+          questions: [
+            ...Array.from({ length: 6 }, (_, i) =>
+              makeQuizQuestion({
+                questionId: `b_${i + 5}`,
+                questionText: `Câu hỏi cơ bản bổ sung số ${i + 5} trong chương Động học?`,
+                questionOrigin: 'textbook_supplement',
+              })
+            ),
+            makeQuizQuestion({
+              questionId: 'a1',
+              questionText: 'Câu hỏi vận dụng cao số 1 về hai xe gặp nhau trên đường thẳng?',
+              isExternalAdvanced: true,
+              questionOrigin: 'external_advanced',
+            }),
+            makeQuizQuestion({
+              questionId: 'a2',
+              questionText: 'Câu hỏi vận dụng cao số 2 về đồ thị tọa độ thời gian hai vật?',
+              isExternalAdvanced: true,
+              questionOrigin: 'external_advanced',
+            }),
+          ],
+        };
+      }
+      return { questions: [] };
+    },
+  });
+
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], { attempt: 0, missingBase: 10, missingAdvanced: 2 });
+  assert.deepEqual(calls[1], { attempt: 1, missingBase: 6, missingAdvanced: 2 });
+  assert.equal(result.baseQuestions.length, 10);
+  assert.equal(result.advancedQuestions.length, 2);
+  assert.equal(result.questions.length, 12);
+  assert.equal(result.missingBase, 0);
+  assert.equal(result.missingAdvanced, 0);
+  assert.equal(result.topUpPassesUsed, 1);
+});
+

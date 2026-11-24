@@ -3,7 +3,11 @@ import type {
   ExamBlueprint,
   ExamDocument,
   ExamQuestion,
+  ExtractedClaim,
+  KnowledgeCoverageItem,
   QuizQuestion,
+  QuizQuestionOrigin,
+  QuizScope,
 } from './types.js';
 
 export interface QuizValidationReport {
@@ -320,4 +324,451 @@ export function distributeExamQuestionScores(
     };
   });
 }
+
+export function normalizeQuizQuestionOrigin(
+  rawOrigin: string | undefined,
+  isExternalAdvanced: boolean,
+  fallbackOrigin: QuizQuestionOrigin
+): QuizQuestionOrigin {
+  if (isExternalAdvanced || rawOrigin === 'external_advanced') {
+    return 'external_advanced';
+  }
+  if (
+    rawOrigin === 'upload' ||
+    rawOrigin === 'mistake_variation' ||
+    rawOrigin === 'textbook_supplement'
+  ) {
+    return rawOrigin;
+  }
+  return fallbackOrigin;
+}
+
+function normalizeJsonEscapesForSalvage(input: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  const isHex = (ch: string) => /^[0-9a-fA-F]$/.test(ch);
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (inString) {
+      if (escaped) {
+        out += ch;
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        const next = input[i + 1] || '';
+        const isStandardEscape =
+          next === '"' ||
+          next === '\\' ||
+          next === '/' ||
+          next === 'b' ||
+          next === 'f' ||
+          next === 'n' ||
+          next === 'r' ||
+          next === 't' ||
+          (next === 'u' &&
+            i + 5 < input.length &&
+            isHex(input[i + 2]) &&
+            isHex(input[i + 3]) &&
+            isHex(input[i + 4]) &&
+            isHex(input[i + 5]));
+        if (isStandardEscape) {
+          out += ch;
+          escaped = true;
+        } else {
+          out += '\\\\';
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+        out += ch;
+        continue;
+      }
+      if (ch === '\n') {
+        out += '\\n';
+        continue;
+      }
+      if (ch === '\r') {
+        out += '\\r';
+        continue;
+      }
+      if (ch === '\t') {
+        out += '\\t';
+        continue;
+      }
+      if (ch.charCodeAt(0) < 0x20) {
+        out += ' ';
+        continue;
+      }
+      out += ch;
+    } else {
+      if (ch === '"') inString = true;
+      out += ch;
+    }
+  }
+  return out.replace(/,\s*([}\]])/g, '$1');
+}
+
+/**
+ * Parses quiz questions from model JSON output and salvages all complete question objects
+ * even if the response was truncated mid-array due to output token limits.
+ */
+export function salvageQuestionsFromTruncatedJson<T = Record<string, unknown>>(
+  rawText: string
+): T[] {
+  const stripped = (rawText || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .trim();
+  if (!stripped) return [];
+
+  const fenced = stripped.match(/```(?:json)?\s*([\s\S]*?)(?:```|$)/i);
+  const body = (fenced && fenced[1] ? fenced[1] : stripped).trim();
+
+  // 1. Fast path: try full JSON parse (raw and escape-repaired)
+  const candidates = [body];
+  const fb = body.indexOf('{');
+  const lb = body.lastIndexOf('}');
+  if (fb >= 0 && lb > fb) {
+    candidates.push(body.slice(fb, lb + 1));
+  }
+  for (const cand of candidates) {
+    for (const attempt of [cand, normalizeJsonEscapesForSalvage(cand)]) {
+      try {
+        const parsed = JSON.parse(attempt) as unknown;
+        if (Array.isArray(parsed)) {
+          return parsed.filter((item): item is T => Boolean(item) && typeof item === 'object');
+        }
+        if (parsed && typeof parsed === 'object') {
+          const obj = parsed as { questions?: unknown };
+          if (Array.isArray(obj.questions)) {
+            return obj.questions.filter(
+              (item): item is T => Boolean(item) && typeof item === 'object'
+            );
+          }
+        }
+      } catch {
+        // Continue to truncation salvage
+      }
+    }
+  }
+
+  // 2. Truncated array salvage: find `"questions": [` (or leading `[`) and extract every complete `{...}`
+  const qKeyMatch = /"questions"\s*:\s*\[/i.exec(body);
+  const arrayStart = qKeyMatch
+    ? qKeyMatch.index + qKeyMatch[0].length - 1
+    : body.indexOf('[');
+  if (arrayStart < 0) return [];
+
+  const salvaged: T[] = [];
+  let inString = false;
+  let escaped = false;
+  let braceDepth = 0;
+  let objStart = -1;
+
+  for (let i = arrayStart + 1; i < body.length; i += 1) {
+    const ch = body[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') {
+      if (braceDepth === 0) objStart = i;
+      braceDepth += 1;
+      continue;
+    }
+    if (ch === '}') {
+      if (braceDepth > 0) {
+        braceDepth -= 1;
+        if (braceDepth === 0 && objStart >= 0) {
+          const slice = body.slice(objStart, i + 1);
+          objStart = -1;
+          for (const attempt of [slice, normalizeJsonEscapesForSalvage(slice)]) {
+            try {
+              const item = JSON.parse(attempt) as unknown;
+              if (item && typeof item === 'object' && !Array.isArray(item)) {
+                salvaged.push(item as T);
+                break;
+              }
+            } catch {
+              // Ignore malformed fragment
+            }
+          }
+        }
+      }
+      continue;
+    }
+    if (ch === ']' && braceDepth === 0) {
+      break;
+    }
+  }
+
+  return salvaged;
+}
+
+export type QuizScopeStrategyMode =
+  | 'mistake_variation'
+  | 'upload_plus_textbook'
+  | 'upload_sufficient'
+  | 'empty_scope_fallback';
+
+export interface QuizScopeStrategy {
+  mode: QuizScopeStrategyMode;
+  targetClaims: ExtractedClaim[];
+  missingItems: KnowledgeCoverageItem[];
+  distinctConceptCount: number;
+  needsTextbookSupplement: boolean;
+  expectedUploadSlots: number;
+  expectedSupplementSlots: number;
+}
+
+/**
+ * Determines scope-aware quiz generation strategy:
+ * - Targeted scopes (`incorrect`, `partial`, `missing`): prioritize multi-angle variations
+ *   directly from the targeted errors/gaps; only fall back to full document + textbook if empty.
+ * - Broad scopes (`all`, `chapter`): harvest all uploaded concepts first, then automatically
+ *   supplement from textbook/GDPT 2018 whenever distinct concepts < baseTargetCount.
+ */
+export function resolveQuizScopeStrategy(params: {
+  scope: QuizScope;
+  baseTargetCount: number;
+  claims: ExtractedClaim[];
+  coverageItems: KnowledgeCoverageItem[];
+  chapterFilter?: string;
+}): QuizScopeStrategy {
+  const { scope, baseTargetCount, claims, coverageItems, chapterFilter } = params;
+  const safeBase = Math.max(1, baseTargetCount);
+
+  const countDistinct = (cList: ExtractedClaim[], mList: KnowledgeCoverageItem[]): number =>
+    new Set(
+      [
+        ...cList.map((c) => normalizeVietnameseText(c.concept || c.sourceText.slice(0, 40))),
+        ...mList.map((m) => normalizeVietnameseText(m.concept || '')),
+      ].filter(Boolean)
+    ).size;
+
+  const allMissingOrPartial = coverageItems.filter(
+    (i) => i.status === 'MISSING' || i.status === 'PARTIALLY_COVERED'
+  );
+
+  if (scope === 'incorrect' || scope === 'partial' || scope === 'missing') {
+    const targetClaims =
+      scope === 'incorrect'
+        ? claims.filter((c) => c.evaluationStatus === 'INCORRECT')
+        : scope === 'partial'
+        ? claims.filter((c) => c.evaluationStatus === 'PARTIALLY_CORRECT')
+        : [];
+    const missingItems =
+      scope === 'missing'
+        ? allMissingOrPartial
+        : scope === 'partial'
+        ? coverageItems.filter((i) => i.status === 'PARTIALLY_COVERED')
+        : [];
+
+    const hasTargetedData = targetClaims.length > 0 || missingItems.length > 0;
+    if (hasTargetedData) {
+      const distinctConceptCount = Math.max(1, countDistinct(targetClaims, missingItems));
+      return {
+        mode: 'mistake_variation',
+        targetClaims,
+        missingItems,
+        distinctConceptCount,
+        needsTextbookSupplement: false,
+        expectedUploadSlots: safeBase,
+        expectedSupplementSlots: 0,
+      };
+    }
+
+    const fallbackDistinct = countDistinct(claims, allMissingOrPartial);
+    return {
+      mode: 'empty_scope_fallback',
+      targetClaims: claims,
+      missingItems: allMissingOrPartial,
+      distinctConceptCount: fallbackDistinct,
+      needsTextbookSupplement: fallbackDistinct < safeBase,
+      expectedUploadSlots: Math.min(safeBase, fallbackDistinct),
+      expectedSupplementSlots: Math.max(0, safeBase - fallbackDistinct),
+    };
+  }
+
+  let targetClaims = claims;
+  let missingItems = allMissingOrPartial;
+  if (scope === 'chapter' && chapterFilter?.trim()) {
+    const needle = chapterFilter.trim().toLowerCase();
+    const filteredClaims = claims.filter((c) => (c.chapter || '').toLowerCase().includes(needle));
+    const filteredMissing = allMissingOrPartial.filter((m) =>
+      (m.chapter || '').toLowerCase().includes(needle)
+    );
+    if (filteredClaims.length === 0 && filteredMissing.length === 0) {
+      const fallbackDistinct = countDistinct(claims, allMissingOrPartial);
+      return {
+        mode: 'empty_scope_fallback',
+        targetClaims: claims,
+        missingItems: allMissingOrPartial,
+        distinctConceptCount: fallbackDistinct,
+        needsTextbookSupplement: fallbackDistinct < safeBase,
+        expectedUploadSlots: Math.min(safeBase, fallbackDistinct),
+        expectedSupplementSlots: Math.max(0, safeBase - fallbackDistinct),
+      };
+    }
+    targetClaims = filteredClaims;
+    missingItems = filteredMissing;
+  }
+
+  const distinctConceptCount = countDistinct(targetClaims, missingItems);
+  const needsTextbookSupplement = distinctConceptCount < safeBase;
+  return {
+    mode: needsTextbookSupplement ? 'upload_plus_textbook' : 'upload_sufficient',
+    targetClaims,
+    missingItems,
+    distinctConceptCount,
+    needsTextbookSupplement,
+    expectedUploadSlots: Math.min(safeBase, distinctConceptCount),
+    expectedSupplementSlots: Math.max(0, safeBase - distinctConceptCount),
+  };
+}
+
+export interface MergedQuizQuotaResult {
+  questions: QuizQuestion[];
+  baseQuestions: QuizQuestion[];
+  advancedQuestions: QuizQuestion[];
+  missingBase: number;
+  missingAdvanced: number;
+}
+
+/**
+ * Merges and deduplicates existing + newly generated quiz questions while enforcing separate
+ * quotas for base questions and optional external advanced questions.
+ */
+export function mergeQuizQuestionsWithQuota(params: {
+  existing: QuizQuestion[];
+  incoming: QuizQuestion[];
+  baseTargetCount: number;
+  advancedTargetCount: number;
+}): MergedQuizQuotaResult {
+  const { existing, incoming, baseTargetCount, advancedTargetCount } = params;
+  const safeBaseTarget = Math.max(1, baseTargetCount);
+  const safeAdvTarget = Math.max(0, advancedTargetCount);
+
+  const normalizedIncoming = incoming.map((q) => {
+    if (safeAdvTarget === 0 && q.isExternalAdvanced) {
+      return {
+        ...q,
+        isExternalAdvanced: false,
+        questionOrigin:
+          q.questionOrigin === 'external_advanced' ? 'textbook_supplement' : q.questionOrigin,
+      } satisfies QuizQuestion;
+    }
+    return q;
+  });
+
+  const validated = validateQuizQuestionSet([...existing, ...normalizedIncoming]);
+
+  const baseQuestions: QuizQuestion[] = [];
+  const advancedQuestions: QuizQuestion[] = [];
+
+  for (const q of validated.questions) {
+    if (safeAdvTarget > 0 && q.isExternalAdvanced) {
+      if (advancedQuestions.length < safeAdvTarget) {
+        advancedQuestions.push(q);
+      }
+    } else if (baseQuestions.length < safeBaseTarget) {
+      baseQuestions.push(q);
+    }
+  }
+
+  return {
+    questions: [...baseQuestions, ...advancedQuestions],
+    baseQuestions,
+    advancedQuestions,
+    missingBase: Math.max(0, safeBaseTarget - baseQuestions.length),
+    missingAdvanced: Math.max(0, safeAdvTarget - advancedQuestions.length),
+  };
+}
+
+/**
+ * Executes a main generation pass followed by up to `maxTopUpPasses` (default 2) automatic
+ * continuation passes whenever valid deduplicated questions fall short of requested quotas.
+ */
+export async function runQuizGenerationWithTopUp(params: {
+  baseTargetCount: number;
+  advancedTargetCount: number;
+  maxTopUpPasses?: number;
+  generateBatch: (batchReq: {
+    attempt: number;
+    missingBase: number;
+    missingAdvanced: number;
+    existingQuestions: QuizQuestion[];
+  }) => Promise<{ questions: QuizQuestion[]; modelUsed?: string }>;
+}): Promise<{
+  questions: QuizQuestion[];
+  baseQuestions: QuizQuestion[];
+  advancedQuestions: QuizQuestion[];
+  missingBase: number;
+  missingAdvanced: number;
+  attemptsUsed: number;
+  topUpPassesUsed: number;
+  modelUsed: string;
+}> {
+  const maxTopUpPasses = Math.max(0, Math.min(3, params.maxTopUpPasses ?? 2));
+  let merged = mergeQuizQuestionsWithQuota({
+    existing: [],
+    incoming: [],
+    baseTargetCount: params.baseTargetCount,
+    advancedTargetCount: params.advancedTargetCount,
+  });
+  let modelUsed = '';
+  let attemptsUsed = 0;
+
+  for (let attempt = 0; attempt <= maxTopUpPasses; attempt += 1) {
+    if (attempt > 0 && merged.missingBase === 0 && merged.missingAdvanced === 0) {
+      break;
+    }
+    attemptsUsed += 1;
+    try {
+      const batch = await params.generateBatch({
+        attempt,
+        missingBase: merged.missingBase,
+        missingAdvanced: merged.missingAdvanced,
+        existingQuestions: merged.questions,
+      });
+      if (batch.modelUsed && !modelUsed) {
+        modelUsed = batch.modelUsed;
+      }
+      merged = mergeQuizQuestionsWithQuota({
+        existing: merged.questions,
+        incoming: batch.questions,
+        baseTargetCount: params.baseTargetCount,
+        advancedTargetCount: params.advancedTargetCount,
+      });
+    } catch (err) {
+      // Fail fast only if the initial pass itself threw and we have zero questions
+      if (attempt === 0 && merged.questions.length === 0) {
+        throw err;
+      }
+      break;
+    }
+  }
+
+  return {
+    ...merged,
+    attemptsUsed,
+    topUpPassesUsed: Math.max(0, attemptsUsed - 1),
+    modelUsed,
+  };
+}
+
 

@@ -384,6 +384,11 @@ export interface ReferenceChunk {
 export type QuizDifficulty = 'basic' | 'medium' | 'advanced' | 'mixed';
 export type QuizScope = 'all' | 'incorrect' | 'missing' | 'partial' | 'chapter';
 export type CognitiveLevel = 'nhan_biet' | 'thong_hieu' | 'van_dung' | 'van_dung_cao';
+export type QuizQuestionOrigin =
+  | 'upload'
+  | 'mistake_variation'
+  | 'textbook_supplement'
+  | 'external_advanced';
 
 export interface DistractorExplanations {
   A?: string;
@@ -412,6 +417,7 @@ export interface QuizQuestion {
   sourceReference: string;
   sourcePage?: number;
   sourceType?: KnowledgeSourceType;
+  questionOrigin?: QuizQuestionOrigin;
   modelId?: string;
   promptVersion?: string;
   validationStatus?: 'passed' | 'repaired' | 'needs_review' | 'rejected';

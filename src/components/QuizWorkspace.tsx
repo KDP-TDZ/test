@@ -33,6 +33,7 @@ import {
 import { authorizedFetch, parseApiResponse } from '../services/apiClient';
 import {
   flagQuizQuestionForReview,
+  listReferenceBooks,
   listReferenceChunksForBook,
   listUserQuizSets,
   recordQuizAttemptAndProgress,
@@ -155,7 +156,21 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
       if (sourceAnalysis.textbookReferenceId) {
         try {
           const allChunks = await listReferenceChunksForBook(sourceAnalysis.textbookReferenceId);
-          referenceChunks = allChunks.slice(0, 12);
+          referenceChunks = allChunks.slice(0, 24);
+        } catch {
+          referenceChunks = [];
+        }
+      }
+      if (referenceChunks.length === 0) {
+        try {
+          const activeBooks = await listReferenceBooks(true);
+          const matchedBook = activeBooks.find(
+            (b) => b.grade === sourceAnalysis.grade && b.subject === sourceAnalysis.subject
+          );
+          if (matchedBook) {
+            const allChunks = await listReferenceChunksForBook(matchedBook.referenceId);
+            referenceChunks = allChunks.slice(0, 24);
+          }
         } catch {
           referenceChunks = [];
         }
@@ -518,8 +533,15 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
           <div className="glass-panel-subtle rounded-2xl px-4 py-2.5 text-xs text-slate-700 dark:text-slate-300 flex items-start gap-2">
             <Info className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
             <span>
-              Chế độ thích ứng thông minh: Nếu tài liệu bạn tải lên tạo được ít hơn 5 câu hỏi khác
-              nhau, hệ thống tự động bổ sung từ kiến thức hoàn thiện của sách giáo khoa để đủ bộ đề.
+              {scope === 'incorrect' || scope === 'partial' || scope === 'missing'
+                ? `Chế độ thích ứng theo mục tiêu: Hệ thống ưu tiên tạo các câu hỏi biến thể đa góc độ xoay quanh chính phần ${
+                    scope === 'incorrect'
+                      ? 'làm sai'
+                      : scope === 'partial'
+                      ? 'thiếu điều kiện'
+                      : 'kiến thức còn thiếu'
+                  } và tự động sinh bù tối đa 2 lượt để đủ ${count} câu (chỉ mở rộng thêm kiến thức cùng bài nếu mục này trống hoặc cạn biến thể).`
+                : `Chế độ thích ứng thông minh: Hệ thống khai thác toàn bộ nội dung tài liệu bạn tải lên trước; nếu tài liệu có ít hơn ${count} đơn vị kiến thức khác nhau, hệ thống tự động bổ sung từ sách giáo khoa & chuẩn GDPT 2018 và sinh bù tối đa 2 lượt để đủ bộ đề.`}
             </span>
           </div>
 
@@ -546,10 +568,20 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
       {/* Active Quiz Runner */}
       {activeQuiz && (
         <div className="space-y-5">
-          {activeQuiz.supplementedFromTextbook && activeQuiz.supplementNotice && (
+          {(activeQuiz.supplementNotice ||
+            (activeQuiz.requestedCount &&
+              activeQuiz.questions.length <
+                activeQuiz.requestedCount +
+                  (activeQuiz.advancedEnabled ? activeQuiz.advancedCount || 0 : 0))) && (
             <div className="rounded-2xl border border-amber-200 dark:border-amber-800/70 bg-amber-50/85 dark:bg-amber-950/40 px-4 py-3 text-xs text-amber-950 dark:text-amber-200 flex items-start gap-2.5">
               <Info className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-              <span>{activeQuiz.supplementNotice}</span>
+              <span>
+                {activeQuiz.supplementNotice ||
+                  `Bộ đề này có ${activeQuiz.questions.length}/${
+                    (activeQuiz.requestedCount || 0) +
+                    (activeQuiz.advancedEnabled ? activeQuiz.advancedCount || 0 : 0)
+                  } câu hợp lệ không trùng lặp.`}
+              </span>
             </div>
           )}
 
@@ -622,7 +654,13 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                       <p className="text-xs font-mono text-sky-700 dark:text-sky-400 font-semibold tabular-nums">
                         Câu {idx + 1} · {q.chapter} · {q.concept}
                         {q.cognitiveLevel ? ` · ${COGNITIVE_LABELS[q.cognitiveLevel]}` : ''}
-                        {q.isExternalAdvanced ? ' · Nâng cao mở rộng' : ''}
+                        {q.isExternalAdvanced || q.questionOrigin === 'external_advanced' ? (
+                          <span className="text-blue-700 dark:text-blue-300"> · Nâng cao mở rộng</span>
+                        ) : q.questionOrigin === 'textbook_supplement' ? (
+                          <span className="text-amber-700 dark:text-amber-300"> · Bổ sung SGK</span>
+                        ) : q.questionOrigin === 'mistake_variation' ? (
+                          <span className="text-indigo-700 dark:text-indigo-300"> · Biến thể sửa lỗi</span>
+                        ) : null}
                       </p>
                       <h3 className="text-sm sm:text-base font-semibold text-[#16243E] dark:text-[#E6EFFC] leading-[1.6] text-pretty">
                         {q.questionText}

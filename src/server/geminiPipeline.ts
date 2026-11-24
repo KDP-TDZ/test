@@ -7,6 +7,10 @@ import {
 import {
   distributeExamQuestionScores,
   normalizeCognitiveLevel,
+  normalizeQuizQuestionOrigin,
+  resolveQuizScopeStrategy,
+  runQuizGenerationWithTopUp,
+  salvageQuestionsFromTruncatedJson,
   validateExamBlueprint,
   validateQuizQuestionSet,
 } from '../core/quizValidation.js';
@@ -47,6 +51,7 @@ import type {
   KnowledgeUnitType,
   QuizDifficulty,
   QuizQuestion,
+  QuizQuestionOrigin,
   QuizScope,
   ReferenceChunk,
   ReferenceEvidence,
@@ -1905,55 +1910,65 @@ export class QuizGenerationService {
       idToken,
     } = params;
 
-    let targetClaims = claims;
-    if (scope === 'incorrect') {
-      targetClaims = claims.filter((c) => c.evaluationStatus === 'INCORRECT');
-    } else if (scope === 'partial') {
-      targetClaims = claims.filter((c) => c.evaluationStatus === 'PARTIALLY_CORRECT');
-    } else if (scope === 'chapter' && chapterFilter) {
-      targetClaims = claims.filter((c) => c.chapter.toLowerCase().includes(chapterFilter.toLowerCase()));
-    }
-
-    const missingItems =
-      scope === 'missing' || scope === 'all'
-        ? coverageItems.filter((i) => i.status === 'MISSING' || i.status === 'PARTIALLY_COVERED')
-        : [];
-
-    // Estimate distinct knowledge points available directly from upload
-    const distinctUploadConcepts = new Set([
-      ...targetClaims.map((c) => (c.concept || c.sourceText.slice(0, 35)).toLowerCase()),
-      ...missingItems.map((m) => (m.concept || '').toLowerCase()),
-    ].filter(Boolean));
-
-    const needsTextbookSupplement = distinctUploadConcepts.size < 5;
     const safeAdvancedExtra = advancedEnabled ? Math.min(6, Math.max(1, Number(advancedCount) || 2)) : 0;
     const baseTargetCount = Math.min(20, Math.max(5, Number(count) || 5));
+    const totalWanted = baseTargetCount + safeAdvancedExtra;
 
-    const supplementChunks = needsTextbookSupplement
-      ? referenceChunks
-          .filter((rc) => rc.grade === grade && rc.subject === subject)
-          .slice(0, 8)
-      : [];
+    const strategy = resolveQuizScopeStrategy({
+      scope,
+      baseTargetCount,
+      claims,
+      coverageItems,
+      chapterFilter,
+    });
 
-    const contextLines = [
-      ...targetClaims.map(
-        (c) =>
-          `[UploadClaim ${c.claimId} | ${c.evaluationStatus} | ${c.chapter} | ${c.concept}] Học sinh viết: "${c.sourceText}" | Chuẩn: "${c.correctKnowledge}" | Giải thích: "${c.explanation}"`
-      ),
-      ...missingItems.map(
-        (m) =>
-          `[UploadMissing | ${m.chapter} | ${m.concept}] Gợi ý: "${m.suggestedAddition}" | Trích dẫn: "${m.referenceExcerpt}"`
-      ),
-      ...supplementChunks.map(
-        (ch) =>
-          `[TextbookSupplement | ${ch.chapter} - ${ch.lesson} | Tr.${ch.pageNumber}] ${ch.content.slice(0, 450)}`
-      ),
-    ];
+    const querySeedText = [
+      chapterFilter || '',
+      ...strategy.targetClaims.map((c) => `${c.chapter} ${c.concept} ${c.correctKnowledge}`),
+      ...strategy.missingItems.map((m) => `${m.chapter} ${m.concept} ${m.suggestedAddition}`),
+    ]
+      .join(' ')
+      .trim();
 
-    const effectiveContext =
-      contextLines.length > 0
-        ? contextLines.join('\n')
-        : claims.map((c) => `${c.concept}: ${c.correctKnowledge}`).join('\n');
+    const sameSubjectChunks = referenceChunks.filter(
+      (rc) => rc.grade === grade && rc.subject === subject
+    );
+    const retrievedSupplementHits =
+      sameSubjectChunks.length > 0 && querySeedText
+        ? retrieveRelevantChunks(querySeedText, sameSubjectChunks, {
+            selectedChapters: chapterFilter?.trim() ? [chapterFilter.trim()] : undefined,
+            topK: 10,
+          })
+        : [];
+    const supplementChunks: ReferenceChunk[] =
+      retrievedSupplementHits.length > 0
+        ? retrievedSupplementHits.map((h) => h.chunk)
+        : sameSubjectChunks.slice(0, 10);
+
+    const buildContextText = (includeTextbookChunks: boolean): string => {
+      const lines = [
+        ...strategy.targetClaims.map(
+          (c) =>
+            `[UploadClaim ${c.claimId} | ${c.evaluationStatus} | ${c.chapter} | ${c.concept}] Học sinh viết: "${c.sourceText}" | Chuẩn: "${c.correctKnowledge}" | Giải thích: "${c.explanation}"`
+        ),
+        ...strategy.missingItems.map(
+          (m) =>
+            `[UploadMissing | ${m.chapter} | ${m.concept}] Gợi ý: "${m.suggestedAddition}" | Trích dẫn: "${m.referenceExcerpt}"`
+        ),
+        ...(includeTextbookChunks
+          ? supplementChunks.map(
+              (ch) =>
+                `[TextbookSupplement | ${ch.chapter} - ${ch.lesson} | Tr.${ch.pageNumber}] ${ch.content.slice(0, 420)}`
+            )
+          : []),
+      ];
+
+      if (lines.length > 0) return lines.join('\n').slice(0, 18000);
+      return claims
+        .map((c) => `[FallbackClaim | ${c.chapter} | ${c.concept}] ${c.correctKnowledge}`)
+        .join('\n')
+        .slice(0, 18000);
+    };
 
     const diffLabel =
       difficulty === 'basic'
@@ -1964,26 +1979,16 @@ export class QuizGenerationService {
         ? 'Nâng cao (Vận dụng, Vận dụng cao)'
         : 'Hỗn hợp cân bằng (Nhận biết 30% - Thông hiểu 30% - Vận dụng 25% - Vận dụng cao 15%)';
 
-    const prompt = [
-      `Soạn ${baseTargetCount} câu hỏi trắc nghiệm ABCD cốt lõi cho học sinh lớp ${grade}, môn ${SUBJECT_LABELS[subject]}.`,
-      needsTextbookSupplement
-        ? `LƯU Ý ĐẶC BIỆT: Nội dung tải lên chỉ có ${distinctUploadConcepts.size} đơn vị kiến thức khác nhau (< 5). Hãy tạo tối đa số câu hỏi bám sát nội dung tải lên, VÀ TỰ ĐỘNG BỔ SUNG phần còn lại từ kiến thức đã hoàn thiện của chương/sách giáo khoa (${textbookTitle || SUBJECT_LABELS[subject] + ' lớp ' + grade}) để đủ ${baseTargetCount} câu chất lượng không trùng lặp.`
-        : `Tất cả ${baseTargetCount} câu cốt lõi bám sát nội dung đã tải lên và phần kiến thức cần củng cố.`,
-      safeAdvancedExtra > 0
-        ? `YÊU CẦU MỞ RỘNG NÂNG CAO: Ngoài ${baseTargetCount} câu trên, HÃY TẠO THÊM ĐÚNG ${safeAdvancedExtra} câu hỏi NÂNG CAO BÊN NGOÀI (isExternalAdvanced = true, mức Vận dụng / Vận dụng cao) kiểm tra tư duy sâu hơn ở cùng chủ đề môn học.`
-        : '',
-      `Độ khó: ${diffLabel}. Nguồn tham chiếu: ${textbookTitle || 'Kiến thức chuẩn GDPT 2018'}.`,
-      'YÊU CẦU CHẤT LƯỢNG NGHIÊM NGẶT:',
-      '- Mỗi câu CHỈ CÓ DUY NHẤT 1 đáp án đúng (A, B, C hoặc D).',
-      '- Độ dài 4 lựa chọn A/B/C/D tương đồng hợp lý, không lộ đáp án đúng bằng độ dài quá vượt trội.',
-      '- Phân loại đúng cognitiveLevel (nhan_biet | thong_hieu | van_dung | van_dung_cao) và knowledgeUnitType (concept | mechanism | condition | characteristic | formula | problem_type).',
-      '- Viết thật ngắn gọn: explanation tối đa 2 câu; mỗi distractorA/B/C/D tối đa 1 câu ngắn giải thích vì sao lựa chọn đó đúng/sai.',
-      '',
-      'NGỮ CẢNH KIẾN THỨC:',
-      effectiveContext.slice(0, 18000),
-    ]
-      .filter(Boolean)
-      .join('\n');
+    const scopeHumanLabel =
+      scope === 'incorrect'
+        ? 'chỗ làm sai'
+        : scope === 'partial'
+        ? 'phần thiếu điều kiện'
+        : scope === 'missing'
+        ? 'phần kiến thức còn thiếu'
+        : scope === 'chapter' && chapterFilter?.trim()
+        ? `chương "${chapterFilter.trim()}"`
+        : 'toàn bộ nội dung đã phân tích';
 
     type RawQuizItem = {
       questionText: string;
@@ -2003,163 +2008,341 @@ export class QuizGenerationService {
       concept: string;
       sourceReference: string;
       isExternalAdvanced?: boolean;
+      questionOrigin?: string;
     };
 
-    const totalWanted = baseTargetCount + safeAdvancedExtra;
-    const quizMaxTokens = Math.min(4096, Math.max(1536, totalWanted * 220));
-
-    const { data: parsed, modelId: modelUsed } = await runTaskWithRouter<{ questions: RawQuizItem[] }>({
-      taskType: 'quiz_generation',
-      config,
-      idToken,
-      allowGroqRescue: true,
-      cacheInput: {
-        subject,
-        grade,
-        baseTargetCount,
-        safeAdvancedExtra,
-        difficulty,
-        scope,
-        chapterFilter: chapterFilter || '',
-        ctx: effectiveContext.slice(0, 8000),
-      },
-      runWithModel: async (modelId) =>
-        generateJsonWithProvider<{ questions: RawQuizItem[] }>({
-          modelId,
-          prompt,
-          thinkingTier: 'low',
-          maxOutputTokens: quizMaxTokens,
-          tokensOut,
-          fallbackJson: '{"questions":[]}',
-          groqSchemaHint:
-            '{"questions":[{"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","explanation":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","chapter":"...","concept":"...","sourceReference":"..."}]}',
-          geminiSchema: {
+    const quizGeminiSchema = {
+      type: Type.OBJECT,
+      properties: {
+        questions: {
+          type: Type.ARRAY,
+          items: {
             type: Type.OBJECT,
             properties: {
-              questions: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    questionText: { type: Type.STRING },
-                    optionA: { type: Type.STRING },
-                    optionB: { type: Type.STRING },
-                    optionC: { type: Type.STRING },
-                    optionD: { type: Type.STRING },
-                    correctAnswer: { type: Type.STRING, description: 'A | B | C | D' },
-                    explanation: { type: Type.STRING },
-                    distractorA: { type: Type.STRING },
-                    distractorB: { type: Type.STRING },
-                    distractorC: { type: Type.STRING },
-                    distractorD: { type: Type.STRING },
-                    cognitiveLevel: {
-                      type: Type.STRING,
-                      description: 'nhan_biet | thong_hieu | van_dung | van_dung_cao',
-                    },
-                    knowledgeUnitType: {
-                      type: Type.STRING,
-                      description: 'concept | mechanism | condition | characteristic | formula | problem_type',
-                    },
-                    chapter: { type: Type.STRING },
-                    concept: { type: Type.STRING },
-                    sourceReference: { type: Type.STRING },
-                    isExternalAdvanced: { type: Type.BOOLEAN },
-                  },
-                  required: [
-                    'questionText',
-                    'optionA',
-                    'optionB',
-                    'optionC',
-                    'optionD',
-                    'correctAnswer',
-                    'explanation',
-                    'cognitiveLevel',
-                    'chapter',
-                    'concept',
-                    'sourceReference',
-                  ],
-                },
+              questionText: { type: Type.STRING },
+              optionA: { type: Type.STRING },
+              optionB: { type: Type.STRING },
+              optionC: { type: Type.STRING },
+              optionD: { type: Type.STRING },
+              correctAnswer: { type: Type.STRING, description: 'A | B | C | D' },
+              explanation: { type: Type.STRING },
+              distractorA: { type: Type.STRING },
+              distractorB: { type: Type.STRING },
+              distractorC: { type: Type.STRING },
+              distractorD: { type: Type.STRING },
+              cognitiveLevel: {
+                type: Type.STRING,
+                description: 'nhan_biet | thong_hieu | van_dung | van_dung_cao',
+              },
+              knowledgeUnitType: {
+                type: Type.STRING,
+                description: 'concept | mechanism | condition | characteristic | formula | problem_type',
+              },
+              chapter: { type: Type.STRING },
+              concept: { type: Type.STRING },
+              sourceReference: { type: Type.STRING },
+              isExternalAdvanced: { type: Type.BOOLEAN },
+              questionOrigin: {
+                type: Type.STRING,
+                description: 'upload | mistake_variation | textbook_supplement | external_advanced',
               },
             },
-            required: ['questions'],
+            required: [
+              'questionText',
+              'optionA',
+              'optionB',
+              'optionC',
+              'optionD',
+              'correctAnswer',
+              'explanation',
+              'cognitiveLevel',
+              'chapter',
+              'concept',
+              'sourceReference',
+              'questionOrigin',
+            ],
           },
-        }),
+        },
+      },
+      required: ['questions'],
+    };
+
+    const quizGroqSchemaHint =
+      '{"questions":[{"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","explanation":"...","distractorA":"...","distractorB":"...","distractorC":"...","distractorD":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","chapter":"...","concept":"...","sourceReference":"...","isExternalAdvanced":false,"questionOrigin":"upload|mistake_variation|textbook_supplement|external_advanced"}]}';
+
+    const unitTypes = new Set<KnowledgeUnitType>([
+      'concept',
+      'mechanism',
+      'condition',
+      'characteristic',
+      'formula',
+      'problem_type',
+    ]);
+
+    const refLabel = textbookTitle || `SGK & chuẩn chương trình GDPT 2018 môn ${SUBJECT_LABELS[subject]} Lớp ${grade}`;
+
+    const runResult = await runQuizGenerationWithTopUp({
+      baseTargetCount,
+      advancedTargetCount: safeAdvancedExtra,
+      maxTopUpPasses: 2,
+      generateBatch: async ({ attempt, missingBase, missingAdvanced, existingQuestions }) => {
+        const batchTotal = missingBase + missingAdvanced;
+        const allowTextbookOnThisPass =
+          strategy.needsTextbookSupplement ||
+          strategy.mode === 'empty_scope_fallback' ||
+          (strategy.mode === 'mistake_variation' && attempt >= 2) ||
+          (strategy.mode !== 'mistake_variation' && attempt >= 1);
+
+        const effectiveContext = buildContextText(allowTextbookOnThisPass);
+
+        let strategyInstruction = '';
+        if (strategy.mode === 'mistake_variation') {
+          if (attempt < 2) {
+            strategyInstruction = [
+              `CHIẾN LƯỢC PHẠM VI (${scopeHumanLabel}): Ưu tiên TẠO CÁC CÂU HỎI BIẾN THỂ ĐA GÓC ĐỘ xoay quanh chính các lỗi sai/ý thiếu trong ngữ cảnh (ví dụ: nhận diện phát biểu đúng/sai về lỗi đó, sửa sai công thức/điều kiện, giải thích bản chất, bài tập tính toán/vận dụng ngắn với số liệu mới, tình huống gây nhầm lẫn tương tự) để đạt CHÍNH XÁC ${missingBase} câu cơ bản.`,
+              'Gán questionOrigin = "mistake_variation" cho các câu biến thể từ lỗi sai/ý thiếu.',
+            ].join('\n');
+          } else {
+            strategyInstruction = [
+              `LƯỢT BỔ SUNG CUỐI (${scopeHumanLabel}): Tiếp tục tạo biến thể mới từ lỗi sai/ý thiếu (questionOrigin = "mistake_variation"). Nếu đã khai thác hết các góc độ biến thể tự nhiên, được phép bổ sung phần còn thiếu từ kiến thức cùng bài trong ${refLabel} và gán questionOrigin = "textbook_supplement" để đạt ĐÚNG ${missingBase} câu cơ bản.`,
+            ].join('\n');
+          }
+        } else if (strategy.mode === 'upload_plus_textbook' || strategy.mode === 'empty_scope_fallback') {
+          strategyInstruction =
+            attempt === 0
+              ? [
+                  `CHIẾN LƯỢC PHẠM VI (${scopeHumanLabel}): Tài liệu tải lên hiện có ${strategy.distinctConceptCount} đơn vị kiến thức (ít hơn ${baseTargetCount} câu cần tạo).`,
+                  `- Trước tiên, khai thác tối đa các ý trong tài liệu tải lên (gán questionOrigin = "upload").`,
+                  `- Tự động bổ sung các câu còn lại từ ${refLabel} đúng chủ đề/chương đang học (gán questionOrigin = "textbook_supplement") sao cho TỔNG SỐ CÂU CƠ BẢN đạt CHÍNH XÁC ${missingBase} câu.`,
+                ].join('\n')
+              : [
+                  `LƯỢT SINH BÙ ${attempt}: Tạo thêm CHÍNH XÁC ${missingBase} câu cơ bản mới hoàn toàn (không trùng câu đã có), ưu tiên ý chưa hỏi trong tài liệu (questionOrigin = "upload") và bổ sung từ ${refLabel} (questionOrigin = "textbook_supplement").`,
+                ].join('\n');
+        } else {
+          strategyInstruction =
+            attempt === 0
+              ? `CHIẾN LƯỢC PHẠM VI (${scopeHumanLabel}): Tạo CHÍNH XÁC ${missingBase} câu cốt lõi bám sát toàn bộ nội dung tài liệu tải lên (gán questionOrigin = "upload"). Nếu vẫn cần mở rộng thêm để tránh trùng ý, bổ sung từ ${refLabel} và gán questionOrigin = "textbook_supplement".`
+              : `LƯỢT SINH BÙ ${attempt}: Tạo thêm CHÍNH XÁC ${missingBase} câu cơ bản mới hoàn toàn (không trùng câu đã có) từ các ý chưa khai thác trong tài liệu (questionOrigin = "upload") hoặc bổ sung từ ${refLabel} (questionOrigin = "textbook_supplement").`;
+        }
+
+        const existingExclusionBlock =
+          existingQuestions.length > 0
+            ? [
+                'DANH SÁCH CÂU HỎI ĐÃ TẠO (TUYỆT ĐỐI KHÔNG ĐƯỢC LẶP LẠI CÂU HỎI HOẶC Ý HỎI TƯƠNG TỰ):',
+                ...existingQuestions.map(
+                  (q, i) => `${i + 1}. [${q.concept}] ${q.questionText.slice(0, 140)}`
+                ),
+              ].join('\n')
+            : '';
+
+        const countRequirementLines: string[] = [];
+        if (missingBase > 0) {
+          countRequirementLines.push(
+            `- PHẢI TẠO ĐÚNG ${missingBase} câu hỏi cơ bản (isExternalAdvanced = false).`
+          );
+        }
+        if (missingAdvanced > 0) {
+          countRequirementLines.push(
+            `- PHẢI TẠO ĐÚNG ${missingAdvanced} câu hỏi NÂNG CAO BÊN NGOÀI (isExternalAdvanced = true, questionOrigin = "external_advanced", mức Vận dụng / Vận dụng cao, mở rộng tư duy giải quyết vấn đề ở cùng chủ đề môn học).`
+          );
+        }
+
+        const prompt = [
+          `Soạn CHÍNH XÁC ${batchTotal} câu hỏi trắc nghiệm ABCD cho học sinh lớp ${grade}, môn ${SUBJECT_LABELS[subject]}.`,
+          `QUY TẮC SỐ LƯỢNG BẮT BUỘC: Mảng "questions" trong JSON PHẢI CÓ ĐÚNG ${batchTotal} PHẦN TỬ, TUYỆT ĐỐI KHÔNG ÍT HƠN.`,
+          ...countRequirementLines,
+          missingBase > 0 ? strategyInstruction : '',
+          `Độ khó: ${diffLabel}. Nguồn tham chiếu: ${refLabel}.`,
+          'YÊU CẦU CHẤT LƯỢNG & CÔ ĐỌNG:',
+          '- Mỗi câu CHỈ CÓ DUY NHẤT 1 đáp án đúng (A, B, C hoặc D); 4 phương án A/B/C/D khác nhau rõ ràng và có độ dài tương đồng hợp lý.',
+          '- Phân loại đúng cognitiveLevel (nhan_biet | thong_hieu | van_dung | van_dung_cao), knowledgeUnitType và questionOrigin.',
+          '- Giữ văn phong ngắn gọn để bảo đảm đủ số câu: explanation tối đa 1-2 câu; mỗi distractorA/B/C/D tối đa 1 câu thật ngắn (<= 14 từ).',
+          existingExclusionBlock,
+          '',
+          'NGỮ CẢNH KIẾN THỨC:',
+          effectiveContext,
+        ]
+          .filter(Boolean)
+          .join('\n');
+
+        // Generous output token budget so reasoning models (GPT-OSS 120B, Qwen 3.8, Gemini Thinking) never truncate mid-array
+        const quizMaxTokens = Math.min(8192, Math.max(3072, batchTotal * 520));
+
+        const { data: parsed, modelId: batchModelUsed } = await runTaskWithRouter<{
+          questions: RawQuizItem[];
+        }>({
+          taskType: 'quiz_generation',
+          config,
+          idToken,
+          allowGroqRescue: true,
+          bypassCache: attempt > 0,
+          cacheInput:
+            attempt === 0
+              ? {
+                  rev: 'v4_scope_adaptive_topup',
+                  subject,
+                  grade,
+                  baseTargetCount,
+                  safeAdvancedExtra,
+                  difficulty,
+                  scope,
+                  chapterFilter: chapterFilter || '',
+                  ctx: effectiveContext.slice(0, 8000),
+                }
+              : undefined,
+          runWithModel: async (modelId) =>
+            generateJsonWithProvider<{ questions: RawQuizItem[] }>({
+              modelId,
+              prompt,
+              thinkingTier: 'minimal',
+              maxOutputTokens: quizMaxTokens,
+              tokensOut,
+              fallbackJson: '{"questions":[]}',
+              strictJsonParser: (rawText) => {
+                const salvaged = salvageQuestionsFromTruncatedJson<RawQuizItem>(rawText);
+                if (salvaged.length === 0) {
+                  throw new Error(
+                    'QUIZ_EMPTY_RESPONSE: Mô hình AI trả về danh sách câu hỏi rỗng hoặc JSON bị lỗi.'
+                  );
+                }
+                return { questions: salvaged };
+              },
+              groqSchemaHint: quizGroqSchemaHint,
+              geminiSchema: quizGeminiSchema,
+            }),
+        });
+
+        const now = new Date().toISOString();
+        const defaultBaseOrigin: QuizQuestionOrigin =
+          strategy.mode === 'mistake_variation'
+            ? attempt >= 2
+              ? 'textbook_supplement'
+              : 'mistake_variation'
+            : strategy.mode === 'upload_sufficient' && attempt === 0
+            ? 'upload'
+            : 'textbook_supplement';
+
+        const mapped: QuizQuestion[] = (parsed.questions || [])
+          .slice(0, batchTotal + 4)
+          .map((q, idx) => {
+            const ans =
+              q.correctAnswer === 'A' ||
+              q.correctAnswer === 'B' ||
+              q.correctAnswer === 'C' ||
+              q.correctAnswer === 'D'
+                ? q.correctAnswer
+                : 'A';
+            const fallbackDiff: QuizQuestion['difficulty'] =
+              difficulty === 'basic' || difficulty === 'advanced' ? difficulty : 'medium';
+            const cog = normalizeCognitiveLevel(q.cognitiveLevel, fallbackDiff);
+            const diff: QuizQuestion['difficulty'] =
+              cog === 'nhan_biet' ? 'basic' : cog === 'thong_hieu' ? 'medium' : 'advanced';
+
+            const isAdv =
+              missingBase === 0 && missingAdvanced > 0
+                ? true
+                : missingAdvanced === 0
+                ? false
+                : Boolean(q.isExternalAdvanced || q.questionOrigin === 'external_advanced');
+
+            const fallbackOriginForIdx: QuizQuestionOrigin = isAdv
+              ? 'external_advanced'
+              : attempt === 0 &&
+                strategy.mode === 'upload_plus_textbook' &&
+                idx < strategy.expectedUploadSlots
+              ? 'upload'
+              : defaultBaseOrigin;
+
+            const origin = normalizeQuizQuestionOrigin(
+              q.questionOrigin,
+              isAdv,
+              fallbackOriginForIdx
+            );
+
+            return {
+              questionId: `q_${Date.now()}_${attempt}_${idx + 1}_${crypto.randomBytes(2).toString('hex')}`,
+              questionText: q.questionText,
+              optionA: q.optionA,
+              optionB: q.optionB,
+              optionC: q.optionC,
+              optionD: q.optionD,
+              correctAnswer: ans,
+              explanation: q.explanation,
+              distractorExplanations:
+                q.distractorA || q.distractorB || q.distractorC || q.distractorD
+                  ? {
+                      A: q.distractorA,
+                      B: q.distractorB,
+                      C: q.distractorC,
+                      D: q.distractorD,
+                    }
+                  : undefined,
+              difficulty: diff,
+              cognitiveLevel: cog,
+              knowledgeUnitType: unitTypes.has(q.knowledgeUnitType as KnowledgeUnitType)
+                ? (q.knowledgeUnitType as KnowledgeUnitType)
+                : 'concept',
+              subject,
+              grade,
+              chapter: q.chapter || chapterFilter || 'Tổng hợp',
+              concept: q.concept || 'Khái niệm trọng tâm',
+              sourceReference: q.sourceReference || textbookTitle || 'Tài liệu tham chiếu',
+              sourceType:
+                origin === 'external_advanced' ? 'external_extension' : 'textbook_reference',
+              questionOrigin: origin,
+              modelId: batchModelUsed,
+              isExternalAdvanced: isAdv,
+              createdAt: now,
+            };
+          });
+
+        return {
+          questions: mapped,
+          modelUsed: batchModelUsed,
+        };
+      },
     });
 
-    const now = new Date().toISOString();
-    const mapped: QuizQuestion[] = (parsed.questions || []).slice(0, totalWanted + 2).map((q, idx) => {
-      const ans =
-        q.correctAnswer === 'A' || q.correctAnswer === 'B' || q.correctAnswer === 'C' || q.correctAnswer === 'D'
-          ? q.correctAnswer
-          : 'A';
-      const fallbackDiff: QuizQuestion['difficulty'] =
-        difficulty === 'basic' || difficulty === 'advanced' ? difficulty : 'medium';
-      const cog = normalizeCognitiveLevel(q.cognitiveLevel, fallbackDiff);
-      const diff: QuizQuestion['difficulty'] =
-        cog === 'nhan_biet' ? 'basic' : cog === 'thong_hieu' ? 'medium' : 'advanced';
-      const unitTypes = new Set<KnowledgeUnitType>([
-        'concept',
-        'mechanism',
-        'condition',
-        'characteristic',
-        'formula',
-        'problem_type',
-      ]);
+    const finalQuestions = runResult.questions;
+    const baseFinal = runResult.baseQuestions;
+    const uploadCount = baseFinal.filter((q) => q.questionOrigin === 'upload').length;
+    const variationCount = baseFinal.filter((q) => q.questionOrigin === 'mistake_variation').length;
+    const supplementCount = baseFinal.filter((q) => q.questionOrigin === 'textbook_supplement').length;
 
-      return {
-        questionId: `q_${Date.now()}_${idx + 1}_${crypto.randomBytes(2).toString('hex')}`,
-        questionText: q.questionText,
-        optionA: q.optionA,
-        optionB: q.optionB,
-        optionC: q.optionC,
-        optionD: q.optionD,
-        correctAnswer: ans,
-        explanation: q.explanation,
-        distractorExplanations:
-          q.distractorA || q.distractorB || q.distractorC || q.distractorD
-            ? {
-                A: q.distractorA,
-                B: q.distractorB,
-                C: q.distractorC,
-                D: q.distractorD,
-              }
-            : undefined,
-        difficulty: diff,
-        cognitiveLevel: cog,
-        knowledgeUnitType: unitTypes.has(q.knowledgeUnitType as KnowledgeUnitType)
-          ? (q.knowledgeUnitType as KnowledgeUnitType)
-          : 'concept',
-        subject,
-        grade,
-        chapter: q.chapter || chapterFilter || 'Tổng hợp',
-        concept: q.concept || 'Khái niệm trọng tâm',
-        sourceReference: q.sourceReference || textbookTitle || 'Tài liệu tham chiếu',
-        sourceType: q.isExternalAdvanced ? 'external_extension' : 'textbook_reference',
-        modelId: modelUsed,
-        isExternalAdvanced: Boolean(q.isExternalAdvanced),
-        createdAt: now,
-      };
-    });
-
-    const validation = validateQuizQuestionSet(mapped);
-
-    const hasActualTextbookChunks = needsTextbookSupplement && supplementChunks.length > 0;
-    const finalQuestions = validation.questions.slice(0, totalWanted);
-
-    let supplementNotice: string | undefined;
-    if (needsTextbookSupplement) {
-      if (hasActualTextbookChunks) {
-        supplementNotice = `Nội dung tải lên chỉ có ${distinctUploadConcepts.size} đơn vị kiến thức khác nhau (< 5). Hệ thống đã tự động bổ sung thêm từ sách giáo khoa tham chiếu (${textbookTitle || 'Thư viện SGK'}) để đủ ${Math.min(finalQuestions.length, baseTargetCount)} câu.`;
-      } else {
-        supplementNotice = `Phạm vi lọc hiện tại chỉ có ${distinctUploadConcepts.size} đơn vị kiến thức (< 5). Hệ thống đã tự động mở rộng câu hỏi dựa trên toàn bộ tài liệu tải lên và chuẩn chương trình GDPT 2018 môn ${SUBJECT_LABELS[subject]} Lớp ${grade} để đủ ${Math.min(finalQuestions.length, baseTargetCount)} câu.`;
+    const noticeParts: string[] = [];
+    if (strategy.mode === 'empty_scope_fallback') {
+      noticeParts.push(
+        `Bài phân tích không có mục nào khớp bộ lọc "${scopeHumanLabel}". Hệ thống đã tự động tổng hợp từ toàn bộ tài liệu và ${refLabel} để tạo ${baseFinal.length} câu cơ bản.`
+      );
+    } else if (strategy.mode === 'mistake_variation') {
+      if (supplementCount > 0) {
+        noticeParts.push(
+          `Đã tạo ${variationCount} câu biến thể đa góc độ từ ${scopeHumanLabel} và bổ sung ${supplementCount} câu cùng chủ đề từ ${refLabel} để đủ ${baseFinal.length} câu cơ bản.`
+        );
+      } else if (variationCount > 0) {
+        noticeParts.push(
+          `Đã tạo ${variationCount} câu hỏi biến thể đa góc độ xoay quanh đúng ${scopeHumanLabel} trong bài phân tích để giúp bạn khắc phục triệt để lỗ hổng.`
+        );
       }
+    } else if (supplementCount > 0) {
+      noticeParts.push(
+        `Nội dung tải lên có ${strategy.distinctConceptCount} đơn vị kiến thức. Bộ đề gồm ${uploadCount} câu bám sát tài liệu tải lên và ${supplementCount} câu bổ sung từ ${refLabel} để đủ ${baseFinal.length} câu cơ bản.`
+      );
     }
+
+    if (finalQuestions.length < totalWanted) {
+      noticeParts.push(
+        `Hệ thống đã tự động sinh bù ${runResult.topUpPassesUsed} lượt nhưng chỉ thu được ${finalQuestions.length}/${totalWanted} câu hợp lệ không trùng lặp.`
+      );
+    }
+
+    const supplementNotice = noticeParts.length > 0 ? noticeParts.join(' ') : undefined;
 
     return {
       questions: finalQuestions,
-      supplementedFromTextbook: hasActualTextbookChunks,
+      supplementedFromTextbook: supplementCount > 0 || Boolean(supplementNotice),
       supplementNotice,
-      modelUsed,
+      modelUsed: runResult.modelUsed || 'unknown',
     };
   }
 }
