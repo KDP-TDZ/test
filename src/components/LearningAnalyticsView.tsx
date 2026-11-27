@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
-  BarChart3,
   BookOpen,
   CheckCircle2,
   Info,
@@ -172,11 +171,19 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
   if (progressList.length === 0 && quizAttempts.length === 0) {
     return (
       <GlassSurface className="rounded-3xl p-8 sm:p-10 text-center space-y-4">
-        <BarChart3 className="w-10 h-10 text-sky-600 dark:text-sky-400 mx-auto" />
-        <h1 className="font-display text-2xl font-bold text-[#16243E] dark:text-[#E6EFFC]">
+        <svg viewBox="0 0 112 80" className="w-28 h-20 mx-auto" aria-hidden="true">
+          <rect x="8" y="8" width="96" height="64" rx="14" className="fill-[#F1F5FA] dark:fill-[#0D1628]" />
+          <rect x="24" y="44" width="12" height="18" rx="4" className="fill-[#BFDBFE] dark:fill-[#1E3A8A]" />
+          <rect x="42" y="34" width="12" height="28" rx="4" className="fill-[#60A5FA] dark:fill-[#2563EB]" />
+          <rect x="60" y="24" width="12" height="38" rx="4" className="fill-[#2563EB] dark:fill-[#3B82F6]" />
+          <rect x="78" y="18" width="12" height="44" rx="4" className="fill-[#059669]" />
+          <path d="M22 38 L48 28 L66 19 L84 13" fill="none" stroke="#F5A623" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="84" cy="13" r="3.5" fill="#F5A623" />
+        </svg>
+        <h1 className="font-display text-2xl font-bold text-[#172033] dark:text-[#E6EFFC]">
           Thống kê kiến thức đã học
         </h1>
-        <p className="text-sm text-slate-600 dark:text-slate-300 max-w-lg mx-auto">
+        <p className="text-sm text-[#525E75] dark:text-[#94A3B8] max-w-lg mx-auto">
           Bạn chưa có dữ liệu khái niệm nào được ghi nhận. Hãy kiểm định một tài liệu hoặc làm bài
           trắc nghiệm để hệ thống lập bản đồ kiến thức theo từng môn và chương.
         </p>
@@ -213,7 +220,7 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
               onClick={() => setTimeRange(id)}
               className={`px-3 py-1.5 rounded-xl font-semibold cursor-pointer transition-all ${
                 timeRange === id
-                  ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                  ? 'bg-[#2563EB] text-white shadow-sm'
                   : 'text-slate-600 dark:text-slate-300 hover:bg-white/60 dark:hover:bg-slate-800/60'
               }`}
             >
@@ -301,9 +308,9 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
                       {st.mastered}/{st.total} nắm vững ({masteryPct}%)
                     </span>
                   </div>
-                  <div className="h-2 rounded-full bg-sky-100 dark:bg-slate-800 overflow-hidden mt-2">
+                  <div className="h-2 rounded-full bg-[#EAF2FF] dark:bg-slate-800 overflow-hidden mt-2">
                     <div
-                      className="h-full bg-gradient-to-r from-sky-500 to-emerald-500"
+                      className="h-full bg-[#2563EB] dark:bg-[#3B82F6]"
                       style={{ width: `${Math.max(4, masteryPct)}%` }}
                     />
                   </div>
@@ -341,7 +348,7 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
                 onClick={() => setSelectedChapter(selectedChapter === ch.chapter ? null : ch.chapter)}
                 className={`px-3 py-1.5 rounded-xl text-xs font-medium cursor-pointer transition-all ${
                   selectedChapter === ch.chapter
-                    ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                    ? 'bg-[#2563EB] text-white shadow-sm'
                     : 'glass-control text-slate-700 dark:text-slate-200'
                 }`}
               >
@@ -420,8 +427,10 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
                 {docScoreSeries.length > 1 && (
                   <polyline
                     fill="none"
-                    stroke="#0284C7"
+                    stroke="#2563EB"
                     strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
                     points={docScoreSeries
                       .map((d, i) => {
                         const x = 42 + (i / (docScoreSeries.length - 1)) * 355;
@@ -439,7 +448,7 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
                   const y = 130 - ((d.accuracyScore ?? 0) / 100) * 110;
                   return (
                     <g key={d.analysisId}>
-                      <circle cx={x} cy={y} r="4.5" fill="#0284C7" stroke="#ffffff" strokeWidth="1.5" />
+                      <circle cx={x} cy={y} r="4.5" fill="#2563EB" stroke="#ffffff" strokeWidth="1.5" />
                       <title>{`${d.documentTitle}: ${d.accuracyScore}%`}</title>
                     </g>
                   );

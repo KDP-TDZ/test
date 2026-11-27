@@ -1,0 +1,253 @@
+/* ============================================================================
+ * StudyCheck AI — Unified Post-Login Editorial Academic Design System
+ * Scoped exclusively inside `.sc-auth-shell` (imported by AuthenticatedShell.tsx)
+ *
+ * Purpose:
+ * 1. Match the frozen Landing Page's luxury editorial academic palette in Light & Dark.
+ * 2. Neutralize global `html[data-ui-mode="classic"]` and `html[data-ui-mode="ethereal"]`
+ *    overrides from `src/index.css` inside `.sc-auth-shell` so post-login renders
+ *    100% identically regardless of `studycheck_ui_mode` in localStorage.
+ * 3. Keep Landing Page and shared LiquidGlass primitive source files 100% untouched.
+ * ============================================================================ */
+
+html[data-ui-mode] .sc-auth-shell {
+  --sc-canvas: #f8fafc;
+  --sc-card: #ffffff;
+  --sc-inset: #f1f5fa;
+  --sc-border: #e6ecf5;
+  --sc-border-strong: #cbd5e1;
+  --sc-ink: #172033;
+  --sc-ink-muted: #525e75;
+  --sc-cobalt: #2563eb;
+  --sc-cobalt-hover: #1746a2;
+  --sc-cobalt-ice: #eaf2ff;
+  --sc-cobalt-border: #bfdbfe;
+  --sc-gold: #f5a623;
+  --sc-gold-hover: #e09212;
+  --sc-emerald: #059669;
+  --sc-rose: #e11d48;
+
+  background-color: var(--sc-canvas);
+  background-image:
+    radial-gradient(920px 420px at 8% -4%, rgba(37, 99, 235, 0.06), transparent 64%),
+    radial-gradient(760px 360px at 94% 0%, rgba(245, 166, 35, 0.05), transparent 60%);
+  color: var(--sc-ink);
+  min-height: 100dvh;
+  position: relative;
+  z-index: 1;
+}
+
+html.dark[data-ui-mode] .sc-auth-shell {
+  --sc-canvas: #09111e;
+  --sc-card: #111b30;
+  --sc-inset: #0d1628;
+  --sc-border: #1e293b;
+  --sc-border-strong: #334155;
+  --sc-ink: #e6effc;
+  --sc-ink-muted: #94a3b8;
+  --sc-cobalt: #3b82f6;
+  --sc-cobalt-hover: #2563eb;
+  --sc-cobalt-ice: rgba(37, 99, 235, 0.16);
+  --sc-cobalt-border: rgba(59, 130, 246, 0.32);
+  --sc-gold: #f5a623;
+  --sc-gold-hover: #e09212;
+  --sc-emerald: #10b981;
+  --sc-rose: #f43f5e;
+
+  background-color: var(--sc-canvas);
+  background-image:
+    radial-gradient(920px 420px at 8% -4%, rgba(37, 99, 235, 0.12), transparent 64%),
+    radial-gradient(760px 360px at 94% 0%, rgba(245, 166, 35, 0.06), transparent 60%);
+  color: var(--sc-ink);
+}
+
+/* --- Unified Surface Overrides (Classic & Ethereal Parity) --- */
+
+html[data-ui-mode] .sc-auth-shell .glass-surface,
+html[data-ui-mode] .sc-auth-shell .liquid-card-glass {
+  background: var(--sc-card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid var(--sc-border);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 8px 24px -16px rgba(15, 23, 42, 0.08);
+  transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+html.dark[data-ui-mode] .sc-auth-shell .glass-surface,
+html.dark[data-ui-mode] .sc-auth-shell .liquid-card-glass {
+  background: var(--sc-card);
+  border-color: var(--sc-border);
+  box-shadow:
+    0 1px 2px rgba(2, 6, 23, 0.35),
+    0 12px 28px -18px rgba(2, 6, 23, 0.55);
+}
+
+html[data-ui-mode] .sc-auth-shell .glass-card-hover:hover,
+html[data-ui-mode] .sc-auth-shell .liquid-card-glass:hover {
+  border-color: var(--sc-cobalt-border);
+  box-shadow:
+    0 4px 14px -6px rgba(37, 99, 235, 0.12),
+    0 12px 28px -16px rgba(15, 23, 42, 0.1);
+}
+
+html.dark[data-ui-mode] .sc-auth-shell .glass-card-hover:hover,
+html.dark[data-ui-mode] .sc-auth-shell .liquid-card-glass:hover {
+  border-color: rgba(59, 130, 246, 0.42);
+  box-shadow:
+    0 4px 16px -6px rgba(37, 99, 235, 0.24),
+    0 14px 30px -16px rgba(2, 6, 23, 0.65);
+}
+
+html[data-ui-mode] .sc-auth-shell .glass-panel-subtle {
+  background: var(--sc-inset);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid var(--sc-border);
+  box-shadow: none;
+}
+
+html[data-ui-mode] .sc-auth-shell .document-paper {
+  background: var(--sc-card);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid var(--sc-border);
+  box-shadow: 0 2px 10px -4px rgba(15, 23, 42, 0.06);
+}
+
+html.dark[data-ui-mode] .sc-auth-shell .document-paper {
+  background: var(--sc-inset);
+  border-color: var(--sc-border);
+  box-shadow: none;
+}
+
+html[data-ui-mode] .sc-auth-shell .glass-nav {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--sc-border);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+}
+
+html.dark[data-ui-mode] .sc-auth-shell .glass-nav {
+  background: rgba(9, 17, 30, 0.92);
+  border-bottom-color: var(--sc-border);
+  box-shadow: 0 1px 0 rgba(2, 6, 23, 0.45);
+}
+
+html[data-ui-mode] .sc-auth-shell .glass-control {
+  background: var(--sc-card);
+  color: var(--sc-ink);
+  border: 1px solid var(--sc-border);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+html[data-ui-mode] .sc-auth-shell .glass-control:hover {
+  background: var(--sc-inset);
+  border-color: var(--sc-cobalt-border);
+}
+
+html[data-ui-mode] .sc-auth-shell .glass-control:focus-visible {
+  outline: 2px solid var(--sc-cobalt);
+  outline-offset: 2px;
+}
+
+html[data-ui-mode] .sc-auth-shell .glass-segment {
+  background: var(--sc-inset);
+  border: 1px solid var(--sc-border);
+}
+
+html[data-ui-mode] .sc-auth-shell .privacy-blur-toggle-active {
+  background: #2563eb;
+  color: #ffffff;
+  border: 1px solid #1d4ed8;
+  box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.45);
+}
+
+html.dark[data-ui-mode] .sc-auth-shell .privacy-blur-toggle-active {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #3b82f6;
+}
+
+/* --- Mobile Parity Override (matches index.css @media (max-width: 767px) !important rules) --- */
+@media (max-width: 767px) {
+  html[data-ui-mode] .sc-auth-shell .glass-surface,
+  html[data-ui-mode] .sc-auth-shell .liquid-card-glass {
+    background: var(--sc-card) !important;
+    border-color: var(--sc-border) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05) !important;
+  }
+
+  html[data-ui-mode] .sc-auth-shell .glass-panel-subtle {
+    background: var(--sc-inset) !important;
+    border-color: var(--sc-border) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  html[data-ui-mode] .sc-auth-shell .document-paper {
+    background: var(--sc-card) !important;
+    border-color: var(--sc-border) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  html.dark[data-ui-mode] .sc-auth-shell .document-paper {
+    background: var(--sc-inset) !important;
+  }
+
+  html[data-ui-mode] .sc-auth-shell .glass-nav {
+    background: var(--sc-card) !important;
+    border-bottom-color: var(--sc-border) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  html[data-ui-mode] .sc-auth-shell .glass-control {
+    background: var(--sc-card) !important;
+    border-color: var(--sc-border) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+/* --- Editorial Utility Helpers Scoped to Post-Login Shell --- */
+
+.sc-auth-shell .sc-card {
+  background-color: var(--sc-card);
+  border: 1px solid var(--sc-border);
+  border-radius: 1rem;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 8px 24px -16px rgba(15, 23, 42, 0.08);
+}
+
+.sc-auth-shell .sc-inset {
+  background-color: var(--sc-inset);
+  border: 1px solid var(--sc-border);
+  border-radius: 0.75rem;
+}
+
+.sc-auth-shell .sc-no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.sc-auth-shell .sc-no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* --- Reduced Motion Support --- */
+@media (prefers-reduced-motion: reduce) {
+  .sc-auth-shell *,
+  .sc-auth-shell *::before,
+  .sc-auth-shell *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

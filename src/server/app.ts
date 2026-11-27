@@ -32,18 +32,17 @@ import {
 import {
   clearCloudflareCredentials,
   clearGroqApiKey,
-  clearSingleGeminiApiKey,
+  clearMistralApiKey,
   evaluateColdStartReadiness,
+  getMistralKeyStatus,
   getProviderKeysStatus,
-  getSingleKeyStatus,
   hydrateSingleKeyForSuperAdmin,
-  isGeminiConfigured,
   setCloudflareCredentials,
   setGroqApiKey,
-  setSingleGeminiApiKey,
+  setMistralApiKey,
   testCloudflareCredentials,
   testGroqApiKey,
-  testSingleGeminiKey,
+  testMistralApiKey,
 } from './singleKeyService.js';
 import {
   DocumentExtractionService,
@@ -64,13 +63,16 @@ import {
 } from './referenceIngestService.js';
 import {
   callWithTimeout,
-  createServerAiClient,
-  generateGeminiContentWithFallback,
   getRecentExecutionLogs,
   MODEL_CATALOG,
   resolveModelForTask,
   testModelConnectivity,
 } from './modelRouter.js';
+import {
+  callMistralChatCompletion,
+  isMistralConfigured,
+  MISTRAL_PRIMARY_MODEL,
+} from './mistralProvider.js';
 import {
   callGroqChatCompletion,
   fetchAvailableGroqChatModels,
@@ -78,6 +80,7 @@ import {
   isGroqConfigured,
 } from './groqProvider.js';
 import { callCloudflareChatCompletion, isCloudflareConfigured } from './cloudflareProvider.js';
+import { clampAdaptiveThresholdChars } from '../core/adaptiveApiPlan.js';
 import {
   SUBJECT_LABELS,
   type AiTaskType,
@@ -208,7 +211,7 @@ function mapGeminiErrorResponse(
   technicalDetail?: string;
   debug?: {
     activeModel: string;
-    configuredProviders: { groq: boolean; gemini: boolean; cloudflare: boolean };
+    configuredProviders: { mistral: boolean; groq: boolean; cloudflare: boolean };
     recentExecutions: ReturnType<typeof getRecentExecutionLogs>;
     timestamp: string;
   };
@@ -216,8 +219,8 @@ function mapGeminiErrorResponse(
   const msg = err instanceof Error ? err.message : String(err);
   const cfg = getAuthoritativeAiConfigSnapshot();
   const configuredProviders = {
+    mistral: isMistralConfigured(),
     groq: isGroqConfigured(),
-    gemini: isGeminiConfigured(),
     cloudflare: isCloudflareConfigured(),
   };
   const debugExtras = includeDebug
@@ -258,6 +261,16 @@ function mapGeminiErrorResponse(
       ...debugExtras,
     };
   }
+  if (msg.includes('MISTRAL_API_KEY_UNCONFIGURED') || msg.includes('Chưa cấu hình Mistral')) {
+    return {
+      status: 503,
+      code: 'MISTRAL_KEY_MISSING',
+      error: includeDebug
+        ? 'Chưa có Mistral AI API Key trên máy chủ. Hãy thêm biến môi trường MISTRAL_API_KEY trên Vercel/Render để chạy 24/7 hoặc dán khóa tại Quản trị hệ thống → API Key & Bảo mật.'
+        : 'Hệ thống AI vừa khởi động lại và đang chờ cấu hình khóa kết nối. Vui lòng thử lại sau ít phút hoặc báo cho quản trị viên.',
+      ...debugExtras,
+    };
+  }
   if (msg.includes('GROQ_API_KEY_UNCONFIGURED') || msg.includes('Chưa cấu hình Groq API Key')) {
     return {
       status: 503,
@@ -281,16 +294,6 @@ function mapGeminiErrorResponse(
       ...debugExtras,
     };
   }
-  if (msg.includes('GEMINI_API_KEY_UNCONFIGURED')) {
-    return {
-      status: 503,
-      code: 'GEMINI_KEY_MISSING',
-      error: includeDebug
-        ? 'Chưa cấu hình khóa API cho AI đang chọn. Để web chạy 24/7 khi máy chủ reset, hãy đặt GROQ_API_KEY hoặc GEMINI_API_KEY trong biến môi trường Vercel/Render.'
-        : 'Hệ thống AI vừa khởi động lại và đang chờ cấu hình khóa kết nối. Vui lòng thử lại sau ít phút hoặc báo cho quản trị viên.',
-      ...debugExtras,
-    };
-  }
   if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
     return {
       status: 429,
@@ -304,8 +307,8 @@ function mapGeminiErrorResponse(
   if (msg.includes('NOT_FOUND') || msg.includes('404')) {
     const activeProvidersList =
       [
+        configuredProviders.mistral ? 'Mistral AI' : '',
         configuredProviders.groq ? 'Groq' : '',
-        configuredProviders.gemini ? 'Gemini' : '',
         configuredProviders.cloudflare ? 'Cloudflare' : '',
       ]
         .filter(Boolean)
@@ -413,6 +416,7 @@ export function createApiApp(): express.Express {
         maintenanceMessage: cfg.maintenanceMessage,
         disabledReason: cfg.disabledReason,
         rateLimitConfig: cfg.rateLimitConfig,
+        adaptiveLongTextThresholdChars: cfg.adaptiveLongTextThresholdChars,
         configVersion: cfg.configVersion,
         updatedAt: cfg.updatedAt,
       });
@@ -821,7 +825,7 @@ export function createApiApp(): express.Express {
         scope: scope || '',
         referenceChunks: referenceChunks || [],
         enableWebGrounding: enableWebGrounding === true,
-        strictModelLock: strictModelLock !== false,
+        strictModelLock: strictModelLock === true,
         ocrConfirmed: ocrConfirmed === true,
         ...(typeof ocrTextHash === 'string' && ocrTextHash.trim()
           ? { ocrTextHash: ocrTextHash.trim().slice(0, 64) }
@@ -1080,7 +1084,7 @@ export function createApiApp(): express.Express {
   app.get('/api/admin/overview', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
     try {
-      const [config, usageStats, auditLogs, singleKeyStatus, providerKeys] = await Promise.all([
+      const [config, usageStats, auditLogs, mistralStatus, providerKeys] = await Promise.all([
         loadAuthoritativeAiConfig(user.idToken),
         getUsageStatistics(user.idToken).catch(() => ({
           today: {
@@ -1104,7 +1108,7 @@ export function createApiApp(): express.Express {
           perUserToday: [],
         })),
         getAuditLogs(user.idToken).catch(() => []),
-        getSingleKeyStatus(user.idToken).catch(() => ({
+        getMistralKeyStatus(user.idToken).catch(() => ({
           configured: false,
           source: 'none' as const,
           maskedKey: '',
@@ -1113,6 +1117,14 @@ export function createApiApp(): express.Express {
           lastTestStatus: 'Untested' as const,
         })),
         getProviderKeysStatus(user.idToken).catch(() => ({
+          mistral: {
+            configured: false,
+            source: 'none' as const,
+            maskedKey: '',
+            label: '',
+            hasEnvFallbackKey: false,
+            lastTestStatus: 'Untested' as const,
+          },
           groq: {
             configured: false,
             source: 'none' as const,
@@ -1136,9 +1148,10 @@ export function createApiApp(): express.Express {
         config,
         usageStats,
         auditLogs,
-        singleKeyStatus,
+        singleKeyStatus: mistralStatus,
         providerKeys,
         coldStartReadiness: evaluateColdStartReadiness(config.activeModel),
+        mistralConfigured: isMistralConfigured(),
         groqConfigured: isGroqConfigured(),
         cloudflareConfigured: isCloudflareConfigured(),
         executionLogs: getRecentExecutionLogs(),
@@ -1160,7 +1173,12 @@ export function createApiApp(): express.Express {
         activeModel,
         allowedOrigins,
         taskModels,
+        adaptiveLongTextThresholdChars,
       } = req.body || {};
+      const parsedThreshold =
+        adaptiveLongTextThresholdChars !== undefined && adaptiveLongTextThresholdChars !== null
+          ? clampAdaptiveThresholdChars(adaptiveLongTextThresholdChars)
+          : undefined;
       const updated = await updateAuthoritativeAiConfig(
         {
           ...(typeof enabled === 'boolean' ? { enabled } : {}),
@@ -1172,6 +1190,7 @@ export function createApiApp(): express.Express {
           ...(typeof activeModel === 'string' ? { activeModel } : {}),
           ...(Array.isArray(allowedOrigins) ? { allowedOrigins } : {}),
           ...(taskModels && typeof taskModels === 'object' ? { taskModels } : {}),
+          ...(parsedThreshold !== undefined ? { adaptiveLongTextThresholdChars: parsedThreshold } : {}),
         },
         user.uid,
         user.email,
@@ -1210,13 +1229,13 @@ export function createApiApp(): express.Express {
   app.post('/api/admin/models/test', requireSuperAdmin, async (req, res) => {
     try {
       const { modelId } = (req.body || {}) as { modelId?: string };
-      const targetModel = (modelId || 'gemini-2.5-flash').trim();
+      const targetModel = (modelId || MISTRAL_PRIMARY_MODEL).trim();
       const result = await testModelConnectivity(targetModel);
       res.json(result);
     } catch (err) {
       res.status(500).json({
         ok: false,
-        modelId: String(req.body?.modelId || 'gemini-2.5-flash'),
+        modelId: String(req.body?.modelId || MISTRAL_PRIMARY_MODEL),
         latencyMs: 0,
         message: err instanceof Error ? err.message : 'Không thể kiểm tra kết nối model.',
       });
@@ -1226,9 +1245,9 @@ export function createApiApp(): express.Express {
   app.get('/api/admin/debug/snapshot', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
     try {
-      const [config, singleKeyStatus, providerKeys] = await Promise.all([
+      const [config, mistralStatus, providerKeys] = await Promise.all([
         loadAuthoritativeAiConfig(user.idToken),
-        getSingleKeyStatus(user.idToken),
+        getMistralKeyStatus(user.idToken),
         getProviderKeysStatus(user.idToken),
       ]);
       const taskTypes: AiTaskType[] = [
@@ -1246,13 +1265,14 @@ export function createApiApp(): express.Express {
         timestamp: new Date().toISOString(),
         adminEmail: user.email,
         activeModel: config.activeModel,
+        adaptiveLongTextThresholdChars: config.adaptiveLongTextThresholdChars,
         enabled: config.enabled,
         configuredProviders: {
+          mistral: isMistralConfigured(),
           groq: isGroqConfigured(),
-          gemini: isGeminiConfigured(),
           cloudflare: isCloudflareConfigured(),
         },
-        singleKeyStatus,
+        singleKeyStatus: mistralStatus,
         providerKeys,
         taskRouting,
         executionLogs: getRecentExecutionLogs().slice(0, 40),
@@ -1269,7 +1289,7 @@ export function createApiApp(): express.Express {
     try {
       const config = await loadAuthoritativeAiConfig(user.idToken);
       const checks: Array<{
-        provider: 'groq' | 'gemini' | 'cloudflare';
+        provider: 'mistral' | 'groq' | 'cloudflare';
         mode: 'text' | 'json_schema';
         configured: boolean;
         ok: boolean;
@@ -1280,7 +1300,62 @@ export function createApiApp(): express.Express {
         availableModels?: string[];
       }> = [];
 
-      // 1. Probe Groq (Text + JSON mode)
+      // 1. Probe Mistral AI (JSON mode)
+      if (isMistralConfigured()) {
+        const targetMistral = config.activeModel.startsWith('mistral:')
+          ? config.activeModel
+          : MISTRAL_PRIMARY_MODEL;
+        const mStart = Date.now();
+        try {
+          const mistralResp = await callWithTimeout(
+            (signal) =>
+              callMistralChatCompletion({
+                modelId: targetMistral,
+                prompt: 'Trả về JSON đúng chuẩn: {"status":"OK","provider":"mistral"}',
+                jsonMode: true,
+                jsonSchemaHint: '{"status":"OK","provider":"mistral"}',
+                maxOutputTokens: 256,
+                signal,
+              }),
+            15_000
+          );
+          const parsed = JSON.parse(mistralResp.text || '{}') as { status?: string };
+          checks.push({
+            provider: 'mistral',
+            mode: 'json_schema',
+            configured: true,
+            ok: Boolean(parsed && typeof parsed === 'object'),
+            requestedModel: targetMistral,
+            resolvedModel: mistralResp.resolvedModel || targetMistral,
+            latencyMs: Date.now() - mStart,
+            detail: `JSON Mode thành công trên ${mistralResp.resolvedModel} (${mistralResp.text.slice(0, 90)})`,
+          });
+        } catch (err) {
+          checks.push({
+            provider: 'mistral',
+            mode: 'json_schema',
+            configured: true,
+            ok: false,
+            requestedModel: targetMistral,
+            resolvedModel: targetMistral,
+            latencyMs: Date.now() - mStart,
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
+      } else {
+        checks.push({
+          provider: 'mistral',
+          mode: 'json_schema',
+          configured: false,
+          ok: false,
+          requestedModel: MISTRAL_PRIMARY_MODEL,
+          resolvedModel: '-',
+          latencyMs: 0,
+          detail: 'Chưa cấu hình Mistral AI API Key.',
+        });
+      }
+
+      // 2. Probe Groq (JSON mode)
       if (isGroqConfigured()) {
         const groqKey = getGroqApiKey();
         const availableGroq = await fetchAvailableGroqChatModels(groqKey, undefined, true);
@@ -1336,66 +1411,6 @@ export function createApiApp(): express.Express {
           resolvedModel: '-',
           latencyMs: 0,
           detail: 'Chưa cấu hình Groq API Key.',
-        });
-      }
-
-      // 2. Probe Gemini (Text + JSON mode)
-      if (isGeminiConfigured()) {
-        const targetGemini =
-          !config.activeModel.startsWith('groq:') && !config.activeModel.startsWith('cf:')
-            ? config.activeModel
-            : 'gemini-2.5-flash';
-        const gStart = Date.now();
-        try {
-          const ai = await createServerAiClient();
-          const gemResp = await callWithTimeout(
-            (signal) =>
-              generateGeminiContentWithFallback({
-                ai,
-                model: targetGemini,
-                contents: 'Trả về JSON đúng chuẩn: {"status":"OK","provider":"gemini"}',
-                thinkingTier: 'minimal',
-                config: {
-                  maxOutputTokens: 256,
-                  abortSignal: signal,
-                  responseMimeType: 'application/json',
-                },
-              }),
-            15_000
-          );
-          const parsed = JSON.parse(gemResp.text || '{}') as { status?: string };
-          checks.push({
-            provider: 'gemini',
-            mode: 'json_schema',
-            configured: true,
-            ok: Boolean(parsed && typeof parsed === 'object'),
-            requestedModel: targetGemini,
-            resolvedModel: gemResp.resolvedModel,
-            latencyMs: Date.now() - gStart,
-            detail: `JSON Mode thành công trên ${gemResp.resolvedModel} (${gemResp.text.slice(0, 90)})`,
-          });
-        } catch (err) {
-          checks.push({
-            provider: 'gemini',
-            mode: 'json_schema',
-            configured: true,
-            ok: false,
-            requestedModel: targetGemini,
-            resolvedModel: targetGemini,
-            latencyMs: Date.now() - gStart,
-            detail: err instanceof Error ? err.message : String(err),
-          });
-        }
-      } else {
-        checks.push({
-          provider: 'gemini',
-          mode: 'json_schema',
-          configured: false,
-          ok: false,
-          requestedModel: 'gemini-2.5-flash',
-          resolvedModel: '-',
-          latencyMs: 0,
-          detail: 'Chưa cấu hình Gemini API Key.',
         });
       }
 
@@ -1601,10 +1616,11 @@ export function createApiApp(): express.Express {
     }
   });
 
+  // --- Super Admin Primary Provider Key Alias (/api/admin/key -> Mistral AI) ---
   app.get('/api/admin/key', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
     try {
-      const singleKeyStatus = await getSingleKeyStatus(user.idToken);
+      const singleKeyStatus = await getMistralKeyStatus(user.idToken);
       const cfg = getAuthoritativeAiConfigSnapshot();
       res.json({
         singleKeyStatus,
@@ -1620,10 +1636,10 @@ export function createApiApp(): express.Express {
     try {
       const { apiKey, label } = (req.body || {}) as { apiKey?: string; label?: string };
       if (!apiKey || typeof apiKey !== 'string') {
-        res.status(400).json({ error: 'Vui lòng nhập Gemini API key.' });
+        res.status(400).json({ error: 'Vui lòng nhập Mistral AI API key.' });
         return;
       }
-      const result = await setSingleGeminiApiKey({
+      const result = await setMistralApiKey({
         rawKey: apiKey,
         label,
         actorUid: user.uid,
@@ -1637,10 +1653,12 @@ export function createApiApp(): express.Express {
       const cfg = getAuthoritativeAiConfigSnapshot();
       res.json({
         singleKeyStatus: result.status,
+        providerKeys: await getProviderKeysStatus(user.idToken),
+        mistralConfigured: isMistralConfigured(),
         coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể lưu Gemini API key.' });
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể lưu Mistral AI API key.' });
     }
   });
 
@@ -1648,19 +1666,17 @@ export function createApiApp(): express.Express {
     const user = req.authUser!;
     try {
       const { apiKey } = (req.body || {}) as { apiKey?: string };
-      const cfg = await loadAuthoritativeAiConfig(user.idToken);
-      const result = await testSingleGeminiKey({
-        rawKeyOverride: apiKey,
+      const result = await testMistralApiKey({
+        rawKeyOverride: typeof apiKey === 'string' ? apiKey : undefined,
         actorUid: user.uid,
         actorEmail: user.email,
         idToken: user.idToken,
-        activeModel: cfg.activeModel,
       });
       res.json(result);
     } catch (err) {
       res.status(500).json({
         status: 'Temporary provider error',
-        message: err instanceof Error ? err.message : 'Không thể kiểm tra Gemini API key.',
+        message: err instanceof Error ? err.message : 'Không thể kiểm tra Mistral AI API key.',
         testedSource: 'none',
         testedAt: new Date().toISOString(),
       });
@@ -1670,7 +1686,7 @@ export function createApiApp(): express.Express {
   app.delete('/api/admin/key', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
     try {
-      const result = await clearSingleGeminiApiKey({
+      const result = await clearMistralApiKey({
         actorUid: user.uid,
         actorEmail: user.email,
         idToken: user.idToken,
@@ -1678,14 +1694,16 @@ export function createApiApp(): express.Express {
       const cfg = getAuthoritativeAiConfigSnapshot();
       res.json({
         singleKeyStatus: result.status,
+        providerKeys: await getProviderKeysStatus(user.idToken),
+        mistralConfigured: isMistralConfigured(),
         coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể xóa Gemini API key.' });
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể xóa Mistral AI API key.' });
     }
   });
 
-  // --- Super Admin Provider Backup Keys (Groq Cloud & Cloudflare Workers AI) ---
+  // --- Super Admin 3-Provider Keys (Mistral AI, Groq Cloud & Cloudflare Workers AI) ---
   app.get('/api/admin/provider-keys', requireSuperAdmin, async (req, res) => {
     const user = req.authUser!;
     try {
@@ -1694,12 +1712,89 @@ export function createApiApp(): express.Express {
       res.json({
         providerKeys,
         coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
+        mistralConfigured: isMistralConfigured(),
         groqConfigured: isGroqConfigured(),
         cloudflareConfigured: isCloudflareConfigured(),
       });
     } catch (err) {
       res.status(500).json({
-        error: err instanceof Error ? err.message : 'Không tải được trạng thái API key dự phòng.',
+        error: err instanceof Error ? err.message : 'Không tải được trạng thái API key.',
+      });
+    }
+  });
+
+  app.post('/api/admin/provider-keys/mistral', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const { apiKey, label } = (req.body || {}) as { apiKey?: string; label?: string };
+      if (!apiKey || typeof apiKey !== 'string') {
+        res.status(400).json({ error: 'Vui lòng nhập Mistral AI API Key.' });
+        return;
+      }
+      const result = await setMistralApiKey({
+        rawKey: apiKey,
+        label,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+      });
+      if (!result.ok) {
+        res.status(400).json({ error: result.error });
+        return;
+      }
+      const cfg = getAuthoritativeAiConfigSnapshot();
+      res.json({
+        mistralStatus: result.status,
+        providerKeys: await getProviderKeysStatus(user.idToken),
+        mistralConfigured: isMistralConfigured(),
+        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Không thể lưu Mistral AI API Key.',
+      });
+    }
+  });
+
+  app.post('/api/admin/provider-keys/mistral/test', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const { apiKey } = (req.body || {}) as { apiKey?: string };
+      const result = await testMistralApiKey({
+        rawKeyOverride: typeof apiKey === 'string' ? apiKey : undefined,
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        status: 'Temporary provider error',
+        message: err instanceof Error ? err.message : 'Không thể kiểm tra Mistral AI API Key.',
+        testedSource: 'none',
+        testedAt: new Date().toISOString(),
+      });
+    }
+  });
+
+  app.delete('/api/admin/provider-keys/mistral', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const result = await clearMistralApiKey({
+        actorUid: user.uid,
+        actorEmail: user.email,
+        idToken: user.idToken,
+      });
+      const cfg = getAuthoritativeAiConfigSnapshot();
+      res.json({
+        mistralStatus: result.status,
+        providerKeys: await getProviderKeysStatus(user.idToken),
+        mistralConfigured: isMistralConfigured(),
+        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Không thể gỡ Mistral AI API Key.',
       });
     }
   });

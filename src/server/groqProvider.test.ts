@@ -15,6 +15,10 @@ import {
   stripCloudflarePrefix,
 } from './cloudflareProvider.js';
 import {
+  isMistralModelId,
+  stripMistralPrefix,
+} from './mistralProvider.js';
+import {
   decryptSecretPayload,
   encryptSecretPayload,
   maskCloudflareIdentifier,
@@ -24,19 +28,23 @@ import {
 } from './singleKeyService.js';
 import { DEFAULT_TASK_MODELS, MODEL_CATALOG } from './modelDefaults.js';
 
-test('isGroqModelId, isCloudflareModelId, and prefix strippers handle groq:*, cf:*, and gemini-* IDs cleanly', () => {
+test('isMistralModelId, isGroqModelId, isCloudflareModelId, and prefix strippers handle 3-provider IDs cleanly', () => {
+  assert.equal(isMistralModelId('mistral:mistral-small-latest'), true);
+  assert.equal(isMistralModelId('MISTRAL:ministral-8b-latest'), true);
+  assert.equal(isMistralModelId('groq:openai/gpt-oss-120b'), false);
+  assert.equal(stripMistralPrefix('mistral:mistral-small-latest'), 'mistral-small-latest');
+
   assert.equal(isGroqModelId('groq:openai/gpt-oss-120b'), true);
   assert.equal(isGroqModelId('GROQ:openai/gpt-oss-20b'), true);
-  assert.equal(isGroqModelId('gemini-4-hydrogen'), false);
+  assert.equal(isGroqModelId('mistral:mistral-small-latest'), false);
   assert.equal(stripGroqPrefix('groq:openai/gpt-oss-120b'), 'openai/gpt-oss-120b');
-  assert.equal(stripGroqPrefix('gemini-4-hydrogen'), 'gemini-4-hydrogen');
   assert.equal(isGroqVisionModelId('groq:qwen/qwen3.8-27b'), true);
   assert.equal(isGroqVisionModelId('groq:meta-llama/llama-4-scout-17b-16e-instruct'), true);
   assert.equal(isGroqVisionModelId('groq:openai/gpt-oss-120b'), false);
 
   assert.equal(isCloudflareModelId('cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast'), true);
   assert.equal(isCloudflareModelId('CF:@cf/meta/llama-3.1-8b-instruct-fast'), true);
-  assert.equal(isCloudflareModelId('gemini-4-hydrogen'), false);
+  assert.equal(isCloudflareModelId('mistral:mistral-small-latest'), false);
   assert.equal(
     stripCloudflarePrefix('cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast'),
     '@cf/meta/llama-3.3-70b-instruct-fp8-fast'
@@ -54,7 +62,7 @@ test('normalizeGroqModelId upgrades retired/legacy Groq IDs and preserves active
   assert.equal(normalizeGroqModelId('groq:llama-3.3-70b-versatile'), 'groq:llama-3.3-70b-versatile');
   assert.equal(normalizeGroqModelId('groq:llama-3.1-8b-instant'), 'groq:llama-3.1-8b-instant');
   assert.equal(normalizeGroqModelId('groq:openai/gpt-oss-120b'), 'groq:openai/gpt-oss-120b');
-  assert.equal(normalizeGroqModelId('gemini-4-hydrogen'), 'gemini-4-hydrogen');
+  assert.equal(normalizeGroqModelId('mistral:mistral-small-latest'), 'mistral:mistral-small-latest');
 });
 
 test('isGroqChatModelId and pickBestAvailableGroqModel filter non-chat models and select preferred fallback', () => {
@@ -86,35 +94,43 @@ test('extractJsonStringFromModelOutput strips markdown fences and surrounding pr
   assert.equal(extractJsonStringFromModelOutput(''), '{}');
 });
 
-test('MODEL_CATALOG prioritizes Groq (including Qwen 3.8 27B Vision) and unifies all 11 default tasks', () => {
+test('MODEL_CATALOG uses 100% free 3-provider stack (Mistral, Groq, Cloudflare) with zero Gemini entries', () => {
   assert.ok(MODEL_CATALOG.every((m) => m.tier === 'free'));
-  assert.equal(MODEL_CATALOG[0].provider, 'groq');
+  assert.equal(MODEL_CATALOG[0].provider, 'mistral');
   const ids = MODEL_CATALOG.map((m) => m.modelId);
-  assert.ok(ids.includes('gemini-4-hydrogen'));
-  assert.ok(ids.includes('gemini-3.1-flash-lite'));
+  assert.equal(ids.some((id) => /gemini/i.test(id)), false);
+  assert.ok(ids.includes('mistral:mistral-small-latest'));
+  assert.ok(ids.includes('mistral:ministral-8b-latest'));
   assert.ok(ids.includes('groq:openai/gpt-oss-120b'));
   assert.ok(ids.includes('groq:qwen/qwen3.8-27b'));
   assert.ok(ids.includes('groq:openai/gpt-oss-20b'));
   assert.ok(ids.includes('cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast'));
+  assert.ok(ids.includes('cf:@cf/qwen/qwen3.8-27b'));
   assert.ok(ids.includes('cf:@cf/meta/llama-3.1-8b-instruct-fast'));
 
-  // Groq Qwen 3.8 27B is multimodal; Cloudflare & GPT-OSS models remain text-only
-  const visionModel = MODEL_CATALOG.find((m) => m.modelId === 'groq:qwen/qwen3.8-27b');
-  assert.equal(visionModel?.supportsMultimodal, true);
-  for (const m of MODEL_CATALOG.filter((item) => item.provider === 'cloudflare')) {
-    assert.equal(m.supportsMultimodal, false);
-  }
+  // Vision models exist on all 3 providers (Groq Qwen, Cloudflare Qwen, Mistral Small)
+  assert.equal(
+    MODEL_CATALOG.find((m) => m.modelId === 'groq:qwen/qwen3.8-27b')?.supportsMultimodal,
+    true
+  );
+  assert.equal(
+    MODEL_CATALOG.find((m) => m.modelId === 'cf:@cf/qwen/qwen3.8-27b')?.supportsMultimodal,
+    true
+  );
+  assert.equal(
+    MODEL_CATALOG.find((m) => m.modelId === 'mistral:mistral-small-latest')?.supportsMultimodal,
+    true
+  );
 
-  // All 11 default tasks share 1 unified Groq primary model and a Groq fallback model (zero Gemini key required)
-  for (const [taskType, cfg] of Object.entries(DEFAULT_TASK_MODELS)) {
-    assert.equal(cfg.defaultModel, 'groq:openai/gpt-oss-120b');
-    assert.equal(cfg.fallbackModel, 'groq:qwen/qwen3.8-27b');
-    assert.equal(
-      cfg.promptVersion,
-      taskType === 'knowledge_analysis' ? 'v4.1_semantic_inline_deterministic' : 'v3.2'
-    );
+  // All 11 default tasks use 3-provider IDs with fallback enabled and zero Gemini IDs
+  for (const cfg of Object.values(DEFAULT_TASK_MODELS)) {
+    assert.equal(/gemini/i.test(cfg.defaultModel), false);
+    assert.equal(/gemini/i.test(cfg.fallbackModel), false);
+    assert.equal(cfg.promptVersion, 'v4.2_3provider');
     assert.equal(cfg.enableFallback, true);
   }
+  assert.equal(DEFAULT_TASK_MODELS.knowledge_analysis.defaultModel, 'mistral:mistral-small-latest');
+  assert.equal(DEFAULT_TASK_MODELS.claim_validation.defaultModel, 'groq:openai/gpt-oss-20b');
 });
 
 test('provider secret encryption, validation, and Firestore maskedIdentifier constraints hold', () => {

@@ -648,10 +648,23 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
 
           {/* List */}
           {filtered.length === 0 ? (
-            <GlassSurface className="rounded-3xl p-8 text-center text-sm text-slate-600 dark:text-slate-300">
-              {items.length === 0
-                ? 'Ngân hàng luyện tập hiện chưa có câu sai nào. Khi bạn làm sai hoặc đánh dấu xem lại trong phần trắc nghiệm, câu hỏi sẽ xuất hiện tại đây.'
-                : 'Không tìm thấy câu hỏi nào khớp bộ lọc hiện tại.'}
+            <GlassSurface className="rounded-3xl p-8 sm:p-10 text-center space-y-3">
+              <svg viewBox="0 0 96 72" className="w-24 h-18 mx-auto" aria-hidden="true">
+                <rect x="10" y="16" width="54" height="42" rx="10" className="fill-[#F1F5FA] dark:fill-[#0D1628] stroke-[#BFDBFE] dark:stroke-[#1E293B]" strokeWidth="2" />
+                <rect x="28" y="10" width="56" height="44" rx="10" className="fill-[#EAF2FF] dark:fill-[#1E293B]" />
+                <rect x="38" y="22" width="34" height="5" rx="2.5" className="fill-[#2563EB]/80 dark:fill-[#60A5FA]" />
+                <rect x="38" y="33" width="24" height="4.5" rx="2.25" className="fill-[#94A3B8]/65" />
+                <circle cx="76" cy="48" r="10" className="fill-[#059669]" />
+                <path d="M72 48.2l2.6 2.6 5.2-5.4" fill="none" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <p className="font-semibold text-[#172033] dark:text-[#E6EFFC]">
+                {items.length === 0 ? 'Ngân hàng luyện tập đang trống' : 'Không tìm thấy câu hỏi phù hợp'}
+              </p>
+              <p className="text-xs sm:text-sm text-[#525E75] dark:text-[#94A3B8] max-w-md mx-auto">
+                {items.length === 0
+                  ? 'Khi bạn làm sai hoặc đánh dấu xem lại trong phần trắc nghiệm, câu hỏi sẽ tự động lưu tại đây theo lịch ôn tập ngắt quãng 1 / 3 / 7 ngày.'
+                  : 'Hãy thử nới lỏng bộ lọc môn học hoặc trạng thái ôn tập để xem toàn bộ câu hỏi đã lưu.'}
+              </p>
             </GlassSurface>
           ) : (
             <div className="space-y-3">

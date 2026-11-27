@@ -4,12 +4,10 @@ import {
   FileText,
   Moon,
   Search,
-  Sparkles,
   Sun,
 } from 'lucide-react';
 import { SUBJECT_LABELS, type AnalysisRecord } from '../../core/types';
 import { useTheme } from '../../context/ThemeContext';
-import { useUiMode } from '../../context/UiModeContext';
 import { AnimatedModal } from './AnimatedModal';
 
 export interface CommandPaletteNavItem {
@@ -30,7 +28,7 @@ interface CommandPaletteProps {
 
 interface CommandEntry {
   key: string;
-  group: 'Điều hướng' | 'Phân tích gần đây' | 'Tùy chỉnh giao diện';
+  group: 'Điều hướng' | 'Phân tích gần đây' | 'Tùy chỉnh hiển thị';
   label: string;
   subtitle?: string;
   icon: React.ComponentType<{ className?: string }>;
@@ -51,7 +49,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 }) => {
   const { theme, toggleTheme } = useTheme();
   const isDark = theme === 'dark';
-  const { isEthereal, toggleUiMode } = useUiMode();
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -94,21 +91,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
     const themeEntries: CommandEntry[] = [
       {
-        key: 'toggle-ui-mode',
-        group: 'Tùy chỉnh giao diện',
-        label: isEthereal
-          ? 'Chuyển sang giao diện Cổ điển (tối giản)'
-          : 'Chuyển sang giao diện Hiện đại (Liquid Glass)',
-        subtitle: 'Giữ nguyên toàn bộ dữ liệu và tính năng',
-        icon: Sparkles,
-        run: () => {
-          toggleUiMode();
-          onClose();
-        },
-      },
-      {
         key: 'toggle-dark-mode',
-        group: 'Tùy chỉnh giao diện',
+        group: 'Tùy chỉnh hiển thị',
         label: isDark ? 'Chuyển sang chế độ Sáng (Light Mode)' : 'Chuyển sang chế độ Tối (Dark Mode)',
         subtitle: 'Cân chỉnh độ tương phản nền',
         icon: isDark ? Sun : Moon,
@@ -132,12 +116,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     navItems,
     analyses,
     query,
-    isEthereal,
     isDark,
     onSelectNav,
     onSelectAnalysis,
     onClose,
-    toggleUiMode,
     toggleTheme,
   ]);
 
@@ -162,7 +144,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   const grouped = useMemo(() => {
     const groups: Array<{ name: CommandEntry['group']; items: Array<{ entry: CommandEntry; flatIndex: number }> }> = [];
-    const order: CommandEntry['group'][] = ['Điều hướng', 'Phân tích gần đây', 'Tùy chỉnh giao diện'];
+    const order: CommandEntry['group'][] = ['Điều hướng', 'Phân tích gần đây', 'Tùy chỉnh hiển thị'];
     let flatIndex = 0;
     for (const g of order) {
       const matched = entries.filter((e) => e.group === g);
@@ -182,33 +164,33 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       onClose={onClose}
       ariaLabel="Bảng tìm kiếm và điều hướng nhanh"
       maxWidthClassName="max-w-xl"
-      panelClassName="p-0 overflow-hidden"
+      panelClassName="p-0 overflow-hidden bg-white dark:bg-[#111B30] border border-[#E6ECF5] dark:border-[#1E293B]"
     >
-      <div className="flex items-center gap-3 px-4 sm:px-5 py-3.5 border-b border-indigo-100/80 dark:border-slate-700/80">
-        <Search className="w-4 h-4 text-indigo-500 dark:text-indigo-400 shrink-0" />
+      <div className="flex items-center gap-3 px-4 sm:px-5 py-3.5 border-b border-[#E6ECF5] dark:border-[#1E293B]">
+        <Search className="w-4 h-4 text-[#2563EB] dark:text-[#60A5FA] shrink-0" />
         <input
           ref={inputRef}
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Tìm tính năng, bài phân tích gần đây hoặc chuyển giao diện..."
-          className="w-full bg-transparent text-sm text-[#171B3A] dark:text-[#EEF1FF] placeholder:text-slate-400 focus:outline-none"
+          placeholder="Tìm tính năng, bài phân tích gần đây hoặc chuyển chế độ màu..."
+          className="w-full bg-transparent text-sm text-[#172033] dark:text-[#E6EFFC] placeholder:text-[#525E75]/70 dark:placeholder:text-[#94A3B8]/70 focus:outline-none"
         />
-        <kbd className="hidden sm:inline-block font-mono text-[10px] px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-slate-800 text-slate-500 dark:text-slate-300 border border-indigo-200/70 dark:border-slate-700">
+        <kbd className="hidden sm:inline-block font-mono text-[10px] px-2 py-0.5 rounded-md bg-[#F1F5FA] dark:bg-[#0D1628] text-[#525E75] dark:text-[#94A3B8] border border-[#E6ECF5] dark:border-[#334155]">
           ESC
         </kbd>
       </div>
 
       <div className="max-h-[380px] overflow-y-auto p-2.5 sm:p-3 space-y-3">
         {grouped.length === 0 ? (
-          <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-400">
+          <div className="py-10 text-center text-xs text-[#525E75] dark:text-[#94A3B8]">
             Không tìm thấy kết quả phù hợp với “{query}”.
           </div>
         ) : (
           grouped.map((group) => (
             <div key={group.name}>
-              <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400">
+              <p className="px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#525E75] dark:text-[#94A3B8]">
                 {group.name}
               </p>
               <div className="space-y-0.5">
@@ -221,18 +203,18 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                       type="button"
                       onMouseEnter={() => setActiveIndex(flatIndex)}
                       onClick={entry.run}
-                      className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-2xl text-left cursor-pointer transition-colors duration-150 ${
+                      className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl text-left cursor-pointer transition-colors duration-150 ${
                         isHighlighted
-                          ? 'bg-indigo-500/12 dark:bg-indigo-500/22 text-[#171B3A] dark:text-white'
-                          : 'text-[#334155] dark:text-[#CBD5E1] hover:bg-indigo-50/70 dark:hover:bg-white/5'
+                          ? 'bg-[#EAF2FF] dark:bg-[#2563EB]/20 text-[#172033] dark:text-white'
+                          : 'text-[#172033] dark:text-[#CBD5E1] hover:bg-[#F1F5FA] dark:hover:bg-[#0D1628]'
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <span
-                          className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
+                          className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
                             isHighlighted
-                              ? 'bg-gradient-to-br from-[#4F46E5] to-[#7C3AED] text-white shadow-sm'
-                              : 'bg-white/80 dark:bg-slate-800/80 text-indigo-600 dark:text-indigo-400 border border-indigo-100/80 dark:border-slate-700'
+                              ? 'bg-[#2563EB] text-white shadow-xs'
+                              : 'bg-[#F1F5FA] dark:bg-[#0D1628] text-[#2563EB] dark:text-[#60A5FA] border border-[#E6ECF5] dark:border-[#1E293B]'
                           }`}
                         >
                           <Icon className="w-4 h-4" />
@@ -240,7 +222,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                         <div className="min-w-0">
                           <p className="text-xs sm:text-sm font-semibold truncate">{entry.label}</p>
                           {entry.subtitle && (
-                            <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                            <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8] truncate">
                               {entry.subtitle}
                             </p>
                           )}
@@ -249,7 +231,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                       <ArrowRight
                         className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${
                           isHighlighted
-                            ? 'text-indigo-600 dark:text-indigo-300 translate-x-0.5'
+                            ? 'text-[#2563EB] dark:text-[#60A5FA] translate-x-0.5'
                             : 'text-slate-300 dark:text-slate-600'
                         }`}
                       />
@@ -262,7 +244,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         )}
       </div>
 
-      <div className="px-4 py-2.5 border-t border-indigo-100/80 dark:border-slate-700/80 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 bg-indigo-50/40 dark:bg-slate-900/40">
+      <div className="px-4 py-2.5 border-t border-[#E6ECF5] dark:border-[#1E293B] flex items-center justify-between text-[11px] text-[#525E75] dark:text-[#94A3B8] bg-[#F8FAFC] dark:bg-[#0D1628]">
         <span>Dùng ↑ ↓ để chọn · Enter để mở</span>
         <span className="font-mono">Ctrl + K</span>
       </div>

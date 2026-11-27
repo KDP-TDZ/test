@@ -5,10 +5,8 @@ import {
   Eye,
   EyeOff,
   FileText,
-  LayoutGrid,
   LogOut,
   Moon,
-  Sparkles,
   Sun,
   Volume2,
   VolumeX,
@@ -16,9 +14,7 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { usePrivacyBlur } from '../../context/PrivacyBlurContext';
 import { useTheme } from '../../context/ThemeContext';
-import { useUiMode } from '../../context/UiModeContext';
 import type { GradeLevel } from '../../core/types';
-import { useIsMobileViewport } from '../../hooks/useIsMobileViewport';
 import { updateUserPreferences } from '../../services/firestoreService';
 import {
   isWaterDropSoundEnabled,
@@ -29,21 +25,19 @@ import {
 const GRADES: GradeLevel[] = ['10', '11', '12'];
 
 interface AccountMenuProps {
-  /** Show compact display name next to avatar on desktop Classic header */
+  /** Show compact display name next to avatar on desktop header */
   showIdentityText?: boolean;
 }
 
 /**
  * Unified Account Avatar Popover consolidating Theme (Sáng/Tối), Privacy Text Blur (Che chữ),
- * UI Mode (Cổ điển/Hiện đại), Quick Grade Switcher (Lớp 10/11/12), and Logout into a single
- * clean header zone so Laptop/Tablet/Mobile headers never overflow or clip controls.
+ * Quick Grade Switcher (Lớp 10/11/12), Water Drop Audio Toggle, System Summary Download,
+ * and Logout into a single clean header zone.
  */
 export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = false }) => {
   const { user, profile, isSuperAdmin, logout, refreshProfile } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const { uiMode, isEthereal, setUiMode } = useUiMode();
   const { privacyBlur, canUsePrivacyBlur, togglePrivacyBlur } = usePrivacyBlur();
-  const isMobile = useIsMobileViewport();
 
   const [open, setOpen] = useState(false);
   const [savingGrade, setSavingGrade] = useState<GradeLevel | null>(null);
@@ -101,11 +95,7 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
           aria-pressed={true}
           aria-label="Hiện lại chữ và nội dung trang (Ctrl+H)"
           title="Đang che chữ · Bấm để hiện lại (Ctrl+H)"
-          className={`inline-flex items-center gap-1.5 min-h-[36px] sm:min-h-[38px] rounded-xl px-2.5 sm:px-3 py-1.5 text-xs font-semibold cursor-pointer shrink-0 whitespace-nowrap transition-opacity duration-150 focus-visible:outline-none focus-visible:ring-2 ${
-            isEthereal
-              ? 'privacy-blur-toggle-active privacy-blur-toggle-modern focus-visible:ring-indigo-500'
-              : 'privacy-blur-toggle-active privacy-blur-toggle-classic focus-visible:ring-sky-500'
-          }`}
+          className="inline-flex items-center gap-1.5 min-h-[38px] rounded-xl px-2.5 sm:px-3 py-1.5 text-xs font-semibold cursor-pointer shrink-0 whitespace-nowrap transition-opacity duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB] privacy-blur-toggle-active"
         >
           <Eye className="size-4 shrink-0" />
           <span className="hidden sm:inline">Hiện chữ</span>
@@ -121,32 +111,22 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
         aria-expanded={open}
         aria-label="Mở menu tài khoản và cài đặt hiển thị"
         title={`${displayName} · Cài đặt & Đăng xuất`}
-        className={`inline-flex items-center gap-2 rounded-full min-h-[40px] cursor-pointer shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 ${
-          isEthereal ? 'focus-visible:ring-indigo-500' : 'focus-visible:ring-sky-500'
-        } ${
+        className={`inline-flex items-center gap-2 rounded-full min-h-[40px] cursor-pointer shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB] ${
           showIdentityText
-            ? 'pl-1 pr-2.5 py-1 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/80'
-            : 'p-0.5 hover:ring-2 hover:ring-indigo-300/70 dark:hover:ring-indigo-400/40'
+            ? 'p-0.5 md:pl-1 md:pr-2.5 md:py-1 border border-[#E6ECF5] dark:border-[#1E293B] bg-white dark:bg-[#111B30] hover:bg-[#F1F5FA] dark:hover:bg-[#1E293B]/80'
+            : 'p-0.5 hover:ring-2 hover:ring-[#BFDBFE] dark:hover:ring-[#3B82F6]/40'
         }`}
       >
-        <span
-          className={`flex items-center justify-center size-9 rounded-full text-white font-display text-xs font-bold select-none shrink-0 ${
-            isEthereal && !isMobile
-              ? 'bg-gradient-to-br from-[#6366F1] to-[#A855F7] shadow-[0_6px_14px_-4px_rgba(99,102,241,0.5)]'
-              : isEthereal
-                ? 'bg-indigo-600'
-                : 'bg-sky-700'
-          }`}
-        >
+        <span className="flex items-center justify-center size-9 rounded-full bg-[#2563EB] text-white font-display text-xs font-bold select-none shrink-0 shadow-[0_4px_12px_-4px_rgba(37,99,235,0.5)]">
           {userInitial}
         </span>
 
         {showIdentityText && (
           <span className="hidden md:flex flex-col text-left leading-tight max-w-[130px]">
-            <span className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
+            <span className="text-xs font-semibold text-[#172033] dark:text-[#E6EFFC] truncate">
               {displayName}
             </span>
-            <span className="text-[11px] text-[#475B78] dark:text-[#B4C7E2] truncate">
+            <span className="text-[11px] text-[#525E75] dark:text-[#94A3B8] truncate">
               {isSuperAdmin ? 'Super Admin' : `Lớp ${currentGrade}`}
             </span>
           </span>
@@ -154,7 +134,7 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
 
         {showIdentityText && (
           <ChevronDown
-            className={`hidden md:block size-3.5 text-slate-500 dark:text-slate-400 transition-transform duration-150 ${
+            className={`hidden md:block size-3.5 text-[#525E75] dark:text-[#94A3B8] transition-transform duration-150 ${
               open ? 'rotate-180' : ''
             }`}
           />
@@ -165,23 +145,19 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
       {open && (
         <div
           role="menu"
-          aria-label="Cài đặt tài khoản và giao diện"
-          className="absolute right-0 top-[calc(100%+8px)] z-[60] w-[280px] sm:w-[300px] rounded-2xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700/90 shadow-xl shadow-slate-900/12 dark:shadow-black/50 p-3 space-y-3"
+          aria-label="Cài đặt tài khoản và hiển thị"
+          className="absolute right-0 top-[calc(100%+8px)] z-[60] w-[280px] sm:w-[300px] rounded-2xl bg-white dark:bg-[#111B30] border border-[#E6ECF5] dark:border-[#1E293B] shadow-xl shadow-slate-900/12 dark:shadow-black/55 p-3 space-y-3"
         >
           {/* User Identity Summary */}
-          <div className="flex items-center gap-3 px-1 pb-2.5 border-b border-slate-100 dark:border-slate-800">
-            <span
-              className={`flex items-center justify-center size-10 rounded-full text-white font-display text-sm font-bold shrink-0 ${
-                isEthereal ? 'bg-indigo-600' : 'bg-sky-700'
-              }`}
-            >
+          <div className="flex items-center gap-3 px-1 pb-2.5 border-b border-[#E6ECF5] dark:border-[#1E293B]">
+            <span className="flex items-center justify-center size-10 rounded-full bg-[#2563EB] text-white font-display text-sm font-bold shrink-0">
               {userInitial}
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
+              <p className="text-sm font-bold text-[#172033] dark:text-[#E6EFFC] truncate">
                 {displayName}
               </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+              <p className="text-xs text-[#525E75] dark:text-[#94A3B8] truncate">
                 {isSuperAdmin
                   ? 'Quản trị viên hệ thống'
                   : `${user?.email || `Học sinh · Lớp ${currentGrade}`}`}
@@ -191,10 +167,10 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
 
           {/* Quick Grade Switcher */}
           <div className="space-y-1.5 px-1">
-            <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+            <div className="flex items-center justify-between text-[11px] font-semibold text-[#525E75] dark:text-[#94A3B8]">
               <span>Khối lớp hiện tại</span>
               {savingGrade && (
-                <span className="text-indigo-600 dark:text-indigo-400">Đang lưu...</span>
+                <span className="text-[#2563EB] dark:text-[#60A5FA]">Đang lưu...</span>
               )}
             </div>
             <div className="grid grid-cols-3 gap-1.5">
@@ -208,12 +184,10 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
                     aria-checked={active}
                     disabled={savingGrade !== null}
                     onClick={() => handleSelectGrade(g)}
-                    className={`min-h-[36px] rounded-xl text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer transition-colors duration-150 ${
+                    className={`min-h-[38px] rounded-xl text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer transition-colors duration-150 ${
                       active
-                        ? isEthereal
-                          ? 'bg-indigo-600 text-white'
-                          : 'bg-sky-700 text-white'
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200/80 dark:hover:bg-slate-700'
+                        ? 'bg-[#2563EB] text-white shadow-xs'
+                        : 'bg-[#F1F5FA] dark:bg-[#0D1628] text-[#172033] dark:text-[#CBD5E1] hover:bg-[#EAF2FF] dark:hover:bg-[#1E293B] border border-[#E6ECF5] dark:border-[#1E293B]'
                     }`}
                   >
                     {active && <Check className="size-3 shrink-0" />}
@@ -224,70 +198,23 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
             </div>
           </div>
 
-          {/* Desktop/Tablet UI Mode Switcher */}
-          <div className="space-y-1.5 px-1">
-            <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 dark:text-slate-400">
-              <span>Phong cách giao diện</span>
-              {isMobile && (
-                <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-                  Mobile siêu nhẹ
-                </span>
-              )}
-            </div>
-            <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-slate-800">
-              <button
-                type="button"
-                role="menuitemradio"
-                aria-checked={uiMode === 'classic'}
-                onClick={() => setUiMode('classic')}
-                className={`min-h-[34px] rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors duration-150 ${
-                  uiMode === 'classic'
-                    ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                <LayoutGrid className="size-3.5 shrink-0" />
-                <span>Cổ điển</span>
-              </button>
-              <button
-                type="button"
-                role="menuitemradio"
-                aria-checked={uiMode === 'ethereal'}
-                onClick={() => setUiMode('ethereal')}
-                className={`min-h-[34px] rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors duration-150 ${
-                  uiMode === 'ethereal'
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                <Sparkles className="size-3.5 shrink-0" />
-                <span>Hiện đại</span>
-              </button>
-            </div>
-            {isMobile && (
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
-                Điện thoại tự dùng CSS phẳng chống lag; chọn phong cách trên sẽ áp dụng cho máy tính.
-              </p>
-            )}
-          </div>
-
-          {/* Display Toggles: Light/Dark & Privacy Blur */}
-          <div className="space-y-1 pt-1 border-t border-slate-100 dark:border-slate-800">
+          {/* Display Toggles: Light/Dark, Sound & Privacy Blur */}
+          <div className="space-y-1 pt-1 border-t border-[#E6ECF5] dark:border-[#1E293B]">
             <button
               type="button"
               role="menuitem"
               onClick={toggleTheme}
-              className="w-full min-h-[40px] px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition-colors"
+              className="w-full min-h-[40px] px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-medium text-[#172033] dark:text-[#E6EFFC] hover:bg-[#F1F5FA] dark:hover:bg-[#0D1628] cursor-pointer transition-colors"
             >
               <span className="inline-flex items-center gap-2.5">
                 {theme === 'light' ? (
-                  <Moon className="size-4 text-sky-600 dark:text-sky-400" />
+                  <Moon className="size-4 text-[#2563EB]" />
                 ) : (
-                  <Sun className="size-4 text-amber-500" />
+                  <Sun className="size-4 text-[#F5A623]" />
                 )}
                 <span>Giao diện màu</span>
               </span>
-              <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              <span className="text-[11px] font-semibold text-[#525E75] dark:text-[#94A3B8]">
                 {theme === 'light' ? 'Sáng' : 'Tối'}
               </span>
             </button>
@@ -301,17 +228,17 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
                 setWaterDropSoundEnabled(next);
                 if (next) playWaterDropSound();
               }}
-              className="w-full min-h-[40px] px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition-colors"
+              className="w-full min-h-[40px] px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-medium text-[#172033] dark:text-[#E6EFFC] hover:bg-[#F1F5FA] dark:hover:bg-[#0D1628] cursor-pointer transition-colors"
             >
               <span className="inline-flex items-center gap-2.5">
                 {waterSoundOn ? (
-                  <Volume2 className="size-4 text-indigo-600 dark:text-indigo-400" />
+                  <Volume2 className="size-4 text-[#2563EB] dark:text-[#60A5FA]" />
                 ) : (
-                  <VolumeX className="size-4 text-slate-400" />
+                  <VolumeX className="size-4 text-[#525E75] dark:text-[#94A3B8]" />
                 )}
                 <span>Âm thanh click giọt nước</span>
               </span>
-              <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              <span className="text-[11px] font-semibold text-[#525E75] dark:text-[#94A3B8]">
                 {waterSoundOn ? 'Bật' : 'Tắt'}
               </span>
             </button>
@@ -324,19 +251,17 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
                 onClick={togglePrivacyBlur}
                 className={`w-full min-h-[40px] px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-medium cursor-pointer transition-colors ${
                   privacyBlur
-                    ? isEthereal
-                      ? 'privacy-blur-toggle-active privacy-blur-toggle-modern'
-                      : 'privacy-blur-toggle-active privacy-blur-toggle-classic'
-                    : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    ? 'privacy-blur-toggle-active'
+                    : 'text-[#172033] dark:text-[#E6EFFC] hover:bg-[#F1F5FA] dark:hover:bg-[#0D1628]'
                 }`}
               >
                 <span className="inline-flex items-center gap-2.5">
                   {privacyBlur ? (
                     <Eye className="size-4 shrink-0" />
                   ) : (
-                    <EyeOff className="size-4 shrink-0 text-indigo-600 dark:text-indigo-400" />
+                    <EyeOff className="size-4 shrink-0 text-[#2563EB] dark:text-[#60A5FA]" />
                   )}
-                  <span>{privacyBlur ? 'Đang che chữ · Bấm hiện lại' : 'Che chữ khoe CSS (Admin)'}</span>
+                  <span>{privacyBlur ? 'Đang che chữ · Bấm hiện lại' : 'Che chữ trình chiếu (Admin)'}</span>
                 </span>
                 <span className="text-[10px] font-mono opacity-80">Ctrl+H</span>
               </button>
@@ -347,18 +272,18 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
               download="TONG_KET_HE_THONG_STUDYCHECK_AI.txt"
               role="menuitem"
               onClick={() => setOpen(false)}
-              className="w-full min-h-[40px] px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition-colors"
+              className="w-full min-h-[40px] px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-medium text-[#172033] dark:text-[#E6EFFC] hover:bg-[#F1F5FA] dark:hover:bg-[#0D1628] cursor-pointer transition-colors"
             >
               <span className="inline-flex items-center gap-2.5">
-                <FileText className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <FileText className="size-4 shrink-0 text-[#059669] dark:text-emerald-400" />
                 <span>Tải bản Tổng kết hệ thống</span>
               </span>
-              <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">.txt</span>
+              <span className="text-[10px] font-mono text-[#525E75] dark:text-[#94A3B8]">.txt</span>
             </a>
           </div>
 
           {/* Sign Out */}
-          <div className="pt-1 border-t border-slate-100 dark:border-slate-800">
+          <div className="pt-1 border-t border-[#E6ECF5] dark:border-[#1E293B]">
             <button
               type="button"
               role="menuitem"
@@ -366,7 +291,7 @@ export const AccountMenu: React.FC<AccountMenuProps> = ({ showIdentityText = fal
                 setOpen(false);
                 logout();
               }}
-              className="w-full min-h-[42px] px-2.5 py-2 rounded-xl flex items-center justify-center gap-2 text-xs font-semibold text-rose-600 dark:text-rose-400 bg-rose-50/80 dark:bg-rose-950/35 hover:bg-rose-100 dark:hover:bg-rose-950/60 cursor-pointer transition-colors"
+              className="w-full min-h-[42px] px-2.5 py-2 rounded-xl flex items-center justify-center gap-2 text-xs font-semibold text-[#E11D48] dark:text-rose-400 bg-rose-50/80 dark:bg-rose-950/35 hover:bg-rose-100 dark:hover:bg-rose-950/60 cursor-pointer transition-colors"
             >
               <LogOut className="size-4 shrink-0" />
               <span>Đăng xuất</span>

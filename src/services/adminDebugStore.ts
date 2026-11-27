@@ -5,8 +5,8 @@ export type DebugLogCategory = 'api' | 'ai_pipeline' | 'firestore' | 'runtime';
 export interface ServerErrorDebugPayload {
   activeModel?: string;
   configuredProviders?: {
+    mistral: boolean;
     groq: boolean;
-    gemini: boolean;
     cloudflare: boolean;
   };
   recentExecutions?: AiExecutionLog[];

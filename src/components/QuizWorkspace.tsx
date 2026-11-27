@@ -12,7 +12,6 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { useUiMode } from '../context/UiModeContext';
 import {
   computeNextQuestionIndex,
   isEditableKeyboardTarget,
@@ -71,7 +70,6 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
 }) => {
   const quizRef = useRef<HTMLDivElement>(null);
   const { user, systemStatus } = useAuth();
-  const { isEthereal } = useUiMode();
   const [savedQuizSets, setSavedQuizSets] = useState<QuizSet[]>([]);
   const [activeQuiz, setActiveQuiz] = useState<QuizSet | null>(null);
 
@@ -274,9 +272,9 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
     }
   );
 
-  // Desktop keyboard shortcuts in Modern mode (1-4 / A-D to answer focused question, ↑/↓ to switch question)
+  // Desktop keyboard shortcuts (1-4 / A-D to answer focused question, ↑/↓ to switch question)
   useEffect(() => {
-    if (!activeQuiz || !isEthereal) return;
+    if (!activeQuiz) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (isEditableKeyboardTarget(document.activeElement as HTMLElement | null)) return;
@@ -311,7 +309,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeQuiz, isEthereal, focusedQuestionIdx, answers, submittingQuestionId, handleSelectOption]);
+  }, [activeQuiz, focusedQuestionIdx, answers, submittingQuestionId, handleSelectOption]);
 
   const handleToggleFlag = async (question: QuizQuestion) => {
     if (!user) return;
@@ -424,7 +422,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                     onClick={() => setCount(n)}
                     className={`py-2 rounded-lg font-mono text-xs font-semibold cursor-pointer transition-all ${
                       count === n
-                        ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                        ? 'bg-[#2563EB] text-white shadow-sm'
                         : 'text-slate-700 dark:text-slate-200 hover:bg-white/60 dark:hover:bg-slate-800/60'
                     }`}
                   >
@@ -519,7 +517,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                     onClick={() => setAdvancedCount(n)}
                     className={`w-9 h-9 rounded-xl font-mono text-xs font-semibold border cursor-pointer transition-colors ${
                       advancedCount === n
-                        ? 'bg-sky-600 text-white border-sky-600 shadow-sm'
+                        ? 'bg-[#2563EB] text-white border-[#2563EB] shadow-sm'
                         : 'glass-control text-slate-700 dark:text-slate-200'
                     }`}
                   >
@@ -616,11 +614,9 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                 Mở Ngân hàng luyện tập
               </WaterRippleButton>
             )}
-            {isEthereal && (
-              <p className="hidden sm:block w-full font-mono text-[11px] text-[#6B7499] dark:text-[#A5B1D8] pt-1">
-                Phím tắt: 1–4 / A–D chọn đáp án cho câu đang chọn · ↑/↓ chuyển câu
-              </p>
-            )}
+            <p className="hidden sm:block w-full font-mono text-[11px] text-[#525E75] dark:text-[#94A3B8] pt-1">
+              Phím tắt: 1–4 / A–D chọn đáp án cho câu đang chọn · ↑/↓ chuyển câu
+            </p>
           </GlassSurface>
 
           <div className="space-y-4">
@@ -630,7 +626,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
               const isCorrect = chosen === q.correctAnswer;
               const isFlagged = Boolean(flaggedMap[q.questionId]);
               const isReporting = reportingQuestionId === q.questionId;
-              const isFocused = isEthereal && focusedQuestionIdx === idx;
+              const isFocused = focusedQuestionIdx === idx;
               const options: Array<{ key: 'A' | 'B' | 'C' | 'D'; text: string }> = [
                 { key: 'A', text: q.optionA },
                 { key: 'B', text: q.optionB },
@@ -645,21 +641,21 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                   onClick={() => setFocusedQuestionIdx(idx)}
                   className={`quiz-question-card rounded-3xl p-4 sm:p-6 space-y-4 ${
                     isFocused
-                      ? 'ring-2 ring-indigo-500/35 dark:ring-indigo-400/35'
+                      ? 'ring-2 ring-[#2563EB]/30 dark:ring-[#3B82F6]/35'
                       : ''
                   }`}
                 >
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="space-y-1 flex-1 min-w-[220px]">
-                      <p className="text-xs font-mono text-sky-700 dark:text-sky-400 font-semibold tabular-nums">
+                      <p className="text-xs font-mono text-[#2563EB] dark:text-[#60A5FA] font-semibold tabular-nums">
                         Câu {idx + 1} · {q.chapter} · {q.concept}
                         {q.cognitiveLevel ? ` · ${COGNITIVE_LABELS[q.cognitiveLevel]}` : ''}
                         {q.isExternalAdvanced || q.questionOrigin === 'external_advanced' ? (
-                          <span className="text-blue-700 dark:text-blue-300"> · Nâng cao mở rộng</span>
+                          <span className="text-[#1746A2] dark:text-[#93C5FD]"> · Nâng cao mở rộng</span>
                         ) : q.questionOrigin === 'textbook_supplement' ? (
                           <span className="text-amber-700 dark:text-amber-300"> · Bổ sung SGK</span>
                         ) : q.questionOrigin === 'mistake_variation' ? (
-                          <span className="text-indigo-700 dark:text-indigo-300"> · Biến thể sửa lỗi</span>
+                          <span className="text-[#2563EB] dark:text-[#60A5FA]"> · Biến thể sửa lỗi</span>
                         ) : null}
                       </p>
                       <h3 className="text-sm sm:text-base font-semibold text-[#16243E] dark:text-[#E6EFFC] leading-[1.6] text-pretty">
@@ -717,7 +713,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                         type="button"
                         disabled={!reportNote.trim()}
                         onClick={() => handleReportQuestion(q.questionId)}
-                        className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 text-white font-semibold disabled:opacity-50 cursor-pointer"
+                        className="px-3.5 py-1.5 rounded-xl bg-[#2563EB] hover:bg-[#1746A2] text-white font-semibold disabled:opacity-50 cursor-pointer"
                       >
                         Gửi
                       </button>

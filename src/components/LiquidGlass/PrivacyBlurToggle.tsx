@@ -1,7 +1,6 @@
 import React from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { usePrivacyBlur } from '../../context/PrivacyBlurContext';
-import { useUiMode } from '../../context/UiModeContext';
 
 interface PrivacyBlurToggleProps {
   className?: string;
@@ -13,7 +12,6 @@ export const PrivacyBlurToggle: React.FC<PrivacyBlurToggleProps> = ({
   showLabelOnMobile = false,
 }) => {
   const { privacyBlur, canUsePrivacyBlur, togglePrivacyBlur } = usePrivacyBlur();
-  const { isEthereal } = useUiMode();
 
   if (!canUsePrivacyBlur) return null;
 
@@ -33,26 +31,16 @@ export const PrivacyBlurToggle: React.FC<PrivacyBlurToggleProps> = ({
           ? 'Đang che chữ · Bấm để hiện lại (Ctrl+H)'
           : 'Che mờ chữ để khoe giao diện CSS · Chỉ dành cho Admin (Ctrl+H)'
       }
-      className={`inline-flex items-center gap-1.5 min-h-[38px] rounded-xl px-2.5 sm:px-3 py-2 text-xs font-medium cursor-pointer shrink-0 whitespace-nowrap transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 ${
-        isEthereal ? 'focus-visible:ring-indigo-500' : 'focus-visible:ring-sky-500'
-      } ${
+      className={`inline-flex items-center gap-1.5 min-h-[38px] rounded-xl px-2.5 sm:px-3 py-2 text-xs font-medium cursor-pointer shrink-0 whitespace-nowrap transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB] ${
         privacyBlur
-          ? isEthereal
-            ? 'privacy-blur-toggle-active privacy-blur-toggle-modern'
-            : 'privacy-blur-toggle-active privacy-blur-toggle-classic'
+          ? 'privacy-blur-toggle-active bg-[#2563EB] text-white border border-[#2563EB] shadow-sm'
           : 'glass-control'
       } ${className}`}
     >
       {privacyBlur ? (
         <Eye className="size-4 text-white shrink-0" />
       ) : (
-        <EyeOff
-          className={`size-4 shrink-0 ${
-            isEthereal
-              ? 'text-indigo-600 dark:text-indigo-300'
-              : 'text-sky-700 dark:text-sky-400'
-          }`}
-        />
+        <EyeOff className="size-4 shrink-0 text-[#2563EB] dark:text-[#60A5FA]" />
       )}
       <span className={showLabelOnMobile ? 'inline' : 'hidden xl:inline'}>
         {privacyBlur ? 'Hiện chữ' : 'Che chữ'}

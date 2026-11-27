@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Award,
-  BookOpen,
   CheckCircle2,
   Clock,
   FileCheck2,
@@ -12,7 +11,6 @@ import {
 } from 'lucide-react';
 import { BRAND_CONFIG } from '../config/brand';
 import { useAuth } from '../context/AuthContext';
-import { useUiMode } from '../context/UiModeContext';
 import {
   computeNextQuestionIndex,
   isEditableKeyboardTarget,
@@ -63,7 +61,6 @@ function formatClock(totalSeconds: number): string {
 
 export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboard }) => {
   const { user, profile, isSuperAdmin } = useAuth();
-  const { isEthereal } = useUiMode();
   const [exams, setExams] = useState<ExamDocument[]>([]);
   const [attempts, setAttempts] = useState<ExamAttempt[]>([]);
   const [loading, setLoading] = useState(true);
@@ -178,7 +175,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
 
   // Desktop keyboard shortcuts (1-4 / A-D for focused ABCD question, ArrowUp/ArrowDown to switch question)
   useEffect(() => {
-    if (!activeExam || latestResult || !isEthereal) return;
+    if (!activeExam || latestResult) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (isEditableKeyboardTarget(document.activeElement as HTMLElement | null)) return;
@@ -218,7 +215,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeExam, latestResult, isEthereal, focusedQuestionIdx]);
+  }, [activeExam, latestResult, focusedQuestionIdx]);
 
   const updateAnswer = (qId: string, updater: (prev: ExamQuestionAnswer) => ExamQuestionAnswer) => {
     setAnswersMap((prev) => {
@@ -327,7 +324,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                 onClick={() => setPrintVariantSeed(v.seed)}
                 className={`px-3 py-1.5 rounded-xl font-medium cursor-pointer transition-all ${
                   printVariantSeed === v.seed
-                    ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                    ? 'bg-[#2563EB] text-white shadow-sm'
                     : 'glass-control'
                 }`}
               >
@@ -457,9 +454,9 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
 
     return (
       <div className="space-y-6">
-        <GlassSurface className="rounded-3xl p-5 flex flex-wrap items-center justify-between gap-4 sticky top-20 z-20">
+        <GlassSurface className="rounded-3xl p-4 sm:p-5 flex flex-wrap items-center justify-between gap-4 sticky top-[60px] md:top-20 z-20">
           <div>
-            <p className="text-xs font-semibold text-sky-700 dark:text-sky-400">
+            <p className="text-xs font-semibold text-[#2563EB] dark:text-[#60A5FA]">
               {EXAM_TYPE_LABELS[activeExam.examType]} · {SUBJECT_LABELS[activeExam.subject]} Lớp{' '}
               {activeExam.grade}
             </p>
@@ -565,8 +562,8 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
             <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 tabular-nums">
               Sơ đồ câu hỏi ({answeredTotal}/{activeExam.questions.length} đã trả lời)
             </p>
-            {isEthereal && !latestResult && (
-              <p className="hidden sm:block font-mono text-[11px] text-[#6B7499] dark:text-[#A5B1D8]">
+            {!latestResult && (
+              <p className="hidden sm:block font-mono text-[11px] text-[#525E75] dark:text-[#94A3B8]">
                 Phím tắt: 1–4 / A–D chọn đáp án · ↑/↓ chuyển câu
               </p>
             )}
@@ -583,14 +580,12 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                 'glass-control text-slate-700 dark:text-slate-300';
               if (bk) {
                 cls = bk.isFullCorrect
-                  ? 'bg-emerald-600 border-emerald-600 text-white'
+                  ? 'bg-[#059669] border-[#059669] text-white'
                   : bk.earnedScore > 0
-                  ? 'bg-amber-500 border-amber-500 text-white'
-                  : 'bg-rose-600 border-rose-600 text-white';
+                  ? 'bg-[#F5A623] border-[#F5A623] text-white'
+                  : 'bg-[#E11D48] border-[#E11D48] text-white';
               } else if (answered) {
-                cls = isEthereal
-                  ? 'bg-gradient-to-r from-[#4338CA] to-[#6366F1] border-indigo-500 text-white'
-                  : 'bg-sky-700 border-sky-700 text-white';
+                cls = 'bg-[#2563EB] border-[#2563EB] text-white';
               } else if (isPartialTf) {
                 cls = 'border-amber-500 bg-amber-500/15 text-amber-800 dark:text-amber-300';
               }
@@ -605,8 +600,8 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                       : undefined
                   }
                   className={`size-8 rounded-xl border font-mono text-xs font-bold flex items-center justify-center ${cls} ${
-                    isEthereal && focusedQuestionIdx === idx && !latestResult
-                      ? 'ring-2 ring-indigo-500 ring-offset-1 dark:ring-offset-slate-900'
+                    focusedQuestionIdx === idx && !latestResult
+                      ? 'ring-2 ring-[#2563EB] ring-offset-1 dark:ring-offset-[#09111E]'
                       : ''
                   }`}
                 >
@@ -622,7 +617,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
           {activeExam.questions.map((q, idx) => {
             const ans = answersMap[q.questionId];
             const bk = latestResult?.attempt.breakdown.find((b) => b.questionId === q.questionId);
-            const isFocused = isEthereal && !latestResult && focusedQuestionIdx === idx;
+            const isFocused = !latestResult && focusedQuestionIdx === idx;
 
             return (
               <div
@@ -631,7 +626,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                 onClick={() => setFocusedQuestionIdx(idx)}
                 className={`document-paper rounded-2xl p-5 sm:p-6 space-y-4 transition-[border-color,box-shadow] duration-150 ${
                   isFocused
-                    ? 'ring-2 ring-indigo-500/35 dark:ring-indigo-400/35 border-indigo-300 dark:border-indigo-500/60'
+                    ? 'ring-2 ring-[#2563EB]/30 dark:ring-[#3B82F6]/35 border-[#2563EB]/60 dark:border-[#3B82F6]/60'
                     : ''
                 }`}
               >
@@ -809,9 +804,21 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
         </div>
       ) : activeTab === 'history' ? (
         attempts.length === 0 ? (
-          <GlassSurface className="rounded-3xl p-8 text-center text-sm text-slate-600 dark:text-slate-300">
-            Bạn chưa nộp bài kiểm tra nào. Chọn một đề ở các tab bên cạnh để bắt đầu thi thử và
-            tích điểm Đua Top.
+          <GlassSurface className="rounded-3xl p-8 sm:p-10 text-center space-y-3">
+            <svg viewBox="0 0 96 72" className="w-24 h-18 mx-auto" aria-hidden="true">
+              <rect x="14" y="8" width="68" height="56" rx="12" className="fill-[#EAF2FF] dark:fill-[#1E293B]" />
+              <rect x="24" y="20" width="32" height="6" rx="3" className="fill-[#2563EB]/75 dark:fill-[#60A5FA]/80" />
+              <rect x="24" y="32" width="48" height="5" rx="2.5" className="fill-[#CBD5E1] dark:fill-[#475569]" />
+              <rect x="24" y="43" width="38" height="5" rx="2.5" className="fill-[#CBD5E1] dark:fill-[#475569]" />
+              <circle cx="72" cy="52" r="11" className="fill-[#2563EB]" />
+              <path d="M67.5 52.2l3 3 6-6.2" fill="none" stroke="#FFFFFF" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <p className="font-semibold text-[#172033] dark:text-[#E6EFFC]">
+              Chưa có bài kiểm tra nào được nộp
+            </p>
+            <p className="text-xs sm:text-sm text-[#525E75] dark:text-[#94A3B8] max-w-md mx-auto">
+              Chọn một đề ở các tab bên cạnh để bắt đầu thi thử theo thời gian thực và tích điểm Đua Top.
+            </p>
           </GlassSurface>
         ) : (
           <div className="space-y-3">
@@ -843,12 +850,18 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
           </div>
         )
       ) : filteredExams.length === 0 ? (
-        <GlassSurface className="rounded-3xl p-8 text-center space-y-2 text-sm text-slate-600 dark:text-slate-300">
-          <BookOpen className="w-8 h-8 text-sky-600 dark:text-sky-400 mx-auto" />
-          <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
+        <GlassSurface className="rounded-3xl p-8 sm:p-10 text-center space-y-3 text-sm text-[#525E75] dark:text-[#94A3B8]">
+          <svg viewBox="0 0 96 72" className="w-24 h-18 mx-auto" aria-hidden="true">
+            <rect x="12" y="12" width="48" height="50" rx="10" className="fill-[#F1F5FA] dark:fill-[#111B30] stroke-[#BFDBFE] dark:stroke-[#1E293B]" strokeWidth="2" />
+            <rect x="34" y="8" width="50" height="52" rx="10" className="fill-[#EAF2FF] dark:fill-[#1E293B]" />
+            <rect x="44" y="20" width="30" height="5" rx="2.5" className="fill-[#2563EB]/80 dark:fill-[#60A5FA]" />
+            <rect x="44" y="31" width="24" height="4.5" rx="2.25" className="fill-[#94A3B8]/60" />
+            <rect x="44" y="41" width="28" height="4.5" rx="2.25" className="fill-[#94A3B8]/45" />
+          </svg>
+          <p className="font-semibold text-[#172033] dark:text-[#E6EFFC]">
             Chưa có đề kiểm tra được xuất bản cho bộ lọc này
           </p>
-          <p className="text-xs">
+          <p className="text-xs max-w-md mx-auto">
             Quản trị viên có thể tạo & duyệt ma trận đề thi mới tại mục Quản trị hệ thống → Quản
             trị Đề kiểm tra.
           </p>

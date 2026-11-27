@@ -2,8 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import type {
+  AiProviderId,
   CloudflareKeyStatus,
   ColdStartProviderReadiness,
   ColdStartReadinessReport,
@@ -11,6 +11,11 @@ import type {
   ProviderKeysStatus,
   SingleApiKeyStatus,
 } from '../core/types.js';
+import {
+  resolveScopedStageApiKey,
+  type AdaptiveSlotNumber,
+  type AdaptiveStageCode,
+} from '../core/adaptiveApiPlan.js';
 import {
   firestoreRestDelete,
   firestoreRestGet,
@@ -59,9 +64,10 @@ interface CachedCloudflareCredentials {
 }
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
-const ENCRYPTED_KEY_FILE = path.join(DATA_DIR, 'single-gemini-key.enc');
-const TMP_ENCRYPTED_KEY_FILE = path.join(os.tmpdir(), 'studycheck-single-gemini-key.enc');
-const FIRESTORE_SECRET_DOC = 'adminSecrets/primary';
+
+const MISTRAL_ENCRYPTED_KEY_FILE = path.join(DATA_DIR, 'mistral-api-key.enc');
+const TMP_MISTRAL_ENCRYPTED_KEY_FILE = path.join(os.tmpdir(), 'studycheck-mistral-api-key.enc');
+const FIRESTORE_MISTRAL_DOC = 'adminSecrets/mistral';
 
 const GROQ_ENCRYPTED_KEY_FILE = path.join(DATA_DIR, 'groq-api-key.enc');
 const TMP_GROQ_ENCRYPTED_KEY_FILE = path.join(os.tmpdir(), 'studycheck-groq-api-key.enc');
@@ -142,8 +148,8 @@ export function maskCloudflareIdentifier(accountId: string, apiToken: string): s
 
 export function validateApiKeyInput(rawKey: string): { valid: boolean; reason?: string } {
   const trimmed = rawKey.trim();
-  if (trimmed.length < 20) {
-    return { valid: false, reason: 'API key quá ngắn (cần tối thiểu 20 ký tự).' };
+  if (trimmed.length < 16) {
+    return { valid: false, reason: 'API key quá ngắn (cần tối thiểu 16 ký tự).' };
   }
   if (trimmed.length > 512) {
     return { valid: false, reason: 'API key quá dài (tối đa 512 ký tự).' };
@@ -182,7 +188,7 @@ export function validateCloudflareToken(apiToken: string): { valid: boolean; rea
   return { valid: true };
 }
 
-let cachedSingleKey: CachedSingleKey | null = null;
+let cachedMistralKey: CachedSingleKey | null = null;
 let cachedGroqKey: CachedSingleKey | null = null;
 let cachedCloudflareCreds: CachedCloudflareCredentials | null = null;
 
@@ -264,24 +270,27 @@ function parseStoredCloudflareDoc(doc: StoredEncryptedSecret): CachedCloudflareC
 }
 
 function loadLocalEncryptedFiles(): void {
-  const geminiDoc = readLocalEncryptedRecord(ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE);
-  if (geminiDoc) {
+  const mistralDoc = readLocalEncryptedRecord(
+    MISTRAL_ENCRYPTED_KEY_FILE,
+    TMP_MISTRAL_ENCRYPTED_KEY_FILE
+  );
+  if (mistralDoc) {
     try {
-      const rawKey = decryptSecretPayload(geminiDoc);
+      const rawKey = decryptSecretPayload(mistralDoc);
       if (rawKey) {
-        cachedSingleKey = {
+        cachedMistralKey = {
           rawKey,
-          maskedKey: geminiDoc.maskedIdentifier || maskApiKey(rawKey),
-          label: geminiDoc.label || 'Gemini API Key duy nhất',
-          updatedAt: geminiDoc.updatedAt || new Date().toISOString(),
-          updatedBy: geminiDoc.updatedBy || 'admin',
-          lastTestStatus: geminiDoc.lastTestStatus,
-          lastTestAt: geminiDoc.lastTestAt,
-          lastTestMessage: geminiDoc.lastTestMessage,
+          maskedKey: mistralDoc.maskedIdentifier || maskApiKey(rawKey),
+          label: mistralDoc.label || 'Mistral AI Free API Key',
+          updatedAt: mistralDoc.updatedAt || new Date().toISOString(),
+          updatedBy: mistralDoc.updatedBy || 'admin',
+          lastTestStatus: mistralDoc.lastTestStatus,
+          lastTestAt: mistralDoc.lastTestAt,
+          lastTestMessage: mistralDoc.lastTestMessage,
         };
       }
     } catch {
-      cachedSingleKey = null;
+      cachedMistralKey = null;
     }
   }
 
@@ -315,16 +324,34 @@ function loadLocalEncryptedFiles(): void {
 // Hydrate immediately on backend boot if previously saved locally
 loadLocalEncryptedFiles();
 
-function getEnvFallbackKey(): string | null {
-  const envKey = process.env.GEMINI_API_KEY?.trim();
-  if (!envKey || envKey === 'MY_GEMINI_API_KEY') return null;
-  return envKey;
+function getEnvFallbackMistralKey(): string | null {
+  const candidates = [
+    process.env.MISTRAL_API_KEY,
+    process.env.MISTRAL_API_KEY_1,
+    process.env.MISTRAL_KEY_CHAM_1,
+    process.env.MISTRAL_KEY_QUET_1,
+    process.env.MISTRAL_KEY_DO_1,
+  ];
+  for (const candidate of candidates) {
+    const clean = candidate?.trim();
+    if (clean && clean !== 'YOUR_MISTRAL_API_KEY') return clean;
+  }
+  return null;
 }
 
 function getEnvFallbackGroqKey(): string | null {
-  const envKey = process.env.GROQ_API_KEY?.trim();
-  if (!envKey) return null;
-  return envKey;
+  const candidates = [
+    process.env.GROQ_API_KEY,
+    process.env.GROQ_API_KEY_1,
+    process.env.GROQ_KEY_QUET_1,
+    process.env.GROQ_KEY_DO_1,
+    process.env.GROQ_KEY_CHAM_1,
+  ];
+  for (const candidate of candidates) {
+    const clean = candidate?.trim();
+    if (clean) return clean;
+  }
+  return null;
 }
 
 function getEnvFallbackCloudflareCredentials(): { accountId: string; apiToken: string } | null {
@@ -334,24 +361,24 @@ function getEnvFallbackCloudflareCredentials(): { accountId: string; apiToken: s
   return { accountId, apiToken };
 }
 
-async function hydrateGeminiSecretFromFirestore(idToken: string): Promise<void> {
-  if (cachedSingleKey) return;
+async function hydrateMistralSecretFromFirestore(idToken: string): Promise<void> {
+  if (cachedMistralKey) return;
   try {
-    const doc = await firestoreRestGet<StoredEncryptedSecret>(FIRESTORE_SECRET_DOC, idToken);
+    const doc = await firestoreRestGet<StoredEncryptedSecret>(FIRESTORE_MISTRAL_DOC, idToken);
     if (!doc || !doc.ciphertext || !doc.iv || !doc.authTag) return;
     const rawKey = decryptSecretPayload(doc);
     if (!rawKey) return;
-    cachedSingleKey = {
+    cachedMistralKey = {
       rawKey,
       maskedKey: doc.maskedIdentifier || maskApiKey(rawKey),
-      label: doc.label || 'Gemini API Key duy nhất',
+      label: doc.label || 'Mistral AI Free API Key',
       updatedAt: doc.updatedAt || new Date().toISOString(),
       updatedBy: doc.updatedBy || 'admin',
       lastTestStatus: doc.lastTestStatus,
       lastTestAt: doc.lastTestAt,
       lastTestMessage: doc.lastTestMessage,
     };
-    writeEncryptedSecretFiles(ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE, doc);
+    writeEncryptedSecretFiles(MISTRAL_ENCRYPTED_KEY_FILE, TMP_MISTRAL_ENCRYPTED_KEY_FILE, doc);
   } catch {
     // Ignore if doc does not exist yet or key seed rotated
   }
@@ -395,13 +422,13 @@ async function hydrateCloudflareSecretFromFirestore(idToken: string): Promise<vo
 }
 
 /**
- * Hydrates all encrypted Admin provider API keys (`primary`, `groq`, `cloudflare`) from Firestore
+ * Hydrates all encrypted Admin provider API keys (`mistral`, `groq`, `cloudflare`) from Firestore
  * in parallel after a serverless cold start so verified users immediately benefit from Admin keys.
  */
 export async function hydrateAllProviderKeysFromFirestore(idToken: string): Promise<void> {
   if (!idToken) return;
   await Promise.allSettled([
-    hydrateGeminiSecretFromFirestore(idToken),
+    hydrateMistralSecretFromFirestore(idToken),
     hydrateGroqSecretFromFirestore(idToken),
     hydrateCloudflareSecretFromFirestore(idToken),
   ]);
@@ -413,35 +440,35 @@ export async function hydrateSingleKeyForSuperAdmin(idToken: string): Promise<vo
 
 export const hydrateSingleKeyFromFirestore = hydrateSingleKeyForSuperAdmin;
 
-export async function getSingleKeyStatus(idToken?: string): Promise<SingleApiKeyStatus> {
-  if (idToken && !cachedSingleKey) {
-    await hydrateGeminiSecretFromFirestore(idToken);
+export async function getMistralKeyStatus(idToken?: string): Promise<SingleApiKeyStatus> {
+  if (idToken && !cachedMistralKey) {
+    await hydrateMistralSecretFromFirestore(idToken);
   }
 
-  const hasEnvFallbackKey = Boolean(getEnvFallbackKey());
+  const hasEnvFallbackKey = Boolean(getEnvFallbackMistralKey());
 
-  if (cachedSingleKey) {
+  if (cachedMistralKey) {
     return {
       configured: true,
       source: 'admin',
-      maskedKey: cachedSingleKey.maskedKey,
-      label: cachedSingleKey.label,
+      maskedKey: cachedMistralKey.maskedKey,
+      label: cachedMistralKey.label,
       hasEnvFallbackKey,
-      lastTestStatus: cachedSingleKey.lastTestStatus || 'Untested',
-      lastTestAt: cachedSingleKey.lastTestAt,
-      lastTestMessage: cachedSingleKey.lastTestMessage,
-      updatedAt: cachedSingleKey.updatedAt,
-      updatedBy: cachedSingleKey.updatedBy,
+      lastTestStatus: cachedMistralKey.lastTestStatus || 'Untested',
+      lastTestAt: cachedMistralKey.lastTestAt,
+      lastTestMessage: cachedMistralKey.lastTestMessage,
+      updatedAt: cachedMistralKey.updatedAt,
+      updatedBy: cachedMistralKey.updatedBy,
     };
   }
 
-  const envKey = getEnvFallbackKey();
+  const envKey = getEnvFallbackMistralKey();
   if (envKey) {
     return {
       configured: true,
       source: 'server_env',
       maskedKey: maskApiKey(envKey),
-      label: 'Biến môi trường máy chủ (GEMINI_API_KEY)',
+      label: 'Biến môi trường máy chủ (MISTRAL_API_KEY)',
       hasEnvFallbackKey: true,
       lastTestStatus: 'Untested',
     };
@@ -549,14 +576,15 @@ export async function getCloudflareKeyStatus(idToken?: string): Promise<Cloudfla
 }
 
 export async function getProviderKeysStatus(idToken?: string): Promise<ProviderKeysStatus> {
-  const [groq, cloudflare] = await Promise.all([
+  const [mistral, groq, cloudflare] = await Promise.all([
+    getMistralKeyStatus(idToken),
     getGroqKeyStatus(idToken),
     getCloudflareKeyStatus(idToken),
   ]);
-  return { groq, cloudflare };
+  return { mistral, groq, cloudflare };
 }
 
-export async function setSingleGeminiApiKey(params: {
+export async function setMistralApiKey(params: {
   rawKey: string;
   label?: string;
   actorUid: string;
@@ -567,16 +595,16 @@ export async function setSingleGeminiApiKey(params: {
   const trimmed = rawKey.trim();
   const check = validateApiKeyInput(trimmed);
   if (!check.valid) {
-    return { ok: false, error: check.reason || 'API key không hợp lệ.' };
+    return { ok: false, error: check.reason || 'Mistral API key không hợp lệ.' };
   }
 
   const now = new Date().toISOString();
   const maskedIdentifier = maskApiKey(trimmed).slice(0, 40);
   const encrypted = encryptSecretPayload(trimmed);
-  const finalLabel = ((label || '').trim() || 'Gemini API Key duy nhất').slice(0, 100);
+  const finalLabel = ((label || '').trim() || 'Mistral AI Free API Key').slice(0, 100);
 
   const storedDoc: StoredEncryptedSecret = {
-    secretId: 'primary',
+    secretId: 'mistral',
     ciphertext: encrypted.ciphertext,
     iv: encrypted.iv,
     authTag: encrypted.authTag,
@@ -589,7 +617,7 @@ export async function setSingleGeminiApiKey(params: {
     lastTestMessage: '',
   };
 
-  cachedSingleKey = {
+  cachedMistralKey = {
     rawKey: trimmed,
     maskedKey: maskedIdentifier,
     label: finalLabel,
@@ -598,21 +626,21 @@ export async function setSingleGeminiApiKey(params: {
     lastTestStatus: 'Untested',
   };
 
-  writeEncryptedSecretFiles(ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE, storedDoc);
+  writeEncryptedSecretFiles(MISTRAL_ENCRYPTED_KEY_FILE, TMP_MISTRAL_ENCRYPTED_KEY_FILE, storedDoc);
 
   try {
     await firestoreRestSet(
-      FIRESTORE_SECRET_DOC,
+      FIRESTORE_MISTRAL_DOC,
       storedDoc as unknown as Record<string, unknown>,
       idToken
     );
   } catch (err) {
-    console.warn('Could not persist encrypted key backup to Firestore:', err);
+    console.warn('Could not persist encrypted Mistral key to Firestore:', err);
     if (process.env.VERCEL === '1') {
       return {
         ok: false,
         error:
-          'Không thể lưu khóa mã hóa lên Cloud Firestore (adminSecrets/primary). Vui lòng kiểm tra quyền Super Admin hoặc kết nối Firestore để tránh mất khóa khi Serverless cold-start.',
+          'Không thể lưu khóa Mistral mã hóa lên Cloud Firestore (adminSecrets/mistral). Vui lòng kiểm tra quyền Super Admin hoặc kết nối Firestore.',
       };
     }
   }
@@ -621,9 +649,9 @@ export async function setSingleGeminiApiKey(params: {
     {
       actorUid,
       actorEmail,
-      action: 'SINGLE_API_KEY_SAVED',
+      action: 'MISTRAL_API_KEY_SAVED',
       resourceType: 'adminSecrets',
-      resourceId: 'primary',
+      resourceId: 'mistral',
       status: 'success',
       metadata: {
         maskedIdentifier,
@@ -633,20 +661,20 @@ export async function setSingleGeminiApiKey(params: {
     idToken
   );
 
-  return { ok: true, status: await getSingleKeyStatus() };
+  return { ok: true, status: await getMistralKeyStatus() };
 }
 
-export async function clearSingleGeminiApiKey(params: {
+export async function clearMistralApiKey(params: {
   actorUid: string;
   actorEmail: string;
   idToken: string;
 }): Promise<{ ok: true; status: SingleApiKeyStatus }> {
   const { actorUid, actorEmail, idToken } = params;
-  cachedSingleKey = null;
-  removeEncryptedSecretFiles(ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE);
+  cachedMistralKey = null;
+  removeEncryptedSecretFiles(MISTRAL_ENCRYPTED_KEY_FILE, TMP_MISTRAL_ENCRYPTED_KEY_FILE);
 
   try {
-    await firestoreRestDelete(FIRESTORE_SECRET_DOC, idToken);
+    await firestoreRestDelete(FIRESTORE_MISTRAL_DOC, idToken);
   } catch {
     // Ignore if not present in Firestore
   }
@@ -655,16 +683,16 @@ export async function clearSingleGeminiApiKey(params: {
     {
       actorUid,
       actorEmail,
-      action: 'SINGLE_API_KEY_CLEARED',
+      action: 'MISTRAL_API_KEY_CLEARED',
       resourceType: 'adminSecrets',
-      resourceId: 'primary',
+      resourceId: 'mistral',
       status: 'success',
       metadata: {},
     },
     idToken
   );
 
-  return { ok: true, status: await getSingleKeyStatus() };
+  return { ok: true, status: await getMistralKeyStatus() };
 }
 
 export async function setGroqApiKey(params: {
@@ -903,12 +931,11 @@ export async function clearCloudflareCredentials(params: {
   return { ok: true, status: await getCloudflareKeyStatus() };
 }
 
-export async function testSingleGeminiKey(params: {
+export async function testMistralApiKey(params: {
   rawKeyOverride?: string;
   actorUid: string;
   actorEmail: string;
   idToken: string;
-  activeModel?: string;
 }): Promise<{
   status: KeyTestStatus;
   message: string;
@@ -916,11 +943,11 @@ export async function testSingleGeminiKey(params: {
   testedAt: string;
   keyStatus: SingleApiKeyStatus;
 }> {
-  const { rawKeyOverride, actorUid, actorEmail, idToken, activeModel } = params;
+  const { rawKeyOverride, actorUid, actorEmail, idToken } = params;
   const testedAt = new Date().toISOString();
 
-  if (!cachedSingleKey) {
-    await hydrateGeminiSecretFromFirestore(idToken);
+  if (!cachedMistralKey) {
+    await hydrateMistralSecretFromFirestore(idToken);
   }
 
   let keyToTest = '';
@@ -929,11 +956,11 @@ export async function testSingleGeminiKey(params: {
   if (rawKeyOverride && rawKeyOverride.trim()) {
     keyToTest = rawKeyOverride.trim();
     testedSource = 'preview_input';
-  } else if (cachedSingleKey) {
-    keyToTest = cachedSingleKey.rawKey;
+  } else if (cachedMistralKey) {
+    keyToTest = cachedMistralKey.rawKey;
     testedSource = 'admin';
   } else {
-    const envKey = getEnvFallbackKey();
+    const envKey = getEnvFallbackMistralKey();
     if (envKey) {
       keyToTest = envKey;
       testedSource = 'server_env';
@@ -943,109 +970,99 @@ export async function testSingleGeminiKey(params: {
   if (!keyToTest) {
     return {
       status: 'Invalid key',
-      message: 'Chưa có Gemini API key nào được cấu hình. Vui lòng nhập API key ở bên dưới rồi bấm Lưu.',
+      message: 'Chưa cấu hình Mistral AI API Key. Hãy dán key rồi bấm Lưu hoặc Thử nghiệm.',
       testedSource: 'none',
       testedAt,
-      keyStatus: await getSingleKeyStatus(),
+      keyStatus: await getMistralKeyStatus(),
     };
   }
 
   let resultStatus: KeyTestStatus = 'Connected';
-  const rawCandidate = (activeModel || '').trim();
-  const modelToTest =
-    !rawCandidate || rawCandidate.startsWith('groq:') || rawCandidate.startsWith('cf:')
-      ? 'gemini-3.1-flash-lite'
-      : rawCandidate;
-  let resolvedGeminiModel: string = modelToTest;
-  let resultMessage = `Kết nối Gemini API thành công (${modelToTest} phản hồi bình thường).`;
+  const testModel = 'mistral-small-latest';
+  let resultMessage = `Kết nối Mistral AI thành công (model ${testModel} phản hồi tốt).`;
 
   try {
-    const { generateGeminiContentWithFallback } = await import('./modelRouter.js');
-    const resp = await generateGeminiContentWithFallback({
-      apiKeyOverride: keyToTest,
-      model: modelToTest,
-      contents: 'Trả lời 1 từ: OK',
-      thinkingTier: 'minimal',
-      config: {
-        maxOutputTokens: 128,
-        abortSignal: AbortSignal.timeout(30_000),
+    const pingRes = await fetch('https://api.mistral.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${keyToTest}`,
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify({
+        model: testModel,
+        messages: [{ role: 'user', content: 'Trả lời duy nhất 1 từ: OK' }],
+        temperature: 0,
+        max_tokens: 32,
+      }),
+      signal: AbortSignal.timeout(15_000),
     });
-    resolvedGeminiModel = resp.resolvedModel || modelToTest;
-    if (!resp.text) {
-      resultStatus = 'Temporary provider error';
-      resultMessage = 'Model phản hồi rỗng.';
-    } else {
-      resultMessage = `Kết nối Gemini API thành công (model ${resolvedGeminiModel} phản hồi bình thường).`;
+
+    if (!pingRes.ok) {
+      const errText = await pingRes.text().catch(() => '');
+      if (pingRes.status === 401 || pingRes.status === 403) {
+        resultStatus = 'Invalid key';
+        resultMessage = 'Mistral AI API Key không hợp lệ hoặc đã bị thu hồi.';
+      } else if (pingRes.status === 429) {
+        resultStatus = 'Quota exceeded';
+        resultMessage = 'Mistral AI API Key đã chạm hạn mức (429).';
+      } else if (pingRes.status === 404) {
+        resultStatus = 'Model unavailable';
+        resultMessage = `Model ${testModel} không khả dụng trên tài khoản Mistral này.`;
+      } else {
+        resultStatus = 'Temporary provider error';
+        resultMessage = `Lỗi Mistral AI (HTTP ${pingRes.status}): ${errText.slice(0, 120)}`;
+      }
     }
   } catch (err) {
-    const rawMsg = err instanceof Error ? err.message : String(err);
-    if (rawMsg.includes('API_KEY_INVALID') || rawMsg.includes('400')) {
-      resultStatus = 'Invalid key';
-      resultMessage = 'API key không hợp lệ hoặc đã bị thu hồi.';
-    } else if (rawMsg.includes('SERVICE_DISABLED') || rawMsg.includes('API has not been used')) {
-      resultStatus = 'API not enabled';
-      resultMessage = 'Generative Language API chưa được bật cho key này.';
-    } else if (rawMsg.includes('RESOURCE_EXHAUSTED') || rawMsg.includes('429')) {
-      resultStatus = 'Quota exceeded';
-      resultMessage = 'Khóa API đã hết hạn mức (429 RESOURCE_EXHAUSTED).';
-    } else if (rawMsg.includes('PERMISSION_DENIED') || rawMsg.includes('403')) {
-      resultStatus = 'Permission denied';
-      resultMessage = 'Khóa API bị từ chối quyền truy cập.';
-    } else if (rawMsg.includes('NOT_FOUND') || rawMsg.includes('404')) {
-      resultStatus = 'Model unavailable';
-      resultMessage = `Model ${modelToTest} không khả dụng với khóa hiện tại.`;
-    } else {
-      resultStatus = 'Temporary provider error';
-      resultMessage = `Lỗi tạm thời từ nhà cung cấp: ${rawMsg.slice(0, 140)}`;
-    }
+    resultStatus = 'Temporary provider error';
+    resultMessage = `Lỗi kết nối Mistral AI: ${(err instanceof Error ? err.message : String(err)).slice(0, 140)}`;
   }
 
-  // If testing a key pasted in the input box succeeds, automatically save & activate it immediately
-  // so the user doesn't get "Model AI không khả dụng / Chưa cấu hình key" when going straight to Kiểm định.
   if (testedSource === 'preview_input' && resultStatus === 'Connected') {
     const check = validateApiKeyInput(keyToTest);
     if (check.valid) {
-      await setSingleGeminiApiKey({
+      await setMistralApiKey({
         rawKey: keyToTest,
-        label: cachedSingleKey?.label || 'Gemini API Key duy nhất',
+        label: cachedMistralKey?.label || 'Mistral AI Free API Key',
         actorUid,
         actorEmail,
         idToken,
       });
-      resultMessage = `${resultMessage} Đã tự động lưu và kích hoạt khóa này cho Kiểm định.`;
+      resultMessage = `${resultMessage} Đã tự động lưu và kích hoạt khóa Mistral AI cho Kiểm định.`;
     }
   }
 
-  // Persist test status if testing the saved admin key (or just auto-saved preview_input key)
-  if ((testedSource === 'admin' || (testedSource === 'preview_input' && resultStatus === 'Connected')) && cachedSingleKey) {
-    cachedSingleKey.lastTestStatus = resultStatus;
-    cachedSingleKey.lastTestAt = testedAt;
-    cachedSingleKey.lastTestMessage = resultMessage.slice(0, 280);
+  if (
+    (testedSource === 'admin' || (testedSource === 'preview_input' && resultStatus === 'Connected')) &&
+    cachedMistralKey
+  ) {
+    cachedMistralKey.lastTestStatus = resultStatus;
+    cachedMistralKey.lastTestAt = testedAt;
+    cachedMistralKey.lastTestMessage = resultMessage.slice(0, 280);
 
-    const encrypted = encryptSecretPayload(cachedSingleKey.rawKey);
+    const encrypted = encryptSecretPayload(cachedMistralKey.rawKey);
     const updatedDoc: StoredEncryptedSecret = {
-      secretId: 'primary',
+      secretId: 'mistral',
       ciphertext: encrypted.ciphertext,
       iv: encrypted.iv,
       authTag: encrypted.authTag,
-      maskedIdentifier: cachedSingleKey.maskedKey.slice(0, 40),
-      label: cachedSingleKey.label.slice(0, 100),
-      updatedAt: cachedSingleKey.updatedAt,
-      updatedBy: cachedSingleKey.updatedBy,
+      maskedIdentifier: cachedMistralKey.maskedKey.slice(0, 40),
+      label: cachedMistralKey.label.slice(0, 100),
+      updatedAt: cachedMistralKey.updatedAt,
+      updatedBy: cachedMistralKey.updatedBy,
       lastTestStatus: resultStatus,
       lastTestAt: testedAt,
-      lastTestMessage: cachedSingleKey.lastTestMessage,
+      lastTestMessage: cachedMistralKey.lastTestMessage,
     };
-    writeEncryptedSecretFiles(ENCRYPTED_KEY_FILE, TMP_ENCRYPTED_KEY_FILE, updatedDoc);
+    writeEncryptedSecretFiles(MISTRAL_ENCRYPTED_KEY_FILE, TMP_MISTRAL_ENCRYPTED_KEY_FILE, updatedDoc);
     try {
       await firestoreRestSet(
-        FIRESTORE_SECRET_DOC,
+        FIRESTORE_MISTRAL_DOC,
         updatedDoc as unknown as Record<string, unknown>,
         idToken
       );
     } catch {
-      // Non-fatal if Firestore backup unavailable
+      // Non-fatal
     }
   }
 
@@ -1053,9 +1070,9 @@ export async function testSingleGeminiKey(params: {
     {
       actorUid,
       actorEmail,
-      action: 'SINGLE_API_KEY_TESTED',
+      action: 'MISTRAL_API_KEY_TESTED',
       resourceType: 'adminSecrets',
-      resourceId: 'primary',
+      resourceId: 'mistral',
       status: resultStatus === 'Connected' ? 'success' : 'failure',
       metadata: {
         resultStatus,
@@ -1070,7 +1087,7 @@ export async function testSingleGeminiKey(params: {
     message: resultMessage,
     testedSource,
     testedAt,
-    keyStatus: await getSingleKeyStatus(),
+    keyStatus: await getMistralKeyStatus(),
   };
 }
 
@@ -1185,7 +1202,7 @@ export async function testGroqApiKey(params: {
         const visionStatusText =
           availableVisionModels.length > 0
             ? `Vision OCR sẵn sàng: ${availableVisionModels.slice(0, 2).join(', ')}`
-            : 'Chưa thấy model Vision OCR trong danh sách Groq của key này — nên thêm Gemini API Key làm dự phòng đọc ảnh';
+            : 'Chưa thấy model Vision OCR trên key Groq này — hệ thống sẽ dùng Cloudflare Workers AI hoặc Mistral AI để đọc ảnh';
         resultMessage = `Kết nối Groq Cloud thành công (model ${chosenModel} phản hồi tốt; ${availableModels.length} model khả dụng; ${visionStatusText}).`;
       } else {
         const errText = await pingRes.text().catch(() => '');
@@ -1209,7 +1226,6 @@ export async function testGroqApiKey(params: {
     resultMessage = `Lỗi kết nối Groq Cloud: ${(err instanceof Error ? err.message : String(err)).slice(0, 140)}`;
   }
 
-  // If testing a Groq key pasted in the input box succeeds, automatically save & activate it immediately
   if (testedSource === 'preview_input' && resultStatus === 'Connected') {
     const check = validateApiKeyInput(keyToTest);
     if (check.valid) {
@@ -1224,7 +1240,10 @@ export async function testGroqApiKey(params: {
     }
   }
 
-  if ((testedSource === 'admin' || (testedSource === 'preview_input' && resultStatus === 'Connected')) && cachedGroqKey) {
+  if (
+    (testedSource === 'admin' || (testedSource === 'preview_input' && resultStatus === 'Connected')) &&
+    cachedGroqKey
+  ) {
     cachedGroqKey.lastTestStatus = resultStatus;
     cachedGroqKey.lastTestAt = testedAt;
     cachedGroqKey.lastTestMessage = resultMessage.slice(0, 280);
@@ -1402,7 +1421,10 @@ export async function testCloudflareCredentials(params: {
     }
   }
 
-  if ((testedSource === 'admin' || (testedSource === 'preview_input' && resultStatus === 'Connected')) && cachedCloudflareCreds) {
+  if (
+    (testedSource === 'admin' || (testedSource === 'preview_input' && resultStatus === 'Connected')) &&
+    cachedCloudflareCreds
+  ) {
     cachedCloudflareCreds.lastTestStatus = resultStatus;
     cachedCloudflareCreds.lastTestAt = testedAt;
     cachedCloudflareCreds.lastTestMessage = resultMessage.slice(0, 280);
@@ -1464,24 +1486,21 @@ export async function testCloudflareCredentials(params: {
 }
 
 /**
- * Resolves the ONE single Gemini API key used across ALL AI tasks
- * (OCR, subject detection, verification analysis + web grounding, and quiz generation).
+ * Resolves the active Mistral AI API Key synchronously (Admin in-web key first, env fallback).
  */
-export function isGeminiConfigured(): boolean {
-  return Boolean(cachedSingleKey?.rawKey || getEnvFallbackKey());
+export function getActiveMistralApiKeySync(): string {
+  if (cachedMistralKey?.rawKey) {
+    return cachedMistralKey.rawKey;
+  }
+  return getEnvFallbackMistralKey() || '';
 }
 
-export async function resolveActiveGeminiApiKey(): Promise<string> {
-  if (cachedSingleKey?.rawKey) {
-    return cachedSingleKey.rawKey;
-  }
+export function resolveActiveMistralApiKey(): string {
+  return getActiveMistralApiKeySync();
+}
 
-  const envKey = getEnvFallbackKey();
-  if (envKey) {
-    return envKey;
-  }
-
-  throw new Error('GEMINI_API_KEY_UNCONFIGURED');
+export function isMistralKeyConfigured(): boolean {
+  return getActiveMistralApiKeySync().length > 0;
 }
 
 /**
@@ -1507,36 +1526,63 @@ export function resolveActiveCloudflareCredentials(): { accountId: string; apiTo
   return getEnvFallbackCloudflareCredentials() || { accountId: '', apiToken: '' };
 }
 
+/**
+ * Resolve optional scoped per-stage & slot API key (e.g., GROQ_KEY_QUET_1, MISTRAL_KEY_CHAM_1, KEY_DO_1)
+ * falling back cleanly to the active Admin / Server Env provider key.
+ */
+export function resolveScopedApiKeyForStage(
+  provider: 'groq' | 'mistral',
+  stage: AdaptiveStageCode,
+  slot: AdaptiveSlotNumber
+): string | undefined {
+  const defaultKey =
+    provider === 'groq' ? resolveActiveGroqApiKey() : resolveActiveMistralApiKey();
+  const resolved = resolveScopedStageApiKey({
+    provider,
+    stage,
+    slot,
+    env: process.env,
+    defaultKey,
+  });
+  return resolved || undefined;
+}
+
 export function getColdStartEnvTemplate(): string {
   return [
-    '# Biến môi trường bắt buộc để AI chạy 24/7 khi Vercel / Render tự ngủ hoặc khởi động lại',
+    '# Biến môi trường cốt lõi cho kiến trúc 3 nhà cung cấp miễn phí 24/7 (Mistral + Cloudflare + Groq)',
+    'MISTRAL_API_KEY=',
     'GROQ_API_KEY=',
-    'GEMINI_API_KEY=',
+    'CLOUDFLARE_ACCOUNT_ID=',
+    'CLOUDFLARE_API_TOKEN=',
     '# Khóa bí mật ngẫu nhiên (tối thiểu 32 ký tự) để giữ khóa nhập trên Admin UI không bị mất sau restart',
     'KEY_ENCRYPTION_SECRET=',
     '# Tên miền web production của bạn (nếu frontend và backend khác domain)',
     'ALLOWED_ORIGIN=',
-    '# Tùy chọn: Tầng dự phòng thứ 3 (Cloudflare Workers AI)',
-    'CLOUDFLARE_ACCOUNT_ID=',
-    'CLOUDFLARE_API_TOKEN=',
+    '# Tùy chọn: Khóa chuyên biệt theo từng giai đoạn Quét (QUET), Chấm (CHAM), Đối soát (DO) cho văn bản dài',
+    '# GROQ_KEY_QUET_1=',
+    '# MISTRAL_KEY_CHAM_1=',
+    '# GROQ_KEY_DO_1=',
+    '# GROQ_KEY_DO_2=',
   ].join('\n');
 }
 
-export function detectProviderFromModelId(modelId: string): 'groq' | 'gemini' | 'cloudflare' {
+export function detectProviderFromModelId(modelId: string): AiProviderId {
   const lower = (modelId || '').trim().toLowerCase();
   if (lower.startsWith('groq:')) return 'groq';
-  if (lower.startsWith('cf:')) return 'cloudflare';
-  return 'gemini';
+  if (lower.startsWith('cf:') || lower.startsWith('cloudflare:') || lower.startsWith('@cf/')) {
+    return 'cloudflare';
+  }
+  return 'mistral';
 }
 
 export interface ColdStartReadinessInput {
   activeModel: string;
   runtimePlatform: 'vercel' | 'render' | 'standard';
   encryptionSecretConfigured: boolean;
+  mistralEnvConfigured: boolean;
+  mistralAdminOverrideActive: boolean;
   groqEnvConfigured: boolean;
   groqAdminOverrideActive: boolean;
-  geminiEnvConfigured: boolean;
-  geminiAdminOverrideActive: boolean;
   cloudflareEnvConfigured: boolean;
   cloudflareAdminOverrideActive: boolean;
 }
@@ -1546,6 +1592,16 @@ export function buildColdStartReadinessReport(
 ): ColdStartReadinessReport {
   const activeProvider = detectProviderFromModelId(input.activeModel);
 
+  const mistral: ColdStartProviderReadiness = {
+    provider: 'mistral',
+    label: 'Mistral AI Free',
+    envVarNames: ['MISTRAL_API_KEY'],
+    envConfigured: input.mistralEnvConfigured,
+    adminOverrideActive: input.mistralAdminOverrideActive,
+    configuredNow: input.mistralEnvConfigured || input.mistralAdminOverrideActive,
+    survivesColdStartWhenAdminOffline: input.mistralEnvConfigured,
+  };
+
   const groq: ColdStartProviderReadiness = {
     provider: 'groq',
     label: 'Groq Cloud Free',
@@ -1554,16 +1610,6 @@ export function buildColdStartReadinessReport(
     adminOverrideActive: input.groqAdminOverrideActive,
     configuredNow: input.groqEnvConfigured || input.groqAdminOverrideActive,
     survivesColdStartWhenAdminOffline: input.groqEnvConfigured,
-  };
-
-  const gemini: ColdStartProviderReadiness = {
-    provider: 'gemini',
-    label: 'Google Gemini',
-    envVarNames: ['GEMINI_API_KEY'],
-    envConfigured: input.geminiEnvConfigured,
-    adminOverrideActive: input.geminiAdminOverrideActive,
-    configuredNow: input.geminiEnvConfigured || input.geminiAdminOverrideActive,
-    survivesColdStartWhenAdminOffline: input.geminiEnvConfigured,
   };
 
   const cloudflare: ColdStartProviderReadiness = {
@@ -1576,21 +1622,21 @@ export function buildColdStartReadinessReport(
     survivesColdStartWhenAdminOffline: input.cloudflareEnvConfigured,
   };
 
-  const providers = { groq, gemini, cloudflare };
+  const providers = { mistral, groq, cloudflare };
   const activeProviderInfo = providers[activeProvider];
   const activeModelCoveredByEnv = activeProviderInfo.envConfigured;
   const anyProviderCoveredByEnv =
-    groq.envConfigured || gemini.envConfigured || cloudflare.envConfigured;
+    mistral.envConfigured || groq.envConfigured || cloudflare.envConfigured;
 
   const warnings: string[] = [];
 
   if (!anyProviderCoveredByEnv) {
     warnings.push(
-      'Chưa có API key nào trong biến môi trường máy chủ (GROQ_API_KEY / GEMINI_API_KEY / CLOUDFLARE_*). Khi Vercel hoặc Render tự ngủ và khởi động lại lúc Admin ngoại tuyến, học sinh sẽ gặp lỗi 503.'
+      'Chưa có API key nào trong biến môi trường máy chủ (MISTRAL_API_KEY / GROQ_API_KEY / CLOUDFLARE_*). Khi Vercel hoặc Render tự ngủ và khởi động lại lúc Admin ngoại tuyến, học sinh sẽ gặp lỗi 503.'
     );
   } else if (!activeModelCoveredByEnv) {
     warnings.push(
-      `Model mặc định đang chọn (${activeProviderInfo.label}) chưa có biến môi trường ${activeProviderInfo.envVarNames.join(' / ')} trên máy chủ. Khi server reset lúc Admin ngoại tuyến, hệ thống sẽ phải chuyển sang nhà cung cấp dự phòng.`
+      `Model mặc định đang chọn (${activeProviderInfo.label}) chưa có biến môi trường ${activeProviderInfo.envVarNames.join(' / ')} trên máy chủ. Khi server reset lúc Admin ngoại tuyến, hệ thống sẽ tự chuyển sang nhà cung cấp dự phòng.`
     );
   }
 
@@ -1601,12 +1647,12 @@ export function buildColdStartReadinessReport(
   }
 
   const anyAdminOnlyWithoutEnv =
+    (mistral.adminOverrideActive && !mistral.envConfigured) ||
     (groq.adminOverrideActive && !groq.envConfigured) ||
-    (gemini.adminOverrideActive && !gemini.envConfigured) ||
     (cloudflare.adminOverrideActive && !cloudflare.envConfigured);
 
   if (anyAdminOnlyWithoutEnv && anyProviderCoveredByEnv) {
-    const missingEnvLabels = [groq, gemini, cloudflare]
+    const missingEnvLabels = [mistral, groq, cloudflare]
       .filter((p) => p.adminOverrideActive && !p.envConfigured)
       .map((p) => `${p.label} (${p.envVarNames.join(' + ')})`);
     warnings.push(
@@ -1647,10 +1693,10 @@ export function evaluateColdStartReadiness(activeModel: string): ColdStartReadin
     activeModel,
     runtimePlatform,
     encryptionSecretConfigured: isPersistentEncryptionSecretConfigured(),
+    mistralEnvConfigured: Boolean(getEnvFallbackMistralKey()),
+    mistralAdminOverrideActive: Boolean(cachedMistralKey?.rawKey),
     groqEnvConfigured: Boolean(getEnvFallbackGroqKey()),
     groqAdminOverrideActive: Boolean(cachedGroqKey?.rawKey),
-    geminiEnvConfigured: Boolean(getEnvFallbackKey()),
-    geminiAdminOverrideActive: Boolean(cachedSingleKey?.rawKey),
     cloudflareEnvConfigured: Boolean(getEnvFallbackCloudflareCredentials()),
     cloudflareAdminOverrideActive: Boolean(
       cachedCloudflareCreds?.accountId && cachedCloudflareCreds?.apiToken

@@ -550,9 +550,9 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
             <button
               type="button"
               onClick={() => setSummaryModalOpen(true)}
-              className="glass-control min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-[#0E4D5D] dark:text-cyan-300 cursor-pointer"
+              className="glass-control min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-[#1746A2] dark:text-[#93C5FD] cursor-pointer"
             >
-              <FileCheck2 className="w-4 h-4 text-sky-600 dark:text-cyan-400" />
+              <FileCheck2 className="w-4 h-4 text-[#2563EB] dark:text-[#60A5FA]" />
               {confirmedSummary ? 'Tải bản tổng kết (Đã tạo)' : 'Tạo & Tải bản tổng kết'}
             </button>
 
@@ -1007,12 +1007,41 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
               </p>
             </div>
             <div>
-              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">Phiên bản kiểm định & Seed</p>
-              <p className="font-mono text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
+              <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8]">Phiên bản kiểm định & Seed</p>
+              <p className="font-mono text-[#172033] dark:text-[#E6EFFC] tabular-nums">
                 {acc.gradingAudit.promptVersion} · Seed {acc.gradingAudit.deterministicSeed}
                 {acc.gradingAudit.systemFingerprint ? ` · ${acc.gradingAudit.systemFingerprint}` : ''}
               </p>
             </div>
+            {acc.gradingAudit.adaptiveApiPlan && (
+              <div className="sm:col-span-2 lg:col-span-3 pt-2 border-t border-[#E6ECF5] dark:border-[#1E293B] grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-2">
+                <div>
+                  <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8]">Chế độ phân bổ API thích ứng</p>
+                  <p className="font-mono text-[#1746A2] dark:text-[#93C5FD] font-semibold tabular-nums">
+                    {acc.gradingAudit.adaptiveApiPlan.isLongText
+                      ? '2 API (Chia đôi văn bản dài)'
+                      : '1 API (Văn bản chuẩn)'}{' '}
+                    · Ngưỡng {acc.gradingAudit.adaptiveApiPlan.thresholdChars.toLocaleString('vi-VN')} ký tự
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8]">Kiểm chứng chéo nhà cung cấp</p>
+                  <p className="font-mono text-[#172033] dark:text-[#E6EFFC] break-all">
+                    {acc.gradingAudit.adaptiveApiPlan.verifyModels?.length
+                      ? acc.gradingAudit.adaptiveApiPlan.verifyModels.join(' · ')
+                      : 'Đối chiếu đồng bộ 3-provider'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8]">Số luồng thực thi (Chấm / Dò)</p>
+                  <p className="font-mono text-[#172033] dark:text-[#E6EFFC] tabular-nums">
+                    {acc.gradingAudit.adaptiveApiPlan.gradeApiCount} chấm ·{' '}
+                    {acc.gradingAudit.adaptiveApiPlan.verifyExecutedApiCount} dò ·{' '}
+                    {acc.gradingAudit.adaptiveApiPlan.textLength.toLocaleString('vi-VN')} ký tự
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
           {acc.gradingAudit.truncationApplied && (
             <p className="text-[11px] text-amber-800 dark:text-amber-300 border-t border-amber-200/70 dark:border-amber-800/50 pt-2">
@@ -1055,8 +1084,8 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       <GlassSurface className="report-scroll-section rounded-3xl p-4 sm:p-7 space-y-5 no-print">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-sky-200/70 dark:border-slate-700/80 pb-4">
           <div>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-[#475B78] dark:text-[#B4C7E2] mb-1">
-              <span className="font-semibold text-[#0E4D5D] dark:text-cyan-300 font-mono tabular-nums">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-[#525E75] dark:text-[#94A3B8] mb-1">
+              <span className="font-semibold text-[#2563EB] dark:text-[#60A5FA] font-mono tabular-nums">
                 {activeWorkflowStep === 4 ? 'Bước 4 / 5 · Không gian sửa lỗi chi tiết' : 'Bước 5 / 5 · Tổng kết & Hoàn tất'}
               </span>
               <span aria-hidden="true">·</span>
@@ -1068,7 +1097,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 {errorClaimsCount} lỗi sai kiến thức/công thức · {missingInfoCount} mục thiếu điều kiện/ý SGK
               </span>
             </div>
-            <h2 className="font-display text-lg sm:text-xl font-bold text-[#16243E] dark:text-[#E6EFFC]">
+            <h2 className="font-display text-lg sm:text-xl font-bold text-[#172033] dark:text-[#E6EFFC]">
               {activeWorkflowStep === 4
                 ? 'Quy trình sửa lỗi từng mệnh đề & bổ sung kiến thức thiếu'
                 : 'Hoàn tất rà soát lỗi & củng cố kiến thức sau kiểm định'}
@@ -1077,14 +1106,14 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
 
           {/* Interactive Mode Switcher between Step 4 (Sửa lỗi) and Step 5 (Hoàn tất) */}
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-slate-100/90 dark:bg-slate-800/90 border border-slate-200/80 dark:border-slate-700">
+            <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-[#F1F5FA] dark:bg-[#0D1628] border border-[#E6ECF5] dark:border-[#1E293B]">
               <button
                 type="button"
                 onClick={() => setActiveWorkflowStep(4)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
                   activeWorkflowStep === 4
-                    ? 'bg-[#0E4D5D] dark:bg-[#0891B2] text-white shadow-xs'
-                    : 'text-[#475B78] dark:text-[#B4C7E2] hover:text-[#16243E] dark:hover:text-white'
+                    ? 'bg-[#2563EB] text-white shadow-xs'
+                    : 'text-[#525E75] dark:text-[#94A3B8] hover:text-[#172033] dark:hover:text-white'
                 }`}
               >
                 4. Sửa lỗi ({resolvedItemsCount}/{actionableQueue.length})
@@ -1094,8 +1123,8 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 onClick={() => setActiveWorkflowStep(5)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
                   activeWorkflowStep === 5
-                    ? 'bg-[#0E4D5D] dark:bg-[#0891B2] text-white shadow-xs'
-                    : 'text-[#475B78] dark:text-[#B4C7E2] hover:text-[#16243E] dark:hover:text-white'
+                    ? 'bg-[#2563EB] text-white shadow-xs'
+                    : 'text-[#525E75] dark:text-[#94A3B8] hover:text-[#172033] dark:hover:text-white'
                 }`}
               >
                 5. Hoàn tất (100%)
@@ -1172,7 +1201,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                     <button
                       type="button"
                       onClick={handleMarkAllItemsResolved}
-                      className="glass-control min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs font-semibold text-[#0E4D5D] dark:text-cyan-300 cursor-pointer whitespace-nowrap"
+                      className="glass-control min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs font-semibold text-[#1746A2] dark:text-[#93C5FD] cursor-pointer whitespace-nowrap"
                     >
                       Áp dụng gợi ý chuẩn cho tất cả & Hoàn tất
                     </button>
@@ -1180,7 +1209,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setActiveWorkflowStep(5)}
-                    className="min-h-[38px] px-4 py-1.5 rounded-xl text-xs font-semibold text-white bg-[#0E4D5D] hover:bg-[#136175] dark:bg-[#0891B2] dark:hover:bg-[#06B6D4] transition-colors cursor-pointer whitespace-nowrap"
+                    className="min-h-[38px] px-4 py-1.5 rounded-xl text-xs font-semibold text-white bg-[#2563EB] hover:bg-[#1746A2] transition-colors cursor-pointer whitespace-nowrap"
                   >
                     Sang Bước 5: Hoàn tất →
                   </button>
@@ -1213,7 +1242,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                         {/* Card Header: Concept, Chapter & Dual-Coded Status */}
                         <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-200/80 dark:border-slate-700/80">
                           <div className="flex flex-wrap items-center gap-1.5 text-sm font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                            <span className="font-mono tabular-nums text-[#0E4D5D] dark:text-cyan-300">
+                            <span className="font-mono tabular-nums text-[#2563EB] dark:text-[#60A5FA]">
                               #{idx + 1}
                             </span>
                             <span>·</span>
@@ -1345,7 +1374,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                               onClick={() =>
                                 handleUpdateStudentCorrectionText(item.id, item.suggestedFix)
                               }
-                              className="text-[11px] font-semibold text-[#0E4D5D] dark:text-cyan-300 hover:underline cursor-pointer"
+                              className="text-[11px] font-semibold text-[#2563EB] dark:text-[#60A5FA] hover:underline cursor-pointer"
                             >
                               Điền nhanh từ gợi ý chuẩn
                             </button>
@@ -1360,7 +1389,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                                 handleUpdateStudentCorrectionText(item.id, e.target.value)
                               }
                               placeholder="Nhập câu hoặc công thức đã sửa chuẩn của bạn..."
-                              className="glass-control flex-1 min-h-[40px] px-3 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
+                              className="glass-control flex-1 min-h-[40px] px-3 py-2 rounded-xl text-xs text-[#172033] dark:text-[#E6EFFC]"
                             />
 
                             <button
@@ -1370,8 +1399,8 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                               }
                               className={`min-h-[40px] inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                                 isResolved
-                                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                                  : 'bg-[#0E4D5D] hover:bg-[#136175] dark:bg-[#0891B2] dark:hover:bg-[#06B6D4] text-white'
+                                  ? 'bg-[#059669] hover:bg-emerald-700 text-white'
+                                  : 'bg-[#2563EB] hover:bg-[#1746A2] text-white'
                               }`}
                             >
                               <CheckCircle2 className="w-4 h-4 shrink-0" />
@@ -1427,17 +1456,17 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
           )
         ) : (
           /* STEP 5: Completion Summary Panel (keeps Accuracy & Completeness strictly independent) */
-          <div className="rounded-2xl border border-cyan-200/90 dark:border-cyan-800/70 bg-gradient-to-br from-cyan-50/70 via-white to-sky-50/70 dark:from-[#0C2230]/80 dark:via-[#111C2D] dark:to-[#0F172A] p-5 sm:p-6 space-y-4">
+          <div className="rounded-2xl border border-[#BFDBFE] dark:border-[#3B82F6]/35 bg-[#EAF2FF]/65 dark:bg-[#0D1628] p-5 sm:p-6 space-y-4">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
               <div className="space-y-1">
-                <div className="flex flex-wrap items-center gap-2 text-xs text-[#0E4D5D] dark:text-cyan-300 font-semibold">
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <div className="flex flex-wrap items-center gap-2 text-xs text-[#1746A2] dark:text-[#93C5FD] font-semibold">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-[#059669] dark:text-emerald-400" />
                   <span>Hoàn tất quy trình 5 bước kiểm định & sửa lỗi bài tập</span>
                 </div>
-                <h3 className="font-display text-base sm:text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                <h3 className="font-display text-base sm:text-lg font-bold text-[#172033] dark:text-[#E6EFFC]">
                   Đã khắc phục {resolvedItemsCount}/{actionableQueue.length} mục cần chỉnh sửa · Sẵn sàng xuất phiếu hoặc luyện tập
                 </h3>
-                <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] leading-relaxed prose-measure">
+                <p className="text-xs text-[#525E75] dark:text-[#94A3B8] leading-relaxed prose-measure">
                   Hai chỉ số được giữ độc lập tuyệt đối: Độ chính xác phản ánh tỷ lệ kiến thức bạn đã viết đúng ({analysis.accuracyScore ?? '—'}%), còn Độ đầy đủ phản ánh mức bao phủ khung kiến thức chương SGK ({analysis.completenessScore ?? '—'}%).
                 </p>
               </div>
@@ -1446,24 +1475,24 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveWorkflowStep(4)}
-                  className="glass-control min-h-[42px] px-3.5 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
+                  className="glass-control min-h-[42px] px-3.5 py-2 rounded-xl text-xs font-semibold text-[#172033] dark:text-[#E6EFFC] cursor-pointer"
                 >
                   ← Xem lại Bước 4 (Sửa lỗi)
                 </button>
                 <button
                   type="button"
                   onClick={() => triggerPrintWithMode('fix_sheet')}
-                  className="glass-control min-h-[42px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
+                  className="glass-control min-h-[42px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#172033] dark:text-[#E6EFFC] cursor-pointer"
                 >
-                  <Printer className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+                  <Printer className="w-4 h-4 text-[#2563EB] dark:text-[#60A5FA]" />
                   <span>In Phiếu sửa lỗi</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setSummaryModalOpen(true)}
-                  className="glass-control min-h-[42px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#0E4D5D] dark:text-cyan-300 cursor-pointer"
+                  className="glass-control min-h-[42px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#1746A2] dark:text-[#93C5FD] cursor-pointer"
                 >
-                  <FileCheck2 className="w-4 h-4 text-sky-600 dark:text-cyan-400" />
+                  <FileCheck2 className="w-4 h-4 text-[#2563EB] dark:text-[#60A5FA]" />
                   <span>{confirmedSummary ? 'Tải bản tổng kết' : 'Tạo bản tổng kết'}</span>
                 </button>
                 <WaterRippleButton onClick={() => onStartQuiz(analysis)}>
@@ -1564,9 +1593,9 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 className="glass-control min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
               >
                 {inlineExportingFormat === 'txt' ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+                  <Loader2 className="w-4 h-4 animate-spin text-[#2563EB]" />
                 ) : (
-                  <ScrollText className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                  <ScrollText className="w-4 h-4 text-[#2563EB] dark:text-[#60A5FA]" />
                 )}
                 <span>Tải Văn bản (.txt)</span>
               </button>

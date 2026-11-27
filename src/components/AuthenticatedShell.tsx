@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BarChart3,
+  ChevronDown,
   ClipboardCheck,
   FilePlus2,
   HelpCircle,
@@ -11,15 +12,14 @@ import {
   Repeat,
   Search,
   Shield,
-  Sparkles,
   Trophy,
 } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
 import { sendEmailVerification } from 'firebase/auth';
 import type { QueryDocumentSnapshot } from 'firebase/firestore';
+import '../styles/authenticated-polish.css';
 import { BRAND_CONFIG } from '../config/brand';
 import { useAuth } from '../context/AuthContext';
-import { useUiMode } from '../context/UiModeContext';
 import { gsap, MOTION_ALLOWED_MEDIA, REDUCED_MOTION_MEDIA, useGSAP } from '../lib/gsapSetup';
 import type {
   AnalysisRecord,
@@ -35,14 +35,12 @@ import {
 } from '../services/firestoreService';
 import { AccountMenu } from './LiquidGlass/AccountMenu';
 import { CommandPalette } from './LiquidGlass/CommandPalette';
-import { FloatingDock } from './LiquidGlass/FloatingDock';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { MaintenanceBanner } from './LiquidGlass/MaintenanceBanner';
 import { MobileBottomNav } from './LiquidGlass/MobileBottomNav';
 import { HamburgerButton, NavigationDrawer } from './LiquidGlass/NavigationDrawer';
 import { TabContentFade } from './LiquidGlass/SlidingTabs';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
-import { useIsMobileViewport } from '../hooks/useIsMobileViewport';
 
 function lazyWithRetry<T extends React.ComponentType<any>>(
   factory: () => Promise<{ default: T }>
@@ -51,16 +49,12 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
     try {
       return await factory();
     } catch {
-      // Retry once after 600ms for transient 4G / Vite chunk load hiccups
       await new Promise((r) => setTimeout(r, 600));
       return await factory();
     }
   });
 }
 
-const StudentDashboard = lazyWithRetry(() =>
-  import('./StudentDashboard').then((m) => ({ default: m.StudentDashboard }))
-);
 const EtherealStudentDashboard = lazyWithRetry(() =>
   import('./EtherealStudentDashboard').then((m) => ({ default: m.EtherealStudentDashboard }))
 );
@@ -104,17 +98,21 @@ type AppView =
   | 'history'
   | 'admin';
 
+const PRIMARY_HEADER_TABS: AppView[] = ['dashboard', 'upload', 'exams', 'practice', 'quiz'];
+const OVERFLOW_HEADER_TABS: AppView[] = ['leaderboard', 'analytics', 'history', 'admin'];
+
 export const AuthenticatedShell: React.FC = () => {
   const { user, profile, isSuperAdmin, systemStatus, logout, refreshProfile } = useAuth();
-  const { isEthereal } = useUiMode();
-  const isMobile = useIsMobileViewport();
   const prefersReduced = useReducedMotion();
 
   const [activeView, setActiveView] = useState<AppView>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+
   const navRef = useRef<HTMLElement>(null);
   const hamburgerBtnRef = useRef<HTMLButtonElement>(null);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
   const motionAllowedRef = useRef(true);
   const mobileNavDrawerId = 'studycheck-navigation-drawer';
 
@@ -130,6 +128,27 @@ export const AuthenticatedShell: React.FC = () => {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [user?.emailVerified]);
+
+  // Close desktop "Thêm" overflow menu on outside click or Escape
+  useEffect(() => {
+    if (!moreMenuOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setMoreMenuOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMoreMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [moreMenuOpen]);
 
   // Student Workspace Data
   const [dataLoading, setDataLoading] = useState(false);
@@ -193,8 +212,8 @@ export const AuthenticatedShell: React.FC = () => {
           gsap.from('.nav-item', {
             y: 10,
             autoAlpha: 0,
-            duration: 0.28,
-            stagger: 0.03,
+            duration: 0.25,
+            stagger: 0.025,
             ease: 'power2.out',
             clearProps: 'transform,opacity,visibility',
           });
@@ -210,64 +229,10 @@ export const AuthenticatedShell: React.FC = () => {
     { scope: navRef, dependencies: [mobileMenuOpen, user?.uid, Boolean(user?.emailVerified)] }
   );
 
-  const handleNavMouseEnter = contextSafe(
-    (target: HTMLButtonElement, isActive: boolean) => {
-      const isDark = document.documentElement.classList.contains('dark');
-      const hoverBg = isDark ? 'rgba(56, 189, 248, 0.16)' : 'rgba(224, 242, 254, 0.78)';
-
-      if (!motionAllowedRef.current) {
-        if (!isActive) {
-          gsap.set(target, { backgroundColor: hoverBg });
-        }
-        return;
-      }
-
-      gsap.to(target, {
-        scale: 1.02,
-        ...(isActive ? {} : { backgroundColor: hoverBg }),
-        duration: 0.22,
-        ease: 'power2.out',
-        overwrite: 'auto',
-      });
-    }
-  );
-
-  const handleNavMouseLeave = contextSafe(
-    (target: HTMLButtonElement, isActive: boolean) => {
-      const isDark = document.documentElement.classList.contains('dark');
-      const restBg = isDark ? 'rgba(56, 189, 248, 0)' : 'rgba(224, 242, 254, 0)';
-
-      if (!motionAllowedRef.current) {
-        gsap.set(target, { clearProps: 'transform,backgroundColor' });
-        return;
-      }
-
-      gsap.to(target, {
-        scale: 1,
-        ...(isActive ? {} : { backgroundColor: restBg }),
-        duration: 0.2,
-        ease: 'power2.out',
-        overwrite: 'auto',
-        clearProps: isActive ? 'transform' : 'transform,backgroundColor',
-      });
-    }
-  );
-
-  const handleNavItemClick = contextSafe(
-    (target: HTMLButtonElement, view: AppView) => {
-      gsap.set(target, { clearProps: 'backgroundColor' });
-      if (motionAllowedRef.current) {
-        gsap.to(target, {
-          scale: 1,
-          duration: 0.15,
-          ease: 'power2.out',
-          overwrite: 'auto',
-          clearProps: 'transform',
-        });
-      }
-      handleNavigate(view);
-    }
-  );
+  const handleNavItemClick = contextSafe((target: HTMLButtonElement, view: AppView) => {
+    gsap.set(target, { clearProps: 'transform,backgroundColor' });
+    handleNavigate(view);
+  });
 
   const handleLoadMoreHistory = async () => {
     if (!user || !analysesCursor || !analysesHasMore) return;
@@ -288,6 +253,7 @@ export const AuthenticatedShell: React.FC = () => {
     subTab?: 'bank' | 'sprint10' | 'flashcards'
   ) => {
     setMobileMenuOpen(false);
+    setMoreMenuOpen(false);
     if (view === 'history') {
       setSelectedHistoryId(analysisId || null);
     }
@@ -318,19 +284,21 @@ export const AuthenticatedShell: React.FC = () => {
   // Email Verification Gate (matches Firestore Rules email_verified == true requirement)
   if (!user.emailVerified) {
     return (
-      <div className="min-h-dvh flex items-center justify-center p-6">
-        <GlassSurface className="max-w-md w-full rounded-3xl p-8 text-center space-y-4">
-          <MailCheck className="w-12 h-12 text-sky-600 dark:text-sky-400 mx-auto" />
-          <h1 className="font-display text-[clamp(1.25rem,3.2vw,1.5rem)] font-bold text-[#16243E] dark:text-[#E6EFFC]">
+      <div className="sc-auth-shell min-h-dvh flex items-center justify-center p-6">
+        <GlassSurface className="max-w-md w-full rounded-2xl p-8 text-center space-y-4">
+          <div className="mx-auto size-12 rounded-2xl bg-[#EAF2FF] dark:bg-[#2563EB]/15 border border-[#BFDBFE] dark:border-[#3B82F6]/30 flex items-center justify-center">
+            <MailCheck className="w-6 h-6 text-[#2563EB] dark:text-[#60A5FA]" />
+          </div>
+          <h1 className="font-display text-[clamp(1.25rem,3.2vw,1.5rem)] font-bold text-[#172033] dark:text-[#E6EFFC]">
             Xác minh địa chỉ email của bạn
           </h1>
-          <p className="text-xs sm:text-sm text-[#475B78] dark:text-[#B4C7E2] leading-[1.6] prose-measure mx-auto">
-            Tài khoản <strong>{user.email}</strong> cần được xác minh email để bảo vệ dữ liệu học tập
+          <p className="text-xs sm:text-sm text-[#525E75] dark:text-[#94A3B8] leading-[1.6] prose-measure mx-auto">
+            Tài khoản <strong className="text-[#172033] dark:text-[#E6EFFC]">{user.email}</strong> cần được xác minh email để bảo vệ dữ liệu học tập
             và tuân thủ quy tắc bảo mật hệ thống. Nếu đây là địa chỉ Gmail, bạn có thể bấm liên kết trong
             hộp thư hoặc đăng xuất rồi chọn <strong>Tiếp tục với Google</strong> để xác minh tự động.
           </p>
           {verificationMsg && (
-            <p className="text-xs text-emerald-700 dark:text-emerald-300 bg-emerald-50/90 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-2xl p-3">
+            <p className="text-xs text-emerald-700 dark:text-emerald-300 bg-emerald-50/90 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-xl p-3">
               {verificationMsg}
             </p>
           )}
@@ -358,7 +326,7 @@ export const AuthenticatedShell: React.FC = () => {
             <button
               type="button"
               onClick={logout}
-              className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 mt-1 cursor-pointer"
+              className="text-xs text-[#525E75] dark:text-[#94A3B8] hover:text-[#172033] dark:hover:text-[#E6EFFC] mt-1 cursor-pointer"
             >
               Đăng xuất
             </button>
@@ -378,9 +346,9 @@ export const AuthenticatedShell: React.FC = () => {
     { id: 'dashboard', label: 'Tổng quan', shortLabel: 'Tổng quan', hint: 'Bảng điều khiển học tập', icon: LayoutDashboard },
     { id: 'upload', label: 'Kiểm định mới', shortLabel: 'Kiểm định', hint: 'Tải vở ghi, PDF hoặc DOCX', icon: FilePlus2 },
     { id: 'exams', label: 'Trung tâm Đề kiểm tra', shortLabel: 'Đề kiểm tra', hint: 'Thi thử chuẩn GDPT 2018', icon: ClipboardCheck },
-    { id: 'leaderboard', label: 'Đua Top Khối & Trường', shortLabel: 'Đua Top', hint: 'Bảng xếp hạng theo khối', icon: Trophy },
     { id: 'practice', label: 'Ngân hàng luyện tập', shortLabel: 'Luyện tập', hint: 'Ôn câu sai & Flashcard', icon: Repeat },
     { id: 'quiz', label: 'Bài trắc nghiệm', shortLabel: 'Trắc nghiệm', hint: 'Đề thích ứng & nâng cao', icon: HelpCircle },
+    { id: 'leaderboard', label: 'Đua Top Khối & Trường', shortLabel: 'Đua Top', hint: 'Bảng xếp hạng theo khối', icon: Trophy },
     { id: 'analytics', label: 'Thống kê kiến thức đã học', shortLabel: 'Thống kê', hint: 'Bản đồ chương & tiến bộ', icon: BarChart3 },
     { id: 'history', label: 'Lịch sử phân tích', shortLabel: 'Lịch sử', hint: 'Xem lại bài đã chấm', icon: History },
     ...(isSuperAdmin
@@ -388,7 +356,10 @@ export const AuthenticatedShell: React.FC = () => {
       : []),
   ];
 
-  const etherealTopTabs: AppView[] = ['dashboard', 'upload', 'practice', 'exams'];
+  const primaryNavItems = navItems.filter((item) => PRIMARY_HEADER_TABS.includes(item.id));
+  const overflowNavItems = navItems.filter((item) => OVERFLOW_HEADER_TABS.includes(item.id));
+  const activeOverflowItem = overflowNavItems.find((item) => item.id === activeView);
+
   const nowIso = new Date().toISOString();
   const duePracticeCount = practiceItems.filter(
     (p) => !p.nextReviewAt || p.nextReviewAt <= nowIso
@@ -398,30 +369,22 @@ export const AuthenticatedShell: React.FC = () => {
     <React.Suspense
       fallback={
         <div className="py-12 flex items-center justify-center">
-          <div className="inline-flex items-center gap-2.5 px-4 py-2.5 rounded-2xl bg-white/80 dark:bg-slate-900/80 border border-slate-200/80 dark:border-slate-800 text-xs font-medium text-slate-600 dark:text-slate-300">
-            <span className="size-4 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin" />
+          <div className="inline-flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-white dark:bg-[#111B30] border border-[#E6ECF5] dark:border-[#1E293B] text-xs font-medium text-[#525E75] dark:text-[#94A3B8] shadow-xs">
+            <span className="size-4 rounded-full border-2 border-[#2563EB] border-t-transparent animate-spin" />
             <span>Đang tải không gian học tập...</span>
           </div>
         </div>
       }
     >
       <TabContentFade activeKey={activeView}>
-        {activeView === 'dashboard' &&
-          (isEthereal && !isMobile ? (
-            <EtherealStudentDashboard
-              analyses={analyses}
-              practiceItems={practiceItems}
-              loading={dataLoading}
-              onNavigate={(view, id, subTab) => handleNavigate(view, id, subTab)}
-            />
-          ) : (
-            <StudentDashboard
-              analyses={analyses}
-              practiceItems={practiceItems}
-              loading={dataLoading}
-              onNavigate={(view, id) => handleNavigate(view, id)}
-            />
-          ))}
+        {activeView === 'dashboard' && (
+          <EtherealStudentDashboard
+            analyses={analyses}
+            practiceItems={practiceItems}
+            loading={dataLoading}
+            onNavigate={(view, id, subTab) => handleNavigate(view, id, subTab)}
+          />
+        )}
 
         {activeView === 'upload' && (
           <UploadWorkspace
@@ -506,339 +469,176 @@ export const AuthenticatedShell: React.FC = () => {
     </React.Suspense>
   );
 
-  const sharedDrawer = (
-    <NavigationDrawer
-      id={mobileNavDrawerId}
-      open={mobileMenuOpen}
-      onClose={() => setMobileMenuOpen(false)}
-      triggerRef={hamburgerBtnRef}
-      panelRef={navRef}
-      ariaLabel="Điều hướng chính"
-      footer={
-        <div className="space-y-2.5">
-          <div className="px-2">
-            <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
-              {profile?.displayName || user.displayName || user.email}
-            </p>
-            <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">
-              {isSuperAdmin ? 'Super Admin' : `Học sinh · Lớp ${profile?.grade || '10'}`}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              setMobileMenuOpen(false);
-              logout();
-            }}
-            className="w-full min-h-[40px] flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold glass-control cursor-pointer"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            <span>Đăng xuất</span>
-          </button>
-          <div className="pt-2 border-t border-sky-200/50 dark:border-slate-800/80 flex items-center justify-between px-2">
-            <div>
-              <p className="text-[10px] text-slate-500 dark:text-slate-400">Phát triển bởi</p>
-              <p className="text-[11px] font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                {BRAND_CONFIG.authorName}
-              </p>
-            </div>
-            <div className="h-8 w-24 overflow-hidden flex items-center justify-center rounded-lg">
-              <img
-                src={BRAND_CONFIG.signatureImageUrl}
-                alt={`Chữ ký ${BRAND_CONFIG.authorName}`}
-                width={96}
-                height={32}
-                loading="lazy"
-                decoding="async"
-                data-no-privacy-blur="true"
-                className="w-full h-full object-contain scale-[2.3] select-none pointer-events-none mix-blend-multiply dark:invert dark:mix-blend-screen"
+  return (
+    <div className="sc-auth-shell min-h-dvh flex flex-col">
+      {/* Unified Sticky Editorial Academic Header */}
+      <header className="sticky top-0 z-[45] no-print glass-nav">
+        <div className="mx-auto w-full max-w-[1320px] px-3.5 sm:px-6 h-[60px] md:h-16 flex items-center justify-between gap-3">
+          {/* Brand + Mobile/Tablet Drawer Trigger */}
+          <div className="flex items-center gap-2 min-w-0 shrink-0">
+            <div className="lg:hidden">
+              <HamburgerButton
+                buttonRef={hamburgerBtnRef}
+                open={mobileMenuOpen}
+                controlsId={mobileNavDrawerId}
+                onToggle={() => setMobileMenuOpen((v) => !v)}
               />
             </div>
-          </div>
-        </div>
-      }
-    >
-      <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#64748B] dark:text-[#94A3B8]">
-        Điều hướng
-      </p>
-      <div className="space-y-1">
-        {navItems
-          .filter((item) => item.id !== 'admin')
-          .map((item) => {
-            const Icon = item.icon;
-            const active =
-              activeView === item.id || (activeView === 'report' && item.id === 'upload');
-            return (
-              <button
-                key={item.id}
-                type="button"
-                aria-current={active ? 'page' : undefined}
-                onClick={(e) => handleNavItemClick(e.currentTarget, item.id)}
-                onMouseEnter={(e) => handleNavMouseEnter(e.currentTarget, active)}
-                onMouseLeave={(e) => handleNavMouseLeave(e.currentTarget, active)}
-                className={`nav-item w-full min-h-[42px] flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-left cursor-pointer ${
-                  active
-                    ? isEthereal
-                      ? 'bg-indigo-500/15 dark:bg-indigo-400/20 text-[#171B3A] dark:text-white font-semibold border border-indigo-300/60 dark:border-indigo-400/30 shadow-xs'
-                      : 'bg-sky-500/18 dark:bg-white/12 text-[#0F172A] dark:text-white font-semibold border border-sky-300/50 dark:border-white/15 shadow-xs'
-                    : 'text-[#334155] dark:text-[#CBD5E1] font-medium'
-                }`}
-              >
-                <Icon className="w-4 h-4 shrink-0 opacity-85" />
-                <span className="truncate">{item.label}</span>
-              </button>
-            );
-          })}
-      </div>
 
-      {isSuperAdmin && (
-        <div className="mt-5 pt-4 border-t border-sky-200/60 dark:border-slate-800/80">
-          <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#64748B] dark:text-[#94A3B8]">
-            Quản trị
-          </p>
-          {navItems
-            .filter((item) => item.id === 'admin')
-            .map((item) => {
-              const Icon = item.icon;
-              const active = activeView === item.id;
+            <button
+              type="button"
+              onClick={() => handleNavigate('dashboard')}
+              className="inline-flex items-center gap-2.5 cursor-pointer shrink-0 group rounded-xl py-1 pr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]"
+            >
+              <span
+                aria-hidden="true"
+                className="size-8 rounded-xl bg-[#2563EB] text-white flex items-center justify-center shadow-[0_6px_14px_-4px_rgba(37,99,235,0.45)] group-hover:bg-[#1746A2] transition-colors duration-150"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  className="size-[18px]"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />
+                  <path d="m9 10 2 2 4-4" />
+                </svg>
+              </span>
+              <span className="font-display text-[15px] sm:text-[17px] font-bold tracking-tight text-[#172033] dark:text-[#E6EFFC] whitespace-nowrap">
+                {BRAND_CONFIG.name}
+              </span>
+            </button>
+          </div>
+
+          {/* Primary Desktop Navigation + Overflow Menu */}
+          <nav
+            aria-label="Điều hướng chính"
+            className="hidden lg:flex items-center gap-1 min-w-0"
+          >
+            {primaryNavItems.map((item) => {
+              const active =
+                activeView === item.id ||
+                (activeView === 'report' && item.id === 'upload');
+              const showBadge = item.id === 'practice' && duePracticeCount > 0;
+
               return (
                 <button
                   key={item.id}
                   type="button"
                   aria-current={active ? 'page' : undefined}
-                  onClick={(e) => handleNavItemClick(e.currentTarget, item.id)}
-                  onMouseEnter={(e) => handleNavMouseEnter(e.currentTarget, active)}
-                  onMouseLeave={(e) => handleNavMouseLeave(e.currentTarget, active)}
-                  className={`nav-item w-full min-h-[42px] flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-left cursor-pointer ${
+                  onClick={() => handleNavigate(item.id)}
+                  className={`relative inline-flex items-center gap-1.5 min-h-[38px] px-3.5 py-2 rounded-xl text-[13px] font-semibold transition-colors duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB] ${
                     active
-                      ? isEthereal
-                        ? 'bg-indigo-500/15 dark:bg-indigo-400/20 text-[#171B3A] dark:text-white font-semibold border border-indigo-300/60 dark:border-indigo-400/30 shadow-xs'
-                        : 'bg-sky-500/18 dark:bg-white/12 text-[#0F172A] dark:text-white font-semibold border border-sky-300/50 dark:border-white/15 shadow-xs'
-                      : 'text-[#334155] dark:text-[#CBD5E1] font-medium'
+                      ? 'text-[#1746A2] dark:text-[#93C5FD]'
+                      : 'text-[#525E75] dark:text-[#94A3B8] hover:text-[#172033] dark:hover:text-[#E6EFFC] hover:bg-[#F1F5FA] dark:hover:bg-[#111B30]'
                   }`}
                 >
-                  <Icon className="w-4 h-4 shrink-0 opacity-85" />
-                  <span className="truncate">{item.label}</span>
+                  {active && (
+                    <motion.span
+                      layoutId="sc-header-active-tab"
+                      aria-hidden="true"
+                      transition={
+                        prefersReduced
+                          ? { duration: 0 }
+                          : { type: 'spring', stiffness: 520, damping: 38, mass: 0.65 }
+                      }
+                      className="absolute inset-0 rounded-xl bg-[#EAF2FF] dark:bg-[#2563EB]/20 border border-[#BFDBFE] dark:border-[#3B82F6]/35"
+                    />
+                  )}
+                  <span className="relative z-10">{item.shortLabel}</span>
+                  {showBadge && (
+                    <span
+                      aria-label={`${duePracticeCount} câu cần ôn`}
+                      className="relative z-10 min-w-[18px] h-[18px] px-1 rounded-full bg-[#E11D48] text-white text-[10px] font-bold font-mono tabular-nums inline-flex items-center justify-center"
+                    >
+                      {duePracticeCount > 99 ? '99+' : duePracticeCount}
+                    </span>
+                  )}
                 </button>
               );
             })}
-        </div>
-      )}
-    </NavigationDrawer>
-  );
 
-  const sharedCommandPalette = (
-    <CommandPalette
-      open={commandPaletteOpen}
-      onClose={() => setCommandPaletteOpen(false)}
-      navItems={navItems.map((n) => ({
-        id: n.id,
-        label: n.label,
-        hint: n.hint,
-        icon: n.icon,
-      }))}
-      analyses={analyses}
-      onSelectNav={(id) => handleNavigate(id as AppView)}
-      onSelectAnalysis={(analysisId) => handleNavigate('history', analysisId)}
-    />
-  );
-
-  // === DEDICATED ULTRA-LIGHTWEIGHT MOBILE NATIVE SHELL (< 768px) ===
-  if (isMobile) {
-    return (
-      <div className="min-h-dvh flex flex-col bg-[#F8FAFC] dark:bg-[#0B1120]">
-        <header className="sticky top-0 z-[45] no-print bg-white dark:bg-[#111827] border-b border-slate-200 dark:border-slate-800 h-[52px] px-3 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <HamburgerButton
-              buttonRef={hamburgerBtnRef}
-              open={mobileMenuOpen}
-              controlsId={mobileNavDrawerId}
-              onToggle={() => setMobileMenuOpen((v) => !v)}
-            />
-            <button
-              type="button"
-              onClick={() => handleNavigate('dashboard')}
-              className="font-display text-[15px] font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap truncate cursor-pointer"
-            >
-              {BRAND_CONFIG.name}
-            </button>
-          </div>
-
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              type="button"
-              onClick={() => setCommandPaletteOpen(true)}
-              aria-label="Tìm kiếm nhanh"
-              title="Tìm kiếm nhanh"
-              className="size-10 inline-flex items-center justify-center rounded-xl text-slate-600 dark:text-slate-300 active:bg-slate-100 dark:active:bg-slate-800 cursor-pointer"
-            >
-              <Search className="size-[18px]" />
-            </button>
-            <AccountMenu />
-          </div>
-        </header>
-
-        <MaintenanceBanner config={systemStatus} />
-        {sharedDrawer}
-        {sharedCommandPalette}
-
-        <main className="flex-1 min-w-0 w-full px-4 pt-4 pb-20">
-          {renderActiveWorkspaceView()}
-        </main>
-
-        <MobileBottomNav
-          activeId={activeView}
-          duePracticeCount={duePracticeCount}
-          onSelect={(id) => handleNavigate(id)}
-        />
-      </div>
-    );
-  }
-
-  // === MODERN LIQUID GLASS & BENTO STUDIO SHELL (UI MODE 2 — TABLET & DESKTOP) ===
-  if (isEthereal) {
-    return (
-      <div className="min-h-dvh flex flex-col">
-        <MaintenanceBanner config={systemStatus} />
-        {sharedDrawer}
-        {sharedCommandPalette}
-
-        <div className="flex-1 mx-auto w-full max-w-[1240px] px-4 sm:px-6 pt-4 sm:pt-6 pb-28">
-          <div className="ethereal-studio-canvas rounded-[30px] sm:rounded-[34px] overflow-x-clip min-h-[calc(100dvh-8.5rem)] flex flex-col">
-            <header className="sticky top-0 z-[40] no-print bg-white/88 dark:bg-[#14193A]/88 backdrop-blur-xl border-b border-indigo-100/80 dark:border-indigo-400/15 px-5 lg:px-7 h-16 flex items-center justify-between gap-4 rounded-t-[30px] sm:rounded-t-[34px]">
-              <div className="flex items-center gap-2.5 min-w-0 shrink-0">
-                <HamburgerButton
-                  buttonRef={hamburgerBtnRef}
-                  open={mobileMenuOpen}
-                  controlsId={mobileNavDrawerId}
-                  onToggle={() => setMobileMenuOpen((v) => !v)}
-                />
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('dashboard')}
-                  className="inline-flex items-center gap-2 cursor-pointer shrink-0 group rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
-                >
-                  <span className="size-8 rounded-xl bg-gradient-to-br from-[#4F46E5] via-[#6366F1] to-[#9333EA] text-white flex items-center justify-center shadow-[0_6px_16px_-4px_rgba(79,70,229,0.55)] group-hover:scale-105 transition-transform duration-150">
-                    <Sparkles className="size-4" />
-                  </span>
-                  <span className="font-display text-base sm:text-lg font-bold tracking-tight text-[#4338CA] dark:text-[#C7D2FE] whitespace-nowrap">
-                    {BRAND_CONFIG.name}
-                  </span>
-                </button>
-              </div>
-
-              <nav
-                aria-label="Điều hướng chính"
-                className="hidden lg:flex items-center gap-1"
+            {/* Overflow Menu ("Thêm") holding Leaderboard, Analytics, History, and Admin */}
+            <div ref={moreMenuRef} className="relative">
+              <button
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={moreMenuOpen}
+                onClick={() => setMoreMenuOpen((v) => !v)}
+                className={`inline-flex items-center gap-1 min-h-[38px] px-3 py-2 rounded-xl text-[13px] font-semibold transition-colors duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB] ${
+                  activeOverflowItem
+                    ? 'bg-[#EAF2FF] dark:bg-[#2563EB]/20 text-[#1746A2] dark:text-[#93C5FD] border border-[#BFDBFE] dark:border-[#3B82F6]/35'
+                    : 'text-[#525E75] dark:text-[#94A3B8] hover:text-[#172033] dark:hover:text-[#E6EFFC] hover:bg-[#F1F5FA] dark:hover:bg-[#111B30] border border-transparent'
+                }`}
               >
-                {navItems
-                  .filter((item) => etherealTopTabs.includes(item.id))
-                  .map((item) => {
-                    const active =
-                      activeView === item.id ||
-                      (activeView === 'report' && item.id === 'upload');
+                <span>{activeOverflowItem ? activeOverflowItem.shortLabel : 'Thêm'}</span>
+                <ChevronDown
+                  className={`size-3.5 transition-transform duration-150 ${
+                    moreMenuOpen ? 'rotate-180' : ''
+                  }`}
+                />
+              </button>
+
+              {moreMenuOpen && (
+                <div
+                  role="menu"
+                  aria-label="Tính năng bổ sung"
+                  className="absolute right-0 top-[calc(100%+8px)] z-[60] w-64 rounded-2xl bg-white dark:bg-[#111B30] border border-[#E6ECF5] dark:border-[#1E293B] shadow-xl shadow-slate-900/10 dark:shadow-black/50 p-1.5 space-y-0.5"
+                >
+                  {overflowNavItems.map((item) => {
+                    const Icon = item.icon;
+                    const active = activeView === item.id;
                     return (
                       <button
                         key={item.id}
                         type="button"
+                        role="menuitem"
                         aria-current={active ? 'page' : undefined}
                         onClick={() => handleNavigate(item.id)}
-                        className={`relative px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
+                        className={`w-full min-h-[42px] flex items-center gap-3 px-3 py-2 rounded-xl text-left cursor-pointer transition-colors duration-150 ${
                           active
-                            ? 'text-[#312E81] dark:text-white'
-                            : 'text-[#6B7499] dark:text-[#A5B1D8] hover:text-[#171B3A] dark:hover:text-white'
+                            ? 'bg-[#EAF2FF] dark:bg-[#2563EB]/20 text-[#1746A2] dark:text-[#93C5FD] font-semibold'
+                            : 'text-[#172033] dark:text-[#E6EFFC] hover:bg-[#F1F5FA] dark:hover:bg-[#0D1628]'
                         }`}
                       >
-                        {active && (
-                          <motion.span
-                            layoutId="ethereal-top-nav-pill"
-                            aria-hidden="true"
-                            transition={
-                              prefersReduced
-                                ? { duration: 0 }
-                                : { type: 'spring', stiffness: 520, damping: 38, mass: 0.65 }
-                            }
-                            className="absolute inset-0 rounded-xl bg-[#EEF0FF] dark:bg-indigo-500/25 border border-indigo-200/70 dark:border-indigo-400/30"
-                          />
-                        )}
-                        <span className="relative z-10">{item.shortLabel}</span>
+                        <span
+                          className={`size-8 rounded-lg flex items-center justify-center shrink-0 ${
+                            active
+                              ? 'bg-[#2563EB] text-white'
+                              : 'bg-[#F1F5FA] dark:bg-[#0D1628] text-[#525E75] dark:text-[#94A3B8]'
+                          }`}
+                        >
+                          <Icon className="size-4" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-xs font-semibold truncate">{item.label}</span>
+                          <span className="block text-[11px] text-[#525E75] dark:text-[#94A3B8] truncate">
+                            {item.hint}
+                          </span>
+                        </span>
                       </button>
                     );
                   })}
-              </nav>
+                </div>
+              )}
+            </div>
+          </nav>
 
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setCommandPaletteOpen(true)}
-                  aria-label="Tìm kiếm nhanh (Ctrl+K)"
-                  title="Tìm kiếm nhanh (Ctrl+K)"
-                  className="inline-flex items-center gap-1.5 min-h-[38px] px-2.5 sm:px-3 rounded-xl text-xs font-medium text-[#5A648C] dark:text-[#B4C0E8] hover:text-[#4338CA] dark:hover:text-white bg-indigo-50/70 dark:bg-white/8 hover:bg-indigo-100/80 dark:hover:bg-white/14 border border-indigo-200/60 dark:border-indigo-400/20 transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
-                >
-                  <Search className="size-3.5 shrink-0" />
-                  <span className="hidden xl:inline">Tìm nhanh</span>
-                  <kbd className="hidden md:inline font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/90 dark:bg-white/10 border border-indigo-200/70 dark:border-indigo-400/25 text-[#4338CA] dark:text-indigo-200">
-                    Ctrl K
-                  </kbd>
-                </button>
-
-                <AccountMenu />
-              </div>
-            </header>
-
-            <main className="flex-1 min-w-0 px-6 lg:px-9 py-6 sm:py-8">
-              {renderActiveWorkspaceView()}
-            </main>
-          </div>
-        </div>
-
-        <FloatingDock
-          items={navItems.map((item) => ({
-            id: item.id,
-            label: item.label,
-            icon: item.icon,
-            badge: item.id === 'practice' ? duePracticeCount : undefined,
-          }))}
-          activeId={activeView === 'report' ? 'upload' : activeView}
-          onSelect={(id) => handleNavigate(id as AppView)}
-          onOpenCommandPalette={() => setCommandPaletteOpen(true)}
-        />
-      </div>
-    );
-  }
-
-  // === CLASSIC ACADEMIC UI SHELL (UI MODE 1 — TABLET & DESKTOP) ===
-  return (
-    <div className="min-h-dvh flex flex-col">
-      <header className="sticky top-0 z-[45] glass-nav no-print">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 h-16 flex items-center justify-between gap-4 sm:gap-6">
-          <div className="flex items-center gap-2.5 sm:gap-3">
-            <HamburgerButton
-              buttonRef={hamburgerBtnRef}
-              open={mobileMenuOpen}
-              controlsId={mobileNavDrawerId}
-              onToggle={() => setMobileMenuOpen((v) => !v)}
-            />
-            <button
-              type="button"
-              onClick={() => handleNavigate('dashboard')}
-              className="font-display text-base sm:text-lg font-bold tracking-tight text-[#16243E] dark:text-[#E6EFFC] whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              {BRAND_CONFIG.name}
-            </button>
-          </div>
-
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* Right Utility Cluster: Quick Command Palette + Account Menu */}
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={() => setCommandPaletteOpen(true)}
               aria-label="Tìm kiếm nhanh (Ctrl+K)"
               title="Tìm kiếm nhanh (Ctrl+K)"
-              className="inline-flex items-center gap-1.5 min-h-[38px] px-3 rounded-xl text-xs font-medium glass-control cursor-pointer whitespace-nowrap shrink-0"
+              className="inline-flex items-center justify-center gap-1.5 min-h-[40px] min-w-[40px] md:min-w-0 px-2.5 sm:px-3 rounded-xl text-xs font-medium text-[#525E75] dark:text-[#94A3B8] hover:text-[#172033] dark:hover:text-[#E6EFFC] bg-[#F1F5FA] dark:bg-[#111B30] hover:bg-[#EAF2FF] dark:hover:bg-[#1E293B] border border-[#E6ECF5] dark:border-[#1E293B] transition-colors duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]"
             >
-              <Search className="size-3.5 shrink-0" />
-              <span className="hidden lg:inline">Tìm nhanh</span>
-              <kbd className="hidden sm:inline font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300">
+              <Search className="size-4 sm:size-3.5 shrink-0" />
+              <span className="hidden xl:inline">Tìm nhanh</span>
+              <kbd className="hidden md:inline font-mono text-[10px] px-1.5 py-0.5 rounded-md bg-white dark:bg-[#0D1628] border border-[#E6ECF5] dark:border-[#334155] text-[#525E75] dark:text-[#94A3B8]">
                 Ctrl K
               </kbd>
             </button>
@@ -849,12 +649,152 @@ export const AuthenticatedShell: React.FC = () => {
       </header>
 
       <MaintenanceBanner config={systemStatus} />
-      {sharedDrawer}
-      {sharedCommandPalette}
 
-      <div className="flex-1 mx-auto w-full max-w-6xl px-4 sm:px-6 py-5 sm:py-6">
-        <main className="min-w-0">{renderActiveWorkspaceView()}</main>
-      </div>
+      {/* Mobile & Tablet Navigation Drawer (All Routes Preserved) */}
+      <NavigationDrawer
+        id={mobileNavDrawerId}
+        open={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
+        triggerRef={hamburgerBtnRef}
+        panelRef={navRef}
+        ariaLabel="Điều hướng chính"
+        footer={
+          <div className="space-y-2.5">
+            <div className="px-2">
+              <p className="text-xs font-semibold text-[#172033] dark:text-[#E6EFFC] truncate">
+                {profile?.displayName || user.displayName || user.email}
+              </p>
+              <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8]">
+                {isSuperAdmin ? 'Super Admin' : `Học sinh · Lớp ${profile?.grade || '10'}`}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setMobileMenuOpen(false);
+                logout();
+              }}
+              className="w-full min-h-[42px] flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-[#E11D48] dark:text-rose-400 bg-rose-50 dark:bg-rose-950/35 hover:bg-rose-100 dark:hover:bg-rose-950/55 border border-rose-200/70 dark:border-rose-900/60 transition-colors cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Đăng xuất</span>
+            </button>
+            <div className="pt-2 border-t border-[#E6ECF5] dark:border-[#1E293B] flex items-center justify-between px-2">
+              <div>
+                <p className="text-[10px] text-[#525E75] dark:text-[#94A3B8]">Phát triển bởi</p>
+                <p className="text-[11px] font-bold text-[#172033] dark:text-[#E6EFFC]">
+                  {BRAND_CONFIG.authorName}
+                </p>
+              </div>
+              <div className="h-8 w-24 overflow-hidden flex items-center justify-center rounded-lg">
+                <img
+                  src={BRAND_CONFIG.signatureImageUrl}
+                  alt={`Chữ ký ${BRAND_CONFIG.authorName}`}
+                  width={96}
+                  height={32}
+                  loading="lazy"
+                  decoding="async"
+                  data-no-privacy-blur="true"
+                  className="w-full h-full object-contain scale-[2.3] select-none pointer-events-none mix-blend-multiply dark:invert dark:mix-blend-screen"
+                />
+              </div>
+            </div>
+          </div>
+        }
+      >
+        <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#525E75] dark:text-[#94A3B8]">
+          Điều hướng
+        </p>
+        <div className="space-y-1">
+          {navItems
+            .filter((item) => item.id !== 'admin')
+            .map((item) => {
+              const Icon = item.icon;
+              const active =
+                activeView === item.id || (activeView === 'report' && item.id === 'upload');
+              const showBadge = item.id === 'practice' && duePracticeCount > 0;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-current={active ? 'page' : undefined}
+                  onClick={(e) => handleNavItemClick(e.currentTarget, item.id)}
+                  className={`nav-item w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-xl text-sm text-left transition-colors duration-150 cursor-pointer ${
+                    active
+                      ? 'bg-[#EAF2FF] dark:bg-[#2563EB]/20 text-[#1746A2] dark:text-[#93C5FD] font-semibold border border-[#BFDBFE] dark:border-[#3B82F6]/35'
+                      : 'text-[#172033] dark:text-[#CBD5E1] hover:bg-[#F1F5FA] dark:hover:bg-[#111B30] font-medium border border-transparent'
+                  }`}
+                >
+                  <span className="flex items-center gap-3 min-w-0">
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                  </span>
+                  {showBadge && (
+                    <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-[#E11D48] text-white text-[10px] font-bold font-mono tabular-nums inline-flex items-center justify-center shrink-0">
+                      {duePracticeCount > 99 ? '99+' : duePracticeCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+        </div>
+
+        {isSuperAdmin && (
+          <div className="mt-5 pt-4 border-t border-[#E6ECF5] dark:border-[#1E293B]">
+            <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#525E75] dark:text-[#94A3B8]">
+              Quản trị
+            </p>
+            {navItems
+              .filter((item) => item.id === 'admin')
+              .map((item) => {
+                const Icon = item.icon;
+                const active = activeView === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    aria-current={active ? 'page' : undefined}
+                    onClick={(e) => handleNavItemClick(e.currentTarget, item.id)}
+                    className={`nav-item w-full min-h-[44px] flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-left transition-colors duration-150 cursor-pointer ${
+                      active
+                        ? 'bg-[#EAF2FF] dark:bg-[#2563EB]/20 text-[#1746A2] dark:text-[#93C5FD] font-semibold border border-[#BFDBFE] dark:border-[#3B82F6]/35'
+                        : 'text-[#172033] dark:text-[#CBD5E1] hover:bg-[#F1F5FA] dark:hover:bg-[#111B30] font-medium border border-transparent'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                  </button>
+                );
+              })}
+          </div>
+        )}
+      </NavigationDrawer>
+
+      <CommandPalette
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        navItems={navItems.map((n) => ({
+          id: n.id,
+          label: n.label,
+          hint: n.hint,
+          icon: n.icon,
+        }))}
+        analyses={analyses}
+        onSelectNav={(id) => handleNavigate(id as AppView)}
+        onSelectAnalysis={(analysisId) => handleNavigate('history', analysisId)}
+      />
+
+      {/* Unified Editorial Main Workspace */}
+      <main className="flex-1 min-w-0 w-full mx-auto max-w-[1320px] px-4 sm:px-6 lg:px-8 pt-5 sm:pt-7 pb-24 md:pb-12">
+        {renderActiveWorkspaceView()}
+      </main>
+
+      {/* Mobile Fixed Bottom Bar (< 768px) */}
+      <MobileBottomNav
+        activeId={activeView}
+        duePracticeCount={duePracticeCount}
+        onSelect={(id) => handleNavigate(id)}
+      />
     </div>
   );
 };

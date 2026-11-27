@@ -13,9 +13,12 @@ import {
   firestoreRestList,
   SUPER_ADMIN_EMAIL,
 } from './firebaseServer.js';
-import { DEFAULT_TASK_MODELS } from './modelDefaults.js';
-import { normalizeGroqModelId } from './groqProvider.js';
-import { clearAiResponseCache } from './modelRouter.js';
+import { DEFAULT_TASK_MODELS, UNIFIED_PRIMARY_MODEL } from './modelDefaults.js';
+import { clearAiResponseCache, normalizeSupportedModelId } from './modelRouter.js';
+import {
+  ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD,
+  clampAdaptiveThresholdChars,
+} from '../core/adaptiveApiPlan.js';
 
 export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
   requestsPerMinute: 15,
@@ -25,6 +28,7 @@ export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
   maximumConcurrentJobs: 3,
   maximumPagesPerAnalysis: 25,
   maximumFileSizeMb: 20,
+  adaptiveLongTextThresholdChars: ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD,
 };
 
 export const DEFAULT_MAINTENANCE_MESSAGE =
@@ -45,11 +49,39 @@ let authoritativeAiConfig: SystemAiConfig = {
   updatedAt: new Date().toISOString(),
   updatedBy: SUPER_ADMIN_EMAIL,
   rateLimitConfig: { ...DEFAULT_RATE_LIMITS },
-  activeModel: 'groq:openai/gpt-oss-120b',
+  activeModel: UNIFIED_PRIMARY_MODEL,
   configVersion: 1,
   allowedOrigins: [],
   taskModels: cloneDefaultTaskModels(),
+  adaptiveLongTextThresholdChars: ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD,
 };
+
+/**
+ * Serialize SystemAiConfig for Cloud Firestore `systemConfig/aiService` strictly matching
+ * `isValidSystemConfig` allowed top-level keys in `firestore.rules`.
+ * `adaptiveLongTextThresholdChars` is persisted inside `rateLimitConfig` so Firestore rules pass cleanly.
+ */
+function serializeSystemConfigForFirestore(cfg: SystemAiConfig): Record<string, unknown> {
+  const threshold = clampAdaptiveThresholdChars(
+    cfg.adaptiveLongTextThresholdChars ?? cfg.rateLimitConfig?.adaptiveLongTextThresholdChars
+  );
+  return {
+    enabled: Boolean(cfg.enabled),
+    disabledReason: String(cfg.disabledReason || '').slice(0, 300),
+    maintenanceMessage: String(cfg.maintenanceMessage || DEFAULT_MAINTENANCE_MESSAGE).slice(0, 400),
+    updatedAt: cfg.updatedAt || new Date().toISOString(),
+    updatedBy: String(cfg.updatedBy || SUPER_ADMIN_EMAIL).slice(0, 128),
+    rateLimitConfig: {
+      ...DEFAULT_RATE_LIMITS,
+      ...(cfg.rateLimitConfig || {}),
+      adaptiveLongTextThresholdChars: threshold,
+    },
+    activeModel: normalizeSupportedModelId(cfg.activeModel),
+    configVersion: typeof cfg.configVersion === 'number' && cfg.configVersion >= 1 ? cfg.configVersion : 1,
+    allowedOrigins: Array.isArray(cfg.allowedOrigins) ? cfg.allowedOrigins.slice(0, 50) : [],
+    taskModels: cfg.taskModels,
+  };
+}
 
 // Server-side in-memory counters & locks (never bypassed by browser refresh)
 const minuteWindows = new Map<string, number[]>();
@@ -94,16 +126,16 @@ function getOrCreateDailyUsage(date = todayDateKey()): ApiUsageDaily {
 function mergeTaskModels(
   base: Record<AiTaskType, TaskModelConfig>,
   patch?: Partial<Record<AiTaskType, Partial<TaskModelConfig>>>,
-  upgradeLegacyPreV32 = false
+  upgradeLegacyPreV42 = false
 ): Record<AiTaskType, TaskModelConfig> {
   const merged = {} as Record<AiTaskType, TaskModelConfig>;
   for (const taskKey of Object.keys(DEFAULT_TASK_MODELS) as AiTaskType[]) {
     const incomingPatch = patch?.[taskKey];
-    const isLegacyPreV32 =
-      upgradeLegacyPreV32 &&
-      (!incomingPatch?.promptVersion || incomingPatch.promptVersion !== 'v3.2');
+    const isLegacyPreV42 =
+      upgradeLegacyPreV42 &&
+      (!incomingPatch?.promptVersion || incomingPatch.promptVersion !== 'v4.2_3provider');
 
-    if (isLegacyPreV32) {
+    if (isLegacyPreV42) {
       merged[taskKey] = {
         ...DEFAULT_TASK_MODELS[taskKey],
       };
@@ -114,14 +146,14 @@ function mergeTaskModels(
       ...DEFAULT_TASK_MODELS[taskKey],
       ...(base?.[taskKey] || {}),
       ...(incomingPatch || {}),
-      promptVersion: 'v3.2',
+      promptVersion: 'v4.2_3provider',
     };
     merged[taskKey] = {
       ...combined,
-      defaultModel: normalizeGroqModelId(combined.defaultModel),
-      fallbackModel: normalizeGroqModelId(combined.fallbackModel),
+      defaultModel: normalizeSupportedModelId(combined.defaultModel),
+      fallbackModel: normalizeSupportedModelId(combined.fallbackModel),
       oneTimeOverrideModel: combined.oneTimeOverrideModel
-        ? normalizeGroqModelId(combined.oneTimeOverrideModel)
+        ? normalizeSupportedModelId(combined.oneTimeOverrideModel)
         : null,
     };
   }
@@ -147,15 +179,14 @@ export async function loadAuthoritativeAiConfig(
       lastRemoteConfigSyncAt = now;
       if (remote && typeof remote.enabled === 'boolean') {
         const remoteTasks = remote.taskModels || ({} as Record<AiTaskType, TaskModelConfig>);
-        const hasLegacyPreV32Tasks = (Object.keys(DEFAULT_TASK_MODELS) as AiTaskType[]).some(
-          (k) => !remoteTasks[k]?.promptVersion || remoteTasks[k]?.promptVersion !== 'v3.2'
+        const hasLegacyPreV42Tasks = (Object.keys(DEFAULT_TASK_MODELS) as AiTaskType[]).some(
+          (k) => !remoteTasks[k]?.promptVersion || remoteTasks[k]?.promptVersion !== 'v4.2_3provider'
         );
         const migratedTaskModels = mergeTaskModels(
           authoritativeAiConfig.taskModels,
           remote.taskModels,
           true
         );
-        // Ensure any 1-time override consumed in memory by a student request is never rolled back by a stale Firestore read
         let needsRemoteFlush = false;
         for (const consumedTask of pendingConsumedOverrides) {
           if (migratedTaskModels[consumedTask]?.oneTimeOverrideModel) {
@@ -168,14 +199,21 @@ export async function loadAuthoritativeAiConfig(
             pendingConsumedOverrides.delete(consumedTask);
           }
         }
-        const resolvedActiveModel = hasLegacyPreV32Tasks
-          ? 'groq:openai/gpt-oss-120b'
-          : normalizeGroqModelId(remote.activeModel || 'groq:openai/gpt-oss-120b');
+        const resolvedActiveModel = hasLegacyPreV42Tasks
+          ? UNIFIED_PRIMARY_MODEL
+          : normalizeSupportedModelId(remote.activeModel || UNIFIED_PRIMARY_MODEL);
+
+        const resolvedThreshold = clampAdaptiveThresholdChars(
+          remote.adaptiveLongTextThresholdChars ??
+            remote.rateLimitConfig?.adaptiveLongTextThresholdChars ??
+            authoritativeAiConfig.adaptiveLongTextThresholdChars
+        );
 
         authoritativeAiConfig = {
           ...authoritativeAiConfig,
           ...remote,
           activeModel: resolvedActiveModel,
+          adaptiveLongTextThresholdChars: resolvedThreshold,
           configVersion:
             typeof remote.configVersion === 'number'
               ? remote.configVersion
@@ -187,6 +225,7 @@ export async function loadAuthoritativeAiConfig(
           rateLimitConfig: {
             ...DEFAULT_RATE_LIMITS,
             ...(remote.rateLimitConfig || {}),
+            adaptiveLongTextThresholdChars: resolvedThreshold,
           },
         };
 
@@ -194,7 +233,7 @@ export async function loadAuthoritativeAiConfig(
           try {
             await firestoreRestSet(
               'systemConfig/aiService',
-              authoritativeAiConfig as unknown as Record<string, unknown>,
+              serializeSystemConfigForFirestore(authoritativeAiConfig),
               idToken
             );
             pendingConsumedOverrides.clear();
@@ -211,7 +250,7 @@ export async function loadAuthoritativeAiConfig(
 }
 
 export function getActiveModel(): string {
-  return (authoritativeAiConfig.activeModel || 'groq:openai/gpt-oss-120b').trim();
+  return normalizeSupportedModelId(authoritativeAiConfig.activeModel || UNIFIED_PRIMARY_MODEL);
 }
 
 export async function consumeOneTimeModelOverride(
@@ -237,12 +276,12 @@ export async function consumeOneTimeModelOverride(
     try {
       await firestoreRestSet(
         'systemConfig/aiService',
-        authoritativeAiConfig as unknown as Record<string, unknown>,
+        serializeSystemConfigForFirestore(authoritativeAiConfig),
         idToken
       );
       pendingConsumedOverrides.delete(taskType);
     } catch {
-      // Non-fatal if caller doesn't have systemConfig write role (pendingConsumedOverrides prevents rollback!)
+      // Non-fatal if caller doesn't have systemConfig write role
     }
   }
 }
@@ -267,7 +306,7 @@ export async function setOneTimeTaskOverride(params: {
       ...authoritativeAiConfig.taskModels,
       [taskType]: {
         ...curTask,
-        oneTimeOverrideModel: modelId ? modelId.trim() : null,
+        oneTimeOverrideModel: modelId ? normalizeSupportedModelId(modelId) : null,
       },
     },
     updatedAt: new Date().toISOString(),
@@ -276,7 +315,7 @@ export async function setOneTimeTaskOverride(params: {
   authoritativeAiConfig = next;
   lastRemoteConfigSyncAt = Date.now();
   try {
-    await firestoreRestSet('systemConfig/aiService', next as unknown as Record<string, unknown>, idToken);
+    await firestoreRestSet('systemConfig/aiService', serializeSystemConfigForFirestore(next), idToken);
     pendingConsumedOverrides.delete(taskType);
   } catch (err) {
     console.warn('Warning: unable to persist 1-run model override via REST:', err);
@@ -305,8 +344,14 @@ export async function updateAuthoritativeAiConfig(
   actorEmail: string,
   idToken: string
 ): Promise<SystemAiConfig> {
-  const shouldBumpVersion = Boolean(patch.taskModels || patch.activeModel || patch.allowedOrigins);
-  if (patch.taskModels || patch.activeModel) {
+  const hasThresholdPatch =
+    patch.adaptiveLongTextThresholdChars !== undefined ||
+    patch.rateLimitConfig?.adaptiveLongTextThresholdChars !== undefined;
+
+  const shouldBumpVersion = Boolean(
+    patch.taskModels || patch.activeModel || patch.allowedOrigins || hasThresholdPatch
+  );
+  if (patch.taskModels || patch.activeModel || hasThresholdPatch) {
     clearAiResponseCache();
   }
 
@@ -314,10 +359,8 @@ export async function updateAuthoritativeAiConfig(
     ? mergeTaskModels(authoritativeAiConfig.taskModels, patch.taskModels)
     : { ...authoritativeAiConfig.taskModels };
 
-  // When Super Admin changes activeModel in the Overview tab without passing patch.taskModels,
-  // propagate activeModel as defaultModel across text tasks so routing reflects their choice immediately.
   if (patch.activeModel && !patch.taskModels) {
-    const normalizedActive = normalizeGroqModelId(patch.activeModel.trim());
+    const normalizedActive = normalizeSupportedModelId(patch.activeModel.trim());
     const propagated = {} as Record<AiTaskType, TaskModelConfig>;
     for (const taskKey of Object.keys(DEFAULT_TASK_MODELS) as AiTaskType[]) {
       const cur = updatedTaskModels[taskKey] || DEFAULT_TASK_MODELS[taskKey];
@@ -329,12 +372,19 @@ export async function updateAuthoritativeAiConfig(
     updatedTaskModels = propagated;
   }
 
+  const nextThreshold = clampAdaptiveThresholdChars(
+    patch.adaptiveLongTextThresholdChars ??
+      patch.rateLimitConfig?.adaptiveLongTextThresholdChars ??
+      authoritativeAiConfig.adaptiveLongTextThresholdChars
+  );
+
   const next: SystemAiConfig = {
     ...authoritativeAiConfig,
     ...patch,
     activeModel: patch.activeModel
-      ? normalizeGroqModelId(patch.activeModel.trim())
+      ? normalizeSupportedModelId(patch.activeModel.trim())
       : authoritativeAiConfig.activeModel,
+    adaptiveLongTextThresholdChars: nextThreshold,
     configVersion: shouldBumpVersion
       ? (authoritativeAiConfig.configVersion || 1) + 1
       : authoritativeAiConfig.configVersion || 1,
@@ -345,6 +395,7 @@ export async function updateAuthoritativeAiConfig(
     rateLimitConfig: {
       ...authoritativeAiConfig.rateLimitConfig,
       ...(patch.rateLimitConfig || {}),
+      adaptiveLongTextThresholdChars: nextThreshold,
     },
     updatedAt: new Date().toISOString(),
     updatedBy: actorUid,
@@ -354,7 +405,7 @@ export async function updateAuthoritativeAiConfig(
   pendingConsumedOverrides.clear();
 
   try {
-    await firestoreRestSet('systemConfig/aiService', next as unknown as Record<string, unknown>, idToken);
+    await firestoreRestSet('systemConfig/aiService', serializeSystemConfigForFirestore(next), idToken);
   } catch (err) {
     console.warn('Warning: unable to persist systemConfig/aiService via REST:', err);
   }

@@ -306,9 +306,9 @@ export const SummaryExportModal: React.FC<SummaryExportModalProps> = ({
                 type="button"
                 disabled={downloadingFormat !== null}
                 onClick={() => handleDownload('txt')}
-                className="document-paper rounded-2xl p-4 text-left hover:border-indigo-400 dark:hover:border-indigo-500 transition-colors cursor-pointer disabled:opacity-60 flex items-start gap-3"
+                className="document-paper rounded-2xl p-4 text-left hover:border-[#2563EB] dark:hover:border-[#3B82F6] transition-colors cursor-pointer disabled:opacity-60 flex items-start gap-3"
               >
-                <div className="size-9 rounded-xl bg-indigo-500/12 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                <div className="size-9 rounded-xl bg-[#EAF2FF] dark:bg-[#2563EB]/20 text-[#2563EB] dark:text-[#60A5FA] flex items-center justify-center shrink-0">
                   {downloadingFormat === 'txt' ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
                   ) : (

@@ -1,6 +1,5 @@
 import React from 'react';
 import { Award, LayoutDashboard, Repeat, Upload } from 'lucide-react';
-import { useUiMode } from '../../context/UiModeContext';
 
 export type MobileTabId = 'dashboard' | 'upload' | 'practice' | 'exams';
 
@@ -31,12 +30,10 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
   duePracticeCount = 0,
   onSelect,
 }) => {
-  const { isEthereal } = useUiMode();
-
   return (
     <nav
       aria-label="Điều hướng chính trên điện thoại"
-      className="md:hidden no-print fixed bottom-0 left-0 right-0 z-40 bg-white dark:bg-[#111827] border-t border-slate-200 dark:border-slate-800 pb-[env(safe-area-inset-bottom)]"
+      className="md:hidden no-print fixed bottom-0 left-0 right-0 z-40 bg-white dark:bg-[#111B30] border-t border-[#E6ECF5] dark:border-[#1E293B] pb-[env(safe-area-inset-bottom)]"
     >
       <div className="grid grid-cols-4 h-[60px] max-w-lg mx-auto">
         {MOBILE_TABS.map((tab) => {
@@ -51,16 +48,10 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
               type="button"
               onClick={() => onSelect(tab.id)}
               aria-current={isActive ? 'page' : undefined}
-              className={`relative flex flex-col items-center justify-center gap-0.5 min-h-[48px] px-1 cursor-pointer select-none active:scale-95 transition-transform duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset ${
-                isEthereal
-                  ? 'focus-visible:ring-indigo-500'
-                  : 'focus-visible:ring-sky-500'
-              } ${
+              className={`relative flex flex-col items-center justify-center gap-0.5 min-h-[48px] px-1 cursor-pointer select-none active:scale-95 transition-transform duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#2563EB] ${
                 isActive
-                  ? isEthereal
-                    ? 'text-indigo-600 dark:text-indigo-400 font-semibold'
-                    : 'text-sky-700 dark:text-sky-400 font-semibold'
-                  : 'text-slate-500 dark:text-slate-400 font-medium'
+                  ? 'text-[#2563EB] dark:text-[#60A5FA] font-semibold'
+                  : 'text-[#525E75] dark:text-[#94A3B8] font-medium'
               }`}
             >
               {/* Crisp top active indicator bar */}
@@ -68,9 +59,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                 aria-hidden="true"
                 className={`absolute top-0 left-1/2 -translate-x-1/2 h-[2.5px] rounded-b-full transition-opacity duration-150 ${
                   isActive
-                    ? isEthereal
-                      ? 'w-7 opacity-100 bg-indigo-600 dark:bg-indigo-400'
-                      : 'w-7 opacity-100 bg-sky-700 dark:bg-sky-400'
+                    ? 'w-7 opacity-100 bg-[#2563EB] dark:bg-[#60A5FA]'
                     : 'w-0 opacity-0'
                 }`}
               />
@@ -80,7 +69,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                 {showBadge && (
                   <span
                     aria-label={`${duePracticeCount} câu cần ôn`}
-                    className="absolute -top-1.5 -right-2.5 min-w-[16px] h-[16px] px-1 rounded-full bg-rose-500 text-white text-[9px] font-bold tabular-nums flex items-center justify-center"
+                    className="absolute -top-1.5 -right-2.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[#E11D48] text-white text-[9px] font-bold font-mono tabular-nums flex items-center justify-center"
                   >
                     {duePracticeCount > 99 ? '99+' : duePracticeCount}
                   </span>

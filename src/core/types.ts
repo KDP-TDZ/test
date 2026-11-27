@@ -176,6 +176,21 @@ export interface FixedRubric {
   totalRequiredWeight: number;
 }
 
+export type AiProviderId = 'mistral' | 'groq' | 'cloudflare';
+
+export interface AdaptiveApiPlanAudit {
+  textLength: number;
+  thresholdChars: number;
+  isLongText: boolean;
+  scanApiCount: 1 | 2;
+  gradeApiCount: 1 | 2;
+  verifyApiCount: 1 | 2;
+  verifyExecutedApiCount: number;
+  verifyAdjustmentsCount: number;
+  gradeModels?: string[];
+  verifyModels?: string[];
+}
+
 export interface GradingAuditMetadata {
   requestedModel: string;
   actualModel: string;
@@ -199,6 +214,7 @@ export interface GradingAuditMetadata {
   textbookCharCount: number;
   webGroundingEnabled: boolean;
   deterministicSeed: number;
+  adaptiveApiPlan?: AdaptiveApiPlanAudit;
 }
 
 export interface KnowledgeCoverageItem {
@@ -788,6 +804,7 @@ export interface RateLimitConfig {
   maximumConcurrentJobs: number;
   maximumPagesPerAnalysis: number;
   maximumFileSizeMb: number;
+  adaptiveLongTextThresholdChars?: number;
 }
 
 export interface SystemAiConfig {
@@ -801,6 +818,7 @@ export interface SystemAiConfig {
   configVersion: number;
   allowedOrigins: string[];
   taskModels: Record<AiTaskType, TaskModelConfig>;
+  adaptiveLongTextThresholdChars?: number;
 }
 
 export type KeyTestStatus =
@@ -831,12 +849,13 @@ export interface CloudflareKeyStatus extends SingleApiKeyStatus {
 }
 
 export interface ProviderKeysStatus {
+  mistral: SingleApiKeyStatus;
   groq: SingleApiKeyStatus;
   cloudflare: CloudflareKeyStatus;
 }
 
 export interface ColdStartProviderReadiness {
-  provider: 'groq' | 'gemini' | 'cloudflare';
+  provider: AiProviderId;
   label: string;
   envVarNames: string[];
   envConfigured: boolean;
@@ -849,13 +868,13 @@ export interface ColdStartReadinessReport {
   overallStatus: 'ready_24_7' | 'partial_risk' | 'at_risk';
   runtimePlatform: 'vercel' | 'render' | 'standard';
   activeModel: string;
-  activeProvider: 'groq' | 'gemini' | 'cloudflare';
+  activeProvider: AiProviderId;
   activeModelCoveredByEnv: boolean;
   anyProviderCoveredByEnv: boolean;
   encryptionSecretConfigured: boolean;
   providers: {
+    mistral: ColdStartProviderReadiness;
     groq: ColdStartProviderReadiness;
-    gemini: ColdStartProviderReadiness;
     cloudflare: ColdStartProviderReadiness;
   };
   warnings: string[];

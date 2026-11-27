@@ -165,8 +165,20 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       </GlassSurface>
 
       {filtered.length === 0 ? (
-        <GlassSurface className="rounded-3xl p-8 text-center text-sm text-slate-600 dark:text-slate-300">
-          Chưa có tài liệu nào phù hợp bộ lọc.
+        <GlassSurface className="rounded-3xl p-8 sm:p-10 text-center space-y-3">
+          <svg viewBox="0 0 96 72" className="w-24 h-18 mx-auto" aria-hidden="true">
+            <rect x="14" y="14" width="68" height="48" rx="12" className="fill-[#EAF2FF] dark:fill-[#1E293B]" />
+            <path d="M14 26h68" className="stroke-[#BFDBFE] dark:stroke-[#334155]" strokeWidth="2" />
+            <rect x="26" y="34" width="44" height="5" rx="2.5" className="fill-[#2563EB]/75 dark:fill-[#60A5FA]/80" />
+            <rect x="34" y="45" width="28" height="4.5" rx="2.25" className="fill-[#94A3B8]/65" />
+            <circle cx="72" cy="20" r="3" className="fill-[#F5A623]" />
+          </svg>
+          <p className="font-semibold text-[#172033] dark:text-[#E6EFFC]">
+            Chưa có tài liệu nào phù hợp bộ lọc
+          </p>
+          <p className="text-xs sm:text-sm text-[#525E75] dark:text-[#94A3B8] max-w-md mx-auto">
+            Thử đổi từ khóa tìm kiếm, khối lớp hoặc tải lên tài liệu mới để lưu báo cáo đối chiếu SGK tại đây.
+          </p>
         </GlassSurface>
       ) : (
         <div className="space-y-3">

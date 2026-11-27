@@ -1,6 +1,5 @@
 import React, { useId } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { useUiMode } from '../../context/UiModeContext';
 
 export interface SlidingTabItem<T extends string = string> {
   id: T;
@@ -19,8 +18,8 @@ interface SlidingTabsProps<T extends string> {
 }
 
 /**
- * Standardized Liquid Glass tab bar with a smooth sliding active indicator
- * (180–240ms spring/ease) and subtle tactile press feedback.
+ * Unified editorial tab bar with a smooth Cobalt sliding active indicator
+ * and clean horizontal scroll support on narrow screens.
  */
 export function SlidingTabs<T extends string>({
   items,
@@ -33,13 +32,12 @@ export function SlidingTabs<T extends string>({
   const autoId = useId();
   const indicatorId = layoutGroupId || `sliding-tab-${autoId}`;
   const prefersReduced = useReducedMotion();
-  const { isEthereal } = useUiMode();
 
   return (
     <div
       role="tablist"
       aria-label={ariaLabel}
-      className={`glass-segment inline-flex flex-wrap items-center gap-1.5 rounded-2xl p-1.5 ${className}`}
+      className={`glass-segment inline-flex items-center gap-1 rounded-2xl p-1.5 max-w-full overflow-x-auto sc-no-scrollbar ${className}`}
     >
       {items.map((item) => {
         const isActive = item.id === activeId;
@@ -52,12 +50,10 @@ export function SlidingTabs<T extends string>({
             aria-selected={isActive}
             disabled={item.disabled}
             onClick={() => onChange(item.id)}
-            className={`relative min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 select-none cursor-pointer transition-colors duration-180 ease-out active:scale-[0.98] disabled:opacity-45 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 ${
-              isEthereal ? 'focus-visible:ring-indigo-500' : 'focus-visible:ring-sky-500'
-            } ${
+            className={`relative min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 select-none cursor-pointer transition-colors duration-180 ease-out active:scale-[0.98] disabled:opacity-45 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB] ${
               isActive
                 ? 'text-white'
-                : 'text-[#475B78] dark:text-[#B4C7E2] hover:text-[#16243E] dark:hover:text-[#E6EFFC] hover:bg-white/55 dark:hover:bg-slate-800/60'
+                : 'text-[#525E75] dark:text-[#94A3B8] hover:text-[#172033] dark:hover:text-[#E6EFFC] hover:bg-white/75 dark:hover:bg-[#111B30]'
             }`}
           >
             {isActive && (
@@ -69,11 +65,7 @@ export function SlidingTabs<T extends string>({
                     ? { duration: 0 }
                     : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }
                 }
-                className={`absolute inset-0 rounded-xl ${
-                  isEthereal
-                    ? 'bg-gradient-to-r from-[#4338CA] via-[#4F46E5] to-[#7C3AED] shadow-[0_6px_16px_-6px_rgba(79,70,229,0.58),inset_0_1px_0_rgba(255,255,255,0.35)]'
-                    : 'bg-gradient-to-r from-sky-500 to-blue-600 shadow-[0_6px_16px_-6px_rgba(2,132,199,0.55),inset_0_1px_0_rgba(255,255,255,0.35)]'
-                }`}
+                className="absolute inset-0 rounded-xl bg-[#2563EB] shadow-[0_6px_14px_-6px_rgba(37,99,235,0.55)]"
               />
             )}
             <span className="relative z-10 inline-flex items-center gap-1.5">

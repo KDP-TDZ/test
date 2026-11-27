@@ -123,7 +123,7 @@ type AdminTab =
 interface ModelCatalogItem {
   modelId: string;
   displayName: string;
-  provider?: 'gemini' | 'groq' | 'cloudflare';
+  provider?: 'mistral' | 'groq' | 'cloudflare';
   tier: string;
   strengths: string;
   supportsMultimodal?: boolean;
@@ -131,66 +131,75 @@ interface ModelCatalogItem {
 
 const FALLBACK_MODEL_CATALOG: ModelCatalogItem[] = [
   {
-    modelId: 'groq:openai/gpt-oss-120b',
-    displayName: 'Groq · GPT-OSS 120B (Ưu tiên #1 · Siêu nhanh Free)',
-    provider: 'groq',
+    modelId: 'mistral:mistral-small-latest',
+    displayName: 'Mistral AI · Mistral Small Latest (Ưu tiên #1 · Chấm chính Free)',
+    provider: 'mistral',
     tier: 'free',
     strengths:
-      'Ưu tiên số 1 cho toàn bộ hệ thống (~500 tok/s, miễn phí) — kiểm định kiến thức, tạo đề, tổng hợp SGK; tự gọi Qwen 3.8 27B Vision khi đọc ảnh OCR.',
+      'Ưu tiên số 1 cho chấm điểm, kiểm định kiến thức, sinh đề & hỗ trợ Vision OCR dự phòng trên Mistral Free Tier.',
+    supportsMultimodal: true,
+  },
+  {
+    modelId: 'mistral:ministral-8b-latest',
+    displayName: 'Mistral AI · Ministral 8B Fast (Đối soát & Tác vụ nhanh Free)',
+    provider: 'mistral',
+    tier: 'free',
+    strengths:
+      'Tốc độ cao, chi phí thấp — tối ưu cho kiểm tra chéo (Verify), phân loại môn học & tạo flashcard.',
     supportsMultimodal: false,
   },
   {
     modelId: 'groq:qwen/qwen3.8-27b',
-    displayName: 'Groq · Qwen 3.8 27B Vision (Đa phương thức Free)',
+    displayName: 'Groq · Qwen 3.8 27B Vision (Ưu tiên #1 OCR & Đối soát Free)',
     provider: 'groq',
     tier: 'free',
     strengths:
-      'Model đa phương thức mới nhất của Groq (~450 tok/s, miễn phí) — đọc trực tiếp ảnh chụp vở/PDF scan & xử lý mọi tác vụ văn bản trên cùng 1 AI.',
+      'Đa phương thức siêu nhanh (~450 tok/s, miễn phí) — quét ảnh chụp vở/bài làm Bước 1 và chạy nhánh đối soát độc lập.',
     supportsMultimodal: true,
+  },
+  {
+    modelId: 'groq:openai/gpt-oss-120b',
+    displayName: 'Groq · GPT-OSS 120B (Dự phòng suy luận siêu nhanh Free)',
+    provider: 'groq',
+    tier: 'free',
+    strengths:
+      'Tốc độ ~500 tok/s, miễn phí — tầng dự phòng mạnh cho chấm điểm, tổng hợp SGK & tạo đề trắc nghiệm.',
+    supportsMultimodal: false,
   },
   {
     modelId: 'groq:openai/gpt-oss-20b',
-    displayName: 'Groq · GPT-OSS 20B Fast (Groq Cloud Free)',
+    displayName: 'Groq · GPT-OSS 20B Fast (Đối soát chéo ~1.000 tok/s Free)',
     provider: 'groq',
     tier: 'free',
     strengths:
-      'Siêu nhanh (~1.000 tok/s), miễn phí — phân loại môn, gợi ý tên tệp, flashcard & tác vụ nhẹ.',
+      'Siêu nhanh (~1.000 tok/s), miễn phí — ưu tiên cho bước Đối soát (Verify) chéo nhà cung cấp & tác vụ nhẹ.',
     supportsMultimodal: false,
-  },
-  {
-    modelId: 'gemini-3.1-flash-lite',
-    displayName: 'Gemini 3.1 Flash Lite (Google Free)',
-    provider: 'gemini',
-    tier: 'free',
-    strengths:
-      'Tốc độ nhanh, hỗ trợ OCR ảnh/PDF, Google Search Grounding & làm tầng dự phòng ổn định.',
-    supportsMultimodal: true,
-  },
-  {
-    modelId: 'gemini-4-hydrogen',
-    displayName: 'Gemini 4 Hydrogen (Google Free)',
-    provider: 'gemini',
-    tier: 'free',
-    strengths:
-      'Suy luận sâu cho công thức viết tay phức tạp, Google Search Grounding & kiểm định kiến thức chuẩn SGK.',
-    supportsMultimodal: true,
   },
   {
     modelId: 'cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-    displayName: 'Cloudflare · Llama 3.3 70B FP8 Fast (Workers AI Free)',
+    displayName: 'Cloudflare · Llama 3.3 70B FP8 Fast (Chấm song song Phần 2 Free)',
     provider: 'cloudflare',
     tier: 'free',
     strengths:
-      'Miễn phí (10.000 Neurons/ngày trên Cloudflare Edge) — tầng dự phòng & chia tải cho chấm kiến thức, tạo đề.',
+      'Miễn phí (10.000 Neurons/ngày trên Cloudflare Edge) — chạy song song Phần 2 khi văn bản dài & làm tầng dự phòng độc lập.',
     supportsMultimodal: false,
   },
   {
-    modelId: 'cf:@cf/meta/llama-3.1-8b-instruct-fast',
-    displayName: 'Cloudflare · Llama 3.1 8B Fast (Workers AI Free)',
+    modelId: 'cf:@cf/qwen/qwen3.8-27b',
+    displayName: 'Cloudflare · Qwen 3.8 27B Vision (Quét tinh chỉnh Bước 2 Free)',
     provider: 'cloudflare',
     tier: 'free',
     strengths:
-      'Miễn phí, tiêu tốn cực ít Neuron trên Cloudflare Edge — phân loại môn, thẩm định nhanh & flashcard.',
+      'Đa phương thức trên Cloudflare Edge — chạy Quét tinh chỉnh (Scan Pass 2) cho tài liệu dài & dự phòng Vision OCR.',
+    supportsMultimodal: true,
+  },
+  {
+    modelId: 'cf:@cf/meta/llama-3.1-8b-instruct-fast',
+    displayName: 'Cloudflare · Llama 3.1 8B Fast (Đối soát dự phòng tiết kiệm Free)',
+    provider: 'cloudflare',
+    tier: 'free',
+    strengths:
+      'Miễn phí, tiêu tốn cực ít Neuron trên Cloudflare Edge — đối soát dự phòng, phân loại môn & flashcard.',
     supportsMultimodal: false,
   },
 ];
@@ -249,6 +258,7 @@ export const AdminControlCenter: React.FC = () => {
   const [showDeployGuide, setShowDeployGuide] = useState(false);
   const [executionLogs, setExecutionLogs] = useState<AiExecutionLog[]>([]);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogItem[]>(FALLBACK_MODEL_CATALOG);
+  const [mistralConfigured, setMistralConfigured] = useState<boolean>(false);
   const [groqConfigured, setGroqConfigured] = useState<boolean>(false);
   const [cloudflareConfigured, setCloudflareConfigured] = useState<boolean>(false);
 
@@ -261,11 +271,10 @@ export const AdminControlCenter: React.FC = () => {
   // Overview / AI Switch form
   const [maintenanceMessage, setMaintenanceMessage] = useState('');
   const [disabledReason, setDisabledReason] = useState('');
-  const [activeModel, setActiveModel] = useState('groq:openai/gpt-oss-120b');
-  const [unifiedFallbackModel, setUnifiedFallbackModel] = useState(
-    'groq:qwen/qwen3.8-27b'
-  );
+  const [activeModel, setActiveModel] = useState('mistral:mistral-small-latest');
+  const [unifiedFallbackModel, setUnifiedFallbackModel] = useState('groq:openai/gpt-oss-120b');
   const [unifiedEnableFallback, setUnifiedEnableFallback] = useState(true);
+  const [adaptiveThresholdInput, setAdaptiveThresholdInput] = useState<number>(1500);
   const [savingConfig, setSavingConfig] = useState(false);
 
   // Model Router state
@@ -279,8 +288,8 @@ export const AdminControlCenter: React.FC = () => {
     latencyMs?: number;
   } | null>(null);
 
-  // API Key & Allowed Origins state
-  const [newKeyLabel, setNewKeyLabel] = useState('Gemini API Key dùng chung');
+  // API Key & Allowed Origins state (Mistral AI)
+  const [newKeyLabel, setNewKeyLabel] = useState('Mistral AI Free API Key');
   const [newRawKey, setNewRawKey] = useState('');
   const [savingKey, setSavingKey] = useState(false);
   const [testingKey, setTestingKey] = useState(false);
@@ -447,8 +456,15 @@ export const AdminControlCenter: React.FC = () => {
       setConfig(data.config);
       setMaintenanceMessage(data.config?.maintenanceMessage || '');
       setDisabledReason(data.config?.disabledReason || '');
-      const loadedPrimary = data.config?.activeModel || 'groq:openai/gpt-oss-120b';
+      const loadedPrimary = data.config?.activeModel || 'mistral:mistral-small-latest';
       setActiveModel(loadedPrimary);
+      if (typeof data.config?.adaptiveLongTextThresholdChars === 'number') {
+        setAdaptiveThresholdInput(data.config.adaptiveLongTextThresholdChars);
+      } else if (typeof data.config?.rateLimitConfig?.adaptiveLongTextThresholdChars === 'number') {
+        setAdaptiveThresholdInput(data.config.rateLimitConfig.adaptiveLongTextThresholdChars);
+      } else {
+        setAdaptiveThresholdInput(1500);
+      }
       if (data.config?.rateLimitConfig) setLimits(data.config.rateLimitConfig);
       if (data.config?.taskModels) {
         setTaskModelsDraft(data.config.taskModels);
@@ -459,9 +475,10 @@ export const AdminControlCenter: React.FC = () => {
       }
       setUsageStats(data.usageStats);
       setAuditLogs(data.auditLogs || []);
-      setSingleKeyStatus(data.singleKeyStatus || null);
+      setSingleKeyStatus(data.singleKeyStatus || data.providerKeys?.mistral || null);
       setProviderKeys(data.providerKeys || null);
       setColdStartReadiness(data.coldStartReadiness || null);
+      setMistralConfigured(Boolean(data.mistralConfigured || data.providerKeys?.mistral?.configured));
       setGroqConfigured(Boolean(data.groqConfigured || data.providerKeys?.groq?.configured));
       setCloudflareConfigured(Boolean(data.cloudflareConfigured || data.providerKeys?.cloudflare?.configured));
       setExecutionLogs(data.executionLogs || []);
@@ -528,6 +545,9 @@ export const AdminControlCenter: React.FC = () => {
       setConfig(data.config);
       if (data.coldStartReadiness) setColdStartReadiness(data.coldStartReadiness);
       if (data.config?.activeModel) setActiveModel(data.config.activeModel);
+      if (typeof data.config?.adaptiveLongTextThresholdChars === 'number') {
+        setAdaptiveThresholdInput(data.config.adaptiveLongTextThresholdChars);
+      }
       if (data.config?.taskModels) setTaskModelsDraft(data.config.taskModels);
       await refreshSystemStatus();
       setNotice(successMsg || `Đã cập nhật cấu hình hệ thống (Phiên bản v${data.config?.configVersion ?? 1}).`);
@@ -550,7 +570,7 @@ export const AdminControlCenter: React.FC = () => {
         fallbackModel: fallbackModelId,
         enableFallback: enableFb,
         oneTimeOverrideModel: null,
-        promptVersion: 'v3.2',
+        promptVersion: 'v4.2_3provider',
       };
     }
     setActiveModel(primaryModelId);
@@ -562,6 +582,15 @@ export const AdminControlCenter: React.FC = () => {
       `Đã gộp toàn bộ 11 tác vụ AI sang 1 model chính: "${primaryModelId}"${
         enableFb ? ` (dự phòng: ${fallbackModelId})` : ''
       }.`
+    );
+  };
+
+  const handleSaveAdaptiveThreshold = async () => {
+    const clamped = Math.max(300, Math.min(20000, Math.round(Number(adaptiveThresholdInput) || 1500)));
+    setAdaptiveThresholdInput(clamped);
+    await handlePatchAiConfig(
+      { adaptiveLongTextThresholdChars: clamped },
+      `Đã lưu ngưỡng phân loại văn bản ngắn/dài: ${clamped.toLocaleString('vi-VN')} ký tự.`
     );
   };
 
@@ -621,22 +650,25 @@ export const AdminControlCenter: React.FC = () => {
     setError(null);
     setNotice(null);
     try {
-      const res = await authorizedFetch('/api/admin/key', {
+      const res = await authorizedFetch('/api/admin/provider-keys/mistral', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ label: newKeyLabel, apiKey: newRawKey }),
       });
-      const data = await parseApiResponse<any>(res, 'Không thể lưu API key.');
-      setSingleKeyStatus(data.singleKeyStatus);
+      const data = await parseApiResponse<any>(res, 'Không thể lưu Mistral API key.');
+      if (data.providerKeys) setProviderKeys(data.providerKeys);
+      const mistralStatus = data.mistralStatus || data.singleKeyStatus || data.providerKeys?.mistral;
+      if (mistralStatus) setSingleKeyStatus(mistralStatus);
+      setMistralConfigured(Boolean(data.mistralConfigured ?? mistralStatus?.configured));
       if (data.coldStartReadiness) setColdStartReadiness(data.coldStartReadiness);
       setNewRawKey('');
       setTestResult(null);
       setNotice(
-        `Đã lưu & kích hoạt ngay Gemini API key (${data.singleKeyStatus.maskedKey}). Để chạy 24/7 khi máy chủ tự ngủ/reset lúc Admin ngoại tuyến, hãy đặt thêm GEMINI_API_KEY trong biến môi trường Vercel/Render.`
+        `Đã lưu & kích hoạt ngay Mistral AI API Key (${mistralStatus?.maskedKey || 'đã mã hóa'}). Để chạy 24/7 khi máy chủ tự ngủ/reset lúc Admin ngoại tuyến, hãy đặt thêm MISTRAL_API_KEY trong biến môi trường Vercel/Render.`
       );
       await loadAllAdminData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Lỗi lưu API key.');
+      setError(err instanceof Error ? err.message : 'Lỗi lưu Mistral API key.');
     } finally {
       setSavingKey(false);
     }
@@ -659,21 +691,23 @@ export const AdminControlCenter: React.FC = () => {
     setTestingKey(true);
     setError(null);
     try {
-      const res = await authorizedFetch('/api/admin/key/test', {
+      const res = await authorizedFetch('/api/admin/provider-keys/mistral/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(rawKeyOverride ? { apiKey: rawKeyOverride } : {}),
       });
-      const data = await parseApiResponse<any>(res, 'Không thể kiểm tra API key.');
+      const data = await parseApiResponse<any>(res, 'Không thể kiểm tra Mistral API key.');
       setTestResult(data);
-      if (data.keyStatus) setSingleKeyStatus(data.keyStatus);
+      if (data.providerKeys) setProviderKeys(data.providerKeys);
+      const mistralStatus = data.keyStatus || data.mistralStatus || data.providerKeys?.mistral;
+      if (mistralStatus) setSingleKeyStatus(mistralStatus);
       if (rawKeyOverride && data.status === 'Connected') {
         setNewRawKey('');
-        setNotice(data.message || 'Đã thử nghiệm thành công và tự động kích hoạt Gemini API Key cho Kiểm định.');
+        setNotice(data.message || 'Đã thử nghiệm thành công và tự động kích hoạt Mistral AI Key.');
       }
       await loadAllAdminData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Lỗi kiểm tra API key.');
+      setError(err instanceof Error ? err.message : 'Lỗi kiểm tra Mistral API key.');
     } finally {
       setTestingKey(false);
     }
@@ -683,14 +717,15 @@ export const AdminControlCenter: React.FC = () => {
     setError(null);
     setNotice(null);
     try {
-      const res = await authorizedFetch('/api/admin/key', { method: 'DELETE' });
-      const data = await parseApiResponse<any>(res, 'Không thể xóa API key quản trị.');
-      setSingleKeyStatus(data.singleKeyStatus);
+      const res = await authorizedFetch('/api/admin/provider-keys/mistral', { method: 'DELETE' });
+      const data = await parseApiResponse<any>(res, 'Không thể xóa Mistral API key quản trị.');
+      if (data.providerKeys) setProviderKeys(data.providerKeys);
+      setSingleKeyStatus(data.mistralStatus || data.singleKeyStatus || null);
       setTestResult(null);
-      setNotice('Đã gỡ API key cấu hình trong Admin UI (hệ thống quay về fallback env nếu có).');
+      setNotice('Đã gỡ Mistral AI key cấu hình trong Admin UI (hệ thống quay về biến MISTRAL_API_KEY của máy chủ nếu có).');
       await loadAllAdminData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Lỗi xóa API key.');
+      setError(err instanceof Error ? err.message : 'Lỗi xóa Mistral API key.');
     }
   };
 
@@ -737,6 +772,14 @@ export const AdminControlCenter: React.FC = () => {
           prev
             ? { ...prev, groq: data.keyStatus }
             : {
+                mistral: {
+                  configured: false,
+                  source: 'none',
+                  maskedKey: '',
+                  label: '',
+                  hasEnvFallbackKey: false,
+                  lastTestStatus: 'Untested',
+                },
                 groq: data.keyStatus,
                 cloudflare: {
                   configured: false,
@@ -831,6 +874,14 @@ export const AdminControlCenter: React.FC = () => {
           prev
             ? { ...prev, cloudflare: data.keyStatus }
             : {
+                mistral: {
+                  configured: false,
+                  source: 'none',
+                  maskedKey: '',
+                  label: '',
+                  hasEnvFallbackKey: false,
+                  lastTestStatus: 'Untested',
+                },
                 groq: {
                   configured: false,
                   source: 'none',
@@ -2059,7 +2110,7 @@ export const AdminControlCenter: React.FC = () => {
                 </GlassSurface>
 
                 <GlassSurface className="rounded-3xl p-5">
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Token Gemini thực tế</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Token AI thực tế</p>
                   <p className="font-mono text-2xl font-bold text-sky-700 dark:text-sky-400 tabular-nums mt-1">
                     {(usageStats?.today.actualTotalTokens ?? 0).toLocaleString('vi-VN')}
                   </p>
@@ -2135,7 +2186,7 @@ export const AdminControlCenter: React.FC = () => {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                          1 AI chính dùng chung toàn hệ thống (Ưu tiên Groq)
+                          AI chính dùng chung toàn hệ thống (Mistral · Groq · Cloudflare)
                         </label>
                         <select
                           value={activeModel}
@@ -2219,17 +2270,17 @@ export const AdminControlCenter: React.FC = () => {
             </div>
           )}
 
-          {/* TAB 2: MODEL ROUTER (1 AI DUY NHẤT - ƯU TIÊN GROQ) */}
+          {/* TAB 2: MODEL ROUTER (3-PROVIDER FREE STACK: MISTRAL · CLOUDFLARE · GROQ) */}
           {tab === 'models' && taskModelsDraft && (
             <div className="space-y-6">
               <GlassSurface className="rounded-3xl p-6 space-y-5">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
                     <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                      Chọn 1 AI duy nhất cho toàn bộ hệ thống (Ưu tiên Groq)
+                      Điều phối 3-Provider Miễn phí &amp; Ngưỡng thích ứng 1-vs-2 API
                     </h2>
                     <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
-                      Gộp toàn bộ 11 tác vụ (OCR ảnh, nhận diện môn, kiểm định 4 lớp, tổng hợp SGK, tạo đề &amp; flashcard) về 1 AI tùy chọn duy nhất — mặc định ưu tiên Groq tốc độ cao.
+                      Hệ thống chạy 100% trên 3 nhà cung cấp miễn phí (Mistral AI · Cloudflare Workers AI · Groq), tự động chia tải 1 API cho bài ngắn và 2 API song song cho bài dài.
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -2241,19 +2292,69 @@ export const AdminControlCenter: React.FC = () => {
                         onClick={() => handleTestModel(m.modelId)}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl glass-control text-xs font-semibold cursor-pointer"
                       >
-                        <Activity className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+                        <Activity className="w-3.5 h-3.5 text-[#2563EB] dark:text-[#60A5FA]" />
                         {testingModelId === m.modelId ? 'Đang test...' : `Test ${m.modelId}`}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-sky-200/80 dark:border-sky-800/60 bg-sky-50/70 dark:bg-sky-950/35 px-4 py-4 text-xs text-[#16243E] dark:text-[#E6EFFC] space-y-3.5">
+                {/* Ngưỡng thích ứng 1-vs-2 API (Admin Configurable) */}
+                <div className="rounded-2xl border border-[#BFDBFE] dark:border-[#1E3A5F] bg-[#EAF2FF]/70 dark:bg-[#0D1A30] px-4 py-4 text-xs text-[#172033] dark:text-[#E6EFFC] space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+                    <div className="flex-1 space-y-1">
+                      <label
+                        htmlFor="adaptive-threshold-input"
+                        className="block text-xs font-semibold text-[#172033] dark:text-[#E6EFFC]"
+                      >
+                        Ngưỡng phân loại văn bản ngắn/dài (ký tự)
+                      </label>
+                      <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8] leading-relaxed">
+                        Bài ngắn (&lt; ngưỡng): 1 API Quét · 1 API Chấm · 1 API Đối soát chéo. Bài dài (&ge; ngưỡng): 2 API Quét tinh chỉnh · 2 API Chấm song song (Mistral + Cloudflare) · 2 API Đối soát chéo. Phạm vi hợp lệ: 300–20.000 ký tự (mặc định 1.500).
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <input
+                        id="adaptive-threshold-input"
+                        type="number"
+                        min={300}
+                        max={20000}
+                        step={100}
+                        value={adaptiveThresholdInput}
+                        onChange={(e) => setAdaptiveThresholdInput(Number(e.target.value))}
+                        className={`${INPUT_CLASS} w-32 font-mono tabular-nums`}
+                      />
+                      <WaterRippleButton
+                        size="sm"
+                        disabled={savingConfig}
+                        onClick={handleSaveAdaptiveThreshold}
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        Lưu ngưỡng
+                      </WaterRippleButton>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-[#E6ECF5] dark:border-[#1E293B] bg-[#F1F5FA]/80 dark:bg-[#0D1628] px-4 py-4 text-xs text-[#172033] dark:text-[#E6EFFC] space-y-3.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="font-semibold">
-                      Cấu hình 1 AI hợp nhất · Ưu tiên số 1: Groq Cloud Free
+                      Cấu hình 1 AI chính &amp; Dự phòng tự động · 3-Provider Free Stack
                     </p>
                     <div className="flex flex-wrap items-center gap-1.5">
+                      <span
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-lg text-[11px] font-semibold ${
+                          mistralConfigured
+                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
+                            : 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300'
+                        }`}
+                      >
+                        {mistralConfigured
+                          ? providerKeys?.mistral?.source === 'admin'
+                            ? 'Mistral AI: Đã bật (Key Admin)'
+                            : 'Mistral AI: Đã bật (MISTRAL_API_KEY)'
+                          : 'Mistral AI: Chưa cấu hình Key'}
+                      </span>
                       <span
                         className={`inline-flex items-center px-2.5 py-0.5 rounded-lg text-[11px] font-semibold ${
                           groqConfigured
@@ -2283,7 +2384,7 @@ export const AdminControlCenter: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => setTab('api_security')}
-                        className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-sky-600 text-white text-[11px] font-semibold hover:bg-sky-700 transition-colors cursor-pointer"
+                        className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-[#2563EB] text-white text-[11px] font-semibold hover:bg-[#1746A2] transition-colors cursor-pointer"
                       >
                         <KeyRound className="w-3 h-3" />
                         Nhập Key trong web
@@ -2354,44 +2455,47 @@ export const AdminControlCenter: React.FC = () => {
                       disabled={savingConfig}
                       onClick={() =>
                         handleApplyUnifiedAi(
+                          'mistral:mistral-small-latest',
                           'groq:openai/gpt-oss-120b',
-                          'groq:qwen/qwen3.8-27b',
                           true
                         )
                       }
-                      className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-[11px] font-semibold hover:bg-emerald-700 transition-colors cursor-pointer"
+                      className="px-3 py-1.5 rounded-xl bg-[#2563EB] text-white text-[11px] font-semibold hover:bg-[#1746A2] transition-colors cursor-pointer"
                     >
-                      100% Groq · GPT-OSS 120B + Qwen 3.8 Vision (Không cần Gemini Key)
+                      Khuyên dùng · Mistral Small + Dự phòng Groq GPT-OSS 120B
                     </button>
                     <button
                       type="button"
                       disabled={savingConfig}
                       onClick={() =>
                         handleApplyUnifiedAi(
-                          'groq:qwen/qwen3.8-27b',
                           'groq:openai/gpt-oss-120b',
+                          'cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast',
                           true
                         )
                       }
                       className="px-3 py-1.5 rounded-xl glass-control text-[11px] font-semibold cursor-pointer"
                     >
-                      Groq Vision · Qwen 3.8 27B (1 model cho cả ảnh &amp; chữ)
+                      Groq GPT-OSS 120B + Dự phòng Cloudflare Llama 70B
                     </button>
                     <button
                       type="button"
                       disabled={savingConfig}
                       onClick={() =>
-                        handleApplyUnifiedAi('gemini-3.1-flash-lite', 'groq:openai/gpt-oss-120b', true)
+                        handleApplyUnifiedAi(
+                          'cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+                          'mistral:mistral-small-latest',
+                          true
+                        )
                       }
                       className="px-3 py-1.5 rounded-xl glass-control text-[11px] font-semibold cursor-pointer"
                     >
-                      Gemini 3.1 Flash Lite (Dự phòng Groq)
+                      Cloudflare Llama 3.3 70B + Dự phòng Mistral Small
                     </button>
                   </div>
 
                   <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
-                    Khi ưu tiên <strong>Groq</strong>, mọi tác vụ văn bản/JSON (kiểm định 4 lớp, tổng hợp SGK, tạo đề, flashcard) chạy siêu nhanh (~500–1.000 token/s); riêng tác vụ <strong>đọc ảnh OCR</strong> sẽ tự chạy qua{' '}
-                    <code className="font-mono text-[11px]">qwen/qwen3.8-27b</code> trên chính Groq Key của bạn (tự chuyển sang Gemini/Cloudflare dự phòng nếu có cấu hình key).
+                    Pipeline 3-Provider tự động điều phối: <strong>Quét OCR</strong> dùng Groq Vision (<code className="font-mono text-[11px]">qwen/qwen3.8-27b</code>) + tinh chỉnh Cloudflare/Mistral Vision cho bài dài; <strong>Chấm điểm</strong> dùng Mistral Small + Cloudflare Llama 70B song song; <strong>Đối soát chéo</strong> luôn chạy nhà cung cấp khác (Groq GPT-OSS 20B / Ministral 8B / Cloudflare 8B) để tối ưu chất lượng và tránh chạm giới hạn 429.
                   </p>
                 </div>
 
@@ -2427,14 +2531,14 @@ export const AdminControlCenter: React.FC = () => {
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                           {(Object.keys(AI_TASK_LABELS) as AiTaskType[]).map((taskKey) => {
                             const row = taskModelsDraft[taskKey] || {
-                              defaultModel: 'groq:openai/gpt-oss-120b',
-                              fallbackModel: 'gemini-3.1-flash-lite',
+                              defaultModel: 'mistral:mistral-small-latest',
+                              fallbackModel: 'groq:openai/gpt-oss-120b',
                               enableFallback: true,
                               oneTimeOverrideModel: null,
-                              promptVersion: 'v3.1',
+                              promptVersion: 'v4.2_3provider',
                             };
                             const overrideDraft =
-                              overrideSelection[taskKey] ?? row.oneTimeOverrideModel ?? 'groq:openai/gpt-oss-120b';
+                              overrideSelection[taskKey] ?? row.oneTimeOverrideModel ?? 'mistral:mistral-small-latest';
                             return (
                               <tr key={taskKey} className="align-middle">
                                 <td className="py-3 pr-3">
@@ -2720,10 +2824,10 @@ export const AdminControlCenter: React.FC = () => {
                       </thead>
                       <tbody className="divide-y divide-slate-200/50 dark:divide-slate-800/70">
                         {[
+                          coldStartReadiness.providers.mistral,
                           coldStartReadiness.providers.groq,
-                          coldStartReadiness.providers.gemini,
                           coldStartReadiness.providers.cloudflare,
-                        ].map((item) => {
+                        ].filter(Boolean).map((item) => {
                           const isActiveProvider = coldStartReadiness.activeProvider === item.provider;
                           return (
                             <tr key={item.provider} className="align-middle">
@@ -2812,8 +2916,8 @@ export const AdminControlCenter: React.FC = () => {
                           <strong>Environment → Add Environment Variable</strong> (trên Render).
                         </li>
                         <li>
-                          Thêm ít nhất khóa AI chính (<code className="font-mono">GROQ_API_KEY</code> hoặc{' '}
-                          <code className="font-mono">GEMINI_API_KEY</code>) cùng 1 chuỗi bí mật ngẫu nhiên 32+ ký tự cho{' '}
+                          Thêm ít nhất khóa AI chính (<code className="font-mono">MISTRAL_API_KEY</code>,{' '}
+                          <code className="font-mono">GROQ_API_KEY</code> hoặc cặp Cloudflare Workers AI) cùng 1 chuỗi bí mật ngẫu nhiên 32+ ký tự cho{' '}
                           <code className="font-mono">KEY_ENCRYPTION_SECRET</code>.
                         </li>
                         <li>
@@ -2828,32 +2932,33 @@ export const AdminControlCenter: React.FC = () => {
                 </GlassSurface>
               )}
 
+              {/* MISTRAL AI FREE KEY (IN-WEB SUPER ADMIN) */}
               <GlassSurface className="rounded-3xl p-6 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                      API Key Gemini dùng chung cho toàn bộ tác vụ
+                      API Key Mistral AI Free (Chấm chính, Kiểm định &amp; Vision dự phòng)
                     </h2>
                     <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
-                      Ghi đè nhanh ngay lập tức trong phiên chạy. Để bền vững 24/7 khi Vercel/Render reset lúc Admin ngoại tuyến, hãy đặt thêm biến <code className="font-mono">GEMINI_API_KEY</code> trên máy chủ.
+                      Ghi đè nhanh ngay lập tức trong phiên chạy (lưu mã hóa AES-256-GCM trên <code className="font-mono">adminSecrets/mistral</code>). Để bền vững 24/7 khi Vercel/Render reset lúc Admin ngoại tuyến, hãy đặt thêm biến <code className="font-mono">MISTRAL_API_KEY</code> trên máy chủ.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <WaterRippleButton
                       size="sm"
                       variant="secondary"
-                      disabled={testingKey || !singleKeyStatus?.configured}
+                      disabled={testingKey || !(providerKeys?.mistral?.configured ?? singleKeyStatus?.configured)}
                       onClick={() => handleTestKey()}
                     >
-                      {testingKey ? 'Đang kiểm tra...' : 'Test API Key đang dùng'}
+                      {testingKey ? 'Đang kiểm tra...' : 'Test Mistral Key đang dùng'}
                     </WaterRippleButton>
-                    {singleKeyStatus?.source === 'admin' && (
+                    {(providerKeys?.mistral?.source ?? singleKeyStatus?.source) === 'admin' && (
                       <button
                         type="button"
                         onClick={handleClearAdminKey}
                         className="px-3 py-1.5 rounded-xl border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 text-xs font-semibold hover:bg-rose-100 cursor-pointer"
                       >
-                        Gỡ key Admin
+                        Gỡ Mistral Key Admin
                       </button>
                     )}
                   </div>
@@ -2864,27 +2969,29 @@ export const AdminControlCenter: React.FC = () => {
                     <p className="text-slate-500 dark:text-slate-400">Trạng thái hiện tại</p>
                     <p
                       className={`font-semibold mt-0.5 ${
-                        singleKeyStatus?.configured
+                        (providerKeys?.mistral?.configured ?? singleKeyStatus?.configured)
                           ? 'text-emerald-700 dark:text-emerald-400'
                           : 'text-rose-700 dark:text-rose-400'
                       }`}
                     >
-                      {singleKeyStatus?.configured
-                        ? singleKeyStatus.source === 'admin'
+                      {(providerKeys?.mistral?.configured ?? singleKeyStatus?.configured)
+                        ? (providerKeys?.mistral?.source ?? singleKeyStatus?.source) === 'admin'
                           ? 'Đang dùng Key của Quản trị viên'
-                          : 'Đang dùng biến GEMINI_API_KEY của máy chủ'
-                        : 'Chưa có API Key nào'}
+                          : 'Đang dùng biến MISTRAL_API_KEY của máy chủ'
+                        : 'Chưa có Mistral API Key'}
                     </p>
                   </div>
                   <div>
                     <p className="text-slate-500 dark:text-slate-400">Mã nhận diện (đã che)</p>
                     <p className="font-mono font-semibold mt-0.5">
-                      {singleKeyStatus?.maskedKey || '—'}
+                      {providerKeys?.mistral?.maskedKey || singleKeyStatus?.maskedKey || '—'}
                     </p>
                   </div>
                   <div>
                     <p className="text-slate-500 dark:text-slate-400">Kiểm tra gần nhất</p>
-                    <p className="font-semibold mt-0.5">{singleKeyStatus?.lastTestStatus || 'Untested'}</p>
+                    <p className="font-semibold mt-0.5">
+                      {providerKeys?.mistral?.lastTestStatus || singleKeyStatus?.lastTestStatus || 'Untested'}
+                    </p>
                   </div>
                 </div>
 
@@ -2910,20 +3017,20 @@ export const AdminControlCenter: React.FC = () => {
                         type="text"
                         value={newKeyLabel}
                         onChange={(e) => setNewKeyLabel(e.target.value)}
-                        placeholder="Ví dụ: Gemini Key Production"
+                        placeholder="Ví dụ: Mistral AI Free Production"
                         className={INPUT_CLASS}
                       />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Gemini API Key mới
+                        Mistral AI API Key mới
                       </label>
                       <input
                         type="password"
                         required
                         value={newRawKey}
                         onChange={(e) => setNewRawKey(e.target.value)}
-                        placeholder="Dán API key vào đây (ví dụ AIza...)"
+                        placeholder="Dán Mistral API Key từ console.mistral.ai..."
                         className={`${INPUT_CLASS} font-mono`}
                       />
                     </div>
@@ -2950,7 +3057,7 @@ export const AdminControlCenter: React.FC = () => {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                      API Key Groq Cloud Free (Tăng tốc văn bản/JSON &amp; dự phòng Gemini 429)
+                      API Key Groq Cloud Free (OCR Vision, Đối soát chéo &amp; Dự phòng siêu tốc)
                     </h2>
                     <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
                       Dùng để thử nghiệm hoặc đổi nhanh tức thì trong phiên chạy (lưu mã hóa AES-256-GCM trên <code className="font-mono">adminSecrets/groq</code> cho Super Admin). Để chạy <strong>24/7 khi Vercel/Render reset lúc Admin ngoại tuyến</strong>, hãy đặt thêm biến <code className="font-mono">GROQ_API_KEY</code> trên máy chủ.
@@ -3561,7 +3668,7 @@ export const AdminControlCenter: React.FC = () => {
                               </div>
                               <div className="h-2 w-full rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
                                 <div
-                                  className="h-full rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 transition-all duration-300"
+                                  className="h-full rounded-full bg-[#2563EB] dark:bg-[#3B82F6] transition-all duration-300"
                                   style={{
                                     width: `${Math.min(
                                       100,
@@ -3773,7 +3880,7 @@ export const AdminControlCenter: React.FC = () => {
 
                           <div className="h-2 w-full rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
                             <div
-                              className="h-full rounded-full bg-gradient-to-r from-sky-500 to-cyan-500 transition-all duration-200"
+                              className="h-full rounded-full bg-[#2563EB] dark:bg-[#3B82F6] transition-all duration-200"
                               style={{
                                 width: `${Math.min(
                                   100,

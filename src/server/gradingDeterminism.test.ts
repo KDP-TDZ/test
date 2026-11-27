@@ -313,8 +313,8 @@ test('Fixed Pre-Grading Rubric locks weights & denominator and prevents AI from 
 
 test(
   'executeRoutedAiTask strictModelLock blocks silent cross-provider fallback and throws STRICT_GRADING_MODEL_UNAVAILABLE',
-  withEnv({ GROQ_API_KEY: 'gsk_test_strict_1', GEMINI_API_KEY: 'AIzaTestStrict1' }, async () => {
-    const cfg = makeTestConfig('groq:openai/gpt-oss-120b', 'gemini-2.5-flash');
+  withEnv({ GROQ_API_KEY: 'gsk_test_strict_1', MISTRAL_API_KEY: 'mistral_test_strict_1' }, async () => {
+    const cfg = makeTestConfig('groq:openai/gpt-oss-120b', 'mistral:mistral-small-latest');
     const calledModels: string[] = [];
 
     await assert.rejects(
@@ -339,8 +339,8 @@ test(
 
 test(
   'executeRoutedAiTask cache hits preserve actualModel, usedFallback=true, and systemFingerprint when fallback ran',
-  withEnv({ GROQ_API_KEY: 'gsk_test_fb_1', GEMINI_API_KEY: 'AIzaTestFb1' }, async () => {
-    const cfg = makeTestConfig('groq:openai/gpt-oss-120b', 'gemini-2.5-flash');
+  withEnv({ GROQ_API_KEY: 'gsk_test_fb_1', MISTRAL_API_KEY: 'mistral_test_fb_1' }, async () => {
+    const cfg = makeTestConfig('groq:openai/gpt-oss-120b', 'mistral:mistral-small-latest');
     let invocations = 0;
 
     const runOnce = () =>
@@ -361,33 +361,33 @@ test(
           return {
             ok: true,
             resolvedModel: modelId,
-            systemFingerprint: 'fp_gemini_25_v1',
+            systemFingerprint: 'fp_mistral_small_v1',
           };
         },
       });
 
     const first = await runOnce();
     assert.equal(first.requestedModel, 'groq:openai/gpt-oss-120b');
-    assert.equal(first.actualModel, 'gemini-2.5-flash');
+    assert.equal(first.actualModel, 'mistral:mistral-small-latest');
     assert.equal(first.usedFallback, true);
     assert.equal(first.cached, false);
-    assert.equal(first.systemFingerprint, 'fp_gemini_25_v1');
+    assert.equal(first.systemFingerprint, 'fp_mistral_small_v1');
 
     // Second call hits cache — MUST NOT lie and say modelId === requestedModel or usedFallback === false!
     const second = await runOnce();
     assert.equal(second.cached, true);
     assert.equal(second.requestedModel, 'groq:openai/gpt-oss-120b');
-    assert.equal(second.actualModel, 'gemini-2.5-flash');
-    assert.equal(second.modelId, 'gemini-2.5-flash');
+    assert.equal(second.actualModel, 'mistral:mistral-small-latest');
+    assert.equal(second.modelId, 'mistral:mistral-small-latest');
     assert.equal(second.usedFallback, true);
-    assert.equal(second.systemFingerprint, 'fp_gemini_25_v1');
+    assert.equal(second.systemFingerprint, 'fp_mistral_small_v1');
     assert.equal(invocations, 2, 'Primary failed once, fallback ran once, cache served second call');
   })
 );
 
 test(
   '10x Repeatability Harness: grading the same document 10 times yields 100% identical scores, claims, rubric, and audit provenance',
-  withEnv({ GROQ_API_KEY: 'gsk_test_repeat_10x', GEMINI_API_KEY: undefined }, async () => {
+  withEnv({ GROQ_API_KEY: 'gsk_test_repeat_10x', MISTRAL_API_KEY: undefined }, async () => {
     const cfg = makeTestConfig('groq:openai/gpt-oss-120b', 'groq:openai/gpt-oss-20b');
     const studentText =
       'Carbohydrate gồm C, H, O tỉ lệ 1:2:1, chia thành đường đơn, đường đôi và đường đa. Protein có đơn phân là amino acid liên kết peptide. DNA có 2 mạch xoắn kép theo nguyên tắc A-U và G-C.';

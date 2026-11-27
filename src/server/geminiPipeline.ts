@@ -1,5 +1,23 @@
 import crypto from 'node:crypto';
-import { Type, type GenerateContentResponse } from '@google/genai';
+import {
+  CF_GRADE_MODEL,
+  CF_VISION_MODEL as ADAPTIVE_CF_VISION_MODEL,
+  GROQ_GRADE_FALLBACK_MODEL,
+  GROQ_SCAN_VISION_MODEL,
+  MISTRAL_GRADE_MODEL,
+  MISTRAL_VISION_MODEL,
+  computeAdaptiveApiPlan,
+  computeNormalizedTextLength,
+  createAdaptiveAuditMetadata,
+  detectProviderIdFromModel,
+  formatStudentBlocksForPrompt,
+  mergeGradedHalves,
+  selectCrossProviderVerifierModel,
+  splitClaimsIntoTwoHalves,
+  splitStudentBlocksIntoTwoHalves,
+  type AdaptiveSlotNumber,
+  type AdaptiveStageCode,
+} from '../core/adaptiveApiPlan.js';
 import {
   calculateAccuracyScore,
   calculateCompletenessScore,
@@ -12,7 +30,6 @@ import {
   runQuizGenerationWithTopUp,
   salvageQuestionsFromTruncatedJson,
   validateExamBlueprint,
-  validateQuizQuestionSet,
 } from '../core/quizValidation.js';
 import {
   retrieveRelevantChunks,
@@ -28,12 +45,14 @@ import {
   isNonGradableLeadInClaim,
 } from '../core/semanticBlocks.js';
 import type {
+  AiProviderId,
   AiTaskType,
   AnalysisStrength,
   AnalysisWeakness,
   AnnotationItem,
   ClaimStatus,
   CognitiveLevel,
+  CoverageStatus,
   ExamBlueprint,
   ExamBlueprintRow,
   ExamDocument,
@@ -66,47 +85,31 @@ import {
 } from './aiGuardService.js';
 import {
   callWithTimeout,
-  createServerAiClient,
   executeRoutedAiTask,
-  generateGeminiContentWithFallback,
-  thinkingConfigForModel,
   type RoutedAiTaskResult,
 } from './modelRouter.js';
 import {
+  callMistralChatCompletion,
+  isMistralConfigured,
+  isMistralModelId,
+  MISTRAL_PRIMARY_MODEL,
+} from './mistralProvider.js';
+import {
   callGroqChatCompletion,
-  GROQ_VISION_MODEL,
   isGroqConfigured,
   isGroqModelId,
 } from './groqProvider.js';
 import {
   callCloudflareChatCompletion,
-  CF_VISION_MODEL,
   isCloudflareConfigured,
   isCloudflareModelId,
 } from './cloudflareProvider.js';
-import { isGeminiConfigured } from './singleKeyService.js';
+import { resolveScopedApiKeyForStage } from './singleKeyService.js';
 
 export interface TokenTelemetry {
   promptTokens: number;
   candidateTokens: number;
   totalTokens: number;
-}
-
-function accumulateTokens(
-  acc: TokenTelemetry,
-  resp: {
-    usageMetadata?: {
-      promptTokenCount?: number;
-      candidatesTokenCount?: number;
-      totalTokenCount?: number;
-    };
-  }
-): void {
-  const meta = resp.usageMetadata;
-  if (!meta) return;
-  acc.promptTokens += meta.promptTokenCount || 0;
-  acc.candidateTokens += meta.candidatesTokenCount || 0;
-  acc.totalTokens += meta.totalTokenCount || 0;
 }
 
 function accumulateRawTokens(
@@ -206,7 +209,7 @@ function normalizeJsonEscapeAndControlChars(jsonCandidate: string): string {
 }
 
 export const DETERMINISTIC_GRADING_SEED = 20261123;
-export const GRADING_PROMPT_VERSION = 'v4.1_semantic_inline_deterministic';
+export const GRADING_PROMPT_VERSION = 'v4.2_3provider_adaptive';
 export const MAX_STUDENT_GRADING_CHARS = 48_000;
 export const MAX_TEXTBOOK_GRADING_CHARS = 24_000;
 
@@ -381,13 +384,14 @@ async function generateJsonWithProviderDetailed<T>(params: {
   thinkingTier: 'minimal' | 'low' | 'medium';
   maxOutputTokens: number;
   timeoutMs?: number;
-  geminiSchema: Record<string, unknown>;
   groqSchemaHint: string;
   fallbackJson: string;
   strictJsonParser?: (rawText: string) => T;
   temperature?: number;
   seed?: number;
   strictModelLock?: boolean;
+  stage?: AdaptiveStageCode;
+  slot?: AdaptiveSlotNumber;
   tokensOut: TokenTelemetry;
 }): Promise<ProviderJsonResult<T>> {
   const parseOutput = (rawText: string): T =>
@@ -396,6 +400,10 @@ async function generateJsonWithProviderDetailed<T>(params: {
       : safeParseModelJson<T>(rawText, params.fallbackJson);
 
   if (isGroqModelId(params.modelId)) {
+    const apiKeyOverride =
+      params.stage && params.slot
+        ? resolveScopedApiKeyForStage('groq', params.stage, params.slot) || undefined
+        : undefined;
     const resp = await callWithTimeout(
       (signal) =>
         callGroqChatCompletion({
@@ -407,6 +415,7 @@ async function generateJsonWithProviderDetailed<T>(params: {
           temperature: params.temperature ?? 0,
           seed: params.seed,
           strictModelLock: params.strictModelLock,
+          apiKeyOverride,
           signal,
         }),
       params.timeoutMs
@@ -443,31 +452,32 @@ async function generateJsonWithProviderDetailed<T>(params: {
     };
   }
 
-  const ai = await createServerAiClient();
-  const response = await callWithTimeout(
+  const mistralModel = isMistralModelId(params.modelId) ? params.modelId : MISTRAL_PRIMARY_MODEL;
+  const apiKeyOverride =
+    params.stage && params.slot
+      ? resolveScopedApiKeyForStage('mistral', params.stage, params.slot) || undefined
+      : undefined;
+  const resp = await callWithTimeout(
     (signal) =>
-      generateGeminiContentWithFallback({
-        ai,
-        model: params.modelId,
-        contents: params.prompt,
-        thinkingTier: params.thinkingTier,
-        temperature: params.temperature,
+      callMistralChatCompletion({
+        modelId: mistralModel,
+        prompt: params.prompt,
+        jsonMode: true,
+        jsonSchemaHint: params.groqSchemaHint,
+        maxOutputTokens: params.maxOutputTokens,
+        temperature: params.temperature ?? 0,
         seed: params.seed,
         strictModelLock: params.strictModelLock,
-        config: {
-          maxOutputTokens: params.maxOutputTokens,
-          abortSignal: signal,
-          responseMimeType: 'application/json',
-          responseSchema: params.geminiSchema,
-        },
+        apiKeyOverride,
+        signal,
       }),
     params.timeoutMs
   );
-  accumulateTokens(params.tokensOut, response);
+  accumulateRawTokens(params.tokensOut, resp);
   return {
-    data: parseOutput(response.text),
-    resolvedModel: response.resolvedModel || params.modelId,
-    ...(response.systemFingerprint ? { systemFingerprint: response.systemFingerprint } : {}),
+    data: parseOutput(resp.text),
+    resolvedModel: resp.resolvedModel || mistralModel,
+    ...(resp.systemFingerprint ? { systemFingerprint: resp.systemFingerprint } : {}),
   };
 }
 
@@ -477,13 +487,14 @@ async function generateJsonWithProvider<T>(params: {
   thinkingTier: 'minimal' | 'low' | 'medium';
   maxOutputTokens: number;
   timeoutMs?: number;
-  geminiSchema: Record<string, unknown>;
   groqSchemaHint: string;
   fallbackJson: string;
   strictJsonParser?: (rawText: string) => T;
   temperature?: number;
   seed?: number;
   strictModelLock?: boolean;
+  stage?: AdaptiveStageCode;
+  slot?: AdaptiveSlotNumber;
   tokensOut: TokenTelemetry;
 }): Promise<T> {
   const res = await generateJsonWithProviderDetailed(params);
@@ -496,9 +507,15 @@ async function generatePlainTextWithProvider(params: {
   thinkingTier: 'minimal' | 'low' | 'medium';
   maxOutputTokens: number;
   timeoutMs?: number;
+  stage?: AdaptiveStageCode;
+  slot?: AdaptiveSlotNumber;
   tokensOut: TokenTelemetry;
 }): Promise<string> {
   if (isGroqModelId(params.modelId)) {
+    const apiKeyOverride =
+      params.stage && params.slot
+        ? resolveScopedApiKeyForStage('groq', params.stage, params.slot) || undefined
+        : undefined;
     const resp = await callWithTimeout(
       (signal) =>
         callGroqChatCompletion({
@@ -506,6 +523,7 @@ async function generatePlainTextWithProvider(params: {
           prompt: params.prompt,
           jsonMode: false,
           maxOutputTokens: params.maxOutputTokens,
+          apiKeyOverride,
           signal,
         }),
       params.timeoutMs
@@ -530,23 +548,25 @@ async function generatePlainTextWithProvider(params: {
     return resp.text.trim();
   }
 
-  const ai = await createServerAiClient();
+  const mistralModel = isMistralModelId(params.modelId) ? params.modelId : MISTRAL_PRIMARY_MODEL;
+  const apiKeyOverride =
+    params.stage && params.slot
+      ? resolveScopedApiKeyForStage('mistral', params.stage, params.slot) || undefined
+      : undefined;
   const resp = await callWithTimeout(
     (signal) =>
-      generateGeminiContentWithFallback({
-        ai,
-        model: params.modelId,
-        contents: params.prompt,
-        thinkingTier: params.thinkingTier,
-        config: {
-          maxOutputTokens: params.maxOutputTokens,
-          abortSignal: signal,
-        },
+      callMistralChatCompletion({
+        modelId: mistralModel,
+        prompt: params.prompt,
+        jsonMode: false,
+        maxOutputTokens: params.maxOutputTokens,
+        apiKeyOverride,
+        signal,
       }),
     params.timeoutMs
   );
-  accumulateTokens(params.tokensOut, resp);
-  return (resp.text || '').trim();
+  accumulateRawTokens(params.tokensOut, resp);
+  return resp.text.trim();
 }
 
 async function runTaskWithRouter<T>(params: {
@@ -557,6 +577,8 @@ async function runTaskWithRouter<T>(params: {
   bypassCache?: boolean;
   allowGroqRescue?: boolean;
   groqRescueModelId?: string;
+  preferredPrimaryModelId?: string;
+  preferredFallbackModelId?: string;
   strictModelLock?: boolean;
   extractExecutionMeta?: (data: T) => { actualModel?: string; systemFingerprint?: string };
   runWithModel: (modelId: string) => Promise<T>;
@@ -570,6 +592,8 @@ async function runTaskWithRouter<T>(params: {
     bypassCache: params.bypassCache,
     allowGroqRescue: params.allowGroqRescue,
     groqRescueModelId: params.groqRescueModelId,
+    preferredPrimaryModelId: params.preferredPrimaryModelId,
+    preferredFallbackModelId: params.preferredFallbackModelId,
     strictModelLock: params.strictModelLock,
     extractExecutionMeta: params.extractExecutionMeta,
     runWithModel: params.runWithModel,
@@ -618,34 +642,140 @@ export class DocumentExtractionService {
     opts?: { config?: SystemAiConfig; idToken?: string; pageOffset?: number }
   ): Promise<ExtractedPage[]> {
     const pageOffset = Math.max(0, Number(opts?.pageOffset) || 0);
+    const cfg = opts?.config || getAuthoritativeAiConfigSnapshot();
 
-    const results = await Promise.all(
+    const jsonHint =
+      '{"rawText":"...","ocrConfidence":0.95,"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}';
+
+    const runVisionWithFallback = async (params: {
+      base64: string;
+      mimeType: string;
+      prompt: string;
+      order: Array<'groq' | 'cloudflare' | 'mistral'>;
+      slot: AdaptiveSlotNumber;
+    }): Promise<ParsedOcrPayload> => {
+      const runners: Record<
+        'groq' | 'cloudflare' | 'mistral',
+        { name: string; enabled: boolean; run: () => Promise<ParsedOcrPayload> }
+      > = {
+        groq: {
+          name: 'Groq',
+          enabled: isGroqConfigured(),
+          run: async () => {
+            const apiKeyOverride =
+              resolveScopedApiKeyForStage('groq', 'QUET', params.slot) || undefined;
+            const resp = await callWithTimeout(
+              (signal) =>
+                callGroqChatCompletion({
+                  modelId: GROQ_SCAN_VISION_MODEL,
+                  prompt: params.prompt,
+                  images: [{ mimeType: params.mimeType, base64: params.base64 }],
+                  jsonMode: true,
+                  jsonSchemaHint: jsonHint,
+                  maxOutputTokens: 2048,
+                  temperature: 0,
+                  seed: DETERMINISTIC_GRADING_SEED,
+                  apiKeyOverride,
+                  signal,
+                }),
+              OCR_FAST_TIMEOUT_MS
+            );
+            accumulateRawTokens(tokensOut, resp);
+            return parseOcrResponsePayload(resp.text || '');
+          },
+        },
+        cloudflare: {
+          name: 'Cloudflare',
+          enabled: isCloudflareConfigured(),
+          run: async () => {
+            const resp = await callWithTimeout(
+              (signal) =>
+                callCloudflareChatCompletion({
+                  modelId: ADAPTIVE_CF_VISION_MODEL,
+                  prompt: params.prompt,
+                  images: [{ mimeType: params.mimeType, base64: params.base64 }],
+                  jsonMode: true,
+                  jsonSchemaHint: jsonHint,
+                  maxOutputTokens: 2048,
+                  temperature: 0,
+                  seed: DETERMINISTIC_GRADING_SEED,
+                  signal,
+                }),
+              OCR_FAST_TIMEOUT_MS
+            );
+            accumulateRawTokens(tokensOut, resp);
+            return parseOcrResponsePayload(resp.text || '');
+          },
+        },
+        mistral: {
+          name: 'Mistral',
+          enabled: isMistralConfigured(),
+          run: async () => {
+            const apiKeyOverride =
+              resolveScopedApiKeyForStage('mistral', 'QUET', params.slot) || undefined;
+            const resp = await callWithTimeout(
+              (signal) =>
+                callMistralChatCompletion({
+                  modelId: MISTRAL_VISION_MODEL,
+                  prompt: params.prompt,
+                  images: [{ mimeType: params.mimeType, base64: params.base64 }],
+                  jsonMode: true,
+                  jsonSchemaHint: jsonHint,
+                  maxOutputTokens: 2048,
+                  temperature: 0,
+                  seed: DETERMINISTIC_GRADING_SEED,
+                  apiKeyOverride,
+                  signal,
+                }),
+              OCR_FAST_TIMEOUT_MS
+            );
+            accumulateRawTokens(tokensOut, resp);
+            return parseOcrResponsePayload(resp.text || '');
+          },
+        },
+      };
+
+      let firstVisionError: unknown = null;
+      const errorSummary: string[] = [];
+      for (const providerKey of params.order) {
+        const provider = runners[providerKey];
+        if (!provider.enabled) continue;
+        try {
+          return await provider.run();
+        } catch (err) {
+          if (!firstVisionError) firstVisionError = err;
+          const msg = err instanceof Error ? err.message : String(err);
+          errorSummary.push(`${provider.name}: ${msg.slice(0, 320)}`);
+        }
+      }
+
+      if (errorSummary.length > 1) {
+        throw new Error(errorSummary.join(' | '));
+      }
+      if (firstVisionError) {
+        throw firstVisionError;
+      }
+      // Emit standard unconfigured-key error code from the top preferred provider
+      return await runners[params.order[0]].run();
+    };
+
+    // Pass 1 OCR (QUET Slot 1): Groq Vision -> Cloudflare Vision -> Mistral Vision
+    const pass1Results = await Promise.all(
       files.map(async (file, idx) => {
         const pageNum = pageOffset + idx + 1;
         const contentHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+        const base64 = file.buffer.toString('base64');
 
-        const { data: parsed } = await runTaskWithRouter<{
-          rawText?: string;
-          ocrConfidence?: number;
-          suggestedGrade?: string;
-          suggestedSubject?: string;
-          suggestedChapters?: string[];
-          suggestedTitle?: string;
-          blocks?: Array<{
-            extractedText: string;
-            textType: string;
-            confidence: number;
-            formulaText?: string;
-          }>;
-        }>({
+        const { data: parsed } = await runTaskWithRouter<ParsedOcrPayload>({
           taskType: 'curriculum_extraction',
-          config: opts?.config,
+          config: cfg,
           idToken: opts?.idToken,
+          preferredPrimaryModelId: GROQ_SCAN_VISION_MODEL,
+          preferredFallbackModelId: ADAPTIVE_CF_VISION_MODEL,
           allowGroqRescue: true,
-          groqRescueModelId: GROQ_VISION_MODEL,
-          cacheInput: { ocrKind: 'image_fast_v3', mimeType: file.mimeType, sha256: contentHash },
+          groqRescueModelId: GROQ_SCAN_VISION_MODEL,
+          cacheInput: { ocrKind: 'image_fast_v4_3provider', mimeType: file.mimeType, sha256: contentHash },
           runWithModel: async (modelId) => {
-            const base64 = file.buffer.toString('base64');
             const ocrPrompt = [
               'Đọc OCR toàn bộ văn bản, công thức và chữ viết tay trong trang ảnh này.',
               '- Giữ nguyên 100% chính tả và công thức gốc của học sinh theo từng dòng xuống hàng (\\n), KHÔNG tự sửa lỗi kiến thức, KHÔNG bình luận.',
@@ -653,167 +783,23 @@ export class DocumentExtractionService {
               '- Nhận diện luôn lớp ("10"|"11"|"12"), môn học THPT, tên chương và tiêu đề bài ghi.',
             ].join('\n');
 
-            const jsonHint =
-              '{"rawText":"...","ocrConfidence":0.95,"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}';
+            const order: Array<'groq' | 'cloudflare' | 'mistral'> = isCloudflareModelId(modelId)
+              ? ['cloudflare', 'groq', 'mistral']
+              : isMistralModelId(modelId)
+                ? ['mistral', 'groq', 'cloudflare']
+                : ['groq', 'cloudflare', 'mistral'];
 
-            const runGroqVision = async () => {
-              const resp = await callWithTimeout(
-                (signal) =>
-                  callGroqChatCompletion({
-                    modelId: isGroqModelId(modelId) ? modelId : GROQ_VISION_MODEL,
-                    prompt: ocrPrompt,
-                    images: [{ mimeType: file.mimeType, base64 }],
-                    jsonMode: true,
-                    jsonSchemaHint: jsonHint,
-                    maxOutputTokens: 2048,
-                    temperature: 0,
-                    seed: DETERMINISTIC_GRADING_SEED,
-                    signal,
-                  }),
-                OCR_FAST_TIMEOUT_MS
-              );
-              accumulateRawTokens(tokensOut, resp);
-              return parseOcrResponsePayload(resp.text || '');
-            };
-
-            const runCloudflareVision = async () => {
-              const resp = await callWithTimeout(
-                (signal) =>
-                  callCloudflareChatCompletion({
-                    modelId: isCloudflareModelId(modelId) ? modelId : CF_VISION_MODEL,
-                    prompt: ocrPrompt,
-                    images: [{ mimeType: file.mimeType, base64 }],
-                    jsonMode: true,
-                    jsonSchemaHint: jsonHint,
-                    maxOutputTokens: 2048,
-                    temperature: 0,
-                    seed: DETERMINISTIC_GRADING_SEED,
-                    signal,
-                  }),
-                OCR_FAST_TIMEOUT_MS
-              );
-              accumulateRawTokens(tokensOut, resp);
-              return parseOcrResponsePayload(resp.text || '');
-            };
-
-            const runGeminiVision = async () => {
-              const ai = await createServerAiClient();
-              const visionModel =
-                isGroqModelId(modelId) || isCloudflareModelId(modelId)
-                  ? 'gemini-2.5-flash'
-                  : modelId;
-              const response = await callWithTimeout(
-                (signal) =>
-                  generateGeminiContentWithFallback({
-                    ai,
-                    model: visionModel,
-                    thinkingTier: 'minimal',
-                    temperature: 0,
-                    seed: DETERMINISTIC_GRADING_SEED,
-                    contents: [
-                      {
-                        role: 'user',
-                        parts: [
-                          {
-                            inlineData: {
-                              mimeType: file.mimeType,
-                              data: base64,
-                            },
-                          },
-                          {
-                            text: `${ocrPrompt}\n\nCấu trúc JSON bắt buộc:\n${jsonHint}`,
-                          },
-                        ],
-                      },
-                    ],
-                    config: {
-                      maxOutputTokens: 2048,
-                      abortSignal: signal,
-                      responseMimeType: 'application/json',
-                      responseSchema: {
-                        type: Type.OBJECT,
-                        properties: {
-                          rawText: { type: Type.STRING },
-                          ocrConfidence: { type: Type.NUMBER },
-                          suggestedGrade: { type: Type.STRING, description: '10 | 11 | 12' },
-                          suggestedSubject: {
-                            type: Type.STRING,
-                            description:
-                              'toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac',
-                          },
-                          suggestedChapters: {
-                            type: Type.ARRAY,
-                            items: { type: Type.STRING },
-                          },
-                          suggestedTitle: { type: Type.STRING },
-                        },
-                        required: [
-                          'rawText',
-                          'ocrConfidence',
-                          'suggestedGrade',
-                          'suggestedSubject',
-                          'suggestedChapters',
-                          'suggestedTitle',
-                        ],
-                      },
-                    },
-                  }),
-                OCR_FAST_TIMEOUT_MS
-              );
-              accumulateTokens(tokensOut, response);
-              return parseOcrResponsePayload(response.text || '');
-            };
-
-            const visionOrder: Array<{
-              name: string;
-              enabled: boolean;
-              run: () => Promise<ParsedOcrPayload>;
-            }> = isGroqModelId(modelId)
-              ? [
-                  { name: 'Groq', enabled: isGroqConfigured(), run: runGroqVision },
-                  { name: 'Gemini', enabled: isGeminiConfigured(), run: runGeminiVision },
-                  { name: 'Cloudflare', enabled: isCloudflareConfigured(), run: runCloudflareVision },
-                ]
-              : isCloudflareModelId(modelId)
-                ? [
-                    { name: 'Cloudflare', enabled: isCloudflareConfigured(), run: runCloudflareVision },
-                    { name: 'Groq', enabled: isGroqConfigured(), run: runGroqVision },
-                    { name: 'Gemini', enabled: isGeminiConfigured(), run: runGeminiVision },
-                  ]
-                : [
-                    { name: 'Gemini', enabled: isGeminiConfigured(), run: runGeminiVision },
-                    { name: 'Groq', enabled: isGroqConfigured(), run: runGroqVision },
-                    { name: 'Cloudflare', enabled: isCloudflareConfigured(), run: runCloudflareVision },
-                  ];
-
-            let firstVisionError: unknown = null;
-            const errorSummary: string[] = [];
-            for (const provider of visionOrder) {
-              if (!provider.enabled) continue;
-              try {
-                return await provider.run();
-              } catch (err) {
-                if (!firstVisionError) firstVisionError = err;
-                const msg = err instanceof Error ? err.message : String(err);
-                errorSummary.push(`${provider.name}: ${msg.slice(0, 320)}`);
-              }
-            }
-
-            if (errorSummary.length > 1) {
-              throw new Error(errorSummary.join(' | '));
-            }
-            if (firstVisionError) {
-              throw firstVisionError;
-            }
-            // Fallback to primary call to emit standard unconfigured-key error code
-            if (isGroqModelId(modelId)) return await runGroqVision();
-            if (isCloudflareModelId(modelId)) return await runCloudflareVision();
-            return await runGeminiVision();
+            return runVisionWithFallback({
+              base64,
+              mimeType: file.mimeType,
+              prompt: ocrPrompt,
+              order,
+              slot: 1,
+            });
           },
         });
 
         let rawText = (parsed.rawText || '').trim();
-        let blocks: ExtractedTextBlock[] = [];
         let avgConf = Math.max(0.1, Math.min(1, Number(parsed.ocrConfidence) || 0.9));
 
         if (!rawText && Array.isArray(parsed.blocks) && parsed.blocks.length > 0) {
@@ -823,59 +809,128 @@ export class DocumentExtractionService {
             .join('\n');
         }
 
-        blocks = buildExtractedBlocksFromRawText(rawText, pageNum, avgConf);
-        if (blocks.length === 0) {
-          avgConf = 0;
-        }
-
-        if (rawText && parsed.suggestedSubject) {
-          const grade: GradeLevel =
-            parsed.suggestedGrade === '11' || parsed.suggestedGrade === '12'
-              ? parsed.suggestedGrade
-              : '10';
-          const subject: SubjectId =
-            parsed.suggestedSubject in SUBJECT_LABELS
-              ? (parsed.suggestedSubject as SubjectId)
-              : 'khac';
-          const textHash = crypto.createHash('sha256').update(rawText.slice(0, 1200)).digest('hex');
-          const suggestionObj: InlineScopeSuggestion = {
-            suggestedGrade: grade,
-            suggestedSubject: subject,
-            suggestedChapters: Array.isArray(parsed.suggestedChapters)
-              ? parsed.suggestedChapters.slice(0, 4)
-              : [],
-            suggestedTitle:
-              (parsed.suggestedTitle || '').trim() ||
-              file.originalName.replace(/\.[^.]+$/, '') ||
-              'Tài liệu ôn tập',
-          };
-          recentInlineScopeByTextHash.set(textHash, suggestionObj);
-          lastExtractedInlineScope = {
-            textPrefix: rawText.slice(0, 160),
-            suggestion: suggestionObj,
-          };
-          if (recentInlineScopeByTextHash.size > 100) {
-            const oldestKey = recentInlineScopeByTextHash.keys().next().value;
-            if (oldestKey) recentInlineScopeByTextHash.delete(oldestKey);
-          }
-        }
-
         return {
-          pageNumber: pageNum,
+          file,
+          base64,
+          contentHash,
+          pageNum,
+          parsed,
           rawText,
-          blocks,
-          ocrAverageConfidence: avgConf,
-        } satisfies ExtractedPage;
+          avgConf,
+        };
       })
     );
 
-    return results.sort((a, b) => a.pageNumber - b.pageNumber);
+    // Adaptive Scan check: if combined Pass 1 text length >= threshold, run Pass 2 OCR refinement (QUET Slot 2)
+    const combinedPass1Length = computeNormalizedTextLength(
+      pass1Results.map((r) => ({ rawText: r.rawText }))
+    );
+    const scanPlan = computeAdaptiveApiPlan(
+      combinedPass1Length,
+      cfg.adaptiveLongTextThresholdChars
+    );
+
+    const refinedResults = scanPlan.isLongText
+      ? await Promise.all(
+          pass1Results.map(async (item) => {
+            if (!item.rawText || item.rawText.length < 40) {
+              return item;
+            }
+            try {
+              const refinePrompt = [
+                'Đọc đối chiếu lại toàn bộ trang ảnh (Pass 2) để phục hồi các dòng bị sót, công thức toán/lý/hóa, chỉ số dưới/trên, phân số, đơn vị đo và dấu câu so với bản nháp Pass 1 bên dưới.',
+                '- GIỮ NGUYÊN 100% lỗi kiến thức gốc của học sinh (KHÔNG tự sửa sai nội dung học thuật), chỉ khôi phục chính xác những gì thực sự xuất hiện trên ảnh.',
+                '- Trả về toàn bộ văn bản đầy đủ của trang trong trường "rawText" (không bỏ bớt các đoạn đã đọc đúng ở Pass 1).',
+                '',
+                '=== BẢN NHÁP PASS 1 ===',
+                item.rawText.slice(0, 6000),
+              ].join('\n');
+
+              const pass2Parsed = await runVisionWithFallback({
+                base64: item.base64,
+                mimeType: item.file.mimeType,
+                prompt: refinePrompt,
+                order: ['cloudflare', 'mistral', 'groq'],
+                slot: 2,
+              });
+
+              const pass2Text = (pass2Parsed.rawText || '').trim();
+              // Preserve Pass 1 if Pass 2 fails or truncates >35% of Pass 1 content
+              if (pass2Text.length >= item.rawText.length * 0.65) {
+                const refinedConf = Math.max(
+                  item.avgConf,
+                  Math.max(0.1, Math.min(1, Number(pass2Parsed.ocrConfidence) || item.avgConf))
+                );
+                return {
+                  ...item,
+                  rawText: pass2Text,
+                  avgConf: refinedConf,
+                  parsed: {
+                    ...item.parsed,
+                    rawText: pass2Text,
+                    ocrConfidence: refinedConf,
+                  },
+                };
+              }
+            } catch (pass2Err) {
+              console.warn(`Adaptive OCR Pass 2 non-fatal fallback on page ${item.pageNum}:`, pass2Err);
+            }
+            return item;
+          })
+        )
+      : pass1Results;
+
+    const pages: ExtractedPage[] = refinedResults.map((item) => {
+      const blocks = buildExtractedBlocksFromRawText(item.rawText, item.pageNum, item.avgConf);
+      const finalConf = blocks.length > 0 ? item.avgConf : 0;
+
+      if (item.rawText && item.parsed.suggestedSubject) {
+        const grade: GradeLevel =
+          item.parsed.suggestedGrade === '11' || item.parsed.suggestedGrade === '12'
+            ? item.parsed.suggestedGrade
+            : '10';
+        const subject: SubjectId =
+          item.parsed.suggestedSubject in SUBJECT_LABELS
+            ? (item.parsed.suggestedSubject as SubjectId)
+            : 'khac';
+        const textHash = crypto.createHash('sha256').update(item.rawText.slice(0, 1200)).digest('hex');
+        const suggestionObj: InlineScopeSuggestion = {
+          suggestedGrade: grade,
+          suggestedSubject: subject,
+          suggestedChapters: Array.isArray(item.parsed.suggestedChapters)
+            ? item.parsed.suggestedChapters.slice(0, 4)
+            : [],
+          suggestedTitle:
+            (item.parsed.suggestedTitle || '').trim() ||
+            item.file.originalName.replace(/\.[^.]+$/, '') ||
+            'Tài liệu ôn tập',
+        };
+        recentInlineScopeByTextHash.set(textHash, suggestionObj);
+        lastExtractedInlineScope = {
+          textPrefix: item.rawText.slice(0, 160),
+          suggestion: suggestionObj,
+        };
+        if (recentInlineScopeByTextHash.size > 100) {
+          const oldestKey = recentInlineScopeByTextHash.keys().next().value;
+          if (oldestKey) recentInlineScopeByTextHash.delete(oldestKey);
+        }
+      }
+
+      return {
+        pageNumber: item.pageNum,
+        rawText: item.rawText,
+        blocks,
+        ocrAverageConfidence: finalConf,
+      } satisfies ExtractedPage;
+    });
+
+    return pages.sort((a, b) => a.pageNumber - b.pageNumber);
   }
 
   static async extractFromPdfBuffer(
     buffer: Buffer,
-    tokensOut: TokenTelemetry,
-    opts?: { config?: SystemAiConfig; idToken?: string }
+    _tokensOut: TokenTelemetry,
+    _opts?: { config?: SystemAiConfig; idToken?: string }
   ): Promise<ExtractedPage[]> {
     try {
       const { extractPdfPagesFromBuffer } = await import('./referenceIngestService.js');
@@ -893,124 +948,12 @@ export class DocumentExtractionService {
         });
       }
     } catch {
-      // Fall back to Gemini multimodal PDF OCR for scanned PDFs
+      // Fall through to scanned-PDF guidance error
     }
 
-    if (!isGeminiConfigured()) {
-      throw new Error(
-        'Tệp PDF này là bản scan ảnh (không chứa văn bản nhúng), trong khi hệ thống hiện chỉ cấu hình Groq/Cloudflare (chưa có Gemini API Key cho OCR tệp PDF scan). Vui lòng tải lên dưới dạng ảnh JPG/PNG hoặc thêm Gemini API Key tại tab Quản trị → API Key & Bảo mật.'
-      );
-    }
-
-    const pdfHash = crypto.createHash('sha256').update(buffer).digest('hex');
-    const { data: parsed } = await runTaskWithRouter<{
-      pages: Array<{
-        pageNumber: number;
-        rawText?: string;
-        ocrConfidence?: number;
-        blocks?: Array<{
-          extractedText: string;
-          textType: string;
-          confidence: number;
-          formulaText?: string;
-        }>;
-      }>;
-    }>({
-      taskType: 'curriculum_extraction',
-      config: opts?.config,
-      idToken: opts?.idToken,
-      cacheInput: { ocrKind: 'pdf_scan_v3', sha256: pdfHash },
-      runWithModel: async (modelId) => {
-        const ai = await createServerAiClient();
-        const visionModel =
-          isGroqModelId(modelId) || isCloudflareModelId(modelId)
-            ? 'gemini-2.5-flash'
-            : modelId;
-        const base64 = buffer.toString('base64');
-        const response = await callWithTimeout(
-          (signal) =>
-            generateGeminiContentWithFallback({
-              ai,
-              model: visionModel,
-              thinkingTier: 'minimal',
-              temperature: 0,
-              seed: DETERMINISTIC_GRADING_SEED,
-              contents: [
-                {
-                  role: 'user',
-                  parts: [
-                    {
-                      inlineData: {
-                        mimeType: 'application/pdf',
-                        data: base64,
-                      },
-                    },
-                    {
-                      text: 'Trích xuất toàn bộ văn bản, công thức và chữ viết tay theo từng trang của file PDF này. Giữ nguyên chính tả và nội dung gốc theo từng dòng xuống hàng (\\n), không tự sửa lỗi kiến thức, không thêm bình luận.',
-                    },
-                  ],
-                },
-              ],
-              config: {
-                maxOutputTokens: 4096,
-                abortSignal: signal,
-                responseMimeType: 'application/json',
-                responseSchema: {
-                  type: Type.OBJECT,
-                  properties: {
-                    pages: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          pageNumber: { type: Type.INTEGER },
-                          rawText: { type: Type.STRING },
-                          ocrConfidence: { type: Type.NUMBER },
-                        },
-                        required: ['pageNumber', 'rawText', 'ocrConfidence'],
-                      },
-                    },
-                  },
-                  required: ['pages'],
-                },
-              },
-            }),
-          30_000
-        );
-        accumulateTokens(tokensOut, response);
-        return safeParseModelJson<{
-          pages: Array<{
-            pageNumber: number;
-            rawText?: string;
-            ocrConfidence?: number;
-            blocks?: Array<{
-              extractedText: string;
-              textType: string;
-              confidence: number;
-              formulaText?: string;
-            }>;
-          }>;
-        }>(response.text || '', '{"pages":[]}');
-      },
-    });
-
-    return (parsed.pages || []).map((p, idx) => {
-      const pageNum = p.pageNumber || idx + 1;
-      const rawText =
-        (p.rawText || '').trim() ||
-        (p.blocks || [])
-          .map((b) => (b.extractedText || '').trim())
-          .filter(Boolean)
-          .join('\n');
-      const avgConf = Math.max(0.1, Math.min(1, Number(p.ocrConfidence) || 0.85));
-      const blocks = buildExtractedBlocksFromRawText(rawText, pageNum, avgConf);
-      return {
-        pageNumber: pageNum,
-        rawText,
-        blocks,
-        ocrAverageConfidence: blocks.length > 0 ? avgConf : 0,
-      };
-    });
+    throw new Error(
+      'Tệp PDF này là bản scan ảnh (không có lớp văn bản nhúng). Vui lòng chụp hoặc xuất từng trang sang ảnh JPG/PNG/WEBP (hoặc dùng tệp PDF/DOCX có chữ chọn được) để hệ thống OCR đa mô hình (Groq / Cloudflare / Mistral Vision) quét chính xác hơn.'
+    );
   }
 
   static async extractFromDocxBuffer(buffer: Buffer): Promise<ExtractedPage[]> {
@@ -1077,7 +1020,7 @@ export class SubjectDetectionService {
       config: opts?.config,
       idToken: opts?.idToken,
       allowGroqRescue: true,
-      cacheInput: { sample: sampleText.slice(0, 1500), rev: 'v3_topic_strict' },
+      cacheInput: { sample: sampleText.slice(0, 1500), rev: 'v4_3provider_topic_strict' },
       runWithModel: async (modelId) =>
         generateJsonWithProvider({
           modelId,
@@ -1089,23 +1032,6 @@ export class SubjectDetectionService {
           fallbackJson: '{}',
           groqSchemaHint:
             '{"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
-          geminiSchema: {
-            type: Type.OBJECT,
-            properties: {
-              suggestedGrade: { type: Type.STRING, description: '10 | 11 | 12' },
-              suggestedSubject: {
-                type: Type.STRING,
-                description:
-                  'toan | vat_ly | hoa_hoc | sinh_hoc | ngu_van | lich_su | dia_ly | tieng_anh | tin_hoc | gdkt_pl | khac',
-              },
-              suggestedChapters: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-              suggestedTitle: { type: Type.STRING },
-            },
-            required: ['suggestedGrade', 'suggestedSubject', 'suggestedChapters', 'suggestedTitle'],
-          },
         }),
     });
 
@@ -1172,7 +1098,7 @@ export class KnowledgeAnalysisService {
       scope,
       referenceChunks,
       enableWebGrounding,
-      strictModelLock = true,
+      strictModelLock = false,
       ocrConfirmed = false,
       ocrTextHash: providedOcrTextHash,
       tokensOut,
@@ -1180,6 +1106,7 @@ export class KnowledgeAnalysisService {
       idToken,
     } = params;
 
+    const effectiveConfig = config || getAuthoritativeAiConfigSnapshot();
     const subjectName = SUBJECT_LABELS[subject];
 
     const formattedStudentBlocks = pages
@@ -1195,6 +1122,12 @@ export class KnowledgeAnalysisService {
       .join('\n\n');
 
     const fullText = pages.map((p) => p.rawText).join('\n').normalize('NFC');
+    const normalizedTextLength = computeNormalizedTextLength(pages);
+    const adaptivePlan = computeAdaptiveApiPlan(
+      normalizedTextLength,
+      effectiveConfig.adaptiveLongTextThresholdChars
+    );
+
     const computedOcrTextHash = crypto
       .createHash('sha256')
       .update(fullText, 'utf8')
@@ -1240,83 +1173,12 @@ export class KnowledgeAnalysisService {
             .join('\n\n')
         : 'Không có đoạn trích sách giáo khoa được lập chỉ mục trong kho tham chiếu cho phạm vi này.';
 
-    let webSources: ReferenceEvidence[] = [];
-    let webGroundingSummary = '';
-    let usedWebGrounding = false;
-    let webGroundingNotice: string | undefined;
-
-    if (enableWebGrounding === true && isGeminiConfigured()) {
-      try {
-        const ai = await createServerAiClient();
-        const searchPrompt = [
-          `Kiểm chứng các khái niệm nâng cao hoặc nội dung chưa có đủ trong sách giáo khoa đối với môn ${subjectName} lớp ${grade}, phạm vi: ${scope || selectedChapters.join(', ') || 'Tổng hợp'}.`,
-          'Ưu tiên nguồn chính thống (Bộ GD&ĐT, NXB Giáo dục, đại học). Tóm tắt thật súc tích tối đa 6 gạch đầu dòng kiến thức chuẩn kèm trích dẫn để đối chiếu với bài ghi sau:',
-          fullText.slice(0, 3500),
-        ].join('\n\n');
-
-        const { data: groundResp } = await runTaskWithRouter({
-          taskType: 'claim_validation',
-          config,
-          idToken,
-          cacheInput: { webSearchTextHash: computedOcrTextHash, grade, subject, scope },
-          runWithModel: async (modelId) => {
-            const searchModel =
-              isGroqModelId(modelId) || isCloudflareModelId(modelId)
-                ? 'gemini-2.5-flash'
-                : modelId;
-            const resp = await callWithTimeout((signal) =>
-              ai.models.generateContent({
-                model: searchModel,
-                contents: searchPrompt,
-                config: {
-                  thinkingConfig: thinkingConfigForModel(searchModel, 'minimal'),
-                  maxOutputTokens: 1024,
-                  abortSignal: signal,
-                  tools: [{ googleSearch: {} }],
-                },
-              })
-            );
-            accumulateTokens(tokensOut, resp);
-            return resp;
-          },
-        });
-
-        const gChunks = groundResp.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-        const nowIso = new Date().toISOString();
-        const extractedWeb: ReferenceEvidence[] = [];
-        for (let i = 0; i < gChunks.length; i++) {
-          const web = gChunks[i]?.web;
-          if (web?.uri) {
-            let domain = '';
-            try {
-              domain = new URL(web.uri).hostname;
-            } catch {
-              domain = '';
-            }
-            extractedWeb.push({
-              evidenceId: `web_${i + 1}`,
-              sourceType: 'web',
-              title: web.title || domain || 'Nguồn học thuật',
-              url: web.uri,
-              domain,
-              excerpt: (groundResp.text || '').slice(0, 420),
-              accessedAt: nowIso,
-            });
-          }
-        }
-        if (extractedWeb.length > 0) {
-          webSources = extractedWeb.slice(0, 8);
-          webGroundingSummary = groundResp.text || '';
-          usedWebGrounding = true;
-        } else {
-          webGroundingNotice =
-            'Google Search Grounding không trả về nguồn web trích dẫn cụ thể cho nội dung này; hệ thống đánh giá dựa trên kho sách tham chiếu.';
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        webGroundingNotice = `Không thể truy vấn Google Search Grounding (${msg.slice(0, 90)}). Đánh giá dựa trên kho sách tham chiếu.`;
-      }
-    }
+    const webSources: ReferenceEvidence[] = [];
+    const usedWebGrounding = false;
+    const webGroundingNotice: string | undefined =
+      enableWebGrounding === true
+        ? 'Hệ thống kiểm định vận hành trên cụm 3 nhà cung cấp AI độc lập (Mistral AI, Cloudflare Workers AI, Groq) và đối chiếu trực tiếp với kho sách giáo khoa tham chiếu & chuẩn GDPT 2018.'
+        : undefined;
 
     const studentTruncated = formattedStudentBlocks.length > MAX_STUDENT_GRADING_CHARS;
     const textbookTruncated = textbookContext.length > MAX_TEXTBOOK_GRADING_CHARS;
@@ -1340,62 +1202,67 @@ export class KnowledgeAnalysisService {
         ? '- ĐÁNH GIÁ ĐỘ ĐẦY ĐỦ (coverageItems): Đánh giá đầy đủ các ý trọng tâm theo phạm vi chương đã chọn (không tự cắt ngắn khi tài liệu dài), phân loại rõ COVERED / PARTIALLY_COVERED / MISSING.'
         : '- Không có SGK hay phạm vi chương cố định: chỉ ghi nhận các thiếu sót trực tiếp trong bài viết (như thiếu chú thích ký hiệu/đơn vị của công thức) nếu thực sự tồn tại.';
 
-    const analysisPrompt = [
-      'Bạn là chuyên gia kiểm định kiến thức giáo dục THPT Việt Nam của StudyCheck AI. Hãy chấm cực kỳ chính xác, chặt chẽ, nhất quán tuyệt đối giữa trạng thái, lời giải thích và đáp án sửa chuẩn.',
-      `Môn học: ${subjectName} | Lớp: ${grade} | Sách tham chiếu: ${textbookTitle || 'Chuẩn chương trình GDPT 2018 & kiến thức khoa học phổ thông'} | Phạm vi: ${scope || selectedChapters.join(', ') || 'Theo đúng chủ đề chính trong tài liệu'}`,
-      '',
-      'NGUỒN CĂN CỨ ĐỐI CHIẾU:',
-      hasIndexedTextbookChunks
-        ? '- Ưu tiên đối chiếu trực tiếp các đoạn trích SGK bên dưới và gắn đúng matchedChunkId, matchedPage. Với kiến thức khoa học phổ thông không xuất hiện trực tiếp trong đoạn trích nhưng thuộc chuẩn GDPT 2018, vẫn kiểm định chuẩn xác theo khoa học phổ thông.'
-        : '- Hiện chưa có đoạn trích SGK trong kho cho bài này. BẮT BUỘC dùng chuẩn kiến thức khoa học chính thống và chương trình GDPT 2018 của Bộ GD&ĐT để kiểm định dứt khoát mọi định nghĩa, định luật, công thức, tính chất và đơn vị đo. TUYỆT ĐỐI KHÔNG đánh UNVERIFIED với lỗi sai kiến thức hay sai công thức phổ thông rõ ràng (ví dụ: sai "tốc độ thay đổi" trong chuyển động thẳng đều, sai "tỉ lệ nghịch", sai phép toán "s = v + t").',
-      '',
-      'QUY TRÌNH KIỂM ĐỊNH 4 LỚP BẮT BUỘC:',
-      'LỚP 1 — TÁCH MỆNH ĐỀ NGỮ NGHĨA & CẤM CHẤM TIÊU ĐỀ DẪN NHẬP:',
-      '- Tách tài liệu học sinh thành từng đơn vị kiến thức độc lập theo đúng từng câu, từng cụm công thức (nhãn dẫn nhập + công thức) và từng cụm giải thích "Trong đó: ..." (không gộp nhiều lỗi khác nhau vào chung 1 claim).',
-      '- TUYỆT ĐỐI KHÔNG tạo claim độc lập cho dòng nhãn dẫn nhập / tiêu đề ngắn kết thúc bằng dấu hai chấm (ví dụ: "Công thức tính quãng đường:", "Phương trình chuyển động thẳng đều:", "Trong đó:", "Định nghĩa:"). Hãy giữ nhãn dẫn nhập gắn liền với công thức hoặc nội dung phía sau thành 1 claim duy nhất để không bơm điểm Chính xác ảo.',
-      '- Kiểm tra kỹ mọi từ khóa mang tính bản chất: "không đổi" vs "thay đổi", "tỉ lệ thuận" vs "tỉ lệ nghịch", "tăng" vs "giảm", "cùng chiều" vs "ngược chiều", "bảo toàn" vs "không bảo toàn", điều kiện áp dụng.',
-      '- Đối chiếu theo nghĩa học thuật (không bắt bẻ cách diễn đạt tương đương nếu đúng bản chất).',
-      '',
-      'LỚP 2 — SOI TỪNG CÔNG THỨC, PHÉP TOÁN & TRÍCH CHÍNH XÁC CỤM SAI (errorSpan):',
-      '- Kiểm tra từng dấu phép toán (+, -, ×, ., /, ^), dấu âm/dương, hệ số, chỉ số dưới và kiểm tra thứ nguyên vật lý/toán học (ví dụ: v [m/s] không thể cộng với t [s] trong s = v + t; công thức đúng phải là s = v.t).',
-      '- Tách riêng claim cho cụm công thức và claim cho cụm chú thích "Trong đó: ..." đi kèm để phân biệt rõ: công thức đúng nhưng thiếu giải thích biến số khác với công thức viết sai.',
-      '- Với MỌI claim có trạng thái INCORRECT hoặc PARTIALLY_CORRECT: BẮT BUỘC điền trường "errorSpan" trích NGUYÊN VĂN cụm từ/vế/công thức bị sai hoặc thiếu bên trong sourceText (ví dụ: "tốc độ thay đổi theo thời gian", "tỉ lệ nghịch", "s = v + t") để hệ thống gạch chân/tô đỏ chính xác vị trí lỗi, và điền trường "shortFix" (1 câu thật ngắn gọn, trực diện cách sửa nhanh, tối đa 15–20 từ).',
-      '',
-      'LỚP 3 — KIỂM TRA ĐỘ ĐẦY ĐỦ CHÚ THÍCH KÝ HIỆU & ĐƠN VỊ CỦA MỌI CÔNG THỨC:',
-      '- Với MỌI công thức xuất hiện trong tài liệu (ví dụ s = v.t, x = x0 + v.t, F = m.a...), liệt kê TẤT CẢ các ký hiệu/biến số có mặt trong công thức đó và đối chiếu với cụm chú thích ("Trong đó: ...") ngay kế tiếp.',
-      '- Nếu học sinh BỎ SÓT giải thích ý nghĩa HOẶC thiếu đơn vị đo của bất kỳ ký hiệu nào:',
-      '  + Đánh giá cụm chú thích đó là PARTIALLY_CORRECT (Thiếu thông tin / Điều kiện), nêu ĐÍCH DANH ký hiệu và đơn vị còn thiếu trong explanation, ghi rõ cách bổ sung ngắn gọn trong shortFix và trọn bộ chú thích đầy đủ trong suggestedFix.',
-      '  + Ghi nhận thiếu sót tương ứng vào weaknesses để hiển thị rõ trong danh sách "Thiếu thông tin".',
-      '',
-      'LỚP 4 — TỰ KIỂM CHÉO NHẤT QUÁN TRƯỚC KHI TRẢ KẾT QUẢ:',
-      '- Phân loại trạng thái chuẩn:',
-      '  + CORRECT: hoàn toàn đúng bản chất, không thiếu ký hiệu hay điều kiện quan trọng.',
-      '  + INCORRECT: sai bản chất kiến thức, sai quan hệ, sai công thức/phép toán.',
-      '  + PARTIALLY_CORRECT: có phần đúng nhưng thiếu thông tin quan trọng (thiếu giải thích ký hiệu/đơn vị, thiếu điều kiện áp dụng, phát biểu chưa trọn vẹn).',
-      '  + UNVERIFIED: CHỈ dùng khi thông tin riêng lẻ/mơ hồ/không đủ ngữ cảnh để xác minh. KHÔNG dùng cho định nghĩa/công thức phổ thông.',
-      ocrConfirmed
-        ? '  + Lưu ý OCR: Văn bản đã được người dùng kiểm tra/xác nhận nên KHÔNG tự ý gắn OCR_UNCERTAIN trừ khi câu chữ bị mất ký tự không thể hiểu nghĩa.'
-        : '  + OCR_UNCERTAIN: độ tin cậy OCR < 0.65.',
-      '  + OUT_OF_SCOPE: nội dung lạc đề hoàn toàn khỏi môn học.',
-      '- KIỂM TRA CHÉO: Nếu explanation chỉ ra học sinh viết sai → evaluationStatus BẮT BUỘC là INCORRECT. Nếu explanation chỉ ra học sinh viết thiếu ký hiệu/đơn vị/điều kiện → evaluationStatus BẮT BUỘC là PARTIALLY_CORRECT. CẤM TUYỆT ĐỐI việc giải thích 1 đằng mà chấm trạng thái 1 nẻo.',
-      '- Gán trọng số importanceWeight cho claims theo quy tắc cố định: 3 (định nghĩa/định luật/công thức cốt lõi), 2 (hỗ trợ/chú thích ký hiệu/điều kiện), 1 (chi tiết/ví dụ mở rộng).',
-      coverageInstruction,
-      '- Tuyệt đối KHÔNG bịa URL hay số trang SGK nếu không có trong ngữ cảnh.',
-      '- Viết rõ ràng, trực diện, súc tích (mỗi shortFix tối đa 1 câu ngắn gọn; explanation/correctKnowledge/suggestedFix tối đa 2-3 câu đi thẳng vào bản chất khái niệm; weaknesses tối đa 10 ý; strengths tối đa 5 ý; suggestions tối đa 5 ý).',
-      '',
-      rubricSection,
-      '=== TÀI LIỆU CỦA HỌC SINH ===',
-      studentSlice,
-      '',
-      '=== ĐOẠN TRÍCH SÁCH GIÁO KHOA THAM CHIẾU ===',
-      textbookSlice,
-      '',
-      webGroundingSummary
-        ? `=== TỔNG HỢP NGUỒN INTERNET ĐÃ GROUNDING ===\n${webGroundingSummary.slice(0, 3500)}`
-        : '',
-    ].join('\n');
+    const buildGradingPrompt = (studentBodyText: string, partNote?: string): string =>
+      [
+        'Bạn là chuyên gia kiểm định kiến thức giáo dục THPT Việt Nam của StudyCheck AI. Hãy chấm cực kỳ chính xác, chặt chẽ, nhất quán tuyệt đối giữa trạng thái, lời giải thích và đáp án sửa chuẩn.',
+        `Môn học: ${subjectName} | Lớp: ${grade} | Sách tham chiếu: ${textbookTitle || 'Chuẩn chương trình GDPT 2018 & kiến thức khoa học phổ thông'} | Phạm vi: ${scope || selectedChapters.join(', ') || 'Theo đúng chủ đề chính trong tài liệu'}`,
+        partNote ? `PHẠM VI PHẦN ĐANG CHẤM: ${partNote}` : '',
+        '',
+        'NGUỒN CĂN CỨ ĐỐI CHIẾU:',
+        hasIndexedTextbookChunks
+          ? '- Ưu tiên đối chiếu trực tiếp các đoạn trích SGK bên dưới và gắn đúng matchedChunkId, matchedPage. Với kiến thức khoa học phổ thông không xuất hiện trực tiếp trong đoạn trích nhưng thuộc chuẩn GDPT 2018, vẫn kiểm định chuẩn xác theo khoa học phổ thông.'
+          : '- Hiện chưa có đoạn trích SGK trong kho cho bài này. BẮT BUỘC dùng chuẩn kiến thức khoa học chính thống và chương trình GDPT 2018 của Bộ GD&ĐT để kiểm định dứt khoát mọi định nghĩa, định luật, công thức, tính chất và đơn vị đo. TUYỆT ĐỐI KHÔNG đánh UNVERIFIED với lỗi sai kiến thức hay sai công thức phổ thông rõ ràng (ví dụ: sai "tốc độ thay đổi" trong chuyển động thẳng đều, sai "tỉ lệ nghịch", sai phép toán "s = v + t").',
+        '',
+        'QUY TRÌNH KIỂM ĐỊNH 4 LỚP BẮT BUỘC:',
+        'LỚP 1 — TÁCH MỆNH ĐỀ NGỮ NGHĨA & CẤM CHẤM TIÊU ĐỀ DẪN NHẬP:',
+        '- Tách tài liệu học sinh thành từng đơn vị kiến thức độc lập theo đúng từng câu, từng cụm công thức (nhãn dẫn nhập + công thức) và từng cụm giải thích "Trong đó: ..." (không gộp nhiều lỗi khác nhau vào chung 1 claim).',
+        '- TUYỆT ĐỐI KHÔNG tạo claim độc lập cho dòng nhãn dẫn nhập / tiêu đề ngắn kết thúc bằng dấu hai chấm (ví dụ: "Công thức tính quãng đường:", "Phương trình chuyển động thẳng đều:", "Trong đó:", "Định nghĩa:"). Hãy giữ nhãn dẫn nhập gắn liền với công thức hoặc nội dung phía sau thành 1 claim duy nhất để không bơm điểm Chính xác ảo.',
+        '- Kiểm tra kỹ mọi từ khóa mang tính bản chất: "không đổi" vs "thay đổi", "tỉ lệ thuận" vs "tỉ lệ nghịch", "tăng" vs "giảm", "cùng chiều" vs "ngược chiều", "bảo toàn" vs "không bảo toàn", điều kiện áp dụng.',
+        '- Đối chiếu theo nghĩa học thuật (không bắt bẻ cách diễn đạt tương đương nếu đúng bản chất).',
+        '',
+        'LỚP 2 — SOI TỪNG CÔNG THỨC, PHÉP TOÁN & TRÍCH CHÍNH XÁC CỤM SAI (errorSpan):',
+        '- Kiểm tra từng dấu phép toán (+, -, ×, ., /, ^), dấu âm/dương, hệ số, chỉ số dưới và kiểm tra thứ nguyên vật lý/toán học (ví dụ: v [m/s] không thể cộng với t [s] trong s = v + t; công thức đúng phải là s = v.t).',
+        '- Tách riêng claim cho cụm công thức và claim cho cụm chú thích "Trong đó: ..." đi kèm để phân biệt rõ: công thức đúng nhưng thiếu giải thích biến số khác với công thức viết sai.',
+        '- Với MỌI claim có trạng thái INCORRECT hoặc PARTIALLY_CORRECT: BẮT BUỘC điền trường "errorSpan" trích NGUYÊN VĂN cụm từ/vế/công thức bị sai hoặc thiếu bên trong sourceText (ví dụ: "tốc độ thay đổi theo thời gian", "tỉ lệ nghịch", "s = v + t") để hệ thống gạch chân/tô đỏ chính xác vị trí lỗi, và điền trường "shortFix" (1 câu thật ngắn gọn, trực diện cách sửa nhanh, tối đa 15–20 từ).',
+        '',
+        'LỚP 3 — KIỂM TRA ĐỘ ĐẦY ĐỦ CHÚ THÍCH KÝ HIỆU & ĐƠN VỊ CỦA MỌI CÔNG THỨC:',
+        '- Với MỌI công thức xuất hiện trong tài liệu (ví dụ s = v.t, x = x0 + v.t, F = m.a...), liệt kê TẤT CẢ các ký hiệu/biến số có mặt trong công thức đó và đối chiếu với cụm chú thích ("Trong đó: ...") ngay kế tiếp.',
+        '- Nếu học sinh BỎ SÓT giải thích ý nghĩa HOẶC thiếu đơn vị đo của bất kỳ ký hiệu nào:',
+        '  + Đánh giá cụm chú thích đó là PARTIALLY_CORRECT (Thiếu thông tin / Điều kiện), nêu ĐÍCH DANH ký hiệu và đơn vị còn thiếu trong explanation, ghi rõ cách bổ sung ngắn gọn trong shortFix và trọn bộ chú thích đầy đủ trong suggestedFix.',
+        '  + Ghi nhận thiếu sót tương ứng vào weaknesses để hiển thị rõ trong danh sách "Thiếu thông tin".',
+        '',
+        'LỚP 4 — TỰ KIỂM CHÉO NHẤT QUÁN TRƯỚC KHI TRẢ KẾT QUẢ:',
+        '- Phân loại trạng thái chuẩn:',
+        '  + CORRECT: hoàn toàn đúng bản chất, không thiếu ký hiệu hay điều kiện quan trọng.',
+        '  + INCORRECT: sai bản chất kiến thức, sai quan hệ, sai công thức/phép toán.',
+        '  + PARTIALLY_CORRECT: có phần đúng nhưng thiếu thông tin quan trọng (thiếu giải thích ký hiệu/đơn vị, thiếu điều kiện áp dụng, phát biểu chưa trọn vẹn).',
+        '  + UNVERIFIED: CHỈ dùng khi thông tin riêng lẻ/mơ hồ/không đủ ngữ cảnh để xác minh. KHÔNG dùng cho định nghĩa/công thức phổ thông.',
+        ocrConfirmed
+          ? '  + Lưu ý OCR: Văn bản đã được người dùng kiểm tra/xác nhận nên KHÔNG tự ý gắn OCR_UNCERTAIN trừ khi câu chữ bị mất ký tự không thể hiểu nghĩa.'
+          : '  + OCR_UNCERTAIN: độ tin cậy OCR < 0.65.',
+        '  + OUT_OF_SCOPE: nội dung lạc đề hoàn toàn khỏi môn học.',
+        '- KIỂM TRA CHÉO: Nếu explanation chỉ ra học sinh viết sai → evaluationStatus BẮT BUỘC là INCORRECT. Nếu explanation chỉ ra học sinh viết thiếu ký hiệu/đơn vị/điều kiện → evaluationStatus BẮT BUỘC là PARTIALLY_CORRECT. CẤM TUYỆT ĐỐI việc giải thích 1 đằng mà chấm trạng thái 1 nẻo.',
+        '- Gán trọng số importanceWeight cho claims theo quy tắc cố định: 3 (định nghĩa/định luật/công thức cốt lõi), 2 (hỗ trợ/chú thích ký hiệu/điều kiện), 1 (chi tiết/ví dụ mở rộng).',
+        coverageInstruction,
+        '- Tuyệt đối KHÔNG bịa URL hay số trang SGK nếu không có trong ngữ cảnh.',
+        '- Viết rõ ràng, trực diện, súc tích (mỗi shortFix tối đa 1 câu ngắn gọn; explanation/correctKnowledge/suggestedFix tối đa 2-3 câu đi thẳng vào bản chất khái niệm; weaknesses tối đa 10 ý; strengths tối đa 5 ý; suggestions tối đa 5 ý).',
+        '',
+        rubricSection,
+        '=== TÀI LIỆU CỦA HỌC SINH ===',
+        studentBodyText,
+        '',
+        '=== ĐOẠN TRÍCH SÁCH GIÁO KHOA THAM CHIẾU ===',
+        textbookSlice,
+      ]
+        .filter((line) => line !== undefined)
+        .join('\n');
 
-    // Full SHA-256 hash covering ENTIRE student text, ENTIRE prompt, fixed rubric, sorted chunks, and grading flags (never truncated to 12,000 chars!)
+    const analysisPrompt = buildGradingPrompt(studentSlice);
+
+    const gradeSchemaHint =
+      '{"claims":[{"blockId":"...","blockIds":["..."],"sourcePage":1,"sourceText":"...","errorSpan":"cụm từ/công thức sai trích nguyên văn từ sourceText","shortFix":"câu sửa ngắn gọn 1 dòng","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"...","matchedChunkId":"...","matchedExcerpt":"...","matchedPage":1}],"coverageItems":[{"criterionId":"KT01","concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1,"matchedChunkId":"..."}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}';
+
+    // Full SHA-256 hash covering ENTIRE student text, ENTIRE prompt, fixed rubric, sorted chunks, and grading flags
     const fullStudentTextHash = crypto
       .createHash('sha256')
       .update(formattedStudentBlocks, 'utf8')
@@ -1422,180 +1289,238 @@ export class KnowledgeAnalysisService {
           rubricHash: fixedRubric.rubricHash,
           enableWebGrounding: Boolean(enableWebGrounding),
           strictModelLock,
+          adaptiveMode: adaptivePlan.isLongText ? 'long_2api' : 'short_1api',
+          adaptiveThreshold: adaptivePlan.thresholdChars,
           seed: DETERMINISTIC_GRADING_SEED,
         }),
         'utf8'
       )
       .digest('hex');
 
-    const routedResult = await runTaskWithRouter<ProviderJsonResult<RawKnowledgeEvalResult>>({
-      taskType: 'knowledge_analysis',
-      config,
-      idToken,
-      strictModelLock,
-      allowGroqRescue: !strictModelLock,
-      extractExecutionMeta: (res) => ({
-        actualModel: res.resolvedModel,
-        systemFingerprint: res.systemFingerprint,
-      }),
-      cacheInput: {
-        promptVersion: GRADING_PROMPT_VERSION,
-        inputHash,
-        fullStudentTextHash,
-        fullPromptHash,
-        rubricHash: fixedRubric.rubricHash,
-        chunkIds: sortedChunkIds,
-        textbookRef: textbookReferenceId,
-        grade,
-        subject,
-        scope,
-        enableWebGrounding: Boolean(enableWebGrounding),
-        ocrConfirmed,
-      },
-      runWithModel: async (modelId) =>
-        generateJsonWithProviderDetailed<RawKnowledgeEvalResult>({
-          modelId,
-          prompt: analysisPrompt,
-          thinkingTier: pages.length <= 2 && formattedStudentBlocks.length <= 3500 ? 'low' : 'medium',
-          maxOutputTokens: pages.length <= 2 && fixedRubric.criteria.length <= 10 ? 4096 : 7168,
-          timeoutMs: 32_000,
-          temperature: 0,
-          seed: DETERMINISTIC_GRADING_SEED,
-          strictModelLock,
-          strictJsonParser: parseAndValidateKnowledgeEvalJson,
-          tokensOut,
-          fallbackJson: '{"claims":[],"coverageItems":[],"strengths":[],"weaknesses":[],"suggestions":[]}',
-          groqSchemaHint:
-            '{"claims":[{"blockId":"...","blockIds":["..."],"sourcePage":1,"sourceText":"...","errorSpan":"cụm từ/công thức sai trích nguyên văn từ sourceText","shortFix":"câu sửa ngắn gọn 1 dòng","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"...","matchedChunkId":"...","matchedExcerpt":"...","matchedPage":1}],"coverageItems":[{"criterionId":"KT01","concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1,"matchedChunkId":"..."}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}',
-          geminiSchema: {
-            type: Type.OBJECT,
-            properties: {
-              claims: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    blockId: { type: Type.STRING },
-                    blockIds: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    sourcePage: { type: Type.INTEGER },
-                    sourceText: { type: Type.STRING },
-                    errorSpan: { type: Type.STRING },
-                    shortFix: { type: Type.STRING },
-                    chapter: { type: Type.STRING },
-                    concept: { type: Type.STRING },
-                    importanceWeight: { type: Type.INTEGER, description: '1 | 2 | 3' },
-                    knowledgeType: {
-                      type: Type.STRING,
-                      description: 'textbook_core | advanced_extension | insufficient_evidence',
-                    },
-                    evaluationStatus: {
-                      type: Type.STRING,
-                      description:
-                        'CORRECT | PARTIALLY_CORRECT | INCORRECT | MISSING | UNVERIFIED | AMBIGUOUS | OCR_UNCERTAIN | OUT_OF_SCOPE',
-                    },
-                    explanation: { type: Type.STRING },
-                    correctKnowledge: { type: Type.STRING },
-                    suggestedFix: { type: Type.STRING },
-                    matchedChunkId: { type: Type.STRING },
-                    matchedExcerpt: { type: Type.STRING },
-                    matchedPage: { type: Type.INTEGER },
-                  },
-                  required: [
-                    'sourcePage',
-                    'sourceText',
-                    'chapter',
-                    'concept',
-                    'importanceWeight',
-                    'evaluationStatus',
-                    'explanation',
-                    'correctKnowledge',
-                  ],
-                },
-              },
-              coverageItems: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    criterionId: { type: Type.STRING },
-                    concept: { type: Type.STRING },
-                    chapter: { type: Type.STRING },
-                    importanceWeight: { type: Type.INTEGER },
-                    status: {
-                      type: Type.STRING,
-                      description: 'COVERED | PARTIALLY_COVERED | MISSING | OUT_OF_SCOPE',
-                    },
-                    suggestedAddition: { type: Type.STRING },
-                    referenceExcerpt: { type: Type.STRING },
-                    referencePage: { type: Type.INTEGER },
-                    matchedChunkId: { type: Type.STRING },
-                  },
-                  required: [
-                    'concept',
-                    'chapter',
-                    'importanceWeight',
-                    'status',
-                    'suggestedAddition',
-                    'referenceExcerpt',
-                  ],
-                },
-              },
-              strengths: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: { type: Type.STRING },
-                    detail: { type: Type.STRING },
-                    sourceExcerpt: { type: Type.STRING },
-                    pageNumber: { type: Type.INTEGER },
-                  },
-                  required: ['title', 'detail', 'sourceExcerpt', 'pageNumber'],
-                },
-              },
-              weaknesses: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: { type: Type.STRING },
-                    detail: { type: Type.STRING },
-                    pageNumber: { type: Type.INTEGER },
-                  },
-                  required: ['title', 'detail'],
-                },
-              },
-              suggestions: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    priority: { type: Type.INTEGER },
-                    title: { type: Type.STRING },
-                    description: { type: Type.STRING },
-                  },
-                  required: ['priority', 'title', 'description'],
-                },
-              },
-            },
-            required: ['claims', 'coverageItems', 'strengths', 'weaknesses', 'suggestions'],
-          },
+    const runGradeSlot = async (slotParams: {
+      promptText: string;
+      preferredPrimaryModelId: string;
+      preferredFallbackModelId: string;
+      slot: AdaptiveSlotNumber;
+      partKey: string;
+      maxOutputTokens: number;
+      thinkingTier: 'low' | 'medium';
+    }) =>
+      runTaskWithRouter<ProviderJsonResult<RawKnowledgeEvalResult>>({
+        taskType: 'knowledge_analysis',
+        config: effectiveConfig,
+        idToken,
+        strictModelLock,
+        allowGroqRescue: !strictModelLock,
+        preferredPrimaryModelId: slotParams.preferredPrimaryModelId,
+        preferredFallbackModelId: slotParams.preferredFallbackModelId,
+        extractExecutionMeta: (res) => ({
+          actualModel: res.resolvedModel,
+          systemFingerprint: res.systemFingerprint,
         }),
-    });
+        cacheInput: {
+          promptVersion: GRADING_PROMPT_VERSION,
+          partKey: slotParams.partKey,
+          inputHash,
+          fullStudentTextHash,
+          fullPromptHash,
+          rubricHash: fixedRubric.rubricHash,
+          chunkIds: sortedChunkIds,
+          textbookRef: textbookReferenceId,
+          grade,
+          subject,
+          scope,
+          ocrConfirmed,
+        },
+        runWithModel: async (modelId) =>
+          generateJsonWithProviderDetailed<RawKnowledgeEvalResult>({
+            modelId,
+            prompt: slotParams.promptText,
+            thinkingTier: slotParams.thinkingTier,
+            maxOutputTokens: slotParams.maxOutputTokens,
+            timeoutMs: 36_000,
+            temperature: 0,
+            seed: DETERMINISTIC_GRADING_SEED,
+            strictModelLock,
+            strictJsonParser: parseAndValidateKnowledgeEvalJson,
+            stage: 'CHAM',
+            slot: slotParams.slot,
+            tokensOut,
+            fallbackJson: '{"claims":[],"coverageItems":[],"strengths":[],"weaknesses":[],"suggestions":[]}',
+            groqSchemaHint: gradeSchemaHint,
+          }),
+      });
 
-    const rawEval = routedResult.data.data;
-    const modelUsed = routedResult.actualModel;
+    // Stage 2 — Adaptive Grading (1 API for short text, 2 parallel APIs for long text)
+    let rawEval: RawKnowledgeEvalResult;
+    let primaryRoutedResult: RoutedAiTaskResult<ProviderJsonResult<RawKnowledgeEvalResult>>;
+    let gradeModelsUsed: string[] = [];
+    let gradeProvidersUsed: AiProviderId[] = [];
+    let part1ClaimCount = 0;
 
-    const blockMap = new Map<string, ExtractedTextBlock>();
-    for (const p of pages) {
-      for (const b of p.blocks) {
-        blockMap.set(b.blockId, b);
+    if (adaptivePlan.isLongText) {
+      const studentGradingBlocks = pages.flatMap((page) => {
+        if (page.blocks && page.blocks.length > 0) {
+          return page.blocks
+            .map((b) => ({
+              pageNumber: page.pageNumber,
+              blockId: b.blockId,
+              text: String(b.extractedText || '').trim(),
+            }))
+            .filter((b) => b.text.length > 0);
+        }
+        const preferredText = (page.rawText || '').trim();
+        if (!preferredText) return [];
+        const semanticBlocks = groupRawTextIntoSemanticBlocks(preferredText, page.pageNumber, 0.92);
+        return semanticBlocks
+          .map((b) => ({
+            pageNumber: page.pageNumber,
+            blockId: b.blockId,
+            text: String(b.extractedText || '').trim(),
+          }))
+          .filter((b) => b.text.length > 0);
+      });
+      const [half1Blocks, half2Blocks] = splitStudentBlocksIntoTwoHalves(studentGradingBlocks);
+      if (half1Blocks.length > 0 && half2Blocks.length > 0) {
+        const part1Text = formatStudentBlocksForPrompt(half1Blocks).slice(
+          0,
+          Math.floor(MAX_STUDENT_GRADING_CHARS / 2)
+        );
+        const part2Text = formatStudentBlocksForPrompt(half2Blocks).slice(
+          0,
+          Math.floor(MAX_STUDENT_GRADING_CHARS / 2)
+        );
+        const part1Prompt = buildGradingPrompt(
+          part1Text,
+          'Phần 1/2 (nửa đầu tài liệu). Chỉ tách claims xuất hiện trong Phần 1/2.'
+        );
+        const part2Prompt = buildGradingPrompt(
+          part2Text,
+          'Phần 2/2 (nửa sau tài liệu). Chỉ tách claims xuất hiện trong Phần 2/2.'
+        );
+
+        const [res1, res2] = await Promise.all([
+          runGradeSlot({
+            promptText: part1Prompt,
+            preferredPrimaryModelId: MISTRAL_GRADE_MODEL,
+            preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
+            slot: 1,
+            partKey: 'long_part_1',
+            maxOutputTokens: 7168,
+            thinkingTier: 'medium',
+          }),
+          runGradeSlot({
+            promptText: part2Prompt,
+            preferredPrimaryModelId: CF_GRADE_MODEL,
+            preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
+            slot: 2,
+            partKey: 'long_part_2',
+            maxOutputTokens: 7168,
+            thinkingTier: 'medium',
+          }),
+        ]);
+
+        primaryRoutedResult = res1;
+        part1ClaimCount = (res1.data.data.claims || []).length;
+        const normalizeCov = (
+          items?: RawKnowledgeEvalResult['coverageItems']
+        ): Array<{
+          criterionId?: string;
+          concept: string;
+          chapter: string;
+          importanceWeight?: 1 | 2 | 3;
+          status: CoverageStatus;
+          suggestedAddition?: string;
+          referenceExcerpt?: string;
+          referencePage?: number;
+          matchedChunkId?: string;
+        }> =>
+          (items || []).map((it) => ({
+            ...it,
+            chapter: it.chapter || '',
+            importanceWeight:
+              it.importanceWeight === 1 || it.importanceWeight === 2 || it.importanceWeight === 3
+                ? it.importanceWeight
+                : undefined,
+            status: (['COVERED', 'PARTIALLY_COVERED', 'MISSING', 'OUT_OF_SCOPE'].includes(
+              String(it.status || '').toUpperCase()
+            )
+              ? String(it.status).toUpperCase()
+              : 'MISSING') as CoverageStatus,
+          }));
+        const mergedHalves = mergeGradedHalves(
+          {
+            claims: res1.data.data.claims || [],
+            coverageItems: normalizeCov(res1.data.data.coverageItems),
+            strengths: [],
+            weaknesses: [],
+            suggestions: [],
+          },
+          {
+            claims: res2.data.data.claims || [],
+            coverageItems: normalizeCov(res2.data.data.coverageItems),
+            strengths: [],
+            weaknesses: [],
+            suggestions: [],
+          }
+        );
+        const dedupByTitle = <T extends { title?: string }>(a: T[] = [], b: T[] = []): T[] => {
+          const seen = new Set<string>();
+          const out: T[] = [];
+          for (const item of [...a, ...b]) {
+            const key = String(item?.title || '').trim().toLowerCase();
+            if (key && seen.has(key)) continue;
+            if (key) seen.add(key);
+            out.push(item);
+          }
+          return out;
+        };
+        rawEval = {
+          claims: mergedHalves.claims,
+          coverageItems: mergedHalves.coverageItems.map((it) => ({
+            ...it,
+            chapter: it.chapter || '',
+          })),
+          strengths: dedupByTitle(res1.data.data.strengths, res2.data.data.strengths).slice(0, 8),
+          weaknesses: dedupByTitle(res1.data.data.weaknesses, res2.data.data.weaknesses).slice(0, 12),
+          suggestions: dedupByTitle(res1.data.data.suggestions, res2.data.data.suggestions).slice(0, 8),
+        };
+        gradeModelsUsed = [res1.actualModel, res2.actualModel];
+        gradeProvidersUsed = [
+          detectProviderIdFromModel(res1.actualModel),
+          detectProviderIdFromModel(res2.actualModel),
+        ];
+      } else {
+        const singleRes = await runGradeSlot({
+          promptText: analysisPrompt,
+          preferredPrimaryModelId: MISTRAL_GRADE_MODEL,
+          preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
+          slot: 1,
+          partKey: 'long_fallback_single',
+          maxOutputTokens: 7168,
+          thinkingTier: 'medium',
+        });
+        primaryRoutedResult = singleRes;
+        rawEval = singleRes.data.data;
+        part1ClaimCount = (rawEval.claims || []).length;
+        gradeModelsUsed = [singleRes.actualModel];
+        gradeProvidersUsed = [detectProviderIdFromModel(singleRes.actualModel)];
       }
-    }
-
-    const chunkMap = new Map<string, ReferenceChunk>();
-    for (const c of referenceChunks) {
-      chunkMap.set(c.chunkId, c);
+    } else {
+      const singleRes = await runGradeSlot({
+        promptText: analysisPrompt,
+        preferredPrimaryModelId: MISTRAL_GRADE_MODEL,
+        preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
+        slot: 1,
+        partKey: 'short_single',
+        maxOutputTokens: pages.length <= 2 && fixedRubric.criteria.length <= 10 ? 4096 : 7168,
+        thinkingTier: pages.length <= 2 && formattedStudentBlocks.length <= 3500 ? 'low' : 'medium',
+      });
+      primaryRoutedResult = singleRes;
+      rawEval = singleRes.data.data;
+      part1ClaimCount = (rawEval.claims || []).length;
+      gradeModelsUsed = [singleRes.actualModel];
+      gradeProvidersUsed = [detectProviderIdFromModel(singleRes.actualModel)];
     }
 
     const validStatuses = new Set<ClaimStatus>([
@@ -1614,6 +1539,228 @@ export class KnowledgeAnalysisService {
     const filteredRawClaims = (rawEval.claims || []).filter(
       (c) => !isNonGradableLeadInClaim(c.sourceText || '')
     );
+
+    // Stage 3 — Cross-Provider Verification (1 API for short text, 2 parallel APIs for long text)
+    type VerifyAdjustment = {
+      claimIndex: number;
+      evaluationStatus?: string;
+      errorSpan?: string;
+      shortFix?: string;
+      explanation?: string;
+      correctKnowledge?: string;
+      suggestedFix?: string;
+    };
+    type VerifyBatchOutput = { adjustments?: VerifyAdjustment[] };
+
+    const configuredProviders = {
+      mistral: isMistralConfigured(),
+      cloudflare: isCloudflareConfigured(),
+      groq: isGroqConfigured(),
+    };
+    const verifySchemaHint =
+      '{"adjustments":[{"claimIndex":0,"evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|UNVERIFIED|OUT_OF_SCOPE","errorSpan":"...","shortFix":"...","explanation":"...","correctKnowledge":"...","suggestedFix":"..."}]}';
+
+    const verifyModelsUsed: string[] = [];
+    let verifyExecutedApiCount = 0;
+    let verifyAdjustmentsCount = 0;
+
+    const runVerifySlice = async (verifyParams: {
+      indexedClaims: Array<{ index: number; claim: NonNullable<RawKnowledgeEvalResult['claims']>[number] }>;
+      gradedByProvider: AiProviderId;
+      slot: AdaptiveSlotNumber;
+      slot1VerifyModel?: string;
+    }): Promise<{ adjustments: VerifyAdjustment[]; modelUsed?: string; executed: boolean }> => {
+      if (verifyParams.indexedClaims.length === 0) {
+        return { adjustments: [], executed: false };
+      }
+      const verifierChoice = selectCrossProviderVerifierModel({
+        gradedByProvider: verifyParams.gradedByProvider,
+        slot: verifyParams.slot,
+        configuredProviders,
+        slot1VerifyModel: verifyParams.slot1VerifyModel,
+      });
+
+      const compactClaimsPayload = verifyParams.indexedClaims.map(({ index, claim }) => ({
+        claimIndex: index,
+        sourcePage: claim.sourcePage,
+        sourceText: (claim.sourceText || '').slice(0, 360),
+        concept: claim.concept,
+        evaluationStatus: claim.evaluationStatus,
+        errorSpan: claim.errorSpan || '',
+        shortFix: claim.shortFix || '',
+        explanation: (claim.explanation || '').slice(0, 320),
+        correctKnowledge: (claim.correctKnowledge || '').slice(0, 320),
+      }));
+
+      const verifyPrompt = [
+        `Bạn là Hội đồng dò chéo độc lập (Cross-Provider Verifier) của StudyCheck AI cho môn ${subjectName} lớp ${grade}.`,
+        'NHIỆM VỤ: Kiểm tra lại danh sách mệnh đề đã chấm bên dưới để phát hiện:',
+        '1. Mâu thuẫn giữa explanation và evaluationStatus (ví dụ explanation nói sai nhưng lại gắn CORRECT, hoặc nói thiếu ký hiệu/đơn vị nhưng gắn CORRECT).',
+        '2. Lỗi báo sai oan (false positive) hoặc bỏ sót lỗi công thức/định nghĩa/đơn vị (false negative).',
+        '3. Đảm bảo mọi claim INCORRECT hoặc PARTIALLY_CORRECT đều có errorSpan trích đúng từ sourceText và shortFix súc tích.',
+        'CHỈ trả về các mục thực sự cần điều chỉnh trong mảng "adjustments" (nếu tất cả đã chính xác và nhất quán, trả về {"adjustments":[]}).',
+        '',
+        '=== DANH SÁCH CLAIMS CẦN DÒ CHÉO ===',
+        JSON.stringify(compactClaimsPayload),
+        textbookSlice ? `\n=== TÓM TẮT NGỮ LIỆU SGK ===\n${textbookSlice.slice(0, 5000)}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      try {
+        const res = await runTaskWithRouter<ProviderJsonResult<VerifyBatchOutput>>({
+          taskType: 'claim_validation',
+          config: effectiveConfig,
+          idToken,
+          strictModelLock: false,
+          allowGroqRescue: true,
+          preferredPrimaryModelId: verifierChoice.primaryModel,
+          preferredFallbackModelId: verifierChoice.fallbackModel,
+          extractExecutionMeta: (out) => ({
+            actualModel: out.resolvedModel,
+            systemFingerprint: out.systemFingerprint,
+          }),
+          cacheInput: {
+            verifyRev: 'v4.2_cross_provider',
+            slot: verifyParams.slot,
+            inputHash,
+            gradedByProvider: verifyParams.gradedByProvider,
+            claimDigest: crypto
+              .createHash('sha256')
+              .update(JSON.stringify(compactClaimsPayload), 'utf8')
+              .digest('hex')
+              .slice(0, 24),
+          },
+          runWithModel: async (modelId) =>
+            generateJsonWithProviderDetailed<VerifyBatchOutput>({
+              modelId,
+              prompt: verifyPrompt,
+              thinkingTier: 'medium',
+              maxOutputTokens: 3072,
+              timeoutMs: 28_000,
+              temperature: 0,
+              seed: DETERMINISTIC_GRADING_SEED,
+              strictModelLock: false,
+              stage: 'DO',
+              slot: verifyParams.slot,
+              tokensOut,
+              fallbackJson: '{"adjustments":[]}',
+              groqSchemaHint: verifySchemaHint,
+            }),
+        });
+        return {
+          adjustments: Array.isArray(res.data.data?.adjustments) ? res.data.data.adjustments : [],
+          modelUsed: res.actualModel,
+          executed: true,
+        };
+      } catch (verifyErr) {
+        console.warn(`Cross-provider verification non-fatal fallback (slot ${verifyParams.slot}):`, verifyErr);
+        return { adjustments: [], executed: false };
+      }
+    };
+
+    const indexedAllClaims = filteredRawClaims.map((claim, index) => ({ index, claim }));
+    const collectedAdjustments: VerifyAdjustment[] = [];
+
+    if (adaptivePlan.isLongText && indexedAllClaims.length >= 2) {
+      const [verifyHalf1, verifyHalf2] = splitClaimsIntoTwoHalves(indexedAllClaims);
+      const slot1Provider = gradeProvidersUsed[0] || 'mistral';
+      const slot2Provider = gradeProvidersUsed[1] || gradeProvidersUsed[0] || 'cloudflare';
+      const slot1PlannedChoice = selectCrossProviderVerifierModel({
+        gradedByProvider: slot1Provider,
+        slot: 1,
+        configuredProviders,
+      });
+
+      const [v1, v2] = await Promise.all([
+        runVerifySlice({
+          indexedClaims: verifyHalf1,
+          gradedByProvider: slot1Provider,
+          slot: 1,
+        }),
+        runVerifySlice({
+          indexedClaims: verifyHalf2,
+          gradedByProvider: slot2Provider,
+          slot: 2,
+          slot1VerifyModel: slot1PlannedChoice.primaryModel,
+        }),
+      ]);
+
+      for (const vr of [v1, v2]) {
+        if (vr.executed) {
+          verifyExecutedApiCount += 1;
+          if (vr.modelUsed) verifyModelsUsed.push(vr.modelUsed);
+          collectedAdjustments.push(...vr.adjustments);
+        }
+      }
+    } else if (indexedAllClaims.length > 0) {
+      const slot1Provider = gradeProvidersUsed[0] || 'mistral';
+      const v1 = await runVerifySlice({
+        indexedClaims: indexedAllClaims,
+        gradedByProvider: slot1Provider,
+        slot: 1,
+      });
+      if (v1.executed) {
+        verifyExecutedApiCount += 1;
+        if (v1.modelUsed) verifyModelsUsed.push(v1.modelUsed);
+        collectedAdjustments.push(...v1.adjustments);
+      }
+    }
+
+    for (const adj of collectedAdjustments) {
+      const idx = Number(adj?.claimIndex);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= filteredRawClaims.length) continue;
+      const target = filteredRawClaims[idx];
+      let mutated = false;
+      if (
+        typeof adj.evaluationStatus === 'string' &&
+        validStatuses.has(adj.evaluationStatus as ClaimStatus) &&
+        adj.evaluationStatus !== target.evaluationStatus
+      ) {
+        target.evaluationStatus = adj.evaluationStatus;
+        mutated = true;
+      }
+      if (typeof adj.errorSpan === 'string' && adj.errorSpan.trim().length >= 2) {
+        target.errorSpan = adj.errorSpan.trim();
+        mutated = true;
+      }
+      if (typeof adj.shortFix === 'string' && adj.shortFix.trim().length > 0) {
+        target.shortFix = adj.shortFix.trim();
+        mutated = true;
+      }
+      if (typeof adj.explanation === 'string' && adj.explanation.trim().length >= 8) {
+        target.explanation = adj.explanation.trim();
+        mutated = true;
+      }
+      if (typeof adj.correctKnowledge === 'string' && adj.correctKnowledge.trim().length >= 4) {
+        target.correctKnowledge = adj.correctKnowledge.trim();
+        mutated = true;
+      }
+      if (typeof adj.suggestedFix === 'string' && adj.suggestedFix.trim().length >= 4) {
+        target.suggestedFix = adj.suggestedFix.trim();
+        mutated = true;
+      }
+      if (mutated) {
+        verifyAdjustmentsCount += 1;
+      }
+    }
+
+    const modelUsed =
+      gradeModelsUsed.length > 1
+        ? Array.from(new Set(gradeModelsUsed)).join(' + ')
+        : primaryRoutedResult.actualModel;
+
+    const blockMap = new Map<string, ExtractedTextBlock>();
+    for (const p of pages) {
+      for (const b of p.blocks) {
+        blockMap.set(b.blockId, b);
+      }
+    }
+
+    const chunkMap = new Map<string, ReferenceChunk>();
+    for (const c of referenceChunks) {
+      chunkMap.set(c.chunkId, c);
+    }
 
     const claims: ExtractedClaim[] = filteredRawClaims.map((c, idx) => {
       const normalizedBlockIds = Array.isArray(c.blockIds)
@@ -1659,10 +1806,6 @@ export class KnowledgeAnalysisService {
           ...(typeof c.matchedPage === 'number' && c.matchedPage > 0 ? { pageNumber: c.matchedPage } : {}),
           excerpt: c.matchedExcerpt,
         });
-      }
-
-      if (usedWebGrounding && c.knowledgeType === 'advanced_extension' && webSources.length > 0) {
-        evidences.push(webSources[0]);
       }
 
       const resolvedSuggestedFix =
@@ -1770,18 +1913,25 @@ export class KnowledgeAnalysisService {
       extraObservationsCount: extraCoverageCount,
     });
 
+    const adaptiveApiPlanAudit = createAdaptiveAuditMetadata(adaptivePlan, {
+      gradeModels: gradeModelsUsed,
+      verifyModels: verifyModelsUsed,
+      verifyExecutedApiCount,
+      verifyAdjustmentsCount,
+    });
+
     const gradingAudit: GradingAuditMetadata = {
-      requestedModel: routedResult.requestedModel,
-      actualModel: routedResult.actualModel,
-      usedFallback: routedResult.usedFallback,
-      usedOverride: routedResult.usedOverride,
-      cached: routedResult.cached,
+      requestedModel: primaryRoutedResult.requestedModel,
+      actualModel: modelUsed,
+      usedFallback: primaryRoutedResult.usedFallback,
+      usedOverride: primaryRoutedResult.usedOverride,
+      cached: primaryRoutedResult.cached,
       strictModelLock,
-      ...(routedResult.systemFingerprint
-        ? { systemFingerprint: routedResult.systemFingerprint }
+      ...(primaryRoutedResult.systemFingerprint
+        ? { systemFingerprint: primaryRoutedResult.systemFingerprint }
         : {}),
       promptVersion: GRADING_PROMPT_VERSION,
-      configVersion: routedResult.configVersion,
+      configVersion: primaryRoutedResult.configVersion,
       inputHash: inputHash.slice(0, 24),
       ocrTextHash,
       ocrConfirmed,
@@ -1795,7 +1945,9 @@ export class KnowledgeAnalysisService {
       textbookCharCount: textbookContext.length,
       webGroundingEnabled: Boolean(enableWebGrounding),
       deterministicSeed: DETERMINISTIC_GRADING_SEED,
+      adaptiveApiPlan: adaptiveApiPlanAudit,
     };
+    void part1ClaimCount;
 
     const accuracyBreakdown = {
       ...baseAccuracyBreakdown,
@@ -2011,62 +2163,6 @@ export class QuizGenerationService {
       questionOrigin?: string;
     };
 
-    const quizGeminiSchema = {
-      type: Type.OBJECT,
-      properties: {
-        questions: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              questionText: { type: Type.STRING },
-              optionA: { type: Type.STRING },
-              optionB: { type: Type.STRING },
-              optionC: { type: Type.STRING },
-              optionD: { type: Type.STRING },
-              correctAnswer: { type: Type.STRING, description: 'A | B | C | D' },
-              explanation: { type: Type.STRING },
-              distractorA: { type: Type.STRING },
-              distractorB: { type: Type.STRING },
-              distractorC: { type: Type.STRING },
-              distractorD: { type: Type.STRING },
-              cognitiveLevel: {
-                type: Type.STRING,
-                description: 'nhan_biet | thong_hieu | van_dung | van_dung_cao',
-              },
-              knowledgeUnitType: {
-                type: Type.STRING,
-                description: 'concept | mechanism | condition | characteristic | formula | problem_type',
-              },
-              chapter: { type: Type.STRING },
-              concept: { type: Type.STRING },
-              sourceReference: { type: Type.STRING },
-              isExternalAdvanced: { type: Type.BOOLEAN },
-              questionOrigin: {
-                type: Type.STRING,
-                description: 'upload | mistake_variation | textbook_supplement | external_advanced',
-              },
-            },
-            required: [
-              'questionText',
-              'optionA',
-              'optionB',
-              'optionC',
-              'optionD',
-              'correctAnswer',
-              'explanation',
-              'cognitiveLevel',
-              'chapter',
-              'concept',
-              'sourceReference',
-              'questionOrigin',
-            ],
-          },
-        },
-      },
-      required: ['questions'],
-    };
-
     const quizGroqSchemaHint =
       '{"questions":[{"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","explanation":"...","distractorA":"...","distractorB":"...","distractorC":"...","distractorD":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","chapter":"...","concept":"...","sourceReference":"...","isExternalAdvanced":false,"questionOrigin":"upload|mistake_variation|textbook_supplement|external_advanced"}]}';
 
@@ -2165,7 +2261,7 @@ export class QuizGenerationService {
           .filter(Boolean)
           .join('\n');
 
-        // Generous output token budget so reasoning models (GPT-OSS 120B, Qwen 3.8, Gemini Thinking) never truncate mid-array
+        // Generous output token budget so reasoning models (Mistral Small, GPT-OSS 120B, Qwen 3.8) never truncate mid-array
         const quizMaxTokens = Math.min(8192, Math.max(3072, batchTotal * 520));
 
         const { data: parsed, modelId: batchModelUsed } = await runTaskWithRouter<{
@@ -2208,7 +2304,6 @@ export class QuizGenerationService {
                 return { questions: salvaged };
               },
               groqSchemaHint: quizGroqSchemaHint,
-              geminiSchema: quizGeminiSchema,
             }),
         });
 
@@ -2438,43 +2533,6 @@ export class ExamPipelineService {
           fallbackJson: '{"title":"","rows":[]}',
           groqSchemaHint:
             '{"title":"...","rows":[{"chapter":"...","topic":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","questionType":"abcd|true_false|short_answer","questionCount":2,"scorePerQuestion":0.25,"learningOutcome":"..."}]}',
-          geminiSchema: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              rows: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    chapter: { type: Type.STRING },
-                    topic: { type: Type.STRING },
-                    cognitiveLevel: {
-                      type: Type.STRING,
-                      description: 'nhan_biet | thong_hieu | van_dung | van_dung_cao',
-                    },
-                    questionType: {
-                      type: Type.STRING,
-                      description: 'abcd | true_false | short_answer',
-                    },
-                    questionCount: { type: Type.INTEGER },
-                    scorePerQuestion: { type: Type.NUMBER },
-                    learningOutcome: { type: Type.STRING },
-                  },
-                  required: [
-                    'chapter',
-                    'topic',
-                    'cognitiveLevel',
-                    'questionType',
-                    'questionCount',
-                    'scorePerQuestion',
-                    'learningOutcome',
-                  ],
-                },
-              },
-            },
-            required: ['title', 'rows'],
-          },
         }),
     });
 
@@ -2630,59 +2688,6 @@ export class ExamPipelineService {
           fallbackJson: '{"questions":[]}',
           groqSchemaHint:
             '{"questions":[{"chapterId":"...","conceptId":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao","questionType":"abcd|true_false|short_answer","scoreWeight":0.25,"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","trueFalseStatements":[{"label":"a","text":"...","isTrue":true}],"shortAnswerAccepted":["..."],"explanation":"...","sourceReference":"..."}]}',
-          geminiSchema: {
-            type: Type.OBJECT,
-            properties: {
-              questions: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    chapterId: { type: Type.STRING },
-                    conceptId: { type: Type.STRING },
-                    cognitiveLevel: { type: Type.STRING },
-                    questionType: { type: Type.STRING },
-                    scoreWeight: { type: Type.NUMBER },
-                    questionText: { type: Type.STRING },
-                    optionA: { type: Type.STRING },
-                    optionB: { type: Type.STRING },
-                    optionC: { type: Type.STRING },
-                    optionD: { type: Type.STRING },
-                    correctAnswer: { type: Type.STRING },
-                    trueFalseStatements: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          label: { type: Type.STRING },
-                          text: { type: Type.STRING },
-                          isTrue: { type: Type.BOOLEAN },
-                        },
-                        required: ['label', 'text', 'isTrue'],
-                      },
-                    },
-                    shortAnswerAccepted: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
-                    },
-                    explanation: { type: Type.STRING },
-                    sourceReference: { type: Type.STRING },
-                  },
-                  required: [
-                    'chapterId',
-                    'conceptId',
-                    'cognitiveLevel',
-                    'questionType',
-                    'scoreWeight',
-                    'questionText',
-                    'explanation',
-                    'sourceReference',
-                  ],
-                },
-              },
-            },
-            required: ['questions'],
-          },
         }),
     });
 
@@ -2788,21 +2793,6 @@ export class ExamPipelineService {
           fallbackJson: '{}',
           groqSchemaHint:
             '{"questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","shortAnswerAccepted":["..."],"explanation":"...","sourceReference":"..."}',
-          geminiSchema: {
-            type: Type.OBJECT,
-            properties: {
-              questionText: { type: Type.STRING },
-              optionA: { type: Type.STRING },
-              optionB: { type: Type.STRING },
-              optionC: { type: Type.STRING },
-              optionD: { type: Type.STRING },
-              correctAnswer: { type: Type.STRING },
-              shortAnswerAccepted: { type: Type.ARRAY, items: { type: Type.STRING } },
-              explanation: { type: Type.STRING },
-              sourceReference: { type: Type.STRING },
-            },
-            required: ['questionText', 'explanation'],
-          },
         }),
     });
 
@@ -2978,22 +2968,30 @@ export class ExamPipelineService {
       config,
       idToken,
       bypassCache: true,
-      allowGroqRescue: inlineParts.every((p) => p.inlineData.mimeType !== 'application/pdf'),
+      allowGroqRescue: true,
       runWithModel: async (modelId) => {
         const hasPdfBinary = inlineParts.some((p) => p.inlineData.mimeType === 'application/pdf');
+        if (hasPdfBinary) {
+          throw new Error(
+            'Tệp đề mẫu PDF này là bản scan ảnh (không chứa lớp văn bản nhúng). Vui lòng chụp hoặc xuất từng trang sang ảnh JPG/PNG/WEBP (hoặc tải tệp PDF/DOCX có văn bản chọn được) để hệ thống trích xuất câu hỏi chính xác.'
+          );
+        }
+
         const imageParts = inlineParts
           .filter((p) => p.inlineData.mimeType.startsWith('image/'))
           .map((p) => ({ mimeType: p.inlineData.mimeType, base64: p.inlineData.data }));
 
-        if (isGroqModelId(modelId) && !hasPdfBinary) {
+        const sampleSchemaHint =
+          '{"detectedTitle":"...","questions":[{"questionType":"abcd|short_answer|true_false","questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","shortAnswerAccepted":["..."],"scoreWeight":0.25,"answerFromSource":true,"explanation":"...","chapter":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao"}]}';
+
+        if (isGroqModelId(modelId)) {
           const resp = await callWithTimeout((signal) =>
             callGroqChatCompletion({
-              modelId,
+              modelId: imageParts.length > 0 ? GROQ_SCAN_VISION_MODEL : modelId,
               prompt: promptText,
               images: imageParts.length > 0 ? imageParts : undefined,
               jsonMode: true,
-              jsonSchemaHint:
-                '{"detectedTitle":"...","questions":[{"questionType":"abcd|short_answer|true_false","questionText":"...","optionA":"...","optionB":"...","optionC":"...","optionD":"...","correctAnswer":"A|B|C|D","shortAnswerAccepted":["..."],"scoreWeight":0.25,"answerFromSource":true,"explanation":"...","chapter":"...","cognitiveLevel":"nhan_biet|thong_hieu|van_dung|van_dung_cao"}]}',
+              jsonSchemaHint: sampleSchemaHint,
               maxOutputTokens: 6144,
               signal,
             })
@@ -3005,85 +3003,37 @@ export class ExamPipelineService {
           }>(resp.text || '', '{"questions":[]}');
         }
 
-        const ai = await createServerAiClient();
-        const safeModel =
-          isGroqModelId(modelId) || isCloudflareModelId(modelId)
-            ? 'gemini-2.5-flash'
-            : modelId;
-        const contents =
-          inlineParts.length > 0
-            ? [{ role: 'user', parts: [...inlineParts, { text: promptText }] }]
-            : promptText;
-        const resp = await callWithTimeout((signal) =>
-          generateGeminiContentWithFallback({
-            ai,
-            model: safeModel,
-            contents,
-            thinkingTier: 'minimal',
-            config: {
+        if (isCloudflareModelId(modelId)) {
+          const resp = await callWithTimeout((signal) =>
+            callCloudflareChatCompletion({
+              modelId: imageParts.length > 0 ? ADAPTIVE_CF_VISION_MODEL : modelId,
+              prompt: promptText,
+              images: imageParts.length > 0 ? imageParts : undefined,
+              jsonMode: true,
+              jsonSchemaHint: sampleSchemaHint,
               maxOutputTokens: 6144,
-              abortSignal: signal,
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  detectedTitle: { type: Type.STRING },
-                  questions: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        questionType: {
-                          type: Type.STRING,
-                          description: includeTrueFalse
-                            ? 'abcd | short_answer | true_false'
-                            : 'abcd | short_answer',
-                        },
-                        questionText: { type: Type.STRING },
-                        optionA: { type: Type.STRING },
-                        optionB: { type: Type.STRING },
-                        optionC: { type: Type.STRING },
-                        optionD: { type: Type.STRING },
-                        correctAnswer: { type: Type.STRING, description: 'A | B | C | D' },
-                        ...(includeTrueFalse
-                          ? {
-                              trueFalseStatements: {
-                                type: Type.ARRAY,
-                                items: {
-                                  type: Type.OBJECT,
-                                  properties: {
-                                    label: { type: Type.STRING },
-                                    text: { type: Type.STRING },
-                                    isTrue: { type: Type.BOOLEAN },
-                                  },
-                                  required: ['label', 'text', 'isTrue'],
-                                },
-                              },
-                            }
-                          : {}),
-                        shortAnswerAccepted: {
-                          type: Type.ARRAY,
-                          items: { type: Type.STRING },
-                        },
-                        scoreWeight: { type: Type.NUMBER },
-                        answerFromSource: { type: Type.BOOLEAN },
-                        explanation: { type: Type.STRING },
-                        chapter: { type: Type.STRING },
-                        cognitiveLevel: {
-                          type: Type.STRING,
-                          description: 'nhan_biet | thong_hieu | van_dung | van_dung_cao',
-                        },
-                      },
-                      required: ['questionType', 'questionText'],
-                    },
-                  },
-                },
-                required: ['questions'],
-              },
-            },
+              signal,
+            })
+          );
+          accumulateRawTokens(tokensOut, resp);
+          return safeParseModelJson<{
+            detectedTitle?: string;
+            questions: RawCopiedQuestion[];
+          }>(resp.text || '', '{"questions":[]}');
+        }
+
+        const resp = await callWithTimeout((signal) =>
+          callMistralChatCompletion({
+            modelId: imageParts.length > 0 ? MISTRAL_VISION_MODEL : isMistralModelId(modelId) ? modelId : MISTRAL_PRIMARY_MODEL,
+            prompt: promptText,
+            images: imageParts.length > 0 ? imageParts : undefined,
+            jsonMode: true,
+            jsonSchemaHint: sampleSchemaHint,
+            maxOutputTokens: 6144,
+            signal,
           })
         );
-        accumulateTokens(tokensOut, resp);
+        accumulateRawTokens(tokensOut, resp);
         return safeParseModelJson<{
           detectedTitle?: string;
           questions: RawCopiedQuestion[];
@@ -3317,30 +3267,6 @@ export class FlashcardGenerationService {
           fallbackJson: '{"cards":[]}',
           groqSchemaHint:
             '{"cards":[{"front":"...","back":"...","chapter":"...","concept":"...","cardType":"concept|formula|condition|mistake_fix|example","sourceReference":"..."}]}',
-          geminiSchema: {
-            type: Type.OBJECT,
-            properties: {
-              cards: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    front: { type: Type.STRING },
-                    back: { type: Type.STRING },
-                    chapter: { type: Type.STRING },
-                    concept: { type: Type.STRING },
-                    cardType: {
-                      type: Type.STRING,
-                      description: 'concept | formula | condition | mistake_fix | example',
-                    },
-                    sourceReference: { type: Type.STRING },
-                  },
-                  required: ['front', 'back', 'chapter', 'concept', 'cardType'],
-                },
-              },
-            },
-            required: ['cards'],
-          },
         }),
     });
 
@@ -3436,39 +3362,7 @@ export class TextbookSynthesisService {
     const defaultBookTitle =
       title?.trim() || `SGK ${subjectName} ${grade} - ${textbookSeries}`;
 
-    let webTocContext = '';
-    const selectedOutlineModel =
-      config?.taskModels?.curriculum_extraction?.defaultModel || config?.activeModel || '';
-    const shouldSearchWithGemini =
-      isGeminiConfigured() &&
-      !isGroqModelId(selectedOutlineModel) &&
-      !isCloudflareModelId(selectedOutlineModel);
-
-    if (shouldSearchWithGemini && (!customTocHint || customTocHint.trim().length < 20)) {
-      try {
-        const ai = await createServerAiClient();
-        const searchQuery = `Mục lục các chương và bài học sách giáo khoa ${subjectName} lớp ${grade} bộ sách ${textbookSeries} chương trình GDPT 2018`;
-        const searchResp = await callWithTimeout(
-          (signal) =>
-            generateGeminiContentWithFallback({
-              ai,
-              model: 'gemini-2.5-flash',
-              contents: searchQuery,
-              thinkingTier: 'minimal',
-              config: {
-                maxOutputTokens: 1024,
-                abortSignal: signal,
-                tools: [{ googleSearch: {} }],
-              },
-            }),
-          14_000
-        );
-        accumulateTokens(tokensOut, searchResp);
-        webTocContext = (searchResp.text || '').trim().slice(0, 4000);
-      } catch {
-        // Proceed with model's built-in GDPT 2018 curriculum knowledge if search grounding times out
-      }
-    }
+    const webTocContext = '';
 
     const prompt = [
       `Bạn là chuyên gia chương trình Giáo dục phổ thông 2018 (GDPT 2018) của Bộ GD&ĐT Việt Nam.`,
@@ -3523,29 +3417,6 @@ export class TextbookSynthesisService {
           fallbackJson: '{"bookTitle":"","chapters":[]}',
           groqSchemaHint:
             '{"bookTitle":"...","chapters":[{"chapterIndex":1,"chapterTitle":"Chương 1: ...","lessons":["Bài 1: ...","Bài 2: ..."],"estimatedPageStart":6}]}',
-          geminiSchema: {
-            type: Type.OBJECT,
-            properties: {
-              bookTitle: { type: Type.STRING },
-              chapters: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    chapterIndex: { type: Type.INTEGER },
-                    chapterTitle: { type: Type.STRING },
-                    lessons: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
-                    },
-                    estimatedPageStart: { type: Type.INTEGER },
-                  },
-                  required: ['chapterIndex', 'chapterTitle', 'lessons', 'estimatedPageStart'],
-                },
-              },
-            },
-            required: ['bookTitle', 'chapters'],
-          },
         }),
     });
 
@@ -3675,37 +3546,6 @@ export class TextbookSynthesisService {
           fallbackJson: '{"chunks":[]}',
           groqSchemaHint:
             '{"chunks":[{"lesson":"Bài 1: ...","pageNumber":10,"sectionTitle":"1. Khái niệm & Công thức","content":"...","keywords":["..."],"learningObjectives":["..."],"conceptTags":["..."]}]}',
-          geminiSchema: {
-            type: Type.OBJECT,
-            properties: {
-              chunks: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    lesson: { type: Type.STRING },
-                    pageNumber: { type: Type.INTEGER },
-                    sectionTitle: { type: Type.STRING },
-                    content: { type: Type.STRING },
-                    keywords: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
-                    },
-                    learningObjectives: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
-                    },
-                    conceptTags: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
-                    },
-                  },
-                  required: ['lesson', 'pageNumber', 'sectionTitle', 'content', 'keywords', 'learningObjectives'],
-                },
-              },
-            },
-            required: ['chunks'],
-          },
         }),
     });
 

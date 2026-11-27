@@ -660,7 +660,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
           scope: draft.scopeNote,
           referenceChunks: relevantChunks,
           enableWebGrounding: false,
-          strictModelLock: true,
+          strictModelLock: false,
           ocrConfirmed: Boolean(draft.ocrConfirmed),
           ocrTextHash,
         }),
@@ -1094,7 +1094,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                 className="absolute inset-x-0 top-0 h-1 bg-sky-100/80 dark:bg-slate-800 overflow-hidden"
               >
                 <div
-                  className="h-full bg-gradient-to-r from-sky-400 via-indigo-500 to-sky-500 transition-all duration-300 ease-out"
+                  className="h-full bg-gradient-to-r from-[#2563EB] via-[#3B82F6] to-[#60A5FA] transition-all duration-300 ease-out"
                   style={{ width: `${Math.max(15, suggestProgressPct)}%` }}
                 />
               </div>
@@ -1260,7 +1260,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                 {/* Smooth Progress Bar */}
                 <div className="h-1.5 w-full rounded-full bg-sky-100 dark:bg-slate-800 overflow-hidden">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-sky-500 via-indigo-500 to-sky-400 transition-all duration-300 ease-out"
+                    className="h-full rounded-full bg-gradient-to-r from-[#2563EB] via-[#3B82F6] to-[#60A5FA] transition-all duration-300 ease-out"
                     style={{ width: `${Math.max(18, suggestProgressPct)}%` }}
                   />
                 </div>
@@ -1471,7 +1471,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
           >
             <div className="space-y-5">
               <div className="text-center space-y-2.5">
-                <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-[#0E4D5D] dark:text-cyan-300 bg-[#F0FDFA] dark:bg-cyan-950/50 border border-[#0E4D5D]/20 dark:border-cyan-500/30">
+                <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-[#1746A2] dark:text-[#93C5FD] bg-[#EAF2FF] dark:bg-[#2563EB]/20 border border-[#BFDBFE] dark:border-[#3B82F6]/35">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   <span>
                     Chặng xử lý {Math.max(1, activeStageIdx + 1)}/{PIPELINE_STAGES.length}
@@ -1480,7 +1480,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                       : ''}
                   </span>
                 </div>
-                <h2 className="upload-status-label font-display text-[clamp(1.05rem,3.2vw,1.3rem)] font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                <h2 className="upload-status-label font-display text-[clamp(1.05rem,3.2vw,1.3rem)] font-bold text-[#172033] dark:text-[#E6EFFC]">
                   {statusLabel || PIPELINE_STAGES[Math.max(0, activeStageIdx)]?.label}
                 </h2>
                 {progressDetail && progressDetail.total > 0 && (
@@ -1488,8 +1488,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                     <div ref={progressFillRef} />
                   </div>
                 )}
-                <p className="inline-flex items-center gap-1.5 font-mono text-xs text-[#475B78] dark:text-[#B4C7E2] tabular-nums">
-                  <Clock className="w-3.5 h-3.5 text-[#0E4D5D] dark:text-cyan-400" />
+                <p className="inline-flex items-center gap-1.5 font-mono text-xs text-[#525E75] dark:text-[#94A3B8] tabular-nums">
+                  <Clock className="w-3.5 h-3.5 text-[#2563EB] dark:text-[#60A5FA]" />
                   Thời gian đã trôi qua: {elapsedSeconds}s
                 </p>
               </div>
@@ -1501,12 +1501,12 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                   return (
                     <div
                       key={st.id}
-                      className={`flex items-center justify-between gap-3 rounded-2xl px-3.5 sm:px-4 py-2.5 text-xs border transition-colors ${
+                      className={`flex items-center justify-between gap-3 rounded-xl px-3.5 sm:px-4 py-2.5 text-xs border transition-colors ${
                         isCurrent
-                          ? 'bg-[#F0FDFA] dark:bg-cyan-950/50 border-[#06B6D4]/60 dark:border-cyan-600 text-[#0E4D5D] dark:text-cyan-100 font-semibold shadow-xs'
+                          ? 'bg-[#EAF2FF] dark:bg-[#2563EB]/20 border-[#BFDBFE] dark:border-[#3B82F6]/45 text-[#1746A2] dark:text-[#93C5FD] font-semibold shadow-xs'
                           : isDone
-                          ? 'bg-emerald-50/75 dark:bg-emerald-950/35 border-emerald-200/80 dark:border-emerald-800/60 text-emerald-800 dark:text-emerald-300'
-                          : 'bg-slate-50/80 dark:bg-slate-900/45 border-slate-200/70 dark:border-slate-800 text-[#475B78] dark:text-[#B4C7E2]'
+                          ? 'bg-emerald-50/75 dark:bg-emerald-950/35 border-emerald-200/80 dark:border-emerald-800/60 text-[#059669] dark:text-emerald-300'
+                          : 'bg-[#F8FAFC] dark:bg-[#0D1628] border-[#E6ECF5] dark:border-[#1E293B] text-[#525E75] dark:text-[#94A3B8]'
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
@@ -1516,7 +1516,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                         <span className="truncate">{st.label}</span>
                       </div>
                       {isCurrent && progressDetail && progressDetail.total > 1 && (
-                        <span className="font-mono text-[11px] shrink-0 text-[#0E4D5D] dark:text-cyan-300 tabular-nums">
+                        <span className="font-mono text-[11px] shrink-0 text-[#2563EB] dark:text-[#60A5FA] tabular-nums">
                           {progressDetail.current}/{progressDetail.total}
                         </span>
                       )}

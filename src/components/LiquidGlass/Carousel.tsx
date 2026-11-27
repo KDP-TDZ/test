@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useReducedMotion } from 'motion/react';
 import { computeCarouselTargetIndex } from '../../core/uiMotionMath';
-import { useUiMode } from '../../context/UiModeContext';
 
 export interface CarouselSlide {
   id: string;
@@ -20,10 +19,10 @@ interface CarouselProps {
 }
 
 /**
- * Accessible W3C Carousel (NameThatUI / web/carousel pattern):
+ * Accessible W3C Carousel:
  * - role="region" + aria-roledescription="carousel"
  * - Native CSS scroll-snap-type: x mandatory for lag-free touch swipe
- * - IntersectionObserver sync (no raw scrollTop/scrollY animation loops)
+ * - IntersectionObserver sync
  * - Prev/Next buttons with explicit aria-labels + keyboard Left/Right support
  * - Bottom Slide Picker controls with role="tablist" & aria-selected tabs
  */
@@ -35,7 +34,6 @@ export const Carousel: React.FC<CarouselProps> = ({
   className = '',
   loop = false,
 }) => {
-  const { isEthereal } = useUiMode();
   const prefersReduced = useReducedMotion();
   const carouselId = useId();
   const trackRef = useRef<HTMLDivElement>(null);
@@ -72,7 +70,6 @@ export const Carousel: React.FC<CarouselProps> = ({
     [activeIndex, slides.length, loop, scrollToSlide]
   );
 
-  // Sync active slide indicator when user swipes natively (via IntersectionObserver)
   useEffect(() => {
     const track = trackRef.current;
     if (!track || typeof IntersectionObserver === 'undefined') return;
@@ -91,7 +88,6 @@ export const Carousel: React.FC<CarouselProps> = ({
 
         if (Date.now() < programmaticLockUntilRef.current) return;
 
-        // Pick the leftmost sufficiently visible slide for deterministic 2-up desktop sync
         let leftmostFull = -1;
         let bestFallback = -1;
         let bestRatio = 0.45;
@@ -145,12 +141,11 @@ export const Carousel: React.FC<CarouselProps> = ({
       }}
       className={`space-y-4 ${className}`}
     >
-      {/* Top Row: Optional heading + Prev/Next Controls */}
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0 flex-1">{headerLeft}</div>
 
         <div className="flex items-center gap-2 shrink-0">
-          <span className="hidden sm:inline-block font-mono text-xs font-medium text-[#6B7499] dark:text-[#A5B1D8] tabular-nums mr-1">
+          <span className="hidden sm:inline-block font-mono text-xs font-medium text-[#525E75] dark:text-[#94A3B8] tabular-nums mr-1">
             {activeIndex + 1} / {slides.length}
           </span>
           <button
@@ -158,9 +153,7 @@ export const Carousel: React.FC<CarouselProps> = ({
             onClick={() => handleStep(-1)}
             disabled={!canPrev}
             aria-label="Slide trước"
-            className={`size-9 sm:size-10 rounded-xl inline-flex items-center justify-center glass-control cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-transform duration-150 ease-out active:scale-95 focus-visible:outline-none focus-visible:ring-2 ${
-              isEthereal ? 'focus-visible:ring-indigo-500' : 'focus-visible:ring-sky-500'
-            }`}
+            className="size-10 rounded-xl inline-flex items-center justify-center glass-control cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-transform duration-150 ease-out active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]"
           >
             <ChevronLeft className="size-4" />
           </button>
@@ -169,16 +162,13 @@ export const Carousel: React.FC<CarouselProps> = ({
             onClick={() => handleStep(1)}
             disabled={!canNext}
             aria-label="Slide tiếp theo"
-            className={`size-9 sm:size-10 rounded-xl inline-flex items-center justify-center glass-control cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-transform duration-150 ease-out active:scale-95 focus-visible:outline-none focus-visible:ring-2 ${
-              isEthereal ? 'focus-visible:ring-indigo-500' : 'focus-visible:ring-sky-500'
-            }`}
+            className="size-10 rounded-xl inline-flex items-center justify-center glass-control cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-transform duration-150 ease-out active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]"
           >
             <ChevronRight className="size-4" />
           </button>
         </div>
       </div>
 
-      {/* Horizontal Scroll-Snap Track */}
       <div
         ref={trackRef}
         className="carousel-track relative flex items-stretch gap-4 sm:gap-5 overflow-x-auto snap-x snap-mandatory scroll-pl-1 pb-2 -mx-1 px-1"
@@ -201,7 +191,6 @@ export const Carousel: React.FC<CarouselProps> = ({
         ))}
       </div>
 
-      {/* Bottom Slide Picker Controls (W3C tablist pattern) */}
       <div
         role="tablist"
         aria-label={`Chọn slide cho ${ariaLabel}`}
@@ -218,17 +207,13 @@ export const Carousel: React.FC<CarouselProps> = ({
               aria-controls={`${carouselId}-slide-${idx}`}
               aria-label={`Chuyển đến slide ${idx + 1}: ${slide.label}`}
               onClick={() => scrollToSlide(idx)}
-              className={`min-h-[32px] px-1.5 inline-flex items-center justify-center cursor-pointer rounded-full focus-visible:outline-none focus-visible:ring-2 ${
-                isEthereal ? 'focus-visible:ring-indigo-500' : 'focus-visible:ring-sky-500'
-              }`}
+              className="min-h-[32px] px-1.5 inline-flex items-center justify-center cursor-pointer rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]"
             >
               <span
                 aria-hidden="true"
                 className={`block h-2 w-6 rounded-full origin-center transition-[transform,opacity,background-color] duration-200 ease-out ${
                   isActive
-                    ? isEthereal
-                      ? 'scale-x-100 opacity-100 bg-gradient-to-r from-[#4338CA] via-[#6366F1] to-[#8B5CF6]'
-                      : 'scale-x-100 opacity-100 bg-gradient-to-r from-sky-500 to-blue-600'
+                    ? 'scale-x-100 opacity-100 bg-[#2563EB] dark:bg-[#3B82F6]'
                     : 'scale-x-[0.34] opacity-45 hover:opacity-75 bg-[#64748B] dark:bg-[#94A3B8]'
                 }`}
               />
