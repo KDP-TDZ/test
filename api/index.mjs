@@ -671,12 +671,20 @@ function isDecodedSuperAdmin(decoded) {
   }
   return false;
 }
+var FIREBASE_REST_TIMEOUT_MS = 6e3;
+function createRestTimeoutSignal(ms = FIREBASE_REST_TIMEOUT_MS) {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return AbortSignal.timeout(ms);
+  }
+  return void 0;
+}
 async function verifyTokenViaIdentityToolkit(idToken) {
   const url = `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(firebaseConfig.apiKey)}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ idToken })
+    body: JSON.stringify({ idToken }),
+    signal: createRestTimeoutSignal(8e3)
   });
   if (!res.ok) {
     throw new Error(`AUTH_LOOKUP_FAILED (${res.status})`);
@@ -846,7 +854,8 @@ function firestoreDocBaseUrl() {
 async function firestoreRestGet(docPath, idToken) {
   const url = `${firestoreDocBaseUrl()}/${docPath}`;
   const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${idToken}` }
+    headers: { Authorization: `Bearer ${idToken}` },
+    signal: createRestTimeoutSignal()
   });
   if (res.status === 404) return null;
   if (!res.ok) {
@@ -875,7 +884,8 @@ async function firestoreRestSet(docPath, payload, idToken) {
       Authorization: `Bearer ${idToken}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ fields })
+    body: JSON.stringify({ fields }),
+    signal: createRestTimeoutSignal()
   });
   if (!res.ok) {
     const txt = await res.text();
@@ -885,7 +895,8 @@ async function firestoreRestSet(docPath, payload, idToken) {
 async function firestoreRestList(collectionPath, idToken, pageSize = 100) {
   const url = `${firestoreDocBaseUrl()}/${collectionPath}?pageSize=${pageSize}`;
   const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${idToken}` }
+    headers: { Authorization: `Bearer ${idToken}` },
+    signal: createRestTimeoutSignal()
   });
   if (res.status === 404) return [];
   if (!res.ok) {
@@ -906,7 +917,8 @@ async function firestoreRestDelete(docPath, idToken) {
   const url = `${firestoreDocBaseUrl()}/${docPath}`;
   const res = await fetch(url, {
     method: "DELETE",
-    headers: { Authorization: `Bearer ${idToken}` }
+    headers: { Authorization: `Bearer ${idToken}` },
+    signal: createRestTimeoutSignal()
   });
   if (!res.ok && res.status !== 404) {
     const txt = await res.text();
@@ -3671,6 +3683,8 @@ async function executeRoutedAiTask(params) {
     preferredPrimaryModelId,
     preferredFallbackModelId,
     strictModelLock = false,
+    overallTimeoutMs,
+    maxFallbackRetries = 0,
     extractExecutionMeta,
     runWithModel
   } = params;
@@ -3799,13 +3813,15 @@ async function executeRoutedAiTask(params) {
   };
   const executeTask = async () => {
     const start = Date.now();
+    const overallDeadline = typeof overallTimeoutMs === "number" && overallTimeoutMs > 0 ? start + overallTimeoutMs : null;
+    const isBudgetExhausted = () => overallDeadline !== null && Date.now() >= overallDeadline - 400;
     try {
       if (primaryUnconfigured) {
         throw new Error(
           isGroqModelId(requestedModel) ? "GROQ_API_KEY_UNCONFIGURED" : isCloudflareModelId(requestedModel) ? "CLOUDFLARE_CREDENTIALS_UNCONFIGURED" : "MISTRAL_API_KEY_UNCONFIGURED"
         );
       }
-      const primaryRetries = canFallback ? 0 : 1;
+      const primaryRetries = canFallback || overallDeadline !== null ? 0 : 1;
       const result = await withExponentialBackoff(() => runWithModel(requestedModel), primaryRetries);
       if (overrideConsumed && consumeOneTimeOverride) {
         await consumeOneTimeOverride(taskType);
@@ -3840,10 +3856,13 @@ async function executeRoutedAiTask(params) {
       const triedProviders = /* @__PURE__ */ new Set();
       const providerOf = (m) => isGroqModelId(m) ? "groq" : isCloudflareModelId(m) ? "cloudflare" : "mistral";
       triedProviders.add(providerOf(requestedModel));
-      if (canFallback) {
+      if (canFallback && !isBudgetExhausted()) {
         triedProviders.add(providerOf(fallbackModelId));
         try {
-          const fbResult = await withExponentialBackoff(() => runWithModel(fallbackModelId), 1);
+          const fbResult = await withExponentialBackoff(
+            () => runWithModel(fallbackModelId),
+            maxFallbackRetries
+          );
           if (overrideConsumed && consumeOneTimeOverride) {
             await consumeOneTimeOverride(taskType);
           }
@@ -3852,7 +3871,7 @@ async function executeRoutedAiTask(params) {
           lastErr = fbErr;
         }
       }
-      if (allowCrossProviderRescue) {
+      if (allowCrossProviderRescue && !isBudgetExhausted()) {
         const rescueHops = [
           {
             provider: "mistral",
@@ -3871,10 +3890,14 @@ async function executeRoutedAiTask(params) {
           }
         ];
         for (const hop of rescueHops) {
+          if (isBudgetExhausted()) break;
           if (!hop.configured || triedProviders.has(hop.provider)) continue;
           triedProviders.add(hop.provider);
           try {
-            const rescueResult = await withExponentialBackoff(() => runWithModel(hop.modelId), 1);
+            const rescueResult = await withExponentialBackoff(
+              () => runWithModel(hop.modelId),
+              maxFallbackRetries
+            );
             return finalizeSuccess(rescueResult, hop.modelId, true, start);
           } catch (rescueErr) {
             lastErr = rescueErr;
@@ -5616,6 +5639,206 @@ ${nextLine}`,
   return blocks;
 }
 
+// src/core/uploadBatching.ts
+var MAX_IMAGE_UPLOAD_MB = 5;
+var MAX_DOCUMENT_UPLOAD_MB = 4;
+var TARGET_COMPRESSED_IMAGE_BYTES = 900 * 1024;
+var DEFAULT_MAX_BATCH_BYTES = Math.floor(2.6 * 1024 * 1024);
+function getEffectiveUploadLimits(adminMaxFileMb) {
+  const safeAdmin = typeof adminMaxFileMb === "number" && Number.isFinite(adminMaxFileMb) && adminMaxFileMb > 0 ? adminMaxFileMb : 20;
+  const maxImageMb = Math.min(safeAdmin, MAX_IMAGE_UPLOAD_MB);
+  const maxDocumentMb = Math.min(safeAdmin, MAX_DOCUMENT_UPLOAD_MB);
+  return {
+    maxImageMb,
+    maxDocumentMb,
+    maxImageBytes: Math.round(maxImageMb * 1024 * 1024),
+    maxDocumentBytes: Math.round(maxDocumentMb * 1024 * 1024)
+  };
+}
+function isDocumentFileLike(file) {
+  const lower = (file.name || "").toLowerCase();
+  const mime = (file.type || "").toLowerCase();
+  return mime === "application/pdf" || mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || lower.endsWith(".pdf") || lower.endsWith(".docx");
+}
+function validateUploadFileSize(file, adminMaxFileMb) {
+  const limits = getEffectiveUploadLimits(adminMaxFileMb);
+  const isDoc = isDocumentFileLike(file);
+  if (isDoc) {
+    if (file.size > limits.maxDocumentBytes) {
+      const actualMb = (file.size / (1024 * 1024)).toFixed(2);
+      return {
+        ok: false,
+        isDocumentLimit: true,
+        error: `T\u1EC7p t\xE0i li\u1EC7u "${file.name}" (${actualMb}MB) v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n an to\xE0n ${limits.maxDocumentMb}MB cho PDF/DOCX tr\xEAn m\xE1y ch\u1EE7 Vercel. H\xE3y n\xE9n file nh\u1ECF h\u01A1n ${limits.maxDocumentMb}MB ho\u1EB7c ch\u1EE5p \u1EA3nh t\u1EEBng trang (h\u1ED7 tr\u1EE3 \u1EA3nh g\u1ED1c t\u1EDBi ${limits.maxImageMb}MB/\u1EA3nh).`
+      };
+    }
+    return { ok: true };
+  }
+  if (file.size > limits.maxImageBytes) {
+    const actualMb = (file.size / (1024 * 1024)).toFixed(2);
+    return {
+      ok: false,
+      isDocumentLimit: false,
+      error: `\u1EA2nh "${file.name}" (${actualMb}MB) v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n t\u1ED1i \u0111a ${limits.maxImageMb}MB/\u1EA3nh.`
+    };
+  }
+  return { ok: true };
+}
+function normalizeVietnameseTokenText(raw) {
+  return (raw || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/\.[^.]+$/, "").replace(/[_\-.,()[\]]+/g, " ").replace(/\s+/g, " ").trim();
+}
+var SUBJECT_KEYWORD_RULES = [
+  {
+    subject: "vat_ly",
+    patterns: [
+      /\b(vat\s*ly|vat\s*li|vly|mon\s*ly|de\s*ly|dao\s*dong|song\s*co|song\s*dien\s*tu|dien\s*xoay\s*chieu|mach\s*rlc|hat\s*nhan|luong\s*tu|quang\s*hoc|nhiet\s*hoc|dong\s*luc\s*hoc|dong\s*hoc|chuyen\s*dong|con\s*lac|tu\s*truong|dien\s*truong|cam\s*ung\s*dien\s*tu|dinh\s*luat\s*ohm|newton|coulomb)\b/,
+      /\b(ly|li)\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "hoa_hoc",
+    patterns: [
+      /\b(hoa\s*hoc|mon\s*hoa|de\s*hoa|este|lipit|cacbohidrat|glucozo|fructozo|saccarozo|tinh\s*bot|xenlulozo|amin|amino\s*axit|peptit|protein|polime|kim\s*loai|kiem\s*tho|nhom|sat|crom|hidrocacbon|ankan|anken|ankin|ankadien|aren|benzen|ancol|phenol|andehit|axit\s*cacboxylic|nguyen\s*tu|bang\s*tuan\s*hoan|phan\s*ung\s*oxi\s*hoa|dien\s*li|dien\s*phan|toc\s*do\s*phan\s*ung|can\s*bang\s*hoa\s*hoc)\b/,
+      /\bhoa\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "toan",
+    patterns: [
+      /\b(toan\s*hoc|mon\s*toan|de\s*toan|dai\s*so|hinh\s*hoc|giai\s*tich|ham\s*so|dao\s*ham|tich\s*phan|nguyen\s*ham|logarit|mu\s*logarit|luong\s*giac|to\s*hop|xac\s*suat|cap\s*so\s*cong|cap\s*so\s*nhan|vecto|toa\s*do\s*oxy|oxyz|so\s*phuc|bat\s*phuong\s*trinh|he\s*phuong\s*trinh|khoi\s*da\s*dien|mat\s*cau|mat\s*non|mat\s*tru|thong\s*ke)\b/,
+      /\btoan\s*(10|11|12)?\b/
+    ]
+  },
+  {
+    subject: "sinh_hoc",
+    patterns: [
+      /\b(sinh\s*hoc|mon\s*sinh|de\s*sinh|di\s*truyen|bien\s*di|dot\s*bien|adn|arn|gen|ma\s*di\s*truyen|phien\s*ma|dich\s*ma|nhiem\s*sac\s*the|te\s*bao|quang\s*hop|ho\s*hap|tien\s*hoa|sinh\s*thai|quan\s*the|quan\s*xa|he\s*sinh\s*thai|chuyen\s*hoa\s*vat\s*chat)\b/,
+      /\bsinh\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "ngu_van",
+    patterns: [
+      /\b(ngu\s*van|mon\s*van|van\s*hoc|nghi\s*luan|doc\s*hieu|lam\s*van|phan\s*tich\s*tho|truyen\s*ngan|tay\s*tien|viet\s*bac|dat\s*nuoc|vo\s*nhat|vo\s*chong\s*a\s*phu|chi\s*pheo|hai\s*dua\s*tre|chu\s*nguoi\s*tu\s*tu)\b/,
+      /\bvan\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "tieng_anh",
+    patterns: [
+      /\b(tieng\s*anh|mon\s*anh|english|grammar|vocabulary|reading|listening|ielts|toeic|phonetics|tenses|relative\s*clause|passive\s*voice|conditional|reported\s*speech)\b/,
+      /\banh\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "lich_su",
+    patterns: [
+      /\b(lich\s*su|mon\s*su|de\s*su|cach\s*mang|chien\s*tranh|the\s*gioi|viet\s*nam|khang\s*chien|phong\s*trao|dien\s*bien\s*phu|asean|lien\s*hop\s*quoc|chien\s*tranh\s*lanh)\b/,
+      /\bsu\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "dia_ly",
+    patterns: [
+      /\b(dia\s*ly|dia\s*li|mon\s*dia|de\s*dia|khi\s*hau|dia\s*hinh|dan\s*cu|vung\s*kinh\s*te|atlat|tu\s*nhien|dong\s*bang\s*song\s*hong|dong\s*bang\s*song\s*cuu\s*long|tay\s*nguyen)\b/,
+      /\bdia\s*(10|11|12)\b/
+    ]
+  },
+  {
+    subject: "gdkt_pl",
+    patterns: [
+      /\b(gdkt\s*pl|gdktpl|gdcd|giao\s*duc\s*kinh\s*te|phap\s*luat|cong\s*dan|hien\s*phap|thi\s*truong|ngan\s*sach|thue|tin\s*dung|lam\s*phat|that\s*nghiep|quyen\s*binh\s*dang)\b/
+    ]
+  },
+  {
+    subject: "tin_hoc",
+    patterns: [
+      /\b(tin\s*hoc|mon\s*tin|lap\s*trinh|python|c\+\+|pascal|thuat\s*toan|co\s*so\s*du\s*lieu|sql|html|css|mang\s*may\s*tinh|tri\s*tue\s*nhan\s*tao)\b/,
+      /\btin\s*(10|11|12)\b/
+    ]
+  }
+];
+function isGenericCameraFileNames(fileNames) {
+  const clean = fileNames.map((n) => (n || "").trim()).filter(Boolean);
+  if (clean.length === 0) return true;
+  return clean.every((name) => {
+    const stem = name.replace(/\.[a-z0-9]{1,8}$/i, "").trim();
+    if (!stem) return true;
+    return /^(img|dsc|screenshot|image|photo|page|trang|scan|cam|whatsapp|viber|zalo|pxl|mvimg|z\d+)[\s_\-\d().a-f]*$/i.test(
+      stem
+    ) || /^[\d_\-\s().]+$/i.test(stem) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:[_-][0-9a-f]{4,16})?$/i.test(
+      stem
+    ) || /^[0-9a-f_\-]{12,}$/i.test(stem);
+  });
+}
+function buildFileNameSuggestionCacheKey(fileNames, defaultGrade = "10") {
+  const normalized = fileNames.map(normalizeVietnameseTokenText).filter(Boolean).slice(0, 15).join("|");
+  return `${defaultGrade}::${normalized}`;
+}
+function inferGradeAndSubjectFromFileNames(fileNames) {
+  const combined = fileNames.map(normalizeVietnameseTokenText).filter(Boolean).join(" ");
+  if (!combined) {
+    return { grade: null, subject: null, confidence: "low" };
+  }
+  let detectedGrade = null;
+  const explicitGradeMatch = combined.match(/\b(?:lop|khoi|k|grade)\s*(10|11|12)\b/) || combined.match(/\b(?:toan|ly|li|hoa|sinh|van|anh|su|dia|tin|gdcd|gdktpl)(10|11|12)\b/) || combined.match(/\b(?:toan|ly|li|hoa|sinh|van|anh|su|dia|tin|gdcd|gdktpl)\s+(10|11|12)\b/);
+  if (explicitGradeMatch) {
+    detectedGrade = explicitGradeMatch[1];
+  } else {
+    const standaloneGradeMatch = combined.match(/(?:^|\s)(10|11|12)(?:\s|$)/);
+    if (standaloneGradeMatch) {
+      detectedGrade = standaloneGradeMatch[1];
+    }
+  }
+  let detectedSubject = null;
+  for (const rule of SUBJECT_KEYWORD_RULES) {
+    if (rule.patterns.some((re) => re.test(combined))) {
+      detectedSubject = rule.subject;
+      break;
+    }
+  }
+  const confidence = detectedSubject && detectedGrade ? "high" : detectedSubject || detectedGrade ? "medium" : "low";
+  return {
+    grade: detectedGrade,
+    subject: detectedSubject,
+    confidence
+  };
+}
+function inferScopeFromContentHeuristic(sampleText, fallbackTitle = "T\xE0i li\u1EC7u \xF4n t\u1EADp") {
+  const cleanTitle = (fallbackTitle || "T\xE0i li\u1EC7u \xF4n t\u1EADp").replace(/\.[^.]+$/, "").trim() || "T\xE0i li\u1EC7u \xF4n t\u1EADp";
+  const snippet = `${cleanTitle}
+${(sampleText || "").slice(0, 2600)}`;
+  const normalized = normalizeVietnameseTokenText(snippet);
+  let detectedGrade = "10";
+  const gradeMatch = normalized.match(/\b(?:lop|khoi|chuong trinh|sgk|on tap|de kiem tra|de thi)\s*(10|11|12)\b/) || normalized.match(/\b(?:toan|vat ly|vat li|hoa hoc|sinh hoc|ngu van|tieng anh|lich su|dia ly|tin hoc|gdkt pl|gdcd)\s*(10|11|12)\b/);
+  if (gradeMatch && (gradeMatch[1] === "10" || gradeMatch[1] === "11" || gradeMatch[1] === "12")) {
+    detectedGrade = gradeMatch[1];
+  }
+  let bestSubject = "khac";
+  let bestScore = 0;
+  for (const rule of SUBJECT_KEYWORD_RULES) {
+    let score = 0;
+    for (const pattern of rule.patterns) {
+      const globalPattern = new RegExp(pattern.source, "gi");
+      const matches = normalized.match(globalPattern);
+      if (matches) {
+        score += matches.length;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestSubject = rule.subject;
+    }
+  }
+  const chapterHints = (sampleText || "").split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length >= 6 && line.length <= 90).filter((line) => /^(chương|bài|chủ đề|phần)\s+[\dIVX]+/i.test(line)).slice(0, 3);
+  return {
+    suggestedGrade: detectedGrade,
+    suggestedSubject: bestSubject,
+    suggestedChapters: chapterHints,
+    suggestedTitle: cleanTitle.slice(0, 110)
+  };
+}
+
 // src/core/types.ts
 var SUBJECT_LABELS = {
   toan: "To\xE1n h\u1ECDc",
@@ -5932,6 +6155,8 @@ async function runTaskWithRouter(params) {
     preferredPrimaryModelId: params.preferredPrimaryModelId,
     preferredFallbackModelId: params.preferredFallbackModelId,
     strictModelLock: params.strictModelLock,
+    overallTimeoutMs: params.overallTimeoutMs,
+    maxFallbackRetries: params.maxFallbackRetries,
     extractExecutionMeta: params.extractExecutionMeta,
     runWithModel: params.runWithModel
   });
@@ -6205,12 +6430,20 @@ var DocumentExtractionService = class {
     );
   }
   static async extractFromDocxBuffer(buffer) {
-    const mammothMod = await import("mammoth");
-    const mammothApi = mammothMod.default || mammothMod;
-    const result = await mammothApi.extractRawText({ buffer });
-    const raw = (result.value || "").trim();
+    let raw = "";
+    try {
+      const mammothMod = await import("mammoth");
+      const mammothApi = mammothMod.default || mammothMod;
+      const result = await mammothApi.extractRawText({ buffer });
+      raw = (result.value || "").trim();
+    } catch (docxErr) {
+      const detail = docxErr instanceof Error ? docxErr.message : String(docxErr);
+      throw new Error(
+        `Kh\xF4ng th\u1EC3 \u0111\u1ECDc c\u1EA5u tr\xFAc t\u1EC7p Word (.docx). Vui l\xF2ng l\u01B0u l\u1EA1i d\u01B0\u1EDBi \u0111\u1ECBnh d\u1EA1ng .docx chu\u1EA9n ho\u1EB7c xu\u1EA5t sang PDF/\u1EA3nh r\u1ED3i t\u1EA3i l\xEAn l\u1EA1i. (${detail.slice(0, 90)})`
+      );
+    }
     if (!raw) {
-      throw new Error("File DOCX kh\xF4ng c\xF3 v\u0103n b\u1EA3n \u0111\u1ECDc \u0111\u01B0\u1EE3c ho\u1EB7c b\u1ECB h\u1ECFng.");
+      throw new Error("File DOCX kh\xF4ng c\xF3 v\u0103n b\u1EA3n \u0111\u1ECDc \u0111\u01B0\u1EE3c (c\xF3 th\u1EC3 ch\u1EC9 ch\u1EE9a \u1EA3nh ch\u1EE5p b\xEAn trong). H\xE3y l\u01B0u th\xE0nh PDF/\u1EA3nh v\xE0 t\u1EA3i l\xEAn l\u1EA1i.");
     }
     const paragraphs = raw.split(/\n+/).map((l) => l.trim()).filter(Boolean);
     const pageSize = 18;
@@ -6242,31 +6475,41 @@ var SubjectDetectionService = class {
       "",
       sampleText.slice(0, 1800)
     ].join("\n");
-    const { data: parsed } = await runTaskWithRouter({
-      taskType: "subject_classification",
-      config: opts?.config,
-      idToken: opts?.idToken,
-      allowGroqRescue: true,
-      cacheInput: { sample: sampleText.slice(0, 1500), rev: "v4_3provider_topic_strict" },
-      runWithModel: async (modelId) => generateJsonWithProvider({
-        modelId,
-        prompt: scopePrompt,
-        thinkingTier: "minimal",
-        maxOutputTokens: 384,
-        timeoutMs: 15e3,
-        tokensOut,
-        fallbackJson: "{}",
-        groqSchemaHint: '{"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}'
-      })
-    });
-    const grade = parsed.suggestedGrade === "11" || parsed.suggestedGrade === "12" ? parsed.suggestedGrade : "10";
-    const subject = parsed.suggestedSubject && parsed.suggestedSubject in SUBJECT_LABELS ? parsed.suggestedSubject : "khac";
-    return {
-      suggestedGrade: grade,
-      suggestedSubject: subject,
-      suggestedChapters: (parsed.suggestedChapters || []).slice(0, 5),
-      suggestedTitle: parsed.suggestedTitle || "T\xE0i li\u1EC7u \xF4n t\u1EADp"
-    };
+    const heuristicFallback = inferScopeFromContentHeuristic(sampleText);
+    try {
+      const { data: parsed } = await callWithTimeout(
+        () => runTaskWithRouter({
+          taskType: "subject_classification",
+          config: opts?.config,
+          idToken: opts?.idToken,
+          allowGroqRescue: false,
+          overallTimeoutMs: 7e3,
+          maxFallbackRetries: 0,
+          cacheInput: { sample: sampleText.slice(0, 1500), rev: "v4_3provider_topic_strict" },
+          runWithModel: async (modelId) => generateJsonWithProvider({
+            modelId,
+            prompt: scopePrompt,
+            thinkingTier: "minimal",
+            maxOutputTokens: 320,
+            timeoutMs: 5e3,
+            tokensOut,
+            fallbackJson: "{}",
+            groqSchemaHint: '{"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}'
+          })
+        }),
+        7500
+      );
+      const grade = parsed.suggestedGrade === "11" || parsed.suggestedGrade === "12" ? parsed.suggestedGrade : parsed.suggestedGrade === "10" ? "10" : heuristicFallback.suggestedGrade;
+      const subject = parsed.suggestedSubject && parsed.suggestedSubject in SUBJECT_LABELS ? parsed.suggestedSubject : heuristicFallback.suggestedSubject;
+      return {
+        suggestedGrade: grade,
+        suggestedSubject: subject,
+        suggestedChapters: Array.isArray(parsed.suggestedChapters) && parsed.suggestedChapters.length > 0 ? parsed.suggestedChapters.slice(0, 5) : heuristicFallback.suggestedChapters,
+        suggestedTitle: parsed.suggestedTitle?.trim() || heuristicFallback.suggestedTitle
+      };
+    } catch {
+      return heuristicFallback;
+    }
   }
 };
 var KnowledgeAnalysisService = class {
@@ -8026,172 +8269,6 @@ ${lessonListStr}`,
 // src/server/app.ts
 init_referenceIngestService();
 
-// src/core/uploadBatching.ts
-var MAX_IMAGE_UPLOAD_MB = 5;
-var MAX_DOCUMENT_UPLOAD_MB = 4;
-var TARGET_COMPRESSED_IMAGE_BYTES = 900 * 1024;
-var DEFAULT_MAX_BATCH_BYTES = Math.floor(2.6 * 1024 * 1024);
-function getEffectiveUploadLimits(adminMaxFileMb) {
-  const safeAdmin = typeof adminMaxFileMb === "number" && Number.isFinite(adminMaxFileMb) && adminMaxFileMb > 0 ? adminMaxFileMb : 20;
-  const maxImageMb = Math.min(safeAdmin, MAX_IMAGE_UPLOAD_MB);
-  const maxDocumentMb = Math.min(safeAdmin, MAX_DOCUMENT_UPLOAD_MB);
-  return {
-    maxImageMb,
-    maxDocumentMb,
-    maxImageBytes: Math.round(maxImageMb * 1024 * 1024),
-    maxDocumentBytes: Math.round(maxDocumentMb * 1024 * 1024)
-  };
-}
-function isDocumentFileLike(file) {
-  const lower = (file.name || "").toLowerCase();
-  const mime = (file.type || "").toLowerCase();
-  return mime === "application/pdf" || mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || lower.endsWith(".pdf") || lower.endsWith(".docx");
-}
-function validateUploadFileSize(file, adminMaxFileMb) {
-  const limits = getEffectiveUploadLimits(adminMaxFileMb);
-  const isDoc = isDocumentFileLike(file);
-  if (isDoc) {
-    if (file.size > limits.maxDocumentBytes) {
-      const actualMb = (file.size / (1024 * 1024)).toFixed(2);
-      return {
-        ok: false,
-        isDocumentLimit: true,
-        error: `T\u1EC7p t\xE0i li\u1EC7u "${file.name}" (${actualMb}MB) v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n an to\xE0n ${limits.maxDocumentMb}MB cho PDF/DOCX tr\xEAn m\xE1y ch\u1EE7 Vercel. H\xE3y n\xE9n file nh\u1ECF h\u01A1n ${limits.maxDocumentMb}MB ho\u1EB7c ch\u1EE5p \u1EA3nh t\u1EEBng trang (h\u1ED7 tr\u1EE3 \u1EA3nh g\u1ED1c t\u1EDBi ${limits.maxImageMb}MB/\u1EA3nh).`
-      };
-    }
-    return { ok: true };
-  }
-  if (file.size > limits.maxImageBytes) {
-    const actualMb = (file.size / (1024 * 1024)).toFixed(2);
-    return {
-      ok: false,
-      isDocumentLimit: false,
-      error: `\u1EA2nh "${file.name}" (${actualMb}MB) v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n t\u1ED1i \u0111a ${limits.maxImageMb}MB/\u1EA3nh.`
-    };
-  }
-  return { ok: true };
-}
-function normalizeVietnameseTokenText(raw) {
-  return (raw || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/\.[^.]+$/, "").replace(/[_\-.,()[\]]+/g, " ").replace(/\s+/g, " ").trim();
-}
-var SUBJECT_KEYWORD_RULES = [
-  {
-    subject: "vat_ly",
-    patterns: [
-      /\b(vat\s*ly|vat\s*li|vly|mon\s*ly|de\s*ly|dao\s*dong|song\s*co|song\s*dien\s*tu|dien\s*xoay\s*chieu|mach\s*rlc|hat\s*nhan|luong\s*tu|quang\s*hoc|nhiet\s*hoc|dong\s*luc\s*hoc|dong\s*hoc|chuyen\s*dong|con\s*lac|tu\s*truong|dien\s*truong|cam\s*ung\s*dien\s*tu|dinh\s*luat\s*ohm|newton|coulomb)\b/,
-      /\b(ly|li)\s*(10|11|12)\b/
-    ]
-  },
-  {
-    subject: "hoa_hoc",
-    patterns: [
-      /\b(hoa\s*hoc|mon\s*hoa|de\s*hoa|este|lipit|cacbohidrat|glucozo|fructozo|saccarozo|tinh\s*bot|xenlulozo|amin|amino\s*axit|peptit|protein|polime|kim\s*loai|kiem\s*tho|nhom|sat|crom|hidrocacbon|ankan|anken|ankin|ankadien|aren|benzen|ancol|phenol|andehit|axit\s*cacboxylic|nguyen\s*tu|bang\s*tuan\s*hoan|phan\s*ung\s*oxi\s*hoa|dien\s*li|dien\s*phan|toc\s*do\s*phan\s*ung|can\s*bang\s*hoa\s*hoc)\b/,
-      /\bhoa\s*(10|11|12)\b/
-    ]
-  },
-  {
-    subject: "toan",
-    patterns: [
-      /\b(toan\s*hoc|mon\s*toan|de\s*toan|dai\s*so|hinh\s*hoc|giai\s*tich|ham\s*so|dao\s*ham|tich\s*phan|nguyen\s*ham|logarit|mu\s*logarit|luong\s*giac|to\s*hop|xac\s*suat|cap\s*so\s*cong|cap\s*so\s*nhan|vecto|toa\s*do\s*oxy|oxyz|so\s*phuc|bat\s*phuong\s*trinh|he\s*phuong\s*trinh|khoi\s*da\s*dien|mat\s*cau|mat\s*non|mat\s*tru|thong\s*ke)\b/,
-      /\btoan\s*(10|11|12)?\b/
-    ]
-  },
-  {
-    subject: "sinh_hoc",
-    patterns: [
-      /\b(sinh\s*hoc|mon\s*sinh|de\s*sinh|di\s*truyen|bien\s*di|dot\s*bien|adn|arn|gen|ma\s*di\s*truyen|phien\s*ma|dich\s*ma|nhiem\s*sac\s*the|te\s*bao|quang\s*hop|ho\s*hap|tien\s*hoa|sinh\s*thai|quan\s*the|quan\s*xa|he\s*sinh\s*thai|chuyen\s*hoa\s*vat\s*chat)\b/,
-      /\bsinh\s*(10|11|12)\b/
-    ]
-  },
-  {
-    subject: "ngu_van",
-    patterns: [
-      /\b(ngu\s*van|mon\s*van|van\s*hoc|nghi\s*luan|doc\s*hieu|lam\s*van|phan\s*tich\s*tho|truyen\s*ngan|tay\s*tien|viet\s*bac|dat\s*nuoc|vo\s*nhat|vo\s*chong\s*a\s*phu|chi\s*pheo|hai\s*dua\s*tre|chu\s*nguoi\s*tu\s*tu)\b/,
-      /\bvan\s*(10|11|12)\b/
-    ]
-  },
-  {
-    subject: "tieng_anh",
-    patterns: [
-      /\b(tieng\s*anh|mon\s*anh|english|grammar|vocabulary|reading|listening|ielts|toeic|phonetics|tenses|relative\s*clause|passive\s*voice|conditional|reported\s*speech)\b/,
-      /\banh\s*(10|11|12)\b/
-    ]
-  },
-  {
-    subject: "lich_su",
-    patterns: [
-      /\b(lich\s*su|mon\s*su|de\s*su|cach\s*mang|chien\s*tranh|the\s*gioi|viet\s*nam|khang\s*chien|phong\s*trao|dien\s*bien\s*phu|asean|lien\s*hop\s*quoc|chien\s*tranh\s*lanh)\b/,
-      /\bsu\s*(10|11|12)\b/
-    ]
-  },
-  {
-    subject: "dia_ly",
-    patterns: [
-      /\b(dia\s*ly|dia\s*li|mon\s*dia|de\s*dia|khi\s*hau|dia\s*hinh|dan\s*cu|vung\s*kinh\s*te|atlat|tu\s*nhien|dong\s*bang\s*song\s*hong|dong\s*bang\s*song\s*cuu\s*long|tay\s*nguyen)\b/,
-      /\bdia\s*(10|11|12)\b/
-    ]
-  },
-  {
-    subject: "gdkt_pl",
-    patterns: [
-      /\b(gdkt\s*pl|gdktpl|gdcd|giao\s*duc\s*kinh\s*te|phap\s*luat|cong\s*dan|hien\s*phap|thi\s*truong|ngan\s*sach|thue|tin\s*dung|lam\s*phat|that\s*nghiep|quyen\s*binh\s*dang)\b/
-    ]
-  },
-  {
-    subject: "tin_hoc",
-    patterns: [
-      /\b(tin\s*hoc|mon\s*tin|lap\s*trinh|python|c\+\+|pascal|thuat\s*toan|co\s*so\s*du\s*lieu|sql|html|css|mang\s*may\s*tinh|tri\s*tue\s*nhan\s*tao)\b/,
-      /\btin\s*(10|11|12)\b/
-    ]
-  }
-];
-function isGenericCameraFileNames(fileNames) {
-  const clean = fileNames.map((n) => (n || "").trim()).filter(Boolean);
-  if (clean.length === 0) return true;
-  return clean.every((name) => {
-    const stem = name.replace(/\.[a-z0-9]{1,8}$/i, "").trim();
-    if (!stem) return true;
-    return /^(img|dsc|screenshot|image|photo|page|trang|scan|cam|whatsapp|viber|zalo|pxl|mvimg|z\d+)[\s_\-\d().a-f]*$/i.test(
-      stem
-    ) || /^[\d_\-\s().]+$/i.test(stem) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:[_-][0-9a-f]{4,16})?$/i.test(
-      stem
-    ) || /^[0-9a-f_\-]{12,}$/i.test(stem);
-  });
-}
-function buildFileNameSuggestionCacheKey(fileNames, defaultGrade = "10") {
-  const normalized = fileNames.map(normalizeVietnameseTokenText).filter(Boolean).slice(0, 15).join("|");
-  return `${defaultGrade}::${normalized}`;
-}
-function inferGradeAndSubjectFromFileNames(fileNames) {
-  const combined = fileNames.map(normalizeVietnameseTokenText).filter(Boolean).join(" ");
-  if (!combined) {
-    return { grade: null, subject: null, confidence: "low" };
-  }
-  let detectedGrade = null;
-  const explicitGradeMatch = combined.match(/\b(?:lop|khoi|k|grade)\s*(10|11|12)\b/) || combined.match(/\b(?:toan|ly|li|hoa|sinh|van|anh|su|dia|tin|gdcd|gdktpl)(10|11|12)\b/) || combined.match(/\b(?:toan|ly|li|hoa|sinh|van|anh|su|dia|tin|gdcd|gdktpl)\s+(10|11|12)\b/);
-  if (explicitGradeMatch) {
-    detectedGrade = explicitGradeMatch[1];
-  } else {
-    const standaloneGradeMatch = combined.match(/(?:^|\s)(10|11|12)(?:\s|$)/);
-    if (standaloneGradeMatch) {
-      detectedGrade = standaloneGradeMatch[1];
-    }
-  }
-  let detectedSubject = null;
-  for (const rule of SUBJECT_KEYWORD_RULES) {
-    if (rule.patterns.some((re) => re.test(combined))) {
-      detectedSubject = rule.subject;
-      break;
-    }
-  }
-  const confidence = detectedSubject && detectedGrade ? "high" : detectedSubject || detectedGrade ? "medium" : "low";
-  return {
-    grade: detectedGrade,
-    subject: detectedSubject,
-    confidence
-  };
-}
-
 // src/core/textEncoding.ts
 var WIN1252_REVERSE_MAP = {
   8364: 128,
@@ -8739,19 +8816,23 @@ function createApiApp() {
       }
       const combinedForScope = [previousText, ...pages.map((p) => p.rawText)].filter(Boolean).join("\n");
       const heuristicScope = inferGradeAndSubjectFromFileNames([first.originalname]);
+      const contentHeuristic = inferScopeFromContentHeuristic(combinedForScope, first.originalname);
       const fallbackScopeSuggestion = {
-        suggestedGrade: presetGrade || heuristicScope.grade || "10",
-        suggestedSubject: presetSubject !== "khac" ? presetSubject : heuristicScope.subject || "khac",
-        suggestedChapters: [],
-        suggestedTitle: first.originalname.replace(/\.[^.]+$/, "")
+        suggestedGrade: presetGrade || heuristicScope.grade || contentHeuristic.suggestedGrade || "10",
+        suggestedSubject: presetSubject !== "khac" ? presetSubject : heuristicScope.subject || contentHeuristic.suggestedSubject || "khac",
+        suggestedChapters: contentHeuristic.suggestedChapters,
+        suggestedTitle: first.originalname.replace(/\.[^.]+$/, "") || contentHeuristic.suggestedTitle
       };
       let scopeSuggestion = fallbackScopeSuggestion;
       if (!skipScope && combinedForScope.trim().length > 15) {
         try {
-          scopeSuggestion = await SubjectDetectionService.detectScope(combinedForScope, tokens, {
-            config: guard.config,
-            idToken: user.idToken
-          });
+          scopeSuggestion = await callWithTimeout(
+            () => SubjectDetectionService.detectScope(combinedForScope, tokens, {
+              config: guard.config,
+              idToken: user.idToken
+            }),
+            8500
+          );
         } catch (scopeErr) {
           console.warn("Non-fatal scope detection fallback during /api/ai/extract:", scopeErr);
         }

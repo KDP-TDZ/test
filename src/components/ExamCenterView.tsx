@@ -110,27 +110,6 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
     };
   }, [user]);
 
-  useGSAP(
-    () => {
-      if (activeExam || printExam || loading) return;
-      const mm = gsap.matchMedia();
-      mm.add(MOTION_ALLOWED_MEDIA, () => {
-        gsap.from('.exam-card', {
-          y: 12,
-          autoAlpha: 0,
-          duration: 0.34,
-          stagger: 0.04,
-          ease: 'power2.out',
-          clearProps: 'transform,opacity,visibility',
-        });
-      });
-    },
-    {
-      scope: examRef,
-      dependencies: [activeTab, loading, gradeFilter, subjectFilter, Boolean(activeExam), Boolean(printExam)],
-    }
-  );
-
   useEffect(() => {
     if (!activeExam || latestResult) return;
     const timer = window.setInterval(() => {
@@ -799,7 +778,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[1, 2].map((i) => (
-            <div key={i} className="glass-surface rounded-3xl p-6 h-40 animate-pulse" />
+            <div key={i} className="glass-surface sc-skeleton rounded-3xl p-6 h-40" />
           ))}
         </div>
       ) : activeTab === 'history' ? (

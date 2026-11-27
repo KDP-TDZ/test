@@ -7,14 +7,13 @@ import {
   CheckCircle2,
   Clock,
   FileUp,
-  Loader2,
   RefreshCw,
   Sparkles,
   Trash2,
   Zap,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { gsap, MOTION_ALLOWED_MEDIA, useGSAP } from '../lib/gsapSetup';
+import { CalmDots, CalmProgressBar } from './CalmLoadingIndicator';
 import {
   SUBJECT_LABELS,
   type AiJobRecord,
@@ -236,62 +235,6 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     }, 1000);
     return () => window.clearInterval(timer);
   }, [step]);
-
-  useGSAP(
-    () => {
-      const mm = gsap.matchMedia();
-      mm.add(MOTION_ALLOWED_MEDIA, () => {
-        gsap.from('.upload-step-panel', {
-          y: 12,
-          autoAlpha: 0,
-          duration: 0.32,
-          ease: 'power2.out',
-          clearProps: 'transform,opacity,visibility',
-        });
-      });
-    },
-    { scope: workspaceRef, dependencies: [step] }
-  );
-
-  useGSAP(
-    () => {
-      if (step !== 'processing') return;
-      const mm = gsap.matchMedia();
-      mm.add(MOTION_ALLOWED_MEDIA, () => {
-        gsap.fromTo(
-          '.upload-status-label',
-          { y: 5, autoAlpha: 0.35 },
-          {
-            y: 0,
-            autoAlpha: 1,
-            duration: 0.24,
-            ease: 'power2.out',
-            clearProps: 'transform,opacity,visibility',
-          }
-        );
-      });
-    },
-    { scope: workspaceRef, dependencies: [statusLabel, activeStage, step] }
-  );
-
-  useGSAP(
-    () => {
-      if (!progressFillRef.current || !progressDetail || progressDetail.total <= 0) return;
-      const ratio = Math.min(1, Math.max(0.08, progressDetail.current / progressDetail.total));
-      const mm = gsap.matchMedia();
-      mm.add(MOTION_ALLOWED_MEDIA, () => {
-        gsap.to(progressFillRef.current, {
-          scaleX: ratio,
-          duration: 0.35,
-          ease: 'power2.out',
-        });
-      });
-      mm.add('(prefers-reduced-motion: reduce)', () => {
-        gsap.set(progressFillRef.current, { scaleX: ratio });
-      });
-    },
-    { scope: workspaceRef, dependencies: [progressDetail?.current, progressDetail?.total, step] }
-  );
 
   const persistOcrDraft = (draft: OcrDraftCache | null) => {
     if (!user) return;
@@ -648,6 +591,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       const idempotencyKey = `${draft.documentId}_${draft.grade}_${draft.subject}_${ocrTextHash.slice(0, 10)}`;
       const res = await authorizedFetch('/api/ai/analyze', {
         method: 'POST',
+        timeoutMs: 65_000,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           idempotencyKey,
@@ -838,6 +782,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         }
         const res = await authorizedFetch('/api/ai/extract', {
           method: 'POST',
+          timeoutMs: 45_000,
           body: formData,
         });
         const data = await parseApiResponse<any>(res, 'Không thể trích xuất nội dung tài liệu.');
@@ -881,6 +826,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
 
           const res = await authorizedFetch('/api/ai/extract', {
             method: 'POST',
+            timeoutMs: 55_000,
             body: formData,
           });
           const data = await parseApiResponse<any>(res, 'Không thể trích xuất nội dung tài liệu.');
@@ -1106,9 +1052,9 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                 <span>Chọn nhanh Khối lớp & Môn học trước khi gửi (tăng tốc tìm SGK)</span>
               </div>
               {suggestingFromFileName ? (
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-sky-700 dark:text-sky-300 animate-pulse">
-                  <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-                  <span>AI đang gợi ý từ tên tệp ({suggestProgressPct}%)...</span>
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#1746A2] dark:text-[#93C5FD]">
+                  <span>Đang nhận diện từ tên tệp ({suggestProgressPct}%)</span>
+                  <CalmDots className="text-[#2563EB] dark:text-[#60A5FA]" />
                 </span>
               ) : hasManualScope ? (
                 <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
@@ -1126,7 +1072,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end">
-              {/* Grade Dropdown with Skeleton state */}
+              {/* Grade Dropdown */}
               <div className="sm:col-span-4 space-y-1">
                 <label
                   htmlFor="upload-grade-select"
@@ -1148,7 +1094,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                       setAutoSuggestNote(null);
                     }}
                     className={`w-full min-h-[40px] rounded-xl border border-sky-200/80 dark:border-slate-700 bg-white/90 dark:bg-slate-900/80 px-3 py-2 text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] focus:outline-none focus:ring-2 focus:ring-sky-500/40 cursor-pointer transition-opacity ${
-                      suggestingFromFileName ? 'opacity-45 animate-pulse' : ''
+                      suggestingFromFileName ? 'opacity-70' : ''
                     }`}
                   >
                     <option value="10">Khối Lớp 10 (GDPT 2018)</option>
@@ -1158,7 +1104,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                 </div>
               </div>
 
-              {/* Subject Dropdown with Skeleton state */}
+              {/* Subject Dropdown */}
               <div className="sm:col-span-5 space-y-1">
                 <label
                   htmlFor="upload-subject-select"
@@ -1179,7 +1125,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                       setAutoSuggestNote(null);
                     }}
                     className={`w-full min-h-[40px] rounded-xl border border-sky-200/80 dark:border-slate-700 bg-white/90 dark:bg-slate-900/80 px-3 py-2 text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] focus:outline-none focus:ring-2 focus:ring-sky-500/40 cursor-pointer transition-opacity ${
-                      suggestingFromFileName ? 'opacity-45 animate-pulse' : ''
+                      suggestingFromFileName ? 'opacity-70' : ''
                     }`}
                   >
                     <option value="auto">Tự động nhận diện môn học (AI)</option>
@@ -1199,14 +1145,14 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                   disabled={suggestingFromFileName}
                   onClick={handleAutoSuggestFromFileName}
                   title="Để AI tự động gợi ý Khối lớp & Môn học dựa trên tên tệp"
-                  className="w-full min-h-[40px] glass-control inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] hover:border-sky-400 dark:hover:border-sky-500 transition-colors cursor-pointer disabled:opacity-60"
+                  className="w-full min-h-[40px] glass-control inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] hover:border-sky-400 dark:hover:border-sky-500 transition-colors cursor-pointer disabled:opacity-70"
                 >
                   {suggestingFromFileName ? (
-                    <Loader2 className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400 animate-spin shrink-0" />
+                    <CalmDots className="text-[#2563EB] dark:text-[#60A5FA]" />
                   ) : (
                     <Sparkles className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400 shrink-0" />
                   )}
-                  <span>{suggestingFromFileName ? 'Đang gợi ý...' : 'Tự động'}</span>
+                  <span>{suggestingFromFileName ? 'Đang gợi ý' : 'Tự động'}</span>
                 </button>
               </div>
             </div>
@@ -1245,34 +1191,30 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
               <div
                 role="status"
                 aria-live="polite"
-                className="mb-5 mx-auto max-w-md rounded-2xl border border-sky-200/90 dark:border-sky-800/70 bg-white/90 dark:bg-slate-900/90 p-3.5 shadow-sm space-y-2.5 text-left"
+                className="mb-5 mx-auto max-w-md rounded-2xl border border-[#BFDBFE] dark:border-[#1E293B] bg-white dark:bg-[#111B30] p-3.5 shadow-xs space-y-2.5 text-left"
               >
-                <div className="flex items-center justify-between gap-2 text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
-                  <span className="inline-flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400 animate-pulse shrink-0" />
-                    <span>AI đang phân tích tên tệp & gợi ý phạm vi SGK...</span>
+                <div className="flex items-center justify-between gap-2 text-xs font-semibold text-[#172033] dark:text-[#E6EFFC]">
+                  <span className="inline-flex items-center gap-2">
+                    <Sparkles className="w-3.5 h-3.5 text-[#2563EB] dark:text-[#60A5FA] shrink-0" />
+                    <span>Đang phân tích tên tệp & gợi ý phạm vi SGK</span>
                   </span>
-                  <span className="font-mono text-[11px] text-sky-600 dark:text-sky-400 tabular-nums">
+                  <span className="font-mono text-[11px] text-[#2563EB] dark:text-[#60A5FA] tabular-nums">
                     {suggestProgressPct}%
                   </span>
                 </div>
 
                 {/* Smooth Progress Bar */}
-                <div className="h-1.5 w-full rounded-full bg-sky-100 dark:bg-slate-800 overflow-hidden">
+                <div className="h-1.5 w-full rounded-full bg-[#E6ECF5] dark:bg-[#1E293B] overflow-hidden">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-[#2563EB] via-[#3B82F6] to-[#60A5FA] transition-all duration-300 ease-out"
+                    className="h-full rounded-full bg-[#2563EB] dark:bg-[#3B82F6] transition-all duration-300 ease-out"
                     style={{ width: `${Math.max(18, suggestProgressPct)}%` }}
                   />
                 </div>
 
-                {/* Skeleton Shimmer Pills for Grade & Subject */}
+                {/* Calm Shimmer Placeholders */}
                 <div className="grid grid-cols-2 gap-2 pt-0.5">
-                  <div className="h-7 rounded-xl bg-slate-200/75 dark:bg-slate-800/90 animate-pulse flex items-center px-2.5">
-                    <span className="h-2.5 w-20 rounded bg-slate-300/90 dark:bg-slate-700" />
-                  </div>
-                  <div className="h-7 rounded-xl bg-slate-200/75 dark:bg-slate-800/90 animate-pulse flex items-center px-2.5">
-                    <span className="h-2.5 w-28 rounded bg-slate-300/90 dark:bg-slate-700" />
-                  </div>
+                  <div className="h-7 rounded-xl sc-skeleton" />
+                  <div className="h-7 rounded-xl sc-skeleton" />
                 </div>
               </div>
             )}
@@ -1465,6 +1407,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
           <VerificationFiveStepBar
             activeStep={currentFiveStepId}
             customProgressPct={livePipelinePct}
+            indeterminate
             statusSummaryText={
               statusLabel || PIPELINE_STAGES[Math.max(0, activeStageIdx)]?.label
             }
@@ -1472,7 +1415,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
             <div className="space-y-5">
               <div className="text-center space-y-2.5">
                 <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-[#1746A2] dark:text-[#93C5FD] bg-[#EAF2FF] dark:bg-[#2563EB]/20 border border-[#BFDBFE] dark:border-[#3B82F6]/35">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <CalmDots className="text-[#2563EB] dark:text-[#60A5FA]" />
                   <span>
                     Chặng xử lý {Math.max(1, activeStageIdx + 1)}/{PIPELINE_STAGES.length}
                     {progressDetail && progressDetail.total > 0
@@ -1480,14 +1423,12 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                       : ''}
                   </span>
                 </div>
-                <h2 className="upload-status-label font-display text-[clamp(1.05rem,3.2vw,1.3rem)] font-bold text-[#172033] dark:text-[#E6EFFC]">
+                <h2 className="upload-status-label min-h-[1.85rem] font-display text-[clamp(1.05rem,3.2vw,1.3rem)] font-bold text-[#172033] dark:text-[#E6EFFC]">
                   {statusLabel || PIPELINE_STAGES[Math.max(0, activeStageIdx)]?.label}
                 </h2>
-                {progressDetail && progressDetail.total > 0 && (
-                  <div className="sr-only" aria-hidden="true">
-                    <div ref={progressFillRef} />
-                  </div>
-                )}
+                <div className="max-w-xs mx-auto pt-0.5">
+                  <CalmProgressBar className="h-1 w-full" label="Đang xử lý tài liệu" />
+                </div>
                 <p className="inline-flex items-center gap-1.5 font-mono text-xs text-[#525E75] dark:text-[#94A3B8] tabular-nums">
                   <Clock className="w-3.5 h-3.5 text-[#2563EB] dark:text-[#60A5FA]" />
                   Thời gian đã trôi qua: {elapsedSeconds}s

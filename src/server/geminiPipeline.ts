@@ -44,6 +44,7 @@ import {
   groupRawTextIntoSemanticBlocks,
   isNonGradableLeadInClaim,
 } from '../core/semanticBlocks.js';
+import { inferScopeFromContentHeuristic } from '../core/uploadBatching.js';
 import type {
   AiProviderId,
   AiTaskType,
@@ -580,6 +581,8 @@ async function runTaskWithRouter<T>(params: {
   preferredPrimaryModelId?: string;
   preferredFallbackModelId?: string;
   strictModelLock?: boolean;
+  overallTimeoutMs?: number;
+  maxFallbackRetries?: number;
   extractExecutionMeta?: (data: T) => { actualModel?: string; systemFingerprint?: string };
   runWithModel: (modelId: string) => Promise<T>;
 }): Promise<RoutedAiTaskResult<T>> {
@@ -595,6 +598,8 @@ async function runTaskWithRouter<T>(params: {
     preferredPrimaryModelId: params.preferredPrimaryModelId,
     preferredFallbackModelId: params.preferredFallbackModelId,
     strictModelLock: params.strictModelLock,
+    overallTimeoutMs: params.overallTimeoutMs,
+    maxFallbackRetries: params.maxFallbackRetries,
     extractExecutionMeta: params.extractExecutionMeta,
     runWithModel: params.runWithModel,
   });
@@ -957,12 +962,20 @@ export class DocumentExtractionService {
   }
 
   static async extractFromDocxBuffer(buffer: Buffer): Promise<ExtractedPage[]> {
-    const mammothMod = await import('mammoth');
-    const mammothApi = mammothMod.default || mammothMod;
-    const result = await mammothApi.extractRawText({ buffer });
-    const raw = (result.value || '').trim();
+    let raw = '';
+    try {
+      const mammothMod = await import('mammoth');
+      const mammothApi = mammothMod.default || mammothMod;
+      const result = await mammothApi.extractRawText({ buffer });
+      raw = (result.value || '').trim();
+    } catch (docxErr) {
+      const detail = docxErr instanceof Error ? docxErr.message : String(docxErr);
+      throw new Error(
+        `Không thể đọc cấu trúc tệp Word (.docx). Vui lòng lưu lại dưới định dạng .docx chuẩn hoặc xuất sang PDF/ảnh rồi tải lên lại. (${detail.slice(0, 90)})`
+      );
+    }
     if (!raw) {
-      throw new Error('File DOCX không có văn bản đọc được hoặc bị hỏng.');
+      throw new Error('File DOCX không có văn bản đọc được (có thể chỉ chứa ảnh chụp bên trong). Hãy lưu thành PDF/ảnh và tải lên lại.');
     }
     const paragraphs = raw
       .split(/\n+/)
@@ -1010,44 +1023,63 @@ export class SubjectDetectionService {
       sampleText.slice(0, 1800),
     ].join('\n');
 
-    const { data: parsed } = await runTaskWithRouter<{
-      suggestedGrade?: string;
-      suggestedSubject?: string;
-      suggestedChapters?: string[];
-      suggestedTitle?: string;
-    }>({
-      taskType: 'subject_classification',
-      config: opts?.config,
-      idToken: opts?.idToken,
-      allowGroqRescue: true,
-      cacheInput: { sample: sampleText.slice(0, 1500), rev: 'v4_3provider_topic_strict' },
-      runWithModel: async (modelId) =>
-        generateJsonWithProvider({
-          modelId,
-          prompt: scopePrompt,
-          thinkingTier: 'minimal',
-          maxOutputTokens: 384,
-          timeoutMs: 15_000,
-          tokensOut,
-          fallbackJson: '{}',
-          groqSchemaHint:
-            '{"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
-        }),
-    });
+    const heuristicFallback = inferScopeFromContentHeuristic(sampleText);
 
-    const grade: GradeLevel =
-      parsed.suggestedGrade === '11' || parsed.suggestedGrade === '12' ? parsed.suggestedGrade : '10';
-    const subject: SubjectId =
-      parsed.suggestedSubject && parsed.suggestedSubject in SUBJECT_LABELS
-        ? (parsed.suggestedSubject as SubjectId)
-        : 'khac';
+    try {
+      const { data: parsed } = await callWithTimeout(
+        () =>
+          runTaskWithRouter<{
+            suggestedGrade?: string;
+            suggestedSubject?: string;
+            suggestedChapters?: string[];
+            suggestedTitle?: string;
+          }>({
+            taskType: 'subject_classification',
+            config: opts?.config,
+            idToken: opts?.idToken,
+            allowGroqRescue: false,
+            overallTimeoutMs: 7_000,
+            maxFallbackRetries: 0,
+            cacheInput: { sample: sampleText.slice(0, 1500), rev: 'v4_3provider_topic_strict' },
+            runWithModel: async (modelId) =>
+              generateJsonWithProvider({
+                modelId,
+                prompt: scopePrompt,
+                thinkingTier: 'minimal',
+                maxOutputTokens: 320,
+                timeoutMs: 5_000,
+                tokensOut,
+                fallbackJson: '{}',
+                groqSchemaHint:
+                  '{"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
+              }),
+          }),
+        7_500
+      );
 
-    return {
-      suggestedGrade: grade,
-      suggestedSubject: subject,
-      suggestedChapters: (parsed.suggestedChapters || []).slice(0, 5),
-      suggestedTitle: parsed.suggestedTitle || 'Tài liệu ôn tập',
-    };
+      const grade: GradeLevel =
+        parsed.suggestedGrade === '11' || parsed.suggestedGrade === '12'
+          ? parsed.suggestedGrade
+          : parsed.suggestedGrade === '10'
+            ? '10'
+            : heuristicFallback.suggestedGrade;
+      const subject: SubjectId =
+        parsed.suggestedSubject && parsed.suggestedSubject in SUBJECT_LABELS
+          ? (parsed.suggestedSubject as SubjectId)
+          : heuristicFallback.suggestedSubject;
+
+      return {
+        suggestedGrade: grade,
+        suggestedSubject: subject,
+        suggestedChapters:
+          Array.isArray(parsed.suggestedChapters) && parsed.suggestedChapters.length > 0
+            ? parsed.suggestedChapters.slice(0, 5)
+            : heuristicFallback.suggestedChapters,
+        suggestedTitle: parsed.suggestedTitle?.trim() || heuristicFallback.suggestedTitle,
+      };
+    } catch {
+      return heuristicFallback;
+    }
   }
 }
 

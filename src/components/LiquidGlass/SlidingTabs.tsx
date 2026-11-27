@@ -1,5 +1,5 @@
 import React, { useId } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { motion, useReducedMotion } from 'motion/react';
 
 export interface SlidingTabItem<T extends string = string> {
   id: T;
@@ -86,30 +86,15 @@ interface TabContentFadeProps {
 }
 
 /**
- * Smooth 180ms crossfade wrapper for tab panel content transitions.
+ * Steady, zero-jitter wrapper for workspace panel transitions.
+ * Avoids `AnimatePresence mode="wait"` blanking pauses and vertical layout jumps.
  */
 export const TabContentFade: React.FC<TabContentFadeProps> = ({
   activeKey,
   children,
   className = '',
-}) => {
-  const prefersReduced = useReducedMotion();
-
-  return (
-    <AnimatePresence mode="wait" initial={false}>
-      <motion.div
-        key={activeKey}
-        initial={prefersReduced ? { opacity: 1 } : { opacity: 0, y: 5 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={prefersReduced ? { opacity: 1 } : { opacity: 0, y: -4 }}
-        transition={{
-          duration: prefersReduced ? 0 : 0.18,
-          ease: [0.16, 1, 0.3, 1],
-        }}
-        className={className}
-      >
-        {children}
-      </motion.div>
-    </AnimatePresence>
-  );
-};
+}) => (
+  <div key={activeKey} className={className}>
+    {children}
+  </div>
+);

@@ -4,7 +4,6 @@ import {
   FileCheck2,
   FileSpreadsheet,
   FileText,
-  Loader2,
   Printer,
   RefreshCw,
   ScrollText,
@@ -21,6 +20,7 @@ import {
   exportSummaryAsXlsx,
   type SummaryExportFormat,
 } from '../services/summaryExportService';
+import { CalmDots } from './CalmLoadingIndicator';
 import { AnimatedModal } from './LiquidGlass/AnimatedModal';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 
@@ -264,7 +264,7 @@ export const SummaryExportModal: React.FC<SummaryExportModalProps> = ({
               >
                 <div className="size-9 rounded-xl bg-blue-500/12 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
                   {downloadingFormat === 'docx' ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <CalmDots />
                   ) : (
                     <FileText className="w-4 h-4" />
                   )}
@@ -287,7 +287,7 @@ export const SummaryExportModal: React.FC<SummaryExportModalProps> = ({
               >
                 <div className="size-9 rounded-xl bg-emerald-500/12 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
                   {downloadingFormat === 'xlsx' ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <CalmDots />
                   ) : (
                     <FileSpreadsheet className="w-4 h-4" />
                   )}
@@ -310,7 +310,7 @@ export const SummaryExportModal: React.FC<SummaryExportModalProps> = ({
               >
                 <div className="size-9 rounded-xl bg-[#EAF2FF] dark:bg-[#2563EB]/20 text-[#2563EB] dark:text-[#60A5FA] flex items-center justify-center shrink-0">
                   {downloadingFormat === 'txt' ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <CalmDots />
                   ) : (
                     <ScrollText className="w-4 h-4" />
                   )}
@@ -333,7 +333,7 @@ export const SummaryExportModal: React.FC<SummaryExportModalProps> = ({
               >
                 <div className="size-9 rounded-xl bg-rose-500/12 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
                   {downloadingFormat === 'pdf' ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <CalmDots />
                   ) : (
                     <Printer className="w-4 h-4" />
                   )}

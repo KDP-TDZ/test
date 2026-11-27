@@ -129,24 +129,6 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
     );
   };
 
-  useGSAP(
-    () => {
-      if (loading) return;
-      const mm = gsap.matchMedia();
-      mm.add(MOTION_ALLOWED_MEDIA, () => {
-        gsap.from('.sc-dash-stagger', {
-          y: 12,
-          autoAlpha: 0,
-          duration: 0.32,
-          stagger: 0.04,
-          ease: 'power2.out',
-          clearProps: 'transform,opacity,visibility',
-        });
-      });
-    },
-    { scope: rootRef, dependencies: [loading] }
-  );
-
   const firstName = profile?.displayName || user?.displayName || 'Học sinh';
 
   const quickDirectory = [
@@ -384,7 +366,7 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
             {[1, 2, 3, 4].map((i) => (
               <div
                 key={i}
-                className="sc-card h-[200px] animate-pulse bg-white dark:bg-[#111B30]"
+                className="sc-card sc-skeleton h-[200px]"
               />
             ))}
           </div>

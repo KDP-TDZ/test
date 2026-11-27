@@ -14,6 +14,8 @@ export interface VerificationFiveStepBarProps {
   onSelectStep?: (stepId: VerificationStepId) => void;
   /** Optional right-side status caption (rendered as clean unboxed metadata) */
   statusSummaryText?: string;
+  /** Shows a calm horizontal light glide on the progress rail while background AI work runs */
+  indeterminate?: boolean;
   /** Optional embedded detail slot rendered below the continuous bottom progress rail */
   children?: React.ReactNode;
 }
@@ -24,6 +26,7 @@ export const VerificationFiveStepBar: React.FC<VerificationFiveStepBarProps> = (
   interactiveSteps = [],
   onSelectStep,
   statusSummaryText,
+  indeterminate = false,
   children,
 }) => {
   const activeSpec = VERIFICATION_STEPS.find((s) => s.id === activeStep) || VERIFICATION_STEPS[0];
@@ -61,8 +64,8 @@ export const VerificationFiveStepBar: React.FC<VerificationFiveStepBarProps> = (
 
       {/* Unified Editorial Cobalt & Slate Stepper Card */}
       <div className="rounded-2xl sm:rounded-3xl p-2 sm:p-3 bg-[#F1F5FA] dark:bg-[#0D1628] border border-[#E6ECF5] dark:border-[#1E293B]">
-        <div className="mx-auto max-w-4xl rounded-xl sm:rounded-2xl bg-white dark:bg-[#111B30] border border-[#E6ECF5] dark:border-[#1E293B] shadow-[0_2px_10px_-4px_rgba(15,23,42,0.06)] px-3.5 py-5 sm:px-8 sm:py-6">
-          <ol className="grid grid-cols-5 gap-1 sm:gap-4 items-start">
+        <div className="w-full rounded-xl sm:rounded-2xl bg-white dark:bg-[#111B30] border border-[#E6ECF5] dark:border-[#1E293B] shadow-[0_2px_10px_-4px_rgba(15,23,42,0.06)] px-4 py-5 sm:px-8 sm:py-6">
+          <ol className="mx-auto max-w-4xl grid grid-cols-5 gap-1 sm:gap-4 items-start">
             {VERIFICATION_STEPS.map((step) => {
               const isCurrent = step.id === activeStep;
               const isCompleted = step.id < activeStep;
@@ -138,7 +141,7 @@ export const VerificationFiveStepBar: React.FC<VerificationFiveStepBarProps> = (
           </ol>
 
           {/* Continuous Bottom Progress Rail (Cobalt #2563EB GPU scaleX fill) */}
-          <div className="mt-5 sm:mt-6 px-2 sm:px-4">
+          <div className="mx-auto max-w-4xl mt-5 sm:mt-6 px-2 sm:px-4">
             <div
               role="progressbar"
               aria-label="Tiến độ quy trình kiểm định và sửa lỗi"
@@ -149,7 +152,9 @@ export const VerificationFiveStepBar: React.FC<VerificationFiveStepBarProps> = (
               className="h-1.5 w-full rounded-full bg-[#E6ECF5] dark:bg-[#1E293B] overflow-hidden"
             >
               <div
-                className="h-full w-full origin-left rounded-full bg-[#2563EB] dark:bg-[#3B82F6] transition-transform duration-200 ease-out"
+                className={`h-full w-full origin-left rounded-full bg-[#2563EB] dark:bg-[#3B82F6] transition-transform duration-300 ease-out ${
+                  indeterminate ? 'sc-rail-sheen' : ''
+                }`}
                 style={{ transform: `scaleX(${scaleFraction})` }}
               />
             </div>

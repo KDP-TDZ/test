@@ -1,4 +1,5 @@
 import { auth } from '../firebaseAuth';
+import { formatNonJsonApiError } from '../core/apiErrorFormatting';
 
 const API_BASE = ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL || '')
   .trim()
@@ -14,19 +15,64 @@ export function resolveApiUrl(input: RequestInfo | URL): RequestInfo | URL {
 export interface AuthorizedFetchInit extends RequestInit {
   /** Retry once on transient network / 502 / 503 gateway errors (never retries 4xx / 413 / 429 / 504). */
   retryTransient?: boolean;
+  /** Optional client-side safety timeout in milliseconds so requests never hang indefinitely. */
+  timeoutMs?: number;
 }
 
 function isAbortError(err: unknown): boolean {
   return err instanceof DOMException
-    ? err.name === 'AbortError'
-    : err instanceof Error && err.name === 'AbortError';
+    ? err.name === 'AbortError' || err.name === 'TimeoutError'
+    : err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
+}
+
+async function fetchWithOptionalTimeout(
+  url: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs?: number
+): Promise<Response> {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return fetch(url, init);
+  }
+  const controller = new AbortController();
+  const externalSignal = init.signal;
+  let timedOut = false;
+
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (timedOut) {
+      throw new Error(
+        'Yêu cầu xử lý vượt quá thời gian chờ. Máy chủ AI đang bận — vui lòng bấm Thử lại.'
+      );
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
+  }
 }
 
 export async function authorizedFetch(
   input: RequestInfo | URL,
   init: AuthorizedFetchInit = {}
 ): Promise<Response> {
-  const { retryTransient, ...fetchInit } = init;
+  const { retryTransient, timeoutMs, ...fetchInit } = init;
   const method = (fetchInit.method || 'GET').toUpperCase();
   const shouldRetry =
     typeof retryTransient === 'boolean'
@@ -44,10 +90,14 @@ export async function authorizedFetch(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const res = await fetch(url, {
-        ...fetchInit,
-        headers,
-      });
+      const res = await fetchWithOptionalTimeout(
+        url,
+        {
+          ...fetchInit,
+          headers,
+        },
+        timeoutMs
+      );
 
       if ((res.status === 502 || res.status === 503) && attempt < maxAttempts) {
         await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -63,10 +113,14 @@ export async function authorizedFetch(
     }
   }
 
-  return fetch(url, {
-    ...fetchInit,
-    headers,
-  });
+  return fetchWithOptionalTimeout(
+    url,
+    {
+      ...fetchInit,
+      headers,
+    },
+    timeoutMs
+  );
 }
 
 export async function parseApiResponse<T = Record<string, any>>(
@@ -95,46 +149,5 @@ export async function parseApiResponse<T = Record<string, any>>(
     return parsed as T;
   }
 
-  // Non-JSON response (e.g. Vercel edge 413/504/502 or static host 404 HTML)
-  const lowered = rawText.trim().toLowerCase();
-
-  if (
-    res.status === 413 ||
-    lowered.includes('payload too large') ||
-    lowered.includes('request entity too large') ||
-    lowered.includes('function_payload_too_large')
-  ) {
-    throw new Error(
-      'Dung lượng gói tải lên vượt quá giới hạn 4.5MB của máy chủ Vercel. Hãy nén tệp PDF/DOCX xuống dưới 4MB hoặc tải ảnh (tối đa 5MB/ảnh, hệ thống sẽ tự nén).'
-    );
-  }
-
-  if (res.status === 504 || lowered.includes('function_invocation_timeout')) {
-    throw new Error(
-      'Máy chủ xử lý quá thời gian chờ (504). Hãy thử lại hoặc chia nhỏ tài liệu ít trang hơn.'
-    );
-  }
-
-  if (
-    res.status === 502 ||
-    res.status === 503 ||
-    lowered.includes('function_invocation_failed')
-  ) {
-    throw new Error(
-      'Máy chủ API tạm thời quá tải hoặc đang khởi động lại (502/503). Vui lòng bấm Thử lại ngay.'
-    );
-  }
-
-  if (
-    res.status === 404 ||
-    lowered.includes('the page could not be found') ||
-    lowered.startsWith('<!doctype') ||
-    lowered.startsWith('<html')
-  ) {
-    throw new Error(
-      'Không tìm thấy máy chủ xử lý API (/api/*). Hãy đảm bảo ứng dụng được deploy kèm backend Node/Serverless (không phải bản tĩnh thuần).'
-    );
-  }
-
-  throw new Error(rawText.trim().slice(0, 180) || `${fallbackError} (HTTP ${res.status})`);
+  throw new Error(formatNonJsonApiError(res.status, rawText, fallbackError));
 }

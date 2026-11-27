@@ -152,6 +152,15 @@ export function isDecodedSuperAdmin(decoded: DecodedIdToken): boolean {
   return false;
 }
 
+const FIREBASE_REST_TIMEOUT_MS = 6_000;
+
+function createRestTimeoutSignal(ms = FIREBASE_REST_TIMEOUT_MS): AbortSignal | undefined {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(ms);
+  }
+  return undefined;
+}
+
 async function verifyTokenViaIdentityToolkit(idToken: string): Promise<{
   uid: string;
   email: string;
@@ -162,6 +171,7 @@ async function verifyTokenViaIdentityToolkit(idToken: string): Promise<{
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ idToken }),
+    signal: createRestTimeoutSignal(8_000),
   });
   if (!res.ok) {
     throw new Error(`AUTH_LOOKUP_FAILED (${res.status})`);
@@ -372,6 +382,7 @@ export async function firestoreRestGet<T = Record<string, unknown>>(
   const url = `${firestoreDocBaseUrl()}/${docPath}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${idToken}` },
+    signal: createRestTimeoutSignal(),
   });
   if (res.status === 404) return null;
   if (!res.ok) {
@@ -406,6 +417,7 @@ export async function firestoreRestSet(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ fields }),
+    signal: createRestTimeoutSignal(),
   });
   if (!res.ok) {
     const txt = await res.text();
@@ -421,6 +433,7 @@ export async function firestoreRestList<T = Record<string, unknown>>(
   const url = `${firestoreDocBaseUrl()}/${collectionPath}?pageSize=${pageSize}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${idToken}` },
+    signal: createRestTimeoutSignal(),
   });
   if (res.status === 404) return [];
   if (!res.ok) {
@@ -445,6 +458,7 @@ export async function firestoreRestDelete(docPath: string, idToken: string): Pro
   const res = await fetch(url, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${idToken}` },
+    signal: createRestTimeoutSignal(),
   });
   if (!res.ok && res.status !== 404) {
     const txt = await res.text();

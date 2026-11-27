@@ -41,6 +41,7 @@ import { MobileBottomNav } from './LiquidGlass/MobileBottomNav';
 import { HamburgerButton, NavigationDrawer } from './LiquidGlass/NavigationDrawer';
 import { TabContentFade } from './LiquidGlass/SlidingTabs';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
+import { CalmDots, CalmProgressBar } from './CalmLoadingIndicator';
 
 function lazyWithRetry<T extends React.ComponentType<any>>(
   factory: () => Promise<{ default: T }>
@@ -368,10 +369,13 @@ export const AuthenticatedShell: React.FC = () => {
   const renderActiveWorkspaceView = () => (
     <React.Suspense
       fallback={
-        <div className="py-12 flex items-center justify-center">
-          <div className="inline-flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-white dark:bg-[#111B30] border border-[#E6ECF5] dark:border-[#1E293B] text-xs font-medium text-[#525E75] dark:text-[#94A3B8] shadow-xs">
-            <span className="size-4 rounded-full border-2 border-[#2563EB] border-t-transparent animate-spin" />
-            <span>Đang tải không gian học tập...</span>
+        <div className="py-12 flex flex-col items-center justify-center gap-3">
+          <div className="w-56">
+            <CalmProgressBar className="h-1 w-full" label="Đang tải không gian học tập" />
+          </div>
+          <div className="inline-flex items-center gap-2 text-xs font-medium text-[#525E75] dark:text-[#94A3B8]">
+            <span>Đang mở không gian học tập</span>
+            <CalmDots className="text-[#2563EB] dark:text-[#60A5FA]" />
           </div>
         </div>
       }

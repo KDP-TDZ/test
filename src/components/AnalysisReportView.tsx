@@ -14,7 +14,6 @@ import {
   HelpCircle,
   Layers,
   Lightbulb,
-  Loader2,
   Printer,
   ScrollText,
   ShieldCheck,
@@ -30,7 +29,6 @@ import {
 } from '../core/summaryReportBuilder';
 import { SUBJECT_LABELS, type AnalysisRecord, type FeedbackEntry } from '../core/types';
 import { sanitizeExternalHttpUrl } from '../core/urlSecurity';
-import { gsap, MOTION_ALLOWED_MEDIA, ScrollTrigger, useGSAP } from '../lib/gsapSetup';
 import { authorizedFetch, parseApiResponse } from '../services/apiClient';
 import { saveFlashcard, submitFeedback } from '../services/firestoreService';
 import {
@@ -39,6 +37,7 @@ import {
   exportSummaryAsXlsx,
   type SummaryExportFormat,
 } from '../services/summaryExportService';
+import { CalmDots } from './CalmLoadingIndicator';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { ScoreRing } from './LiquidGlass/ScoreRing';
 import { SmoothAccordion } from './LiquidGlass/SmoothAccordion';
@@ -300,56 +299,6 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
   const comp = analysis.completenessBreakdown;
   const aiEnabled = systemStatus ? systemStatus.enabled : true;
 
-  useGSAP(
-    () => {
-      const mm = gsap.matchMedia();
-      mm.add(MOTION_ALLOWED_MEDIA, () => {
-        const tl = gsap.timeline({ defaults: { ease: 'power2.out' } });
-        tl.from('.report-hero-block', {
-          y: 12,
-          autoAlpha: 0,
-          duration: 0.34,
-          clearProps: 'transform,opacity,visibility',
-        }).from(
-          '.report-metric-card',
-          {
-            y: 14,
-            autoAlpha: 0,
-            duration: 0.34,
-            stagger: 0.06,
-            clearProps: 'transform,opacity,visibility',
-          },
-          '-=0.18'
-        );
-
-        const sections = gsap.utils.toArray<HTMLElement>('.report-scroll-section', reportRef.current);
-        sections.forEach((section) => {
-          gsap.from(section, {
-            y: 16,
-            autoAlpha: 0,
-            duration: 0.38,
-            ease: 'power2.out',
-            clearProps: 'transform,opacity,visibility',
-            scrollTrigger: {
-              trigger: section,
-              start: 'top 92%',
-              once: true,
-            },
-          });
-        });
-      });
-    },
-    { scope: reportRef, dependencies: [analysis.analysisId] }
-  );
-
-  // Refresh ScrollTrigger positions whenever collapsible panels change document height
-  useEffect(() => {
-    const rafId = window.requestAnimationFrame(() => {
-      ScrollTrigger.refresh();
-    });
-    return () => window.cancelAnimationFrame(rafId);
-  }, [showFormula, showAuditTrail, reportingClaimId, flashcardNotice, feedbackResult, confirmedSummary]);
-
   // Before/After Comparison against an older analysis in the same subject
   const previousComparable = useMemo(() => {
     const candidates = allAnalyses
@@ -563,7 +512,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
               className="glass-control min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] disabled:opacity-50 cursor-pointer"
             >
               {generatingCards ? (
-                <Loader2 className="w-4 h-4 animate-spin text-sky-600" />
+                <CalmDots className="text-[#2563EB] dark:text-[#60A5FA]" />
               ) : (
                 <Layers className="w-4 h-4 text-sky-600 dark:text-sky-400" />
               )}
@@ -1565,7 +1514,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 className="glass-control min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
               >
                 {inlineExportingFormat === 'docx' ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                  <CalmDots className="text-blue-600" />
                 ) : (
                   <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 )}
@@ -1579,7 +1528,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 className="glass-control min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
               >
                 {inlineExportingFormat === 'xlsx' ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
+                  <CalmDots className="text-emerald-600" />
                 ) : (
                   <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                 )}
@@ -1593,7 +1542,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 className="glass-control min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
               >
                 {inlineExportingFormat === 'txt' ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-[#2563EB]" />
+                  <CalmDots className="text-[#2563EB]" />
                 ) : (
                   <ScrollText className="w-4 h-4 text-[#2563EB] dark:text-[#60A5FA]" />
                 )}
@@ -1607,7 +1556,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 className="glass-control min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
               >
                 {inlineExportingFormat === 'pdf' ? (
-                  <Loader2 className="w-4 h-4 animate-spin text-rose-600" />
+                  <CalmDots className="text-rose-600" />
                 ) : (
                   <Printer className="w-4 h-4 text-rose-600 dark:text-rose-400" />
                 )}

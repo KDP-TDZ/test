@@ -273,3 +273,64 @@ export function inferGradeAndSubjectFromFileNames(
   };
 }
 
+export interface ContentScopeHeuristicResult {
+  suggestedGrade: GradeLevel;
+  suggestedSubject: SubjectId;
+  suggestedChapters: string[];
+  suggestedTitle: string;
+}
+
+/**
+ * Fast, deterministic (< 1ms) Vietnamese THPT grade & subject classifier from extracted document text.
+ * Used as an instant safety net when `/api/ai/extract` scope AI times out or is unavailable.
+ */
+export function inferScopeFromContentHeuristic(
+  sampleText: string,
+  fallbackTitle = 'Tài liệu ôn tập'
+): ContentScopeHeuristicResult {
+  const cleanTitle = (fallbackTitle || 'Tài liệu ôn tập').replace(/\.[^.]+$/, '').trim() || 'Tài liệu ôn tập';
+  const snippet = `${cleanTitle}\n${(sampleText || '').slice(0, 2600)}`;
+  const normalized = normalizeVietnameseTokenText(snippet);
+
+  let detectedGrade: GradeLevel = '10';
+  const gradeMatch =
+    normalized.match(/\b(?:lop|khoi|chuong trinh|sgk|on tap|de kiem tra|de thi)\s*(10|11|12)\b/) ||
+    normalized.match(/\b(?:toan|vat ly|vat li|hoa hoc|sinh hoc|ngu van|tieng anh|lich su|dia ly|tin hoc|gdkt pl|gdcd)\s*(10|11|12)\b/);
+  if (gradeMatch && (gradeMatch[1] === '10' || gradeMatch[1] === '11' || gradeMatch[1] === '12')) {
+    detectedGrade = gradeMatch[1];
+  }
+
+  let bestSubject: SubjectId = 'khac';
+  let bestScore = 0;
+  for (const rule of SUBJECT_KEYWORD_RULES) {
+    let score = 0;
+    for (const pattern of rule.patterns) {
+      const globalPattern = new RegExp(pattern.source, 'gi');
+      const matches = normalized.match(globalPattern);
+      if (matches) {
+        score += matches.length;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestSubject = rule.subject;
+    }
+  }
+
+  // Extract up to 2 chapter/heading lines from the first few lines as lightweight chapter hints
+  const chapterHints = (sampleText || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 6 && line.length <= 90)
+    .filter((line) => /^(chương|bài|chủ đề|phần)\s+[\dIVX]+/i.test(line))
+    .slice(0, 3);
+
+  return {
+    suggestedGrade: detectedGrade,
+    suggestedSubject: bestSubject,
+    suggestedChapters: chapterHints,
+    suggestedTitle: cleanTitle.slice(0, 110),
+  };
+}
+
+

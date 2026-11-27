@@ -98,6 +98,7 @@ import {
 import {
   buildFileNameSuggestionCacheKey,
   inferGradeAndSubjectFromFileNames,
+  inferScopeFromContentHeuristic,
   isGenericCameraFileNames,
   validateUploadFileSize,
 } from '../core/uploadBatching.js';
@@ -697,21 +698,28 @@ export function createApiApp(): express.Express {
 
       const combinedForScope = [previousText, ...pages.map((p) => p.rawText)].filter(Boolean).join('\n');
       const heuristicScope = inferGradeAndSubjectFromFileNames([first.originalname]);
+      const contentHeuristic = inferScopeFromContentHeuristic(combinedForScope, first.originalname);
       const fallbackScopeSuggestion = {
-        suggestedGrade: presetGrade || heuristicScope.grade || '10',
+        suggestedGrade: presetGrade || heuristicScope.grade || contentHeuristic.suggestedGrade || '10',
         suggestedSubject:
-          presetSubject !== 'khac' ? presetSubject : heuristicScope.subject || 'khac',
-        suggestedChapters: [] as string[],
-        suggestedTitle: first.originalname.replace(/\.[^.]+$/, ''),
+          presetSubject !== 'khac'
+            ? presetSubject
+            : heuristicScope.subject || contentHeuristic.suggestedSubject || 'khac',
+        suggestedChapters: contentHeuristic.suggestedChapters,
+        suggestedTitle: first.originalname.replace(/\.[^.]+$/, '') || contentHeuristic.suggestedTitle,
       };
 
       let scopeSuggestion = fallbackScopeSuggestion;
       if (!skipScope && combinedForScope.trim().length > 15) {
         try {
-          scopeSuggestion = await SubjectDetectionService.detectScope(combinedForScope, tokens, {
-            config: guard.config,
-            idToken: user.idToken,
-          });
+          scopeSuggestion = await callWithTimeout(
+            () =>
+              SubjectDetectionService.detectScope(combinedForScope, tokens, {
+                config: guard.config,
+                idToken: user.idToken,
+              }),
+            8_500
+          );
         } catch (scopeErr) {
           console.warn('Non-fatal scope detection fallback during /api/ai/extract:', scopeErr);
         }

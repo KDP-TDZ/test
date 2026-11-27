@@ -6,12 +6,12 @@ import {
   Flag,
   HelpCircle,
   Info,
-  Loader2,
   RotateCcw,
   Sparkles,
   XCircle,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { CalmDots } from './CalmLoadingIndicator';
 import {
   computeNextQuestionIndex,
   isEditableKeyboardTarget,
@@ -105,40 +105,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
       .catch(() => setSavedQuizSets([]));
   }, [user]);
 
-  const { contextSafe } = useGSAP(
-    () => {
-      if (!activeQuiz) return;
-      const mm = gsap.matchMedia();
-      mm.add(MOTION_ALLOWED_MEDIA, () => {
-        gsap.from('.quiz-question-card', {
-          y: 14,
-          autoAlpha: 0,
-          duration: 0.34,
-          stagger: 0.05,
-          ease: 'power2.out',
-          clearProps: 'transform,opacity,visibility',
-        });
-      });
-    },
-    { scope: quizRef, dependencies: [activeQuiz?.quizSetId] }
-  );
-
-  useGSAP(
-    () => {
-      if (!lastAnsweredId) return;
-      const mm = gsap.matchMedia();
-      mm.add(MOTION_ALLOWED_MEDIA, () => {
-        gsap.from(`[data-quiz-feedback="${lastAnsweredId}"]`, {
-          y: 8,
-          autoAlpha: 0,
-          duration: 0.26,
-          ease: 'power2.out',
-          clearProps: 'transform,opacity,visibility',
-        });
-      });
-    },
-    { scope: quizRef, dependencies: [lastAnsweredId] }
-  );
+  const { contextSafe } = useGSAP({ scope: quizRef });
 
   const handleGenerateQuiz = async () => {
     if (!user || !sourceAnalysis) return;
@@ -550,7 +517,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
           >
             {generating ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <CalmDots />
                 Đang sinh bộ câu hỏi ABCD...
               </>
             ) : (

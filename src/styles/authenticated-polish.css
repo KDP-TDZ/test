@@ -241,6 +241,135 @@ html.dark[data-ui-mode] .sc-auth-shell .privacy-blur-toggle-active {
   display: none;
 }
 
+/* --- Calm, Zero-Jitter Loading Primitives (Replaces Spinning Wheels & Harsh Pulse) --- */
+
+@keyframes sc-glide-bar {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+@keyframes sc-soft-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.28;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+@keyframes sc-calm-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+.sc-auth-shell .sc-progress-indeterminate {
+  position: relative;
+  overflow: hidden;
+  border-radius: 9999px;
+  background-color: var(--sc-border);
+}
+
+.sc-auth-shell .sc-progress-indeterminate::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 42%;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    rgba(37, 99, 235, 0) 0%,
+    rgba(37, 99, 235, 0.92) 50%,
+    rgba(37, 99, 235, 0) 100%
+  );
+  animation: sc-glide-bar 1.55s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: transform;
+}
+
+html.dark[data-ui-mode] .sc-auth-shell .sc-progress-indeterminate::after {
+  background: linear-gradient(
+    90deg,
+    rgba(96, 165, 250, 0) 0%,
+    rgba(96, 165, 250, 0.95) 50%,
+    rgba(96, 165, 250, 0) 100%
+  );
+}
+
+.sc-auth-shell .sc-rail-sheen {
+  position: relative;
+  overflow: hidden;
+}
+
+.sc-auth-shell .sc-rail-sheen::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 36%;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.55) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: sc-glide-bar 1.75s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: transform;
+}
+
+.sc-auth-shell .sc-loading-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  vertical-align: middle;
+}
+
+.sc-auth-shell .sc-loading-dots > span {
+  width: 4px;
+  height: 4px;
+  border-radius: 9999px;
+  background-color: currentColor;
+  animation: sc-soft-dot 1.2s ease-in-out infinite;
+}
+
+.sc-auth-shell .sc-loading-dots > span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.sc-auth-shell .sc-loading-dots > span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+.sc-auth-shell .sc-skeleton {
+  background-color: #eef3fa;
+  background-image: linear-gradient(
+    105deg,
+    rgba(238, 243, 250, 0) 35%,
+    rgba(255, 255, 255, 0.72) 50%,
+    rgba(238, 243, 250, 0) 65%
+  );
+  background-size: 220% 100%;
+  animation: sc-calm-shimmer 1.9s ease-in-out infinite;
+}
+
+html.dark[data-ui-mode] .sc-auth-shell .sc-skeleton {
+  background-color: #111b30;
+  background-image: linear-gradient(
+    105deg,
+    rgba(17, 27, 48, 0) 35%,
+    rgba(51, 65, 85, 0.38) 50%,
+    rgba(17, 27, 48, 0) 65%
+  );
+}
+
 /* --- Reduced Motion Support --- */
 @media (prefers-reduced-motion: reduce) {
   .sc-auth-shell *,

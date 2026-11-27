@@ -17,7 +17,6 @@ import {
   KeyRound,
   Layers,
   ListChecks,
-  Loader2,
   MessageSquareWarning,
   PauseCircle,
   PlayCircle,
@@ -37,6 +36,7 @@ import {
   Wand2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { CalmDots, CalmProgressBar } from './CalmLoadingIndicator';
 import {
   distributeExamQuestionScores,
   generateShuffledExamVariant,
@@ -2038,9 +2038,14 @@ export const AdminControlCenter: React.FC = () => {
       )}
 
       {loading ? (
-        <GlassSurface className="rounded-3xl p-10 text-center">
-          <Loader2 className="w-8 h-8 text-sky-600 animate-spin mx-auto" />
-          <p className="text-xs text-slate-600 dark:text-slate-300 mt-3">Đang đồng bộ dữ liệu quản trị...</p>
+        <GlassSurface className="rounded-3xl p-10 text-center space-y-3">
+          <div className="max-w-xs mx-auto">
+            <CalmProgressBar className="h-1.5 w-full" label="Đang đồng bộ dữ liệu quản trị" />
+          </div>
+          <p className="inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+            <span>Đang đồng bộ dữ liệu quản trị</span>
+            <CalmDots className="text-[#2563EB] dark:text-[#60A5FA]" />
+          </p>
         </GlassSurface>
       ) : (
         <>
@@ -3572,7 +3577,7 @@ export const AdminControlCenter: React.FC = () => {
                           onClick={() => void handleGenerateSgkOutline()}
                         >
                           {synthesizingOutline ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <CalmDots />
                           ) : (
                             <Wand2 className="w-4 h-4" />
                           )}
@@ -3748,9 +3753,9 @@ export const AdminControlCenter: React.FC = () => {
 
                                   <div className="flex items-center gap-2 shrink-0">
                                     {ch.status === 'running' && (
-                                      <span className="inline-flex items-center gap-1 font-semibold text-sky-700 dark:text-sky-300">
-                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                        <span>Đang tổng hợp...</span>
+                                      <span className="inline-flex items-center gap-1.5 font-semibold text-sky-700 dark:text-sky-300">
+                                        <CalmDots />
+                                        <span>Đang tổng hợp</span>
                                       </span>
                                     )}
                                     {ch.status === 'saved' && (
@@ -3794,7 +3799,7 @@ export const AdminControlCenter: React.FC = () => {
                               onClick={() => void handleRunSequentialChapterSynthesis()}
                             >
                               {synthesizingChapters ? (
-                                <Loader2 className="w-4 h-4 animate-spin" />
+                                <CalmDots />
                               ) : (
                                 <Sparkles className="w-4 h-4" />
                               )}
@@ -3910,7 +3915,7 @@ export const AdminControlCenter: React.FC = () => {
                       <div className="flex flex-wrap items-center gap-3">
                         <WaterRippleButton type="submit" disabled={ingestingRef || !refFile}>
                           {ingestingRef ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <CalmDots />
                           ) : (
                             <FileUp className="w-4 h-4" />
                           )}
@@ -4872,7 +4877,7 @@ export const AdminControlCenter: React.FC = () => {
                     >
                       {importingSampleExam ? (
                         <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <CalmDots />
                           Đang đọc & sao chép câu hỏi...
                         </>
                       ) : (

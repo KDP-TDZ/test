@@ -310,6 +310,10 @@ export async function executeRoutedAiTask<T>(params: {
   preferredPrimaryModelId?: string;
   preferredFallbackModelId?: string;
   strictModelLock?: boolean;
+  /** Hard overall time budget across primary + fallback + cross-provider rescue hops. */
+  overallTimeoutMs?: number;
+  /** Number of retries per fallback/rescue hop (default 0 to avoid multi-provider timeout cascades). */
+  maxFallbackRetries?: number;
   extractExecutionMeta?: (data: T) => { actualModel?: string; systemFingerprint?: string };
   runWithModel: (modelId: string) => Promise<T>;
 }): Promise<RoutedAiTaskResult<T>> {
@@ -323,6 +327,8 @@ export async function executeRoutedAiTask<T>(params: {
     preferredPrimaryModelId,
     preferredFallbackModelId,
     strictModelLock = false,
+    overallTimeoutMs,
+    maxFallbackRetries = 0,
     extractExecutionMeta,
     runWithModel,
   } = params;
@@ -481,6 +487,13 @@ export async function executeRoutedAiTask<T>(params: {
 
   const executeTask = async (): Promise<RoutedAiTaskResult<T>> => {
     const start = Date.now();
+    const overallDeadline =
+      typeof overallTimeoutMs === 'number' && overallTimeoutMs > 0
+        ? start + overallTimeoutMs
+        : null;
+    const isBudgetExhausted = () =>
+      overallDeadline !== null && Date.now() >= overallDeadline - 400;
+
     try {
       if (primaryUnconfigured) {
         throw new Error(
@@ -492,7 +505,7 @@ export async function executeRoutedAiTask<T>(params: {
         );
       }
       // When fallback is active, transition immediately on transient 429/503 within Vercel's timeout budget
-      const primaryRetries = canFallback ? 0 : 1;
+      const primaryRetries = canFallback || overallDeadline !== null ? 0 : 1;
       const result = await withExponentialBackoff(() => runWithModel(requestedModel), primaryRetries);
       if (overrideConsumed && consumeOneTimeOverride) {
         await consumeOneTimeOverride(taskType);
@@ -537,10 +550,13 @@ export async function executeRoutedAiTask<T>(params: {
         isGroqModelId(m) ? 'groq' : isCloudflareModelId(m) ? 'cloudflare' : 'mistral';
       triedProviders.add(providerOf(requestedModel));
 
-      if (canFallback) {
+      if (canFallback && !isBudgetExhausted()) {
         triedProviders.add(providerOf(fallbackModelId));
         try {
-          const fbResult = await withExponentialBackoff(() => runWithModel(fallbackModelId), 1);
+          const fbResult = await withExponentialBackoff(
+            () => runWithModel(fallbackModelId),
+            maxFallbackRetries
+          );
           if (overrideConsumed && consumeOneTimeOverride) {
             await consumeOneTimeOverride(taskType);
           }
@@ -550,7 +566,7 @@ export async function executeRoutedAiTask<T>(params: {
         }
       }
 
-      if (allowCrossProviderRescue) {
+      if (allowCrossProviderRescue && !isBudgetExhausted()) {
         // Cross-provider rescue hops across Mistral <-> Groq <-> Cloudflare
         const rescueHops: Array<{ provider: string; configured: boolean; modelId: string }> = [
           {
@@ -571,10 +587,14 @@ export async function executeRoutedAiTask<T>(params: {
         ];
 
         for (const hop of rescueHops) {
+          if (isBudgetExhausted()) break;
           if (!hop.configured || triedProviders.has(hop.provider)) continue;
           triedProviders.add(hop.provider);
           try {
-            const rescueResult = await withExponentialBackoff(() => runWithModel(hop.modelId), 1);
+            const rescueResult = await withExponentialBackoff(
+              () => runWithModel(hop.modelId),
+              maxFallbackRetries
+            );
             return finalizeSuccess(rescueResult, hop.modelId, true, start);
           } catch (rescueErr) {
             lastErr = rescueErr;
