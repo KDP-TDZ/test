@@ -22,12 +22,14 @@ export const DEFAULT_MASTERY_RULE: MasteryRuleConfig = {
 };
 
 /**
- * Computes Accuracy Score strictly from verified claims present in the student's document.
- * - CORRECT = 1.0
- * - PARTIALLY_CORRECT = 0.5
- * - INCORRECT = 0
- * - UNVERIFIED, OCR_UNCERTAIN, OUT_OF_SCOPE, AMBIGUOUS, MISSING are excluded from Accuracy denominator.
- * Never returns a fabricated 100% when there are zero verified claims.
+ * Computes transparent Accuracy Score & Total Correct / Wrong percentages strictly from evaluated claims.
+ * Every evaluated claim counts equally (1 unit) so counts and percentages ALWAYS match 100% transparently:
+ * - CORRECT = 1.0 điểm
+ * - PARTIALLY_CORRECT = 0.5 điểm (đúng một phần / thiếu điều kiện)
+ * - INCORRECT = 0.0 điểm
+ * - UNVERIFIED, OCR_UNCERTAIN, OUT_OF_SCOPE, AMBIGUOUS, MISSING are excluded from the evaluated denominator.
+ * - Guarantees correctPercent + incorrectPercent === 100 when evaluatedTotal > 0.
+ * Never returns a fabricated 100% when there are zero evaluated claims.
  */
 export function calculateAccuracyScore(
   claims: ExtractedClaim[],
@@ -45,16 +47,11 @@ export function calculateAccuracyScore(
     outOfScope: 0,
   };
 
-  let totalClaimWeight = 0;
-  let verifiedWeight = 0;
-  let earnedWeight = 0;
   let ocrConfidenceSum = 0;
   let ocrCount = 0;
 
   for (const claim of claims) {
-    const w = claim.importanceWeight || 1;
     if (claim.evaluationStatus !== 'MISSING' && claim.evaluationStatus !== 'OUT_OF_SCOPE') {
-      totalClaimWeight += w;
       ocrConfidenceSum += typeof claim.ocrConfidence === 'number' ? claim.ocrConfidence : 1;
       ocrCount += 1;
     }
@@ -62,17 +59,12 @@ export function calculateAccuracyScore(
     switch (claim.evaluationStatus) {
       case 'CORRECT':
         counts.correct += 1;
-        verifiedWeight += w;
-        earnedWeight += w * 1.0;
         break;
       case 'PARTIALLY_CORRECT':
         counts.partiallyCorrect += 1;
-        verifiedWeight += w;
-        earnedWeight += w * 0.5;
         break;
       case 'INCORRECT':
         counts.incorrect += 1;
-        verifiedWeight += w;
         break;
       case 'MISSING':
         counts.missing += 1;
@@ -92,18 +84,38 @@ export function calculateAccuracyScore(
     }
   }
 
+  const evaluatedTotal = counts.correct + counts.partiallyCorrect + counts.incorrect;
+  const earnedPoints = counts.correct * 1 + counts.partiallyCorrect * 0.5;
+  const totalGradableClaims =
+    evaluatedTotal + counts.unverified + counts.ambiguous + counts.ocrUncertain;
+
   const accuracyScore =
-    verifiedWeight > 0 ? Math.round((earnedWeight / verifiedWeight) * 1000) / 10 : null;
+    evaluatedTotal > 0 ? Math.round((earnedPoints / evaluatedTotal) * 1000) / 10 : null;
+  const correctPercent = accuracyScore;
+  const incorrectPercent =
+    accuracyScore !== null ? Math.round((100 - accuracyScore) * 10) / 10 : null;
+  const exactCorrectPercent =
+    evaluatedTotal > 0 ? Math.round((counts.correct / evaluatedTotal) * 1000) / 10 : null;
+  const partialPercent =
+    evaluatedTotal > 0 ? Math.round((counts.partiallyCorrect / evaluatedTotal) * 1000) / 10 : null;
+  const exactIncorrectPercent =
+    evaluatedTotal > 0 ? Math.round((counts.incorrect / evaluatedTotal) * 1000) / 10 : null;
+
+  const verifiedWeight = evaluatedTotal;
+  const earnedWeight = earnedPoints;
+  const totalClaimWeight = totalGradableClaims;
 
   const evidenceCoverage =
-    totalClaimWeight > 0 ? Math.round((verifiedWeight / totalClaimWeight) * 1000) / 10 : null;
+    totalGradableClaims > 0
+      ? Math.round((evaluatedTotal / totalGradableClaims) * 1000) / 10
+      : null;
 
   const avgOcrConfidence = ocrCount > 0 ? ocrConfidenceSum / ocrCount : 0;
 
   let confidenceLevel: ConfidenceLevel = 'Chưa đủ dữ liệu đánh giá';
   let confidenceReason = 'Chưa có đủ mệnh đề kiến thức được xác minh để đánh giá độ tin cậy.';
 
-  if (verifiedWeight > 0 && evidenceCoverage !== null) {
+  if (evaluatedTotal > 0 && evidenceCoverage !== null) {
     if (avgOcrConfidence >= 0.85 && evidenceCoverage >= 75 && hasReferenceTextbook) {
       confidenceLevel = 'Cao';
       confidenceReason = `Độ rõ OCR đạt ${Math.round(avgOcrConfidence * 100)}%, tỷ lệ dẫn chứng kiểm chứng ${evidenceCoverage}% và có sách giáo khoa tham chiếu trực tiếp.`;
@@ -120,6 +132,12 @@ export function calculateAccuracyScore(
 
   return {
     accuracyScore,
+    evaluatedTotal,
+    correctPercent,
+    incorrectPercent,
+    exactCorrectPercent,
+    partialPercent,
+    exactIncorrectPercent,
     verifiedWeight,
     earnedWeight,
     totalClaimWeight,
@@ -127,6 +145,72 @@ export function calculateAccuracyScore(
     confidenceLevel,
     confidenceReason,
     counts,
+  };
+}
+
+export interface ClaimScoreSummary {
+  evaluatedTotal: number;
+  correctCount: number;
+  partialCount: number;
+  incorrectCount: number;
+  wrongOrNeedFixCount: number;
+  unverifiedCount: number;
+  earnedPoints: number;
+  correctPercent: number | null;
+  incorrectPercent: number | null;
+  exactCorrectPercent: number | null;
+  partialPercent: number | null;
+  exactIncorrectPercent: number | null;
+}
+
+/**
+ * Pure helper for UI & reports to always display consistent Total Correct/Wrong and % Correct/% Wrong
+ * even for historical AnalysisRecord entries saved before the breakdown fields were added.
+ */
+export function computeClaimScoreSummary(
+  claims: ExtractedClaim[],
+  breakdown?: AccuracyBreakdown | null
+): ClaimScoreSummary {
+  const correctCount =
+    breakdown?.counts?.correct ?? claims.filter((c) => c.evaluationStatus === 'CORRECT').length;
+  const partialCount =
+    breakdown?.counts?.partiallyCorrect ??
+    claims.filter((c) => c.evaluationStatus === 'PARTIALLY_CORRECT').length;
+  const incorrectCount =
+    breakdown?.counts?.incorrect ?? claims.filter((c) => c.evaluationStatus === 'INCORRECT').length;
+  const unverifiedCount =
+    breakdown?.counts
+      ? breakdown.counts.unverified + breakdown.counts.ambiguous + breakdown.counts.ocrUncertain
+      : claims.filter(
+          (c) =>
+            c.evaluationStatus === 'UNVERIFIED' ||
+            c.evaluationStatus === 'AMBIGUOUS' ||
+            c.evaluationStatus === 'OCR_UNCERTAIN'
+        ).length;
+
+  const evaluatedTotal = correctCount + partialCount + incorrectCount;
+  const earnedPoints = correctCount * 1 + partialCount * 0.5;
+  const correctPercent =
+    evaluatedTotal > 0 ? Math.round((earnedPoints / evaluatedTotal) * 1000) / 10 : null;
+  const incorrectPercent =
+    correctPercent !== null ? Math.round((100 - correctPercent) * 10) / 10 : null;
+
+  return {
+    evaluatedTotal,
+    correctCount,
+    partialCount,
+    incorrectCount,
+    wrongOrNeedFixCount: incorrectCount + partialCount,
+    unverifiedCount,
+    earnedPoints,
+    correctPercent,
+    incorrectPercent,
+    exactCorrectPercent:
+      evaluatedTotal > 0 ? Math.round((correctCount / evaluatedTotal) * 1000) / 10 : null,
+    partialPercent:
+      evaluatedTotal > 0 ? Math.round((partialCount / evaluatedTotal) * 1000) / 10 : null,
+    exactIncorrectPercent:
+      evaluatedTotal > 0 ? Math.round((incorrectCount / evaluatedTotal) * 1000) / 10 : null,
   };
 }
 

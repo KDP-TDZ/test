@@ -271,6 +271,12 @@ export interface ImprovementSuggestion {
 
 export interface AccuracyBreakdown {
   accuracyScore: number | null;
+  evaluatedTotal?: number;
+  correctPercent?: number | null;
+  incorrectPercent?: number | null;
+  exactCorrectPercent?: number | null;
+  partialPercent?: number | null;
+  exactIncorrectPercent?: number | null;
   verifiedWeight: number;
   earnedWeight: number;
   totalClaimWeight: number;

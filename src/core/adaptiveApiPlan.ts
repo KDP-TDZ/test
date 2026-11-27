@@ -142,7 +142,8 @@ export function computeNormalizedTextLength(
 }
 
 /**
- * Determine whether Scan, Grade, and Verify run 1 API or 2 APIs based on text length vs threshold.
+ * Fixed 1-1-1 API plan: regardless of document length (short or long),
+ * always run strictly 1 Scan API, 1 Grade API, and 1 Verify API.
  */
 export function computeAdaptiveApiPlan(
   textLength: number,
@@ -150,16 +151,14 @@ export function computeAdaptiveApiPlan(
 ): AdaptiveApiPlan {
   const safeLen = Number.isFinite(textLength) && textLength > 0 ? Math.floor(textLength) : 0;
   const threshold = clampAdaptiveThresholdChars(thresholdChars);
-  const isLongText = safeLen >= threshold;
-  const count: 1 | 2 = isLongText ? 2 : 1;
 
   return {
     textLength: safeLen,
     thresholdChars: threshold,
-    isLongText,
-    scanApiCount: count,
-    gradeApiCount: count,
-    verifyApiCount: count,
+    isLongText: false,
+    scanApiCount: 1,
+    gradeApiCount: 1,
+    verifyApiCount: 1,
   };
 }
 
