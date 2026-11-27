@@ -123,71 +123,6 @@ export async function authorizedFetch(
   );
 }
 
-export interface ApiProviderHealthItem {
-  provider: 'mistral' | 'groq' | 'cloudflare';
-  configured: boolean;
-  status: 'healthy' | 'unconfigured' | 'billing_blocked' | 'auth_error' | 'cooldown';
-  coolingDown: boolean;
-  cooldownUntil?: string;
-  remainingSeconds: number;
-  lastErrorCode?: string;
-  lastError?: string;
-  failedAt?: string;
-}
-
-export interface ApiAttemptTraceItem {
-  provider: 'mistral' | 'groq' | 'cloudflare';
-  modelId: string;
-  status: 'success' | 'failed' | 'skipped';
-  durationMs: number;
-  errorCode?: string;
-  error?: string;
-}
-
-export interface ApiErrorDebugPayload {
-  activeModel?: string;
-  configuredProviders?: { mistral: boolean; groq: boolean; cloudflare: boolean };
-  providerHealth?: Record<'mistral' | 'groq' | 'cloudflare', ApiProviderHealthItem>;
-  attemptTrace?: ApiAttemptTraceItem[];
-  recentExecutions?: Array<{
-    executionId: string;
-    taskType: string;
-    requestedModel?: string;
-    actualModel?: string;
-    modelId: string;
-    usedFallback?: boolean;
-    status: string;
-    durationMs: number;
-    error?: string;
-    timestamp: string;
-  }>;
-  timestamp?: string;
-}
-
-export class ApiRequestError extends Error {
-  readonly status: number;
-  readonly code?: string;
-  readonly technicalDetail?: string;
-  readonly debug?: ApiErrorDebugPayload;
-
-  constructor(
-    message: string,
-    opts: {
-      status: number;
-      code?: string;
-      technicalDetail?: string;
-      debug?: ApiErrorDebugPayload;
-    }
-  ) {
-    super(message);
-    this.name = 'ApiRequestError';
-    this.status = opts.status;
-    this.code = opts.code;
-    this.technicalDetail = opts.technicalDetail;
-    this.debug = opts.debug;
-  }
-}
-
 export async function parseApiResponse<T = Record<string, any>>(
   res: Response,
   fallbackError: string
@@ -205,26 +140,14 @@ export async function parseApiResponse<T = Record<string, any>>(
 
   if (parsed !== null) {
     if (!res.ok) {
-      const msg =
+      throw new Error(
         (typeof parsed.error === 'string' && parsed.error) ||
-        (typeof parsed.message === 'string' && parsed.message) ||
-        fallbackError;
-      throw new ApiRequestError(msg, {
-        status: res.status,
-        code: typeof parsed.code === 'string' ? parsed.code : undefined,
-        technicalDetail:
-          typeof parsed.technicalDetail === 'string' ? parsed.technicalDetail : undefined,
-        debug:
-          parsed.debug && typeof parsed.debug === 'object'
-            ? (parsed.debug as ApiErrorDebugPayload)
-            : undefined,
-      });
+          (typeof parsed.message === 'string' && parsed.message) ||
+          fallbackError
+      );
     }
     return parsed as T;
   }
 
-  throw new ApiRequestError(formatNonJsonApiError(res.status, rawText, fallbackError), {
-    status: res.status,
-    technicalDetail: rawText.slice(0, 400) || undefined,
-  });
+  throw new Error(formatNonJsonApiError(res.status, rawText, fallbackError));
 }

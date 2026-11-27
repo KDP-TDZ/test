@@ -8670,7 +8670,7 @@ function mapGeminiErrorResponse(err, includeDebug = false) {
     return {
       status: 402,
       code: "MISTRAL_BILLING_REQUIRED",
-      error: includeDebug ? hasBackup ? "Mistral b\xE1o HTTP 402 (C\u1EA7n k\xEDch ho\u1EA1t g\xF3i Experiment mi\u1EC5n ph\xED ho\u1EB7c Billing t\u1EA1i console.mistral.ai) v\xE0 c\xE1c nh\xE0 cung c\u1EA5p d\u1EF1 ph\xF2ng c\u0169ng ch\u01B0a ph\u1EA3n h\u1ED3i. H\u1EC7 th\u1ED1ng \u0111\xE3 t\u1EA1m khoanh v\xF9ng Mistral 10 ph\xFAt \u2014 xem b\u1EA3ng Debug Admin b\xEAn d\u01B0\u1EDBi \u0111\u1EC3 ki\u1EC3m tra chi ti\u1EBFt t\u1EEBng nh\xE0 cung c\u1EA5p." : "Mistral b\xE1o HTTP 402: Key mi\u1EC5n ph\xED c\u1EE7a Mistral v\u1EABn b\u1EAFt bu\u1ED9c v\xE0o console.mistral.ai \u2192 Billing / Subscription \u0111\u1EC3 ch\u1ECDn g\xF3i Experiment (mi\u1EC5n ph\xED, x\xE1c minh S\u0110T) ho\u1EB7c n\u1EA1p credit. B\u1EA1n c\u0169ng n\xEAn th\xEAm GROQ_API_KEY (mi\u1EC5n ph\xED) \u0111\u1EC3 h\u1EC7 th\u1ED1ng t\u1EF1 \u0111\u1ED9ng d\u1EF1 ph\xF2ng kh\xF4ng gi\xE1n \u0111o\u1EA1n." : "D\u1ECBch v\u1EE5 AI t\u1EA1m th\u1EDDi kh\xF4ng kh\u1EA3 d\u1EE5ng do gi\u1EDBi h\u1EA1n t\xE0i kho\u1EA3n nh\xE0 cung c\u1EA5p. Vui l\xF2ng th\u1EED l\u1EA1i sau ho\u1EB7c b\xE1o qu\u1EA3n tr\u1ECB vi\xEAn.",
+      error: includeDebug ? hasBackup ? "Mistral b\xE1o HTTP 402 (C\u1EA7n k\xEDch ho\u1EA1t g\xF3i Experiment mi\u1EC5n ph\xED ho\u1EB7c Billing t\u1EA1i console.mistral.ai) v\xE0 c\xE1c nh\xE0 cung c\u1EA5p d\u1EF1 ph\xF2ng hi\u1EC7n ch\u01B0a ph\u1EA3n h\u1ED3i. H\u1EC7 th\u1ED1ng \u0111\xE3 t\u1EA1m khoanh v\xF9ng Mistral 10 ph\xFAt." : "Mistral b\xE1o HTTP 402: Key mi\u1EC5n ph\xED c\u1EE7a Mistral v\u1EABn b\u1EAFt bu\u1ED9c v\xE0o console.mistral.ai \u2192 Billing / Subscription \u0111\u1EC3 ch\u1ECDn g\xF3i Experiment (mi\u1EC5n ph\xED, x\xE1c minh S\u0110T) ho\u1EB7c n\u1EA1p credit. B\u1EA1n c\u0169ng n\xEAn th\xEAm GROQ_API_KEY (mi\u1EC5n ph\xED) \u0111\u1EC3 h\u1EC7 th\u1ED1ng t\u1EF1 \u0111\u1ED9ng d\u1EF1 ph\xF2ng kh\xF4ng gi\xE1n \u0111o\u1EA1n." : "D\u1ECBch v\u1EE5 AI t\u1EA1m th\u1EDDi kh\xF4ng kh\u1EA3 d\u1EE5ng do gi\u1EDBi h\u1EA1n t\xE0i kho\u1EA3n nh\xE0 cung c\u1EA5p. Vui l\xF2ng th\u1EED l\u1EA1i sau ho\u1EB7c b\xE1o qu\u1EA3n tr\u1ECB vi\xEAn.",
       ...debugExtras
     };
   }
@@ -10115,93 +10115,6 @@ function createApiApp() {
         message: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 ki\u1EC3m tra Cloudflare Workers AI.",
         testedSource: "none",
         testedAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
-    }
-  });
-  app.get("/api/admin/debug/snapshot", requireSuperAdmin, async (req, res) => {
-    const user = req.authUser;
-    try {
-      await hydrateSingleKeyForSuperAdmin(user.idToken);
-      const cfg = await loadAuthoritativeAiConfig(user.idToken);
-      const providerKeys = await getProviderKeysStatus(user.idToken);
-      res.json({
-        serverTime: (/* @__PURE__ */ new Date()).toISOString(),
-        runtime: {
-          nodeVersion: process.version,
-          isVercel: process.env.VERCEL === "1",
-          uptimeSec: Math.round(process.uptime()),
-          configVersion: cfg.configVersion || 1,
-          aiEnabled: cfg.enabled
-        },
-        activeModel: cfg.activeModel,
-        adaptiveLongTextThresholdChars: cfg.adaptiveLongTextThresholdChars ?? 1500,
-        configuredProviders: {
-          mistral: isMistralConfigured(),
-          groq: isGroqConfigured(),
-          cloudflare: isCloudflareConfigured()
-        },
-        providerHealth: getProviderHealthSnapshot(),
-        providerSources: {
-          mistral: {
-            source: providerKeys.mistral.source,
-            maskedKey: providerKeys.mistral.maskedKey,
-            lastTestStatus: providerKeys.mistral.lastTestStatus,
-            lastTestMessage: providerKeys.mistral.lastTestMessage
-          },
-          groq: {
-            source: providerKeys.groq.source,
-            maskedKey: providerKeys.groq.maskedKey,
-            lastTestStatus: providerKeys.groq.lastTestStatus,
-            lastTestMessage: providerKeys.groq.lastTestMessage
-          },
-          cloudflare: {
-            source: providerKeys.cloudflare.source,
-            maskedKey: providerKeys.cloudflare.maskedAccountId && providerKeys.cloudflare.maskedKey ? `${providerKeys.cloudflare.maskedAccountId} / ${providerKeys.cloudflare.maskedKey}` : providerKeys.cloudflare.maskedKey || providerKeys.cloudflare.maskedAccountId || "",
-            lastTestStatus: providerKeys.cloudflare.lastTestStatus,
-            lastTestMessage: providerKeys.cloudflare.lastTestMessage
-          }
-        },
-        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
-        recentExecutions: getRecentExecutionLogs().slice(0, 30)
-      });
-    } catch (err) {
-      res.status(500).json({
-        error: err instanceof Error ? err.message : "Kh\xF4ng t\u1EA3i \u0111\u01B0\u1EE3c d\u1EEF li\u1EC7u ch\u1EA9n \u0111o\xE1n Debug Admin."
-      });
-    }
-  });
-  app.post("/api/admin/debug/reset-health", requireSuperAdmin, async (req, res) => {
-    const user = req.authUser;
-    try {
-      const { provider, clearCache } = req.body || {};
-      if (provider === "mistral" || provider === "groq" || provider === "cloudflare") {
-        clearProviderCooldown(provider);
-      } else {
-        clearProviderCooldown();
-      }
-      if (clearCache !== false) {
-        clearAiResponseCache();
-      }
-      await recordAuditLog(
-        {
-          actorUid: user.uid,
-          actorEmail: user.email,
-          action: "ADMIN_DEBUG_HEALTH_RESET",
-          resourceType: "aiDebug",
-          resourceId: provider || "all",
-          status: "success",
-          metadata: { clearCache: clearCache !== false }
-        },
-        user.idToken
-      );
-      res.json({
-        ok: true,
-        providerHealth: getProviderHealthSnapshot(),
-        resetAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
-    } catch (err) {
-      res.status(500).json({
-        error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 \u0111\u1EB7t l\u1EA1i tr\u1EA1ng th\xE1i nh\xE0 cung c\u1EA5p."
       });
     }
   });
