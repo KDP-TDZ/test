@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { BoundedTtlCache, buildDeterministicCacheKey } from '../core/cache.js';
 import type {
   AiExecutionLog,
+  AiProviderId,
   AiTaskType,
   SystemAiConfig,
 } from '../core/types.js';
@@ -120,6 +121,179 @@ const aiResponseCache = new BoundedTtlCache<CachedTaskEnvelope>(320, 6 * 60 * 60
 const inFlightTasks = new Map<string, Promise<RoutedAiTaskResult<unknown>>>();
 const executionLogs: AiExecutionLog[] = [];
 
+export interface RoutedAttemptTrace {
+  provider: AiProviderId;
+  modelId: string;
+  status: 'success' | 'failed' | 'skipped';
+  durationMs: number;
+  errorCode?: string;
+  error?: string;
+}
+
+export interface ProviderHealthSnapshotItem {
+  provider: AiProviderId;
+  configured: boolean;
+  status: 'healthy' | 'unconfigured' | 'billing_blocked' | 'auth_error' | 'cooldown';
+  coolingDown: boolean;
+  cooldownUntil?: string;
+  remainingSeconds: number;
+  lastErrorCode?: string;
+  lastError?: string;
+  failedAt?: string;
+}
+
+interface ProviderCooldownEntry {
+  provider: AiProviderId;
+  status: 'billing_blocked' | 'auth_error' | 'cooldown';
+  code: string;
+  lastError: string;
+  failedAt: string;
+  untilMs: number;
+}
+
+const providerCooldowns = new Map<AiProviderId, ProviderCooldownEntry>();
+const BILLING_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes — auto-cleared when Admin updates/tests key or clicks Reset
+const AUTH_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+
+export function getProviderForModel(modelId: string): AiProviderId {
+  if (isGroqModelId(modelId)) return 'groq';
+  if (isCloudflareModelId(modelId)) return 'cloudflare';
+  return 'mistral';
+}
+
+export function classifyProviderFailure(err: unknown): {
+  code: string;
+  shouldCooldown: boolean;
+  cooldownStatus?: 'billing_blocked' | 'auth_error' | 'cooldown';
+  cooldownMs?: number;
+} {
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  if (
+    msg.includes('MISTRAL_BILLING_REQUIRED') ||
+    msg.includes('HTTP 402') ||
+    msg.includes(' 402 ') ||
+    lower.includes('need a subscription') ||
+    lower.includes('payment required')
+  ) {
+    return {
+      code: 'MISTRAL_BILLING_REQUIRED',
+      shouldCooldown: true,
+      cooldownStatus: 'billing_blocked',
+      cooldownMs: BILLING_COOLDOWN_MS,
+    };
+  }
+  if (
+    msg.includes('API_KEY_INVALID') ||
+    msg.includes('PERMISSION_DENIED') ||
+    msg.includes(' 401 ') ||
+    msg.includes('HTTP 401') ||
+    msg.includes(' 403 ') ||
+    msg.includes('HTTP 403')
+  ) {
+    return {
+      code: 'PROVIDER_AUTH_ERROR',
+      shouldCooldown: true,
+      cooldownStatus: 'auth_error',
+      cooldownMs: AUTH_COOLDOWN_MS,
+    };
+  }
+  if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
+    return { code: 'PROVIDER_QUOTA_EXCEEDED', shouldCooldown: false };
+  }
+  if (msg.includes('vượt quá thời gian chờ') || msg.includes('AbortError') || msg.includes('timed out')) {
+    return { code: 'AI_TIMEOUT', shouldCooldown: false };
+  }
+  if (msg.includes('UNCONFIGURED')) {
+    return { code: 'PROVIDER_UNCONFIGURED', shouldCooldown: false };
+  }
+  return { code: 'PROVIDER_ERROR', shouldCooldown: false };
+}
+
+export function markProviderUnhealthy(
+  provider: AiProviderId,
+  code: string,
+  errorMessage: string,
+  options?: {
+    status?: 'billing_blocked' | 'auth_error' | 'cooldown';
+    ttlMs?: number;
+  }
+): void {
+  const ttlMs = options?.ttlMs ?? BILLING_COOLDOWN_MS;
+  providerCooldowns.set(provider, {
+    provider,
+    status: options?.status ?? 'cooldown',
+    code,
+    lastError: errorMessage.slice(0, 320),
+    failedAt: new Date().toISOString(),
+    untilMs: Date.now() + ttlMs,
+  });
+}
+
+export function isProviderCoolingDown(provider: AiProviderId): boolean {
+  const entry = providerCooldowns.get(provider);
+  if (!entry) return false;
+  if (Date.now() >= entry.untilMs) {
+    providerCooldowns.delete(provider);
+    return false;
+  }
+  return true;
+}
+
+export function clearProviderCooldown(provider?: AiProviderId): void {
+  if (provider) {
+    providerCooldowns.delete(provider);
+    return;
+  }
+  providerCooldowns.clear();
+}
+
+export function getProviderHealthSnapshot(): Record<AiProviderId, ProviderHealthSnapshotItem> {
+  const now = Date.now();
+  const build = (provider: AiProviderId, configured: boolean): ProviderHealthSnapshotItem => {
+    const entry = providerCooldowns.get(provider);
+    if (entry && now >= entry.untilMs) {
+      providerCooldowns.delete(provider);
+    }
+    const activeEntry = providerCooldowns.get(provider);
+    if (!configured) {
+      return {
+        provider,
+        configured: false,
+        status: 'unconfigured',
+        coolingDown: false,
+        remainingSeconds: 0,
+      };
+    }
+    if (activeEntry) {
+      return {
+        provider,
+        configured: true,
+        status: activeEntry.status,
+        coolingDown: true,
+        cooldownUntil: new Date(activeEntry.untilMs).toISOString(),
+        remainingSeconds: Math.max(0, Math.ceil((activeEntry.untilMs - now) / 1000)),
+        lastErrorCode: activeEntry.code,
+        lastError: activeEntry.lastError,
+        failedAt: activeEntry.failedAt,
+      };
+    }
+    return {
+      provider,
+      configured: true,
+      status: 'healthy',
+      coolingDown: false,
+      remainingSeconds: 0,
+    };
+  };
+
+  return {
+    mistral: build('mistral', isMistralConfigured()),
+    groq: build('groq', isGroqConfigured()),
+    cloudflare: build('cloudflare', isCloudflareConfigured()),
+  };
+}
+
 export function clearAiResponseCache(): void {
   aiResponseCache.clear();
   inFlightTasks.clear();
@@ -214,6 +388,10 @@ export function isModelProviderConfigured(modelId: string): boolean {
   return isMistralConfigured();
 }
 
+export function isModelProviderHealthy(modelId: string): boolean {
+  return isModelProviderConfigured(modelId) && !isProviderCoolingDown(getProviderForModel(modelId));
+}
+
 function pickConfiguredProviderModel(
   taskType: AiTaskType,
   preferredModel: string,
@@ -223,6 +401,32 @@ function pickConfiguredProviderModel(
   const normPreferred = normalizeSupportedModelId(preferredModel);
   const normActive = normalizeSupportedModelId(activeModel);
 
+  // Pass 1: Prefer configured AND healthy (non-cooling-down) providers
+  if (isModelProviderHealthy(normPreferred) && normPreferred !== excludeModel) {
+    return normPreferred;
+  }
+  if (isModelProviderHealthy(normActive) && normActive !== excludeModel) {
+    return normActive;
+  }
+  if (isMistralConfigured() && !isProviderCoolingDown('mistral')) {
+    const mistralPrimary = defaultMistralRescueModelForTask(taskType);
+    if (mistralPrimary !== excludeModel) return mistralPrimary;
+    return mistralPrimary === MISTRAL_PRIMARY_MODEL ? MISTRAL_FAST_MODEL : MISTRAL_PRIMARY_MODEL;
+  }
+  if (isGroqConfigured() && !isProviderCoolingDown('groq')) {
+    const groqPrimary = defaultGroqRescueModelForTask(taskType);
+    if (groqPrimary !== excludeModel) return groqPrimary;
+    return groqPrimary === GROQ_RESCUE_MODEL_STRONG
+      ? GROQ_RESCUE_MODEL_FAST
+      : GROQ_VISION_MODEL;
+  }
+  if (isCloudflareConfigured() && !isProviderCoolingDown('cloudflare')) {
+    const cfPrimary = defaultCloudflareRescueModelForTask(taskType);
+    if (cfPrimary !== excludeModel) return cfPrimary;
+    return cfPrimary === CF_RESCUE_MODEL_STRONG ? CF_RESCUE_MODEL_FAST : CF_RESCUE_MODEL_STRONG;
+  }
+
+  // Pass 2: If all configured providers are cooling down, still return a configured model rather than failing prematurely
   if (isModelProviderConfigured(normPreferred) && normPreferred !== excludeModel) {
     return normPreferred;
   }
@@ -272,12 +476,12 @@ export function resolveModelForTask(
     taskCfg.fallbackModel || UNIFIED_FALLBACK_MODEL
   );
 
-  // Bidirectionally route to whichever configured provider key (Mistral / Groq / Cloudflare) is available
-  if (!isModelProviderConfigured(modelId)) {
+  // Bidirectionally route to whichever configured & healthy provider key (Mistral / Groq / Cloudflare) is available
+  if (!isModelProviderHealthy(modelId)) {
     modelId = pickConfiguredProviderModel(taskType, modelId, activeFallbackDefault);
   }
 
-  if (!isModelProviderConfigured(fallbackModelId) || fallbackModelId === modelId) {
+  if (!isModelProviderHealthy(fallbackModelId) || fallbackModelId === modelId) {
     fallbackModelId = pickConfiguredProviderModel(
       taskType,
       fallbackModelId,
@@ -348,10 +552,10 @@ export async function executeRoutedAiTask<T>(params: {
     ? normalizeSupportedModelId(preferredFallbackModelId)
     : decision.fallbackModelId;
 
-  if (!strictModelLock && !isModelProviderConfigured(requestedModel)) {
+  if (!strictModelLock && !isModelProviderHealthy(requestedModel)) {
     requestedModel = pickConfiguredProviderModel(taskType, requestedModel, decision.modelId);
   }
-  if (!strictModelLock && (!isModelProviderConfigured(fallbackModelId) || fallbackModelId === requestedModel)) {
+  if (!strictModelLock && (!isModelProviderHealthy(fallbackModelId) || fallbackModelId === requestedModel)) {
     fallbackModelId = pickConfiguredProviderModel(
       taskType,
       fallbackModelId,
@@ -493,7 +697,29 @@ export async function executeRoutedAiTask<T>(params: {
         : null;
     const isBudgetExhausted = () =>
       overallDeadline !== null && Date.now() >= overallDeadline - 400;
+    const attemptTrace: RoutedAttemptTrace[] = [];
 
+    const recordAttemptFailure = (modelId: string, hopStartMs: number, err: unknown) => {
+      const provider = getProviderForModel(modelId);
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      const classified = classifyProviderFailure(err);
+      if (classified.shouldCooldown && classified.cooldownStatus) {
+        markProviderUnhealthy(provider, classified.code, rawMsg, {
+          status: classified.cooldownStatus,
+          ttlMs: classified.cooldownMs,
+        });
+      }
+      attemptTrace.push({
+        provider,
+        modelId,
+        status: 'failed',
+        durationMs: Date.now() - hopStartMs,
+        errorCode: classified.code,
+        error: rawMsg.slice(0, 240),
+      });
+    };
+
+    const primaryStart = Date.now();
     try {
       if (primaryUnconfigured) {
         throw new Error(
@@ -513,6 +739,7 @@ export async function executeRoutedAiTask<T>(params: {
       return finalizeSuccess(result, requestedModel, false, start);
     } catch (primaryErr) {
       let lastErr: unknown = primaryErr;
+      recordAttemptFailure(requestedModel, primaryStart, primaryErr);
 
       if (strictModelLock) {
         const reason =
@@ -536,44 +763,48 @@ export async function executeRoutedAiTask<T>(params: {
           reason.includes('GRADING_JSON_INVALID') ||
           reason.includes('GROQ_API_KEY_UNCONFIGURED') ||
           reason.includes('MISTRAL_API_KEY_UNCONFIGURED') ||
-          reason.includes('CLOUDFLARE_CREDENTIALS_UNCONFIGURED')
+          reason.includes('CLOUDFLARE_CREDENTIALS_UNCONFIGURED') ||
+          reason.includes('MISTRAL_BILLING_REQUIRED')
         ) {
+          if (primaryErr instanceof Error) {
+            (primaryErr as Error & { attemptTrace?: RoutedAttemptTrace[] }).attemptTrace = attemptTrace;
+          }
           throw primaryErr;
         }
-        throw new Error(
+        const strictErr = new Error(
           `STRICT_GRADING_MODEL_UNAVAILABLE: Model chấm điểm cố định (${requestedModel}) tạm thời không phản hồi và yêu cầu đã bật khóa model. Chi tiết: ${reason}`
-        );
+        ) as Error & { attemptTrace?: RoutedAttemptTrace[] };
+        strictErr.attemptTrace = attemptTrace;
+        throw strictErr;
       }
 
-      const triedProviders = new Set<string>();
-      const providerOf = (m: string) =>
-        isGroqModelId(m) ? 'groq' : isCloudflareModelId(m) ? 'cloudflare' : 'mistral';
-      triedProviders.add(providerOf(requestedModel));
+      const triedProviders = new Set<AiProviderId>();
+      triedProviders.add(getProviderForModel(requestedModel));
 
       if (canFallback && !isBudgetExhausted()) {
-        triedProviders.add(providerOf(fallbackModelId));
-        try {
-          const fbResult = await withExponentialBackoff(
-            () => runWithModel(fallbackModelId),
-            maxFallbackRetries
-          );
-          if (overrideConsumed && consumeOneTimeOverride) {
-            await consumeOneTimeOverride(taskType);
+        const fbProvider = getProviderForModel(fallbackModelId);
+        if (!isProviderCoolingDown(fbProvider)) {
+          triedProviders.add(fbProvider);
+          const fbStart = Date.now();
+          try {
+            const fbResult = await withExponentialBackoff(
+              () => runWithModel(fallbackModelId),
+              maxFallbackRetries
+            );
+            if (overrideConsumed && consumeOneTimeOverride) {
+              await consumeOneTimeOverride(taskType);
+            }
+            return finalizeSuccess(fbResult, fallbackModelId, true, start);
+          } catch (fbErr) {
+            lastErr = fbErr;
+            recordAttemptFailure(fallbackModelId, fbStart, fbErr);
           }
-          return finalizeSuccess(fbResult, fallbackModelId, true, start);
-        } catch (fbErr) {
-          lastErr = fbErr;
         }
       }
 
       if (allowCrossProviderRescue && !isBudgetExhausted()) {
-        // Cross-provider rescue hops across Mistral <-> Groq <-> Cloudflare
-        const rescueHops: Array<{ provider: string; configured: boolean; modelId: string }> = [
-          {
-            provider: 'mistral',
-            configured: isMistralConfigured(),
-            modelId: defaultMistralRescueModelForTask(taskType),
-          },
+        // Cross-provider rescue hops across Mistral <-> Groq <-> Cloudflare (skip cooling-down providers)
+        const rescueHops: Array<{ provider: AiProviderId; configured: boolean; modelId: string }> = [
           {
             provider: 'groq',
             configured: isGroqConfigured(),
@@ -584,12 +815,20 @@ export async function executeRoutedAiTask<T>(params: {
             configured: isCloudflareConfigured(),
             modelId: defaultCloudflareRescueModelForTask(taskType),
           },
+          {
+            provider: 'mistral',
+            configured: isMistralConfigured(),
+            modelId: defaultMistralRescueModelForTask(taskType),
+          },
         ];
 
         for (const hop of rescueHops) {
           if (isBudgetExhausted()) break;
-          if (!hop.configured || triedProviders.has(hop.provider)) continue;
+          if (!hop.configured || triedProviders.has(hop.provider) || isProviderCoolingDown(hop.provider)) {
+            continue;
+          }
           triedProviders.add(hop.provider);
+          const hopStart = Date.now();
           try {
             const rescueResult = await withExponentialBackoff(
               () => runWithModel(hop.modelId),
@@ -598,9 +837,14 @@ export async function executeRoutedAiTask<T>(params: {
             return finalizeSuccess(rescueResult, hop.modelId, true, start);
           } catch (rescueErr) {
             lastErr = rescueErr;
+            recordAttemptFailure(hop.modelId, hopStart, rescueErr);
           }
         }
       }
+
+      const traceSummary = attemptTrace
+        .map((t) => `${t.modelId} [${t.errorCode || 'ERR'}]`)
+        .join(' -> ');
 
       appendExecutionLog({
         executionId: `exec_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`,
@@ -608,17 +852,26 @@ export async function executeRoutedAiTask<T>(params: {
         modelId: canFallback ? fallbackModelId : requestedModel,
         requestedModel,
         actualModel: canFallback ? fallbackModelId : requestedModel,
-        usedFallback: canFallback,
+        usedFallback: canFallback || attemptTrace.length > 1,
         usedOverride: decision.usedOverride,
         promptVersion: decision.promptVersion,
         configVersion: decision.configVersion,
         status: 'failed',
-        error:
-          lastErr instanceof Error ? lastErr.message.slice(0, 180) : String(lastErr).slice(0, 180),
+        error: (
+          attemptTrace.length > 1
+            ? `${traceSummary} | ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
+            : lastErr instanceof Error
+              ? lastErr.message
+              : String(lastErr)
+        ).slice(0, 240),
         durationMs: Date.now() - start,
         timestamp: new Date().toISOString(),
       });
-      throw lastErr;
+
+      const finalErr: Error & { attemptTrace?: RoutedAttemptTrace[] } =
+        lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+      finalErr.attemptTrace = attemptTrace;
+      throw finalErr;
     }
   };
 

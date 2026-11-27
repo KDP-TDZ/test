@@ -999,7 +999,11 @@ export async function testMistralApiKey(params: {
 
     if (!pingRes.ok) {
       const errText = await pingRes.text().catch(() => '');
-      if (pingRes.status === 401 || pingRes.status === 403) {
+      if (pingRes.status === 402) {
+        resultStatus = 'Quota exceeded';
+        resultMessage =
+          'Mistral báo HTTP 402 (Cần kích hoạt gói): Key miễn phí của Mistral vẫn cần vào console.mistral.ai → Billing / Subscription để chọn gói Experiment (miễn phí, xác minh SĐT) hoặc nạp credit. Trong lúc chờ, hệ thống sẽ tự chuyển sang Groq / Cloudflare nếu đã cấu hình.';
+      } else if (pingRes.status === 401 || pingRes.status === 403) {
         resultStatus = 'Invalid key';
         resultMessage = 'Mistral AI API Key không hợp lệ hoặc đã bị thu hồi.';
       } else if (pingRes.status === 429) {

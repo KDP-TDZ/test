@@ -3,6 +3,7 @@ import {
   Activity,
   AlertCircle,
   BookOpen,
+  Bug,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -107,6 +108,7 @@ import {
   runSmartClientPdfIngest,
   type SmartPdfIngestProgress,
 } from '../services/clientPdfIngest';
+import { AdminDebugPanel } from './AdminDebugPanel';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { SlidingTabs } from './LiquidGlass/SlidingTabs';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
@@ -118,7 +120,8 @@ type AdminTab =
   | 'references'
   | 'exams'
   | 'feedback_roles'
-  | 'limits_audit';
+  | 'limits_audit'
+  | 'debug_console';
 
 interface ModelCatalogItem {
   modelId: string;
@@ -2020,6 +2023,7 @@ export const AdminControlCenter: React.FC = () => {
           { id: 'exams', label: 'Quản trị Đề kiểm tra', icon: ClipboardCheck },
           { id: 'feedback_roles', label: 'Phản hồi & Phân quyền', icon: UserCheck },
           { id: 'limits_audit', label: 'Giới hạn & Nhật ký', icon: Sliders },
+          { id: 'debug_console', label: 'Debug Admin', icon: Bug },
         ]}
       />
 
@@ -5882,6 +5886,13 @@ export const AdminControlCenter: React.FC = () => {
                   ))}
                 </div>
               </GlassSurface>
+            </div>
+          )}
+
+          {/* TAB 8: SUPER ADMIN DEDICATED DEBUG CONSOLE */}
+          {tab === 'debug_console' && (
+            <div className="space-y-4">
+              <AdminDebugPanel mode="full" />
             </div>
           )}
         </>

@@ -184,6 +184,9 @@ export async function callMistralChatCompletion(
     } catch {
       // keep raw snippet
     }
+    if (res.status === 402) {
+      throw new Error(`Mistral 402 MISTRAL_BILLING_REQUIRED (${mistralModel}): ${errDetail}`);
+    }
     if (res.status === 429) {
       throw new Error(`Mistral 429 RESOURCE_EXHAUSTED (${mistralModel}): ${errDetail}`);
     }

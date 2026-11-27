@@ -36,7 +36,7 @@ import {
   validateUploadFileSize,
 } from '../core/uploadBatching';
 import { repairUtf8Mojibake } from '../core/textEncoding';
-import { authorizedFetch, parseApiResponse } from '../services/apiClient';
+import { ApiRequestError, authorizedFetch, parseApiResponse } from '../services/apiClient';
 import { compressImageFilesForUpload } from '../services/imageCompression';
 import {
   listReferenceBooks,
@@ -46,6 +46,7 @@ import {
   saveAnalysisRecord,
   syncEncounteredConceptsFromAnalysis,
 } from '../services/firestoreService';
+import { AdminDebugPanel, type AdminDebugCapturedError } from './AdminDebugPanel';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 import { OcrReviewPanel } from './OcrReviewPanel';
@@ -91,10 +92,11 @@ const ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.jpg', '.jpeg', '.png', '.webp'];
 export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisCompleted }) => {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const progressFillRef = useRef<HTMLDivElement>(null);
-  const { user, profile, systemStatus } = useAuth();
+  const { user, profile, systemStatus, isSuperAdmin } = useAuth();
   const [step, setStep] = useState<WizardStep>('select');
   const [files, setFiles] = useState<File[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [adminDebugError, setAdminDebugError] = useState<AdminDebugCapturedError | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [activeStage, setActiveStage] = useState<AnalysisStage>('uploading');
   const [statusLabel, setStatusLabel] = useState<string>('');
@@ -679,6 +681,17 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       const msg = err instanceof Error ? err.message : 'Không thể hoàn tất phân tích.';
       setProgressDetail(null);
       setError(msg);
+      if (isSuperAdmin) {
+        setAdminDebugError({
+          message: msg,
+          status: err instanceof ApiRequestError ? err.status : undefined,
+          code: err instanceof ApiRequestError ? err.code : undefined,
+          technicalDetail: err instanceof ApiRequestError ? err.technicalDetail : msg,
+          debug: err instanceof ApiRequestError ? err.debug : undefined,
+          endpoint: '/api/ai/analyze',
+          capturedAt: new Date().toISOString(),
+        });
+      }
       setLastFailedAction('verify_draft');
       setStep('select');
       saveAiJobRecord({
@@ -702,6 +715,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     }
 
     setError(null);
+    setAdminDebugError(null);
     setWarning(null);
     setLastFailedAction(null);
     setStep('processing');
@@ -901,6 +915,17 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       const msg = err instanceof Error ? err.message : 'Lỗi xử lý tải lên và trích xuất.';
       setProgressDetail(null);
       setError(msg);
+      if (isSuperAdmin) {
+        setAdminDebugError({
+          message: msg,
+          status: err instanceof ApiRequestError ? err.status : undefined,
+          code: err instanceof ApiRequestError ? err.code : undefined,
+          technicalDetail: err instanceof ApiRequestError ? err.technicalDetail : msg,
+          debug: err instanceof ApiRequestError ? err.debug : undefined,
+          endpoint: '/api/ai/extract',
+          capturedAt: new Date().toISOString(),
+        });
+      }
       setLastFailedAction('full');
       setStep('select');
       saveAiJobRecord({
@@ -917,6 +942,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
     const activeDraft = overrideDraft || ocrDraft;
     if (!activeDraft || !aiEnabled) return;
     setError(null);
+    setAdminDebugError(null);
     setLastFailedAction(null);
     setStep('processing');
     await runVerificationOnDraft(activeDraft, files[0] || null);
@@ -1006,6 +1032,22 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
             </button>
           )}
         </div>
+      )}
+
+      {/* Super-Admin-only live debug drawer (completely omitted for student accounts) */}
+      {isSuperAdmin && (
+        <AdminDebugPanel
+          mode="inline"
+          lastError={adminDebugError}
+          onRetryAfterReset={
+            lastFailedAction
+              ? () =>
+                  lastFailedAction === 'verify_draft' && ocrDraft
+                    ? void handleGradeSavedDraftNow()
+                    : void handleStartOneClickGrading()
+              : undefined
+          }
+        />
       )}
 
       {warning && (

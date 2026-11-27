@@ -2597,7 +2597,10 @@ async function testMistralApiKey(params) {
     });
     if (!pingRes.ok) {
       const errText = await pingRes.text().catch(() => "");
-      if (pingRes.status === 401 || pingRes.status === 403) {
+      if (pingRes.status === 402) {
+        resultStatus = "Quota exceeded";
+        resultMessage = "Mistral b\xE1o HTTP 402 (C\u1EA7n k\xEDch ho\u1EA1t g\xF3i): Key mi\u1EC5n ph\xED c\u1EE7a Mistral v\u1EABn c\u1EA7n v\xE0o console.mistral.ai \u2192 Billing / Subscription \u0111\u1EC3 ch\u1ECDn g\xF3i Experiment (mi\u1EC5n ph\xED, x\xE1c minh S\u0110T) ho\u1EB7c n\u1EA1p credit. Trong l\xFAc ch\u1EDD, h\u1EC7 th\u1ED1ng s\u1EBD t\u1EF1 chuy\u1EC3n sang Groq / Cloudflare n\u1EBFu \u0111\xE3 c\u1EA5u h\xECnh.";
+      } else if (pingRes.status === 401 || pingRes.status === 403) {
         resultStatus = "Invalid key";
         resultMessage = "Mistral AI API Key kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c \u0111\xE3 b\u1ECB thu h\u1ED3i.";
       } else if (pingRes.status === 429) {
@@ -3256,6 +3259,9 @@ ${params.jsonSchemaHint}` : params.prompt;
       errDetail = parsed?.message || parsed?.error?.message || parsed?.detail || errDetail;
     } catch {
     }
+    if (res.status === 402) {
+      throw new Error(`Mistral 402 MISTRAL_BILLING_REQUIRED (${mistralModel}): ${errDetail}`);
+    }
     if (res.status === 429) {
       throw new Error(`Mistral 429 RESOURCE_EXHAUSTED (${mistralModel}): ${errDetail}`);
     }
@@ -3547,6 +3553,115 @@ function normalizeSupportedModelId(modelId) {
 var aiResponseCache = new BoundedTtlCache(320, 6 * 60 * 60 * 1e3);
 var inFlightTasks = /* @__PURE__ */ new Map();
 var executionLogs = [];
+var providerCooldowns = /* @__PURE__ */ new Map();
+var BILLING_COOLDOWN_MS = 10 * 60 * 1e3;
+var AUTH_COOLDOWN_MS = 5 * 60 * 1e3;
+function getProviderForModel(modelId) {
+  if (isGroqModelId(modelId)) return "groq";
+  if (isCloudflareModelId(modelId)) return "cloudflare";
+  return "mistral";
+}
+function classifyProviderFailure(err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  if (msg.includes("MISTRAL_BILLING_REQUIRED") || msg.includes("HTTP 402") || msg.includes(" 402 ") || lower.includes("need a subscription") || lower.includes("payment required")) {
+    return {
+      code: "MISTRAL_BILLING_REQUIRED",
+      shouldCooldown: true,
+      cooldownStatus: "billing_blocked",
+      cooldownMs: BILLING_COOLDOWN_MS
+    };
+  }
+  if (msg.includes("API_KEY_INVALID") || msg.includes("PERMISSION_DENIED") || msg.includes(" 401 ") || msg.includes("HTTP 401") || msg.includes(" 403 ") || msg.includes("HTTP 403")) {
+    return {
+      code: "PROVIDER_AUTH_ERROR",
+      shouldCooldown: true,
+      cooldownStatus: "auth_error",
+      cooldownMs: AUTH_COOLDOWN_MS
+    };
+  }
+  if (msg.includes("RESOURCE_EXHAUSTED") || msg.includes("429")) {
+    return { code: "PROVIDER_QUOTA_EXCEEDED", shouldCooldown: false };
+  }
+  if (msg.includes("v\u01B0\u1EE3t qu\xE1 th\u1EDDi gian ch\u1EDD") || msg.includes("AbortError") || msg.includes("timed out")) {
+    return { code: "AI_TIMEOUT", shouldCooldown: false };
+  }
+  if (msg.includes("UNCONFIGURED")) {
+    return { code: "PROVIDER_UNCONFIGURED", shouldCooldown: false };
+  }
+  return { code: "PROVIDER_ERROR", shouldCooldown: false };
+}
+function markProviderUnhealthy(provider, code, errorMessage, options) {
+  const ttlMs = options?.ttlMs ?? BILLING_COOLDOWN_MS;
+  providerCooldowns.set(provider, {
+    provider,
+    status: options?.status ?? "cooldown",
+    code,
+    lastError: errorMessage.slice(0, 320),
+    failedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    untilMs: Date.now() + ttlMs
+  });
+}
+function isProviderCoolingDown(provider) {
+  const entry = providerCooldowns.get(provider);
+  if (!entry) return false;
+  if (Date.now() >= entry.untilMs) {
+    providerCooldowns.delete(provider);
+    return false;
+  }
+  return true;
+}
+function clearProviderCooldown(provider) {
+  if (provider) {
+    providerCooldowns.delete(provider);
+    return;
+  }
+  providerCooldowns.clear();
+}
+function getProviderHealthSnapshot() {
+  const now = Date.now();
+  const build = (provider, configured) => {
+    const entry = providerCooldowns.get(provider);
+    if (entry && now >= entry.untilMs) {
+      providerCooldowns.delete(provider);
+    }
+    const activeEntry = providerCooldowns.get(provider);
+    if (!configured) {
+      return {
+        provider,
+        configured: false,
+        status: "unconfigured",
+        coolingDown: false,
+        remainingSeconds: 0
+      };
+    }
+    if (activeEntry) {
+      return {
+        provider,
+        configured: true,
+        status: activeEntry.status,
+        coolingDown: true,
+        cooldownUntil: new Date(activeEntry.untilMs).toISOString(),
+        remainingSeconds: Math.max(0, Math.ceil((activeEntry.untilMs - now) / 1e3)),
+        lastErrorCode: activeEntry.code,
+        lastError: activeEntry.lastError,
+        failedAt: activeEntry.failedAt
+      };
+    }
+    return {
+      provider,
+      configured: true,
+      status: "healthy",
+      coolingDown: false,
+      remainingSeconds: 0
+    };
+  };
+  return {
+    mistral: build("mistral", isMistralConfigured()),
+    groq: build("groq", isGroqConfigured()),
+    cloudflare: build("cloudflare", isCloudflareConfigured())
+  };
+}
 function clearAiResponseCache() {
   aiResponseCache.clear();
   inFlightTasks.clear();
@@ -3610,9 +3725,33 @@ function isModelProviderConfigured(modelId) {
   if (isMistralModelId(modelId)) return isMistralConfigured();
   return isMistralConfigured();
 }
+function isModelProviderHealthy(modelId) {
+  return isModelProviderConfigured(modelId) && !isProviderCoolingDown(getProviderForModel(modelId));
+}
 function pickConfiguredProviderModel(taskType, preferredModel, activeModel, excludeModel) {
   const normPreferred = normalizeSupportedModelId(preferredModel);
   const normActive = normalizeSupportedModelId(activeModel);
+  if (isModelProviderHealthy(normPreferred) && normPreferred !== excludeModel) {
+    return normPreferred;
+  }
+  if (isModelProviderHealthy(normActive) && normActive !== excludeModel) {
+    return normActive;
+  }
+  if (isMistralConfigured() && !isProviderCoolingDown("mistral")) {
+    const mistralPrimary = defaultMistralRescueModelForTask(taskType);
+    if (mistralPrimary !== excludeModel) return mistralPrimary;
+    return mistralPrimary === MISTRAL_PRIMARY_MODEL ? MISTRAL_FAST_MODEL : MISTRAL_PRIMARY_MODEL;
+  }
+  if (isGroqConfigured() && !isProviderCoolingDown("groq")) {
+    const groqPrimary = defaultGroqRescueModelForTask(taskType);
+    if (groqPrimary !== excludeModel) return groqPrimary;
+    return groqPrimary === GROQ_RESCUE_MODEL_STRONG ? GROQ_RESCUE_MODEL_FAST : GROQ_VISION_MODEL;
+  }
+  if (isCloudflareConfigured() && !isProviderCoolingDown("cloudflare")) {
+    const cfPrimary = defaultCloudflareRescueModelForTask(taskType);
+    if (cfPrimary !== excludeModel) return cfPrimary;
+    return cfPrimary === CF_RESCUE_MODEL_STRONG ? CF_RESCUE_MODEL_FAST : CF_RESCUE_MODEL_STRONG;
+  }
   if (isModelProviderConfigured(normPreferred) && normPreferred !== excludeModel) {
     return normPreferred;
   }
@@ -3651,10 +3790,10 @@ function resolveModelForTask(taskType, config, consumeOverride) {
   let fallbackModelId = normalizeSupportedModelId(
     taskCfg.fallbackModel || UNIFIED_FALLBACK_MODEL
   );
-  if (!isModelProviderConfigured(modelId)) {
+  if (!isModelProviderHealthy(modelId)) {
     modelId = pickConfiguredProviderModel(taskType, modelId, activeFallbackDefault);
   }
-  if (!isModelProviderConfigured(fallbackModelId) || fallbackModelId === modelId) {
+  if (!isModelProviderHealthy(fallbackModelId) || fallbackModelId === modelId) {
     fallbackModelId = pickConfiguredProviderModel(
       taskType,
       fallbackModelId,
@@ -3695,10 +3834,10 @@ async function executeRoutedAiTask(params) {
   });
   let requestedModel = preferredPrimaryModelId ? normalizeSupportedModelId(preferredPrimaryModelId) : decision.modelId;
   let fallbackModelId = preferredFallbackModelId ? normalizeSupportedModelId(preferredFallbackModelId) : decision.fallbackModelId;
-  if (!strictModelLock && !isModelProviderConfigured(requestedModel)) {
+  if (!strictModelLock && !isModelProviderHealthy(requestedModel)) {
     requestedModel = pickConfiguredProviderModel(taskType, requestedModel, decision.modelId);
   }
-  if (!strictModelLock && (!isModelProviderConfigured(fallbackModelId) || fallbackModelId === requestedModel)) {
+  if (!strictModelLock && (!isModelProviderHealthy(fallbackModelId) || fallbackModelId === requestedModel)) {
     fallbackModelId = pickConfiguredProviderModel(
       taskType,
       fallbackModelId,
@@ -3815,6 +3954,27 @@ async function executeRoutedAiTask(params) {
     const start = Date.now();
     const overallDeadline = typeof overallTimeoutMs === "number" && overallTimeoutMs > 0 ? start + overallTimeoutMs : null;
     const isBudgetExhausted = () => overallDeadline !== null && Date.now() >= overallDeadline - 400;
+    const attemptTrace = [];
+    const recordAttemptFailure = (modelId, hopStartMs, err) => {
+      const provider = getProviderForModel(modelId);
+      const rawMsg = err instanceof Error ? err.message : String(err);
+      const classified = classifyProviderFailure(err);
+      if (classified.shouldCooldown && classified.cooldownStatus) {
+        markProviderUnhealthy(provider, classified.code, rawMsg, {
+          status: classified.cooldownStatus,
+          ttlMs: classified.cooldownMs
+        });
+      }
+      attemptTrace.push({
+        provider,
+        modelId,
+        status: "failed",
+        durationMs: Date.now() - hopStartMs,
+        errorCode: classified.code,
+        error: rawMsg.slice(0, 240)
+      });
+    };
+    const primaryStart = Date.now();
     try {
       if (primaryUnconfigured) {
         throw new Error(
@@ -3829,6 +3989,7 @@ async function executeRoutedAiTask(params) {
       return finalizeSuccess(result, requestedModel, false, start);
     } catch (primaryErr) {
       let lastErr = primaryErr;
+      recordAttemptFailure(requestedModel, primaryStart, primaryErr);
       if (strictModelLock) {
         const reason = primaryErr instanceof Error ? primaryErr.message.slice(0, 220) : String(primaryErr).slice(0, 220);
         appendExecutionLog({
@@ -3846,38 +4007,42 @@ async function executeRoutedAiTask(params) {
           durationMs: Date.now() - start,
           timestamp: (/* @__PURE__ */ new Date()).toISOString()
         });
-        if (reason.includes("GRADING_JSON_INVALID") || reason.includes("GROQ_API_KEY_UNCONFIGURED") || reason.includes("MISTRAL_API_KEY_UNCONFIGURED") || reason.includes("CLOUDFLARE_CREDENTIALS_UNCONFIGURED")) {
+        if (reason.includes("GRADING_JSON_INVALID") || reason.includes("GROQ_API_KEY_UNCONFIGURED") || reason.includes("MISTRAL_API_KEY_UNCONFIGURED") || reason.includes("CLOUDFLARE_CREDENTIALS_UNCONFIGURED") || reason.includes("MISTRAL_BILLING_REQUIRED")) {
+          if (primaryErr instanceof Error) {
+            primaryErr.attemptTrace = attemptTrace;
+          }
           throw primaryErr;
         }
-        throw new Error(
+        const strictErr = new Error(
           `STRICT_GRADING_MODEL_UNAVAILABLE: Model ch\u1EA5m \u0111i\u1EC3m c\u1ED1 \u0111\u1ECBnh (${requestedModel}) t\u1EA1m th\u1EDDi kh\xF4ng ph\u1EA3n h\u1ED3i v\xE0 y\xEAu c\u1EA7u \u0111\xE3 b\u1EADt kh\xF3a model. Chi ti\u1EBFt: ${reason}`
         );
+        strictErr.attemptTrace = attemptTrace;
+        throw strictErr;
       }
       const triedProviders = /* @__PURE__ */ new Set();
-      const providerOf = (m) => isGroqModelId(m) ? "groq" : isCloudflareModelId(m) ? "cloudflare" : "mistral";
-      triedProviders.add(providerOf(requestedModel));
+      triedProviders.add(getProviderForModel(requestedModel));
       if (canFallback && !isBudgetExhausted()) {
-        triedProviders.add(providerOf(fallbackModelId));
-        try {
-          const fbResult = await withExponentialBackoff(
-            () => runWithModel(fallbackModelId),
-            maxFallbackRetries
-          );
-          if (overrideConsumed && consumeOneTimeOverride) {
-            await consumeOneTimeOverride(taskType);
+        const fbProvider = getProviderForModel(fallbackModelId);
+        if (!isProviderCoolingDown(fbProvider)) {
+          triedProviders.add(fbProvider);
+          const fbStart = Date.now();
+          try {
+            const fbResult = await withExponentialBackoff(
+              () => runWithModel(fallbackModelId),
+              maxFallbackRetries
+            );
+            if (overrideConsumed && consumeOneTimeOverride) {
+              await consumeOneTimeOverride(taskType);
+            }
+            return finalizeSuccess(fbResult, fallbackModelId, true, start);
+          } catch (fbErr) {
+            lastErr = fbErr;
+            recordAttemptFailure(fallbackModelId, fbStart, fbErr);
           }
-          return finalizeSuccess(fbResult, fallbackModelId, true, start);
-        } catch (fbErr) {
-          lastErr = fbErr;
         }
       }
       if (allowCrossProviderRescue && !isBudgetExhausted()) {
         const rescueHops = [
-          {
-            provider: "mistral",
-            configured: isMistralConfigured(),
-            modelId: defaultMistralRescueModelForTask(taskType)
-          },
           {
             provider: "groq",
             configured: isGroqConfigured(),
@@ -3887,12 +4052,20 @@ async function executeRoutedAiTask(params) {
             provider: "cloudflare",
             configured: isCloudflareConfigured(),
             modelId: defaultCloudflareRescueModelForTask(taskType)
+          },
+          {
+            provider: "mistral",
+            configured: isMistralConfigured(),
+            modelId: defaultMistralRescueModelForTask(taskType)
           }
         ];
         for (const hop of rescueHops) {
           if (isBudgetExhausted()) break;
-          if (!hop.configured || triedProviders.has(hop.provider)) continue;
+          if (!hop.configured || triedProviders.has(hop.provider) || isProviderCoolingDown(hop.provider)) {
+            continue;
+          }
           triedProviders.add(hop.provider);
+          const hopStart = Date.now();
           try {
             const rescueResult = await withExponentialBackoff(
               () => runWithModel(hop.modelId),
@@ -3901,25 +4074,29 @@ async function executeRoutedAiTask(params) {
             return finalizeSuccess(rescueResult, hop.modelId, true, start);
           } catch (rescueErr) {
             lastErr = rescueErr;
+            recordAttemptFailure(hop.modelId, hopStart, rescueErr);
           }
         }
       }
+      const traceSummary = attemptTrace.map((t) => `${t.modelId} [${t.errorCode || "ERR"}]`).join(" -> ");
       appendExecutionLog({
         executionId: `exec_${Date.now()}_${crypto4.randomBytes(2).toString("hex")}`,
         taskType,
         modelId: canFallback ? fallbackModelId : requestedModel,
         requestedModel,
         actualModel: canFallback ? fallbackModelId : requestedModel,
-        usedFallback: canFallback,
+        usedFallback: canFallback || attemptTrace.length > 1,
         usedOverride: decision.usedOverride,
         promptVersion: decision.promptVersion,
         configVersion: decision.configVersion,
         status: "failed",
-        error: lastErr instanceof Error ? lastErr.message.slice(0, 180) : String(lastErr).slice(0, 180),
+        error: (attemptTrace.length > 1 ? `${traceSummary} | ${lastErr instanceof Error ? lastErr.message : String(lastErr)}` : lastErr instanceof Error ? lastErr.message : String(lastErr)).slice(0, 240),
         durationMs: Date.now() - start,
         timestamp: (/* @__PURE__ */ new Date()).toISOString()
       });
-      throw lastErr;
+      const finalErr = lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+      finalErr.attemptTrace = attemptTrace;
+      throw finalErr;
     }
   };
   if (!cacheKey) {
@@ -8420,18 +8597,23 @@ async function requireSuperAdmin(req, res, next) {
 }
 function mapGeminiErrorResponse(err, includeDebug = false) {
   const msg = err instanceof Error ? err.message : String(err);
+  const lowerMsg = msg.toLowerCase();
+  const attemptTrace = err instanceof Error && Array.isArray(err.attemptTrace) ? err.attemptTrace : void 0;
   const cfg = getAuthoritativeAiConfigSnapshot();
   const configuredProviders = {
     mistral: isMistralConfigured(),
     groq: isGroqConfigured(),
     cloudflare: isCloudflareConfigured()
   };
+  const providerHealth = getProviderHealthSnapshot();
   const debugExtras = includeDebug ? {
     technicalDetail: msg,
     debug: {
       activeModel: cfg.activeModel,
       configuredProviders,
-      recentExecutions: getRecentExecutionLogs().slice(0, 6),
+      providerHealth,
+      ...attemptTrace && attemptTrace.length > 0 ? { attemptTrace } : {},
+      recentExecutions: getRecentExecutionLogs().slice(0, 10),
       timestamp: (/* @__PURE__ */ new Date()).toISOString()
     }
   } : {};
@@ -8480,6 +8662,15 @@ function mapGeminiErrorResponse(err, includeDebug = false) {
       status: 503,
       code: "CLOUDFLARE_KEY_MISSING",
       error: includeDebug ? "Ch\u01B0a c\u1EA5u h\xECnh Cloudflare Workers AI. H\xE3y \u0111\u1EB7t bi\u1EBFn CLOUDFLARE_ACCOUNT_ID v\xE0 CLOUDFLARE_API_TOKEN tr\xEAn m\xE1y ch\u1EE7 \u0111\u1EC3 ch\u1EA1y 24/7 ho\u1EB7c nh\u1EADp t\u1EA1i Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng \u2192 API Key & B\u1EA3o m\u1EADt." : "H\u1EC7 th\u1ED1ng AI v\u1EEBa kh\u1EDFi \u0111\u1ED9ng l\u1EA1i v\xE0 \u0111ang ch\u1EDD c\u1EA5u h\xECnh kh\xF3a k\u1EBFt n\u1ED1i. Vui l\xF2ng th\u1EED l\u1EA1i sau \xEDt ph\xFAt ho\u1EB7c b\xE1o cho qu\u1EA3n tr\u1ECB vi\xEAn.",
+      ...debugExtras
+    };
+  }
+  if (msg.includes("MISTRAL_BILLING_REQUIRED") || msg.includes("HTTP 402") || msg.includes(" 402 ") || lowerMsg.includes("need a subscription") || lowerMsg.includes("payment required")) {
+    const hasBackup = configuredProviders.groq || configuredProviders.cloudflare;
+    return {
+      status: 402,
+      code: "MISTRAL_BILLING_REQUIRED",
+      error: includeDebug ? hasBackup ? "Mistral b\xE1o HTTP 402 (C\u1EA7n k\xEDch ho\u1EA1t g\xF3i Experiment mi\u1EC5n ph\xED ho\u1EB7c Billing t\u1EA1i console.mistral.ai) v\xE0 c\xE1c nh\xE0 cung c\u1EA5p d\u1EF1 ph\xF2ng c\u0169ng ch\u01B0a ph\u1EA3n h\u1ED3i. H\u1EC7 th\u1ED1ng \u0111\xE3 t\u1EA1m khoanh v\xF9ng Mistral 10 ph\xFAt \u2014 xem b\u1EA3ng Debug Admin b\xEAn d\u01B0\u1EDBi \u0111\u1EC3 ki\u1EC3m tra chi ti\u1EBFt t\u1EEBng nh\xE0 cung c\u1EA5p." : "Mistral b\xE1o HTTP 402: Key mi\u1EC5n ph\xED c\u1EE7a Mistral v\u1EABn b\u1EAFt bu\u1ED9c v\xE0o console.mistral.ai \u2192 Billing / Subscription \u0111\u1EC3 ch\u1ECDn g\xF3i Experiment (mi\u1EC5n ph\xED, x\xE1c minh S\u0110T) ho\u1EB7c n\u1EA1p credit. B\u1EA1n c\u0169ng n\xEAn th\xEAm GROQ_API_KEY (mi\u1EC5n ph\xED) \u0111\u1EC3 h\u1EC7 th\u1ED1ng t\u1EF1 \u0111\u1ED9ng d\u1EF1 ph\xF2ng kh\xF4ng gi\xE1n \u0111o\u1EA1n." : "D\u1ECBch v\u1EE5 AI t\u1EA1m th\u1EDDi kh\xF4ng kh\u1EA3 d\u1EE5ng do gi\u1EDBi h\u1EA1n t\xE0i kho\u1EA3n nh\xE0 cung c\u1EA5p. Vui l\xF2ng th\u1EED l\u1EA1i sau ho\u1EB7c b\xE1o qu\u1EA3n tr\u1ECB vi\xEAn.",
       ...debugExtras
     };
   }
@@ -9651,6 +9842,7 @@ function createApiApp() {
         res.status(400).json({ error: result.error });
         return;
       }
+      clearProviderCooldown("mistral");
       const cfg = getAuthoritativeAiConfigSnapshot();
       res.json({
         singleKeyStatus: result.status,
@@ -9738,6 +9930,7 @@ function createApiApp() {
         res.status(400).json({ error: result.error });
         return;
       }
+      clearProviderCooldown("mistral");
       const cfg = getAuthoritativeAiConfigSnapshot();
       res.json({
         mistralStatus: result.status,
@@ -9761,6 +9954,9 @@ function createApiApp() {
         actorEmail: user.email,
         idToken: user.idToken
       });
+      if (result.status === "Connected") {
+        clearProviderCooldown("mistral");
+      }
       res.json(result);
     } catch (err) {
       res.status(500).json({
@@ -9811,6 +10007,7 @@ function createApiApp() {
         res.status(400).json({ error: result.error });
         return;
       }
+      clearProviderCooldown("groq");
       res.json({
         groqStatus: result.status,
         providerKeys: await getProviderKeysStatus(user.idToken),
@@ -9832,6 +10029,9 @@ function createApiApp() {
         actorEmail: user.email,
         idToken: user.idToken
       });
+      if (result.status === "Connected") {
+        clearProviderCooldown("groq");
+      }
       res.json(result);
     } catch (err) {
       res.status(500).json({
@@ -9850,6 +10050,7 @@ function createApiApp() {
         actorEmail: user.email,
         idToken: user.idToken
       });
+      clearProviderCooldown("groq");
       res.json({
         groqStatus: result.status,
         providerKeys: await getProviderKeysStatus(user.idToken),
@@ -9881,6 +10082,7 @@ function createApiApp() {
         res.status(400).json({ error: result.error });
         return;
       }
+      clearProviderCooldown("cloudflare");
       res.json({
         cloudflareStatus: result.status,
         providerKeys: await getProviderKeysStatus(user.idToken),
@@ -9903,6 +10105,9 @@ function createApiApp() {
         actorEmail: user.email,
         idToken: user.idToken
       });
+      if (result.status === "Connected") {
+        clearProviderCooldown("cloudflare");
+      }
       res.json(result);
     } catch (err) {
       res.status(500).json({
@@ -9910,6 +10115,93 @@ function createApiApp() {
         message: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 ki\u1EC3m tra Cloudflare Workers AI.",
         testedSource: "none",
         testedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    }
+  });
+  app.get("/api/admin/debug/snapshot", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    try {
+      await hydrateSingleKeyForSuperAdmin(user.idToken);
+      const cfg = await loadAuthoritativeAiConfig(user.idToken);
+      const providerKeys = await getProviderKeysStatus(user.idToken);
+      res.json({
+        serverTime: (/* @__PURE__ */ new Date()).toISOString(),
+        runtime: {
+          nodeVersion: process.version,
+          isVercel: process.env.VERCEL === "1",
+          uptimeSec: Math.round(process.uptime()),
+          configVersion: cfg.configVersion || 1,
+          aiEnabled: cfg.enabled
+        },
+        activeModel: cfg.activeModel,
+        adaptiveLongTextThresholdChars: cfg.adaptiveLongTextThresholdChars ?? 1500,
+        configuredProviders: {
+          mistral: isMistralConfigured(),
+          groq: isGroqConfigured(),
+          cloudflare: isCloudflareConfigured()
+        },
+        providerHealth: getProviderHealthSnapshot(),
+        providerSources: {
+          mistral: {
+            source: providerKeys.mistral.source,
+            maskedKey: providerKeys.mistral.maskedKey,
+            lastTestStatus: providerKeys.mistral.lastTestStatus,
+            lastTestMessage: providerKeys.mistral.lastTestMessage
+          },
+          groq: {
+            source: providerKeys.groq.source,
+            maskedKey: providerKeys.groq.maskedKey,
+            lastTestStatus: providerKeys.groq.lastTestStatus,
+            lastTestMessage: providerKeys.groq.lastTestMessage
+          },
+          cloudflare: {
+            source: providerKeys.cloudflare.source,
+            maskedKey: providerKeys.cloudflare.maskedAccountId && providerKeys.cloudflare.maskedKey ? `${providerKeys.cloudflare.maskedAccountId} / ${providerKeys.cloudflare.maskedKey}` : providerKeys.cloudflare.maskedKey || providerKeys.cloudflare.maskedAccountId || "",
+            lastTestStatus: providerKeys.cloudflare.lastTestStatus,
+            lastTestMessage: providerKeys.cloudflare.lastTestMessage
+          }
+        },
+        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
+        recentExecutions: getRecentExecutionLogs().slice(0, 30)
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : "Kh\xF4ng t\u1EA3i \u0111\u01B0\u1EE3c d\u1EEF li\u1EC7u ch\u1EA9n \u0111o\xE1n Debug Admin."
+      });
+    }
+  });
+  app.post("/api/admin/debug/reset-health", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    try {
+      const { provider, clearCache } = req.body || {};
+      if (provider === "mistral" || provider === "groq" || provider === "cloudflare") {
+        clearProviderCooldown(provider);
+      } else {
+        clearProviderCooldown();
+      }
+      if (clearCache !== false) {
+        clearAiResponseCache();
+      }
+      await recordAuditLog(
+        {
+          actorUid: user.uid,
+          actorEmail: user.email,
+          action: "ADMIN_DEBUG_HEALTH_RESET",
+          resourceType: "aiDebug",
+          resourceId: provider || "all",
+          status: "success",
+          metadata: { clearCache: clearCache !== false }
+        },
+        user.idToken
+      );
+      res.json({
+        ok: true,
+        providerHealth: getProviderHealthSnapshot(),
+        resetAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 \u0111\u1EB7t l\u1EA1i tr\u1EA1ng th\xE1i nh\xE0 cung c\u1EA5p."
       });
     }
   });
@@ -9921,6 +10213,7 @@ function createApiApp() {
         actorEmail: user.email,
         idToken: user.idToken
       });
+      clearProviderCooldown("cloudflare");
       res.json({
         cloudflareStatus: result.status,
         providerKeys: await getProviderKeysStatus(user.idToken),

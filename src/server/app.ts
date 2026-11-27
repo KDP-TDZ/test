@@ -63,10 +63,15 @@ import {
 } from './referenceIngestService.js';
 import {
   callWithTimeout,
+  clearAiResponseCache,
+  clearProviderCooldown,
+  getProviderHealthSnapshot,
   getRecentExecutionLogs,
   MODEL_CATALOG,
   resolveModelForTask,
   testModelConnectivity,
+  type ProviderHealthSnapshotItem,
+  type RoutedAttemptTrace,
 } from './modelRouter.js';
 import {
   callMistralChatCompletion,
@@ -213,24 +218,34 @@ function mapGeminiErrorResponse(
   debug?: {
     activeModel: string;
     configuredProviders: { mistral: boolean; groq: boolean; cloudflare: boolean };
+    providerHealth: Record<'mistral' | 'groq' | 'cloudflare', ProviderHealthSnapshotItem>;
+    attemptTrace?: RoutedAttemptTrace[];
     recentExecutions: ReturnType<typeof getRecentExecutionLogs>;
     timestamp: string;
   };
 } {
   const msg = err instanceof Error ? err.message : String(err);
+  const lowerMsg = msg.toLowerCase();
+  const attemptTrace =
+    err instanceof Error && Array.isArray((err as Error & { attemptTrace?: RoutedAttemptTrace[] }).attemptTrace)
+      ? (err as Error & { attemptTrace?: RoutedAttemptTrace[] }).attemptTrace
+      : undefined;
   const cfg = getAuthoritativeAiConfigSnapshot();
   const configuredProviders = {
     mistral: isMistralConfigured(),
     groq: isGroqConfigured(),
     cloudflare: isCloudflareConfigured(),
   };
+  const providerHealth = getProviderHealthSnapshot();
   const debugExtras = includeDebug
     ? {
         technicalDetail: msg,
         debug: {
           activeModel: cfg.activeModel,
           configuredProviders,
-          recentExecutions: getRecentExecutionLogs().slice(0, 6),
+          providerHealth,
+          ...(attemptTrace && attemptTrace.length > 0 ? { attemptTrace } : {}),
+          recentExecutions: getRecentExecutionLogs().slice(0, 10),
           timestamp: new Date().toISOString(),
         },
       }
@@ -292,6 +307,25 @@ function mapGeminiErrorResponse(
       error: includeDebug
         ? 'Chưa cấu hình Cloudflare Workers AI. Hãy đặt biến CLOUDFLARE_ACCOUNT_ID và CLOUDFLARE_API_TOKEN trên máy chủ để chạy 24/7 hoặc nhập tại Quản trị hệ thống → API Key & Bảo mật.'
         : 'Hệ thống AI vừa khởi động lại và đang chờ cấu hình khóa kết nối. Vui lòng thử lại sau ít phút hoặc báo cho quản trị viên.',
+      ...debugExtras,
+    };
+  }
+  if (
+    msg.includes('MISTRAL_BILLING_REQUIRED') ||
+    msg.includes('HTTP 402') ||
+    msg.includes(' 402 ') ||
+    lowerMsg.includes('need a subscription') ||
+    lowerMsg.includes('payment required')
+  ) {
+    const hasBackup = configuredProviders.groq || configuredProviders.cloudflare;
+    return {
+      status: 402,
+      code: 'MISTRAL_BILLING_REQUIRED',
+      error: includeDebug
+        ? hasBackup
+          ? 'Mistral báo HTTP 402 (Cần kích hoạt gói Experiment miễn phí hoặc Billing tại console.mistral.ai) và các nhà cung cấp dự phòng cũng chưa phản hồi. Hệ thống đã tạm khoanh vùng Mistral 10 phút — xem bảng Debug Admin bên dưới để kiểm tra chi tiết từng nhà cung cấp.'
+          : 'Mistral báo HTTP 402: Key miễn phí của Mistral vẫn bắt buộc vào console.mistral.ai → Billing / Subscription để chọn gói Experiment (miễn phí, xác minh SĐT) hoặc nạp credit. Bạn cũng nên thêm GROQ_API_KEY (miễn phí) để hệ thống tự động dự phòng không gián đoạn.'
+        : 'Dịch vụ AI tạm thời không khả dụng do giới hạn tài khoản nhà cung cấp. Vui lòng thử lại sau hoặc báo quản trị viên.',
       ...debugExtras,
     };
   }
@@ -1658,6 +1692,7 @@ export function createApiApp(): express.Express {
         res.status(400).json({ error: result.error });
         return;
       }
+      clearProviderCooldown('mistral');
       const cfg = getAuthoritativeAiConfigSnapshot();
       res.json({
         singleKeyStatus: result.status,
@@ -1750,6 +1785,7 @@ export function createApiApp(): express.Express {
         res.status(400).json({ error: result.error });
         return;
       }
+      clearProviderCooldown('mistral');
       const cfg = getAuthoritativeAiConfigSnapshot();
       res.json({
         mistralStatus: result.status,
@@ -1774,6 +1810,9 @@ export function createApiApp(): express.Express {
         actorEmail: user.email,
         idToken: user.idToken,
       });
+      if (result.status === 'Connected') {
+        clearProviderCooldown('mistral');
+      }
       res.json(result);
     } catch (err) {
       res.status(500).json({
@@ -1826,6 +1865,7 @@ export function createApiApp(): express.Express {
         res.status(400).json({ error: result.error });
         return;
       }
+      clearProviderCooldown('groq');
       res.json({
         groqStatus: result.status,
         providerKeys: await getProviderKeysStatus(user.idToken),
@@ -1848,6 +1888,9 @@ export function createApiApp(): express.Express {
         actorEmail: user.email,
         idToken: user.idToken,
       });
+      if (result.status === 'Connected') {
+        clearProviderCooldown('groq');
+      }
       res.json(result);
     } catch (err) {
       res.status(500).json({
@@ -1867,6 +1910,7 @@ export function createApiApp(): express.Express {
         actorEmail: user.email,
         idToken: user.idToken,
       });
+      clearProviderCooldown('groq');
       res.json({
         groqStatus: result.status,
         providerKeys: await getProviderKeysStatus(user.idToken),
@@ -1903,6 +1947,7 @@ export function createApiApp(): express.Express {
         res.status(400).json({ error: result.error });
         return;
       }
+      clearProviderCooldown('cloudflare');
       res.json({
         cloudflareStatus: result.status,
         providerKeys: await getProviderKeysStatus(user.idToken),
@@ -1929,6 +1974,9 @@ export function createApiApp(): express.Express {
         actorEmail: user.email,
         idToken: user.idToken,
       });
+      if (result.status === 'Connected') {
+        clearProviderCooldown('cloudflare');
+      }
       res.json(result);
     } catch (err) {
       res.status(500).json({
@@ -1936,6 +1984,102 @@ export function createApiApp(): express.Express {
         message: err instanceof Error ? err.message : 'Không thể kiểm tra Cloudflare Workers AI.',
         testedSource: 'none',
         testedAt: new Date().toISOString(),
+      });
+    }
+  });
+
+  // --- Super Admin Dedicated Debug & Diagnostics Endpoints (Strictly Super Admin Only, zero raw secrets) ---
+  app.get('/api/admin/debug/snapshot', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      await hydrateSingleKeyForSuperAdmin(user.idToken);
+      const cfg = await loadAuthoritativeAiConfig(user.idToken);
+      const providerKeys = await getProviderKeysStatus(user.idToken);
+      res.json({
+        serverTime: new Date().toISOString(),
+        runtime: {
+          nodeVersion: process.version,
+          isVercel: process.env.VERCEL === '1',
+          uptimeSec: Math.round(process.uptime()),
+          configVersion: cfg.configVersion || 1,
+          aiEnabled: cfg.enabled,
+        },
+        activeModel: cfg.activeModel,
+        adaptiveLongTextThresholdChars: cfg.adaptiveLongTextThresholdChars ?? 1500,
+        configuredProviders: {
+          mistral: isMistralConfigured(),
+          groq: isGroqConfigured(),
+          cloudflare: isCloudflareConfigured(),
+        },
+        providerHealth: getProviderHealthSnapshot(),
+        providerSources: {
+          mistral: {
+            source: providerKeys.mistral.source,
+            maskedKey: providerKeys.mistral.maskedKey,
+            lastTestStatus: providerKeys.mistral.lastTestStatus,
+            lastTestMessage: providerKeys.mistral.lastTestMessage,
+          },
+          groq: {
+            source: providerKeys.groq.source,
+            maskedKey: providerKeys.groq.maskedKey,
+            lastTestStatus: providerKeys.groq.lastTestStatus,
+            lastTestMessage: providerKeys.groq.lastTestMessage,
+          },
+          cloudflare: {
+            source: providerKeys.cloudflare.source,
+            maskedKey:
+              providerKeys.cloudflare.maskedAccountId && providerKeys.cloudflare.maskedKey
+                ? `${providerKeys.cloudflare.maskedAccountId} / ${providerKeys.cloudflare.maskedKey}`
+                : providerKeys.cloudflare.maskedKey || providerKeys.cloudflare.maskedAccountId || '',
+            lastTestStatus: providerKeys.cloudflare.lastTestStatus,
+            lastTestMessage: providerKeys.cloudflare.lastTestMessage,
+          },
+        },
+        coldStartReadiness: evaluateColdStartReadiness(cfg.activeModel),
+        recentExecutions: getRecentExecutionLogs().slice(0, 30),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Không tải được dữ liệu chẩn đoán Debug Admin.',
+      });
+    }
+  });
+
+  app.post('/api/admin/debug/reset-health', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const { provider, clearCache } = (req.body || {}) as {
+        provider?: 'mistral' | 'groq' | 'cloudflare';
+        clearCache?: boolean;
+      };
+      if (provider === 'mistral' || provider === 'groq' || provider === 'cloudflare') {
+        clearProviderCooldown(provider);
+      } else {
+        clearProviderCooldown();
+      }
+      if (clearCache !== false) {
+        clearAiResponseCache();
+      }
+      await recordAuditLog(
+        {
+          actorUid: user.uid,
+          actorEmail: user.email,
+          action: 'ADMIN_DEBUG_HEALTH_RESET',
+          resourceType: 'aiDebug',
+          resourceId: provider || 'all',
+          status: 'success',
+          metadata: { clearCache: clearCache !== false },
+        },
+        user.idToken
+      );
+      res.json({
+        ok: true,
+        providerHealth: getProviderHealthSnapshot(),
+        resetAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Không thể đặt lại trạng thái nhà cung cấp.',
       });
     }
   });
@@ -1948,6 +2092,7 @@ export function createApiApp(): express.Express {
         actorEmail: user.email,
         idToken: user.idToken,
       });
+      clearProviderCooldown('cloudflare');
       res.json({
         cloudflareStatus: result.status,
         providerKeys: await getProviderKeysStatus(user.idToken),
