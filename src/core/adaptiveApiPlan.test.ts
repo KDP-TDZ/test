@@ -30,7 +30,7 @@ describe('adaptiveApiPlan — threshold clamping & short/long classification', (
     assert.equal(clampAdaptiveThresholdChars(1799.6), 1800);
   });
 
-  it('classifies short text (< threshold) as 1-1-1 and long text (>= threshold) as 2-2-2', () => {
+  it('always returns fixed 1-1-1 plan regardless of short or long document length', () => {
     const shortPlan = computeAdaptiveApiPlan(1499);
     assert.equal(shortPlan.isLongText, false);
     assert.equal(shortPlan.thresholdChars, 1500);
@@ -39,15 +39,17 @@ describe('adaptiveApiPlan — threshold clamping & short/long classification', (
     assert.equal(shortPlan.verifyApiCount, 1);
 
     const boundaryPlan = computeAdaptiveApiPlan(1500);
-    assert.equal(boundaryPlan.isLongText, true);
-    assert.equal(boundaryPlan.scanApiCount, 2);
-    assert.equal(boundaryPlan.gradeApiCount, 2);
-    assert.equal(boundaryPlan.verifyApiCount, 2);
+    assert.equal(boundaryPlan.isLongText, false);
+    assert.equal(boundaryPlan.scanApiCount, 1);
+    assert.equal(boundaryPlan.gradeApiCount, 1);
+    assert.equal(boundaryPlan.verifyApiCount, 1);
 
-    const customThreshold = computeAdaptiveApiPlan(900, 800);
-    assert.equal(customThreshold.isLongText, true);
-    assert.equal(customThreshold.thresholdChars, 800);
-    assert.equal(customThreshold.gradeApiCount, 2);
+    const longPlan = computeAdaptiveApiPlan(15000, 800);
+    assert.equal(longPlan.isLongText, false);
+    assert.equal(longPlan.thresholdChars, 800);
+    assert.equal(longPlan.scanApiCount, 1);
+    assert.equal(longPlan.gradeApiCount, 1);
+    assert.equal(longPlan.verifyApiCount, 1);
   });
 
   it('computes NFC-normalized trimmed text length from strings and pages', () => {

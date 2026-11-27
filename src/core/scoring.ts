@@ -256,14 +256,13 @@ export function calculateCompletenessScore(
 
   for (const item of coverageItems) {
     if (item.status === 'OUT_OF_SCOPE') continue;
-    const w = item.importanceWeight || 1;
-    totalRequiredWeight += w;
+    totalRequiredWeight += 1;
 
     if (item.status === 'COVERED') {
-      coveredWeight += w * 1.0;
+      coveredWeight += 1;
       coveredCount += 1;
     } else if (item.status === 'PARTIALLY_COVERED') {
-      coveredWeight += w * 0.5;
+      coveredWeight += 0.5;
       partialCount += 1;
     } else {
       missingCount += 1;

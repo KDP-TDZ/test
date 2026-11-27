@@ -661,7 +661,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
 
       setActiveStage('generating_report');
       await saveAnalysisRecord(record);
-      await syncEncounteredConceptsFromAnalysis(user.uid, record);
+      syncEncounteredConceptsFromAnalysis(user.uid, record).catch(() => {});
       persistOcrDraft(null);
       setProgressDetail(null);
 
@@ -886,9 +886,24 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         updatedAt: new Date().toISOString(),
       }).catch(() => {});
 
-      const hasLowConfidenceOcr = pages.some(
-        (p) => p.ocrAverageConfidence < 0.72 || p.blocks.some((b) => b.confidence < 0.65)
-      );
+      const unreadablePageNums = pages
+        .filter(
+          (p) =>
+            p.ocrAverageConfidence < 0.55 ||
+            !p.rawText?.trim() ||
+            /\[KHÔNG NHÌN RÕ\]/i.test(p.rawText || '')
+        )
+        .map((p) => p.pageNumber);
+      const hasLowConfidenceOcr =
+        unreadablePageNums.length > 0 ||
+        pages.some(
+          (p) => p.ocrAverageConfidence < 0.72 || p.blocks.some((b) => b.confidence < 0.65)
+        );
+      if (unreadablePageNums.length > 0) {
+        setWarning(
+          `Không thể nhìn rõ toàn bộ nội dung ở trang ${unreadablePageNums.join(', ')}. Hệ thống không tự đoán hay sửa thay — vui lòng kiểm tra hoặc chụp ảnh rõ nét hơn.`
+        );
+      }
       if (reviewOcrBeforeGrading || hasLowConfidenceOcr) {
         setProgressDetail(null);
         setStep('review_ocr');

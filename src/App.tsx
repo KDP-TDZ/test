@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { PrivacyBlurProvider } from './context/PrivacyBlurContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { AmbientCanvas } from './components/LiquidGlass/AmbientCanvas';
+import { CalmDots } from './components/CalmLoadingIndicator';
 import { LandingPage } from './components/LandingPage';
 
 function lazyWithRetry<T extends React.ComponentType<any>>(
@@ -29,8 +30,10 @@ const AuthenticatedShell = lazyWithRetry(() =>
 
 const BootLoader: React.FC = () => (
   <div className="min-h-dvh flex items-center justify-center p-6">
-    <div className="glass-surface rounded-3xl px-8 py-7 text-center">
-      <div className="size-6 rounded-full border-2 border-sky-500 border-t-transparent animate-spin mx-auto mb-3" />
+    <div className="glass-surface rounded-3xl px-8 py-7 text-center space-y-3">
+      <div className="flex justify-center">
+        <CalmDots className="text-sky-600 dark:text-sky-400" />
+      </div>
       <p className="text-sm font-medium text-[#16243E] dark:text-[#E6EFFC]">
         Đang khởi tạo {BRAND_CONFIG.name}...
       </p>

@@ -54,8 +54,8 @@ const INLINE_MARK_STYLES: Record<
   }
 > = {
   red: {
-    mark: 'bg-rose-100/90 dark:bg-rose-950/70 text-rose-950 dark:text-rose-100 underline decoration-rose-500 decoration-2 underline-offset-4 hover:bg-rose-200/80 dark:hover:bg-rose-900/70',
-    activeRing: 'ring-2 ring-rose-400/90 dark:ring-rose-500/80 bg-rose-200/90 dark:bg-rose-900/85',
+    mark: 'bg-rose-100 dark:bg-rose-950/75 text-rose-950 dark:text-rose-100 font-medium underline decoration-rose-600 decoration-[2.5px] underline-offset-4 hover:bg-rose-200/85 dark:hover:bg-rose-900/75',
+    activeRing: 'ring-2 ring-rose-500/90 dark:ring-rose-500/80 bg-rose-200/95 dark:bg-rose-900/90',
     badgeBg: 'bg-rose-600 text-white',
     label: 'Sai kiến thức / Công thức',
     text: 'text-rose-700 dark:text-rose-400',
@@ -63,8 +63,8 @@ const INLINE_MARK_STYLES: Record<
       'border-rose-300 dark:border-rose-700 bg-rose-50/75 dark:bg-rose-950/35 ring-2 ring-rose-200/80 dark:ring-rose-800/70',
   },
   orange: {
-    mark: 'bg-amber-100/85 dark:bg-amber-950/65 text-amber-950 dark:text-amber-100 underline decoration-amber-500 decoration-dashed decoration-2 underline-offset-4 hover:bg-amber-200/80 dark:hover:bg-amber-900/65',
-    activeRing: 'ring-2 ring-amber-400/90 dark:ring-amber-500/80 bg-amber-200/90 dark:bg-amber-900/80',
+    mark: 'bg-amber-100 dark:bg-amber-950/70 text-amber-950 dark:text-amber-100 font-medium underline decoration-amber-500 decoration-dashed decoration-[2.5px] underline-offset-4 hover:bg-amber-200/85 dark:hover:bg-amber-900/70',
+    activeRing: 'ring-2 ring-amber-500/90 dark:ring-amber-500/80 bg-amber-200/95 dark:bg-amber-900/85',
     badgeBg: 'bg-amber-600 text-white',
     label: 'Thiếu thông tin / Điều kiện',
     text: 'text-amber-700 dark:text-amber-400',
@@ -526,9 +526,14 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
           >
             {/* Clean Unboxed Document Header */}
             <div className="flex flex-wrap items-baseline justify-between gap-2 pb-3.5 mb-5 border-b border-slate-200/80 dark:border-slate-800 text-xs">
-              <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
-                {analysis.documentTitle}
-              </h3>
+              <div className="min-w-0">
+                <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+                  {analysis.documentTitle}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  Sao chép nguyên văn bài làm · Chỉ gạch chân & tô nổi bật chỗ sai/thiếu (không tự sửa)
+                </p>
+              </div>
               <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400 font-mono tabular-nums shrink-0">
                 <span>{SUBJECT_LABELS[analysis.subject]}</span>
                 <span aria-hidden="true">·</span>
@@ -537,6 +542,23 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                 <span>{issueClaims.length} điểm cần sửa</span>
               </div>
             </div>
+
+            {currentPage &&
+              (currentPage.ocrAverageConfidence < 0.55 ||
+                !currentPage.rawText?.trim() ||
+                /\[KHÔNG NHÌN RÕ\]/i.test(currentPage.rawText || '')) && (
+                <div className="mb-4 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/90 dark:bg-amber-950/40 px-3.5 py-2.5 flex items-start gap-2.5 text-xs text-amber-950 dark:text-amber-200">
+                  <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-semibold">
+                      Không thể nhìn rõ toàn bộ nội dung trang {currentPageNumber}
+                    </p>
+                    <p className="mt-0.5 text-amber-900/90 dark:text-amber-200/90">
+                      Hệ thống giữ nguyên bản sao chép và không tự đoán hay sửa thay. Vui lòng chụp lại trang rõ nét hơn nếu có phần chữ bị mờ hoặc mất nét.
+                    </p>
+                  </div>
+                </div>
+              )}
 
             {/* Optional Collapsible Original Uploaded Image / PDF Canvas */}
             {showOriginalMedia && hasOriginalMedia && (

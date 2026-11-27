@@ -213,9 +213,12 @@ test('scoring accurately grades 5-defect Uniform Rectilinear Motion test fixture
   assert.equal(acc.counts.partiallyCorrect, 2);
   assert.equal(acc.counts.correct, 1);
   assert.equal(acc.counts.unverified, 0);
-  // earned = 3*1 + 2*0.5 + 2*0.5 = 5; verified = 3+3+3+2+3+2 = 16 -> 31.3%
-  assert.equal(acc.accuracyScore, 31.3);
+  // Count-based: (1 + 2*0.5) / 6 = 2 / 6 -> 33.3% đúng, 66.7% sai
+  assert.equal(acc.evaluatedTotal, 6);
+  assert.equal(acc.accuracyScore, 33.3);
+  assert.equal(acc.correctPercent, 33.3);
+  assert.equal(acc.incorrectPercent, 66.7);
   assert.equal(comp.missingCount, 2);
-  // covered = 3 / 7 -> 42.9%
-  assert.equal(comp.completenessScore, 42.9);
+  // Count-based completeness: 1 covered / 3 total -> 33.3%
+  assert.equal(comp.completenessScore, 33.3);
 });

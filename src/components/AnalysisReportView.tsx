@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { compareAnalysesBeforeAfter } from '../core/examScoring';
+import { computeClaimScoreSummary } from '../core/scoring';
 import {
   buildVerificationSummaryReport,
   type VerificationSummaryReport,
@@ -297,6 +298,10 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
 
   const acc = analysis.accuracyBreakdown;
   const comp = analysis.completenessBreakdown;
+  const scoreSummary = useMemo(
+    () => computeClaimScoreSummary(analysis.claims || [], acc),
+    [analysis.claims, acc]
+  );
   const aiEnabled = systemStatus ? systemStatus.enabled : true;
 
   // Before/After Comparison against an older analysis in the same subject
@@ -744,17 +749,29 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
 
       {/* Four Independent Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-5 no-print">
-        <GlassSurface className="report-metric-card rounded-3xl p-4 sm:p-5">
+        <GlassSurface className="report-metric-card rounded-3xl p-4 sm:p-5 space-y-2.5">
           <ScoreRing
             label="Độ chính xác (Accuracy)"
-            value={analysis.accuracyScore}
+            value={scoreSummary.correctPercent ?? analysis.accuracyScore}
             subtitle={
-              acc
-                ? `${acc.counts.correct} đúng · ${acc.counts.incorrect} sai kiến thức/CT · ${acc.counts.partiallyCorrect} thiếu thông tin`
-                : 'Chỉ chấm trên kiến thức đã viết & kiểm chứng'
+              scoreSummary.evaluatedTotal > 0
+                ? `Tổng ${scoreSummary.evaluatedTotal} ý: ${scoreSummary.correctCount} đúng · ${scoreSummary.partialCount} thiếu/1 phần · ${scoreSummary.incorrectCount} sai`
+                : 'Chưa đủ mệnh đề xác minh để tính điểm'
             }
             color="sky"
           />
+          {scoreSummary.evaluatedTotal > 0 &&
+            scoreSummary.correctPercent !== null &&
+            scoreSummary.incorrectPercent !== null && (
+              <div className="pt-2 border-t border-slate-200/70 dark:border-slate-700/70 flex items-center justify-between text-xs font-mono tabular-nums">
+                <span className="font-semibold text-emerald-700 dark:text-emerald-400">
+                  Đúng {scoreSummary.correctPercent}%
+                </span>
+                <span className="font-semibold text-rose-700 dark:text-rose-400">
+                  Sai {scoreSummary.incorrectPercent}%
+                </span>
+              </div>
+            )}
         </GlassSurface>
 
         <GlassSurface className="report-metric-card rounded-3xl p-4 sm:p-5">
@@ -844,12 +861,11 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
         open={showFormula}
         onToggle={(next) => {
           setShowFormula(next);
-          window.setTimeout(() => ScrollTrigger.refresh(), 260);
         }}
         icon={<Calculator className="w-4 h-4 text-sky-600 dark:text-sky-400" />}
         title={
           <span className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
-            Xem công thức tách biệt Độ chính xác và Độ đầy đủ
+            Xem công thức tính Tổng đúng/sai & % Đúng / % Sai minh bạch
           </span>
         }
         className="report-scroll-section glass-panel-subtle !rounded-3xl no-print"
@@ -858,29 +874,29 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       >
         <div>
           <p className="font-semibold text-sky-800 dark:text-sky-300 mb-1">
-            Độ chính xác = Trọng số đúng đạt được / Tổng trọng số đã xác minh
+            % Đúng = (Số ý đúng + 0,5 × Số ý thiếu/1 phần) / Tổng số ý đã chấm · % Sai = 100% − % Đúng
           </p>
           <p>
-            Đúng = 1,0 · Thiếu điều kiện = 0,5 · Sai = 0. Các ý chưa đủ căn cứ (Chưa xác định),
-            chữ OCR mờ (OCR_UNCERTAIN) hoặc kiến thức ngoài phạm vi không bị phạt vào mẫu số.
+            Mỗi ý đã kiểm chứng tính đều 1 đơn vị (Đúng = 1,0 · Thiếu/đúng 1 phần = 0,5 · Sai = 0),
+            không bị bóp méo bởi trọng số ẩn. Các ý chưa đủ căn cứ hoặc OCR mờ không bị phạt vào mẫu số.
           </p>
-          {acc && (
-            <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC]">
-              Thực tế: {acc.earnedWeight} / {acc.verifiedWeight} ={' '}
-              {acc.accuracyScore !== null ? `${acc.accuracyScore}%` : 'Chưa đủ dữ liệu'}
-            </p>
-          )}
+          <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
+            Thực tế: ({scoreSummary.correctCount} + 0,5 × {scoreSummary.partialCount}) / {scoreSummary.evaluatedTotal} ={' '}
+            {scoreSummary.correctPercent !== null
+              ? `Đúng ${scoreSummary.correctPercent}% · Sai ${scoreSummary.incorrectPercent}%`
+              : 'Chưa đủ dữ liệu'}
+          </p>
         </div>
         <div>
           <p className="font-semibold text-sky-800 dark:text-sky-300 mb-1">
-            Độ đầy đủ = Trọng số ý đã bao phủ / Tổng trọng số khung kiến thức chương
+            Độ đầy đủ = (Số ý đã phủ + 0,5 × Số ý phủ 1 phần) / Tổng số ý khung kiến thức
           </p>
           <p>
             Chỉ chấm khi có sách giáo khoa hoặc khung mục tiêu chương rõ ràng. Thiếu ý chỉ ảnh
             hưởng Độ đầy đủ, tuyệt đối không làm giảm Độ chính xác.
           </p>
           {comp && (
-            <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC]">
+            <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
               Thực tế: {comp.coveredWeight} / {comp.totalRequiredWeight} ={' '}
               {comp.completenessScore !== null ? `${comp.completenessScore}%` : 'Không áp dụng'}
             </p>
@@ -894,7 +910,6 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
           open={showAuditTrail}
           onToggle={(next) => {
             setShowAuditTrail(next);
-            window.setTimeout(() => ScrollTrigger.refresh(), 260);
           }}
           icon={<ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
           title={
@@ -965,12 +980,9 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
             {acc.gradingAudit.adaptiveApiPlan && (
               <div className="sm:col-span-2 lg:col-span-3 pt-2 border-t border-[#E6ECF5] dark:border-[#1E293B] grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-2">
                 <div>
-                  <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8]">Chế độ phân bổ API thích ứng</p>
+                  <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8]">Chế độ luồng API kiểm định</p>
                   <p className="font-mono text-[#1746A2] dark:text-[#93C5FD] font-semibold tabular-nums">
-                    {acc.gradingAudit.adaptiveApiPlan.isLongText
-                      ? '2 API (Chia đôi văn bản dài)'
-                      : '1 API (Văn bản chuẩn)'}{' '}
-                    · Ngưỡng {acc.gradingAudit.adaptiveApiPlan.thresholdChars.toLocaleString('vi-VN')} ký tự
+                    Cố định 1 Quét · 1 Chấm · 1 Dò
                   </p>
                 </div>
                 <div>

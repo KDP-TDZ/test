@@ -301,7 +301,7 @@ test('Fixed Pre-Grading Rubric locks weights & denominator and prevents AI from 
     rubricItemCount: rubric1.criteria.length,
     extraObservationsCount: extraObservations.length,
   });
-  assert.equal(comp.totalRequiredWeight, rubric1.totalRequiredWeight);
+  assert.equal(comp.totalRequiredWeight, rubric1.criteria.length);
   assert.equal(comp.rubricMode, 'fixed_textbook_rubric');
   assert.equal(comp.extraObservationsCount, 1);
 

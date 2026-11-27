@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
   calculateAccuracyScore,
   calculateCompletenessScore,
+  computeClaimScoreSummary,
   evaluateMasteryStatus,
 } from './scoring';
+import { computeInlineHighlightSegments } from './semanticBlocks';
 import { validateReferenceUrl } from './urlSecurity';
 import {
   retrieveRelevantChunks,
@@ -40,12 +42,12 @@ function makeClaim(
   };
 }
 
-test('calculateAccuracyScore matches weighted formula and excludes UNVERIFIED/OCR_UNCERTAIN/OUT_OF_SCOPE/MISSING', () => {
+test('calculateAccuracyScore uses transparent count-based formula, guarantees % đúng + % sai = 100%, and excludes UNVERIFIED/OCR_UNCERTAIN/OUT_OF_SCOPE/MISSING', () => {
   const claims: ExtractedClaim[] = [
-    ...Array.from({ length: 7 }, (_, i) => makeClaim(`c${i}`, 'CORRECT', 1)),
-    makeClaim('p1', 'PARTIALLY_CORRECT', 1),
+    ...Array.from({ length: 7 }, (_, i) => makeClaim(`c${i}`, 'CORRECT', i % 2 === 0 ? 3 : 1)),
+    makeClaim('p1', 'PARTIALLY_CORRECT', 3),
     makeClaim('p2', 'PARTIALLY_CORRECT', 1),
-    makeClaim('i1', 'INCORRECT', 1),
+    makeClaim('i1', 'INCORRECT', 3),
     makeClaim('u1', 'UNVERIFIED', 3),
     makeClaim('o1', 'OCR_UNCERTAIN', 3),
     makeClaim('oos1', 'OUT_OF_SCOPE', 3),
@@ -53,19 +55,71 @@ test('calculateAccuracyScore matches weighted formula and excludes UNVERIFIED/OC
   ];
 
   const result = calculateAccuracyScore(claims, true);
-  // (7 + 2 * 0.5) / 10 * 100 = 80%
+  // 7 correct + 2 partial (0.5 each) + 1 incorrect = 8 / 10 = 80% đúng, 20% sai
+  assert.equal(result.evaluatedTotal, 10);
   assert.equal(result.accuracyScore, 80);
-  // Total claim weight excluding MISSING & OUT_OF_SCOPE = 10 + 3 + 3 = 16; verified = 10 -> 62.5%
-  assert.equal(result.evidenceCoverage, 62.5);
+  assert.equal(result.correctPercent, 80);
+  assert.equal(result.incorrectPercent, 20);
+  assert.equal((result.correctPercent ?? 0) + (result.incorrectPercent ?? 0), 100);
+  assert.equal(result.exactCorrectPercent, 70);
+  assert.equal(result.partialPercent, 20);
+  assert.equal(result.exactIncorrectPercent, 10);
+  // Total gradable claims excluding MISSING & OUT_OF_SCOPE = 10 + 1 + 1 = 12; evaluated = 10 -> 83.3%
+  assert.equal(result.evidenceCoverage, 83.3);
   assert.equal(result.counts.incorrect, 1);
   assert.equal(result.counts.unverified, 1);
   assert.equal(result.counts.missing, 1);
+
+  const summary = computeClaimScoreSummary(claims, result);
+  assert.equal(summary.evaluatedTotal, 10);
+  assert.equal(summary.correctPercent, 80);
+  assert.equal(summary.incorrectPercent, 20);
+});
+
+test('calculateAccuracyScore unequal importanceWeight never distorts 50/50 split and inline highlight preserves 100% verbatim student text', () => {
+  const claims = [
+    makeClaim('c1', 'CORRECT', 1),
+    makeClaim('c2', 'CORRECT', 1),
+    makeClaim('i1', 'INCORRECT', 3),
+    makeClaim('i2', 'INCORRECT', 3),
+  ];
+  const res = calculateAccuracyScore(claims, true);
+  assert.equal(res.evaluatedTotal, 4);
+  assert.equal(res.correctPercent, 50);
+  assert.equal(res.incorrectPercent, 50);
+
+  // Verbatim check: joining highlighted segments MUST equal the original student text character-for-character
+  const original = 'Chuyển động thẳng đều có tốc độ thay đổi theo thời gian và công thức s = v + t.';
+  const { segments } = computeInlineHighlightSegments(original, 'p1_b1', [
+    {
+      claimId: 'err1',
+      blockId: 'p1_b1',
+      errorSpan: 'tốc độ thay đổi theo thời gian',
+      textExcerpt: original,
+      annotationColor: 'red',
+      orderNumber: 1,
+    },
+    {
+      claimId: 'err2',
+      blockId: 'p1_b1',
+      errorSpan: 's = v + t',
+      textExcerpt: original,
+      annotationColor: 'orange',
+      orderNumber: 2,
+    },
+  ]);
+  assert.equal(segments.map((s) => s.text).join(''), original);
+  assert.equal(segments.filter((s) => s.annotationColor === 'red').length, 1);
+  assert.equal(segments.filter((s) => s.annotationColor === 'orange').length, 1);
 });
 
 test('calculateAccuracyScore returns null instead of fake 100% when no claims are verified', () => {
   const claims = [makeClaim('u1', 'UNVERIFIED', 2), makeClaim('o1', 'OCR_UNCERTAIN', 2)];
   const result = calculateAccuracyScore(claims, false);
   assert.equal(result.accuracyScore, null);
+  assert.equal(result.correctPercent, null);
+  assert.equal(result.incorrectPercent, null);
+  assert.equal(result.evaluatedTotal, 0);
   assert.equal(result.confidenceLevel, 'Chưa đủ dữ liệu đánh giá');
 });
 

@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 import {
-  CF_GRADE_MODEL,
   CF_VISION_MODEL as ADAPTIVE_CF_VISION_MODEL,
   GROQ_GRADE_FALLBACK_MODEL,
   GROQ_SCAN_VISION_MODEL,
@@ -10,11 +9,7 @@ import {
   computeNormalizedTextLength,
   createAdaptiveAuditMetadata,
   detectProviderIdFromModel,
-  formatStudentBlocksForPrompt,
-  mergeGradedHalves,
   selectCrossProviderVerifierModel,
-  splitClaimsIntoTwoHalves,
-  splitStudentBlocksIntoTwoHalves,
   type AdaptiveSlotNumber,
   type AdaptiveStageCode,
 } from '../core/adaptiveApiPlan.js';
@@ -86,7 +81,10 @@ import {
 } from './aiGuardService.js';
 import {
   callWithTimeout,
+  classifyProviderFailure,
   executeRoutedAiTask,
+  isProviderCoolingDown,
+  markProviderUnhealthy,
   type RoutedAiTaskResult,
 } from './modelRouter.js';
 import {
@@ -612,7 +610,7 @@ export interface InlineScopeSuggestion {
   suggestedTitle: string;
 }
 
-const OCR_FAST_TIMEOUT_MS = 30_000;
+const OCR_FAST_TIMEOUT_MS = 22_000;
 
 function buildExtractedBlocksFromRawText(
   rawText: string,
@@ -677,7 +675,7 @@ export class DocumentExtractionService {
                   images: [{ mimeType: params.mimeType, base64: params.base64 }],
                   jsonMode: true,
                   jsonSchemaHint: jsonHint,
-                  maxOutputTokens: 2048,
+                  maxOutputTokens: 3500,
                   temperature: 0,
                   seed: DETERMINISTIC_GRADING_SEED,
                   apiKeyOverride,
@@ -701,7 +699,7 @@ export class DocumentExtractionService {
                   images: [{ mimeType: params.mimeType, base64: params.base64 }],
                   jsonMode: true,
                   jsonSchemaHint: jsonHint,
-                  maxOutputTokens: 2048,
+                  maxOutputTokens: 3500,
                   temperature: 0,
                   seed: DETERMINISTIC_GRADING_SEED,
                   signal,
@@ -726,7 +724,7 @@ export class DocumentExtractionService {
                   images: [{ mimeType: params.mimeType, base64: params.base64 }],
                   jsonMode: true,
                   jsonSchemaHint: jsonHint,
-                  maxOutputTokens: 2048,
+                  maxOutputTokens: 3500,
                   temperature: 0,
                   seed: DETERMINISTIC_GRADING_SEED,
                   apiKeyOverride,
@@ -740,16 +738,30 @@ export class DocumentExtractionService {
         },
       };
 
+      const healthyOrder = params.order.filter(
+        (k) => runners[k].enabled && !isProviderCoolingDown(k)
+      );
+      const effectiveOrder =
+        healthyOrder.length > 0
+          ? healthyOrder
+          : params.order.filter((k) => runners[k].enabled);
+
       let firstVisionError: unknown = null;
       const errorSummary: string[] = [];
-      for (const providerKey of params.order) {
+      for (const providerKey of effectiveOrder) {
         const provider = runners[providerKey];
-        if (!provider.enabled) continue;
         try {
           return await provider.run();
         } catch (err) {
           if (!firstVisionError) firstVisionError = err;
           const msg = err instanceof Error ? err.message : String(err);
+          const classified = classifyProviderFailure(err);
+          if (classified.shouldCooldown) {
+            markProviderUnhealthy(providerKey, classified.code, msg, {
+              status: classified.cooldownStatus,
+              ttlMs: classified.cooldownMs,
+            });
+          }
           errorSummary.push(`${provider.name}: ${msg.slice(0, 320)}`);
         }
       }
@@ -764,7 +776,7 @@ export class DocumentExtractionService {
       return await runners[params.order[0]].run();
     };
 
-    // Pass 1 OCR (QUET Slot 1): Groq Vision -> Cloudflare Vision -> Mistral Vision
+    // Fixed 1-API Scan (QUET Slot 1): Groq Vision -> Cloudflare Vision -> Mistral Vision
     const pass1Results = await Promise.all(
       files.map(async (file, idx) => {
         const pageNum = pageOffset + idx + 1;
@@ -779,12 +791,13 @@ export class DocumentExtractionService {
           preferredFallbackModelId: ADAPTIVE_CF_VISION_MODEL,
           allowGroqRescue: true,
           groqRescueModelId: GROQ_SCAN_VISION_MODEL,
-          cacheInput: { ocrKind: 'image_fast_v4_3provider', mimeType: file.mimeType, sha256: contentHash },
+          cacheInput: { ocrKind: 'image_fast_v5_verbatim_1api', mimeType: file.mimeType, sha256: contentHash },
           runWithModel: async (modelId) => {
             const ocrPrompt = [
-              'Đọc OCR toàn bộ văn bản, công thức và chữ viết tay trong trang ảnh này.',
-              '- Giữ nguyên 100% chính tả và công thức gốc của học sinh theo từng dòng xuống hàng (\\n), KHÔNG tự sửa lỗi kiến thức, KHÔNG bình luận.',
-              '- Chấm độ rõ nét chữ viết ocrConfidence (0.0-1.0; nếu mờ/khó đọc đặt < 0.65).',
+              'SAO CHÉP NGUYÊN VĂN 100% toàn bộ văn bản, công thức, ký hiệu, dấu câu và chữ viết tay trong trang ảnh này từ trên xuống dưới.',
+              '- CẤM TUYỆT ĐỐI bỏ sót bất kỳ dòng, đoạn, ký hiệu hay công thức nào.',
+              '- CẤM TUYỆT ĐỐI tự ý sửa lỗi chính tả, sửa lỗi kiến thức, sửa công thức sai hay viết lại câu của học sinh — học sinh viết sai thế nào PHẢI chép y hệt như vậy, giữ nguyên xuống dòng (\\n).',
+              '- NẾU ảnh bị mờ, tối, lóa, bị che khuất hoặc không thể nhìn rõ chữ: KHÔNG ĐƯỢC tự đoán hay bịa nội dung; đặt "ocrConfidence" <= 0.35, để "rawText": "" (nếu toàn trang không đọc được) hoặc ghi đúng nhãn "[KHÔNG NHÌN RÕ]" tại vị trí không đọc được.',
               '- Nhận diện luôn lớp ("10"|"11"|"12"), môn học THPT, tên chương và tiêu đề bài ghi.',
             ].join('\n');
 
@@ -814,6 +827,11 @@ export class DocumentExtractionService {
             .join('\n');
         }
 
+        const readableWithoutMarker = rawText.replace(/\[KHÔNG NHÌN RÕ\]/gi, '').trim();
+        if (!readableWithoutMarker) {
+          avgConf = Math.min(avgConf, 0.25);
+        }
+
         return {
           file,
           base64,
@@ -826,66 +844,7 @@ export class DocumentExtractionService {
       })
     );
 
-    // Adaptive Scan check: if combined Pass 1 text length >= threshold, run Pass 2 OCR refinement (QUET Slot 2)
-    const combinedPass1Length = computeNormalizedTextLength(
-      pass1Results.map((r) => ({ rawText: r.rawText }))
-    );
-    const scanPlan = computeAdaptiveApiPlan(
-      combinedPass1Length,
-      cfg.adaptiveLongTextThresholdChars
-    );
-
-    const refinedResults = scanPlan.isLongText
-      ? await Promise.all(
-          pass1Results.map(async (item) => {
-            if (!item.rawText || item.rawText.length < 40) {
-              return item;
-            }
-            try {
-              const refinePrompt = [
-                'Đọc đối chiếu lại toàn bộ trang ảnh (Pass 2) để phục hồi các dòng bị sót, công thức toán/lý/hóa, chỉ số dưới/trên, phân số, đơn vị đo và dấu câu so với bản nháp Pass 1 bên dưới.',
-                '- GIỮ NGUYÊN 100% lỗi kiến thức gốc của học sinh (KHÔNG tự sửa sai nội dung học thuật), chỉ khôi phục chính xác những gì thực sự xuất hiện trên ảnh.',
-                '- Trả về toàn bộ văn bản đầy đủ của trang trong trường "rawText" (không bỏ bớt các đoạn đã đọc đúng ở Pass 1).',
-                '',
-                '=== BẢN NHÁP PASS 1 ===',
-                item.rawText.slice(0, 6000),
-              ].join('\n');
-
-              const pass2Parsed = await runVisionWithFallback({
-                base64: item.base64,
-                mimeType: item.file.mimeType,
-                prompt: refinePrompt,
-                order: ['cloudflare', 'mistral', 'groq'],
-                slot: 2,
-              });
-
-              const pass2Text = (pass2Parsed.rawText || '').trim();
-              // Preserve Pass 1 if Pass 2 fails or truncates >35% of Pass 1 content
-              if (pass2Text.length >= item.rawText.length * 0.65) {
-                const refinedConf = Math.max(
-                  item.avgConf,
-                  Math.max(0.1, Math.min(1, Number(pass2Parsed.ocrConfidence) || item.avgConf))
-                );
-                return {
-                  ...item,
-                  rawText: pass2Text,
-                  avgConf: refinedConf,
-                  parsed: {
-                    ...item.parsed,
-                    rawText: pass2Text,
-                    ocrConfidence: refinedConf,
-                  },
-                };
-              }
-            } catch (pass2Err) {
-              console.warn(`Adaptive OCR Pass 2 non-fatal fallback on page ${item.pageNum}:`, pass2Err);
-            }
-            return item;
-          })
-        )
-      : pass1Results;
-
-    const pages: ExtractedPage[] = refinedResults.map((item) => {
+    const pages: ExtractedPage[] = pass1Results.map((item) => {
       const blocks = buildExtractedBlocksFromRawText(item.rawText, item.pageNum, item.avgConf);
       const finalConf = blocks.length > 0 ? item.avgConf : 0;
 
@@ -1038,7 +997,7 @@ export class SubjectDetectionService {
             config: opts?.config,
             idToken: opts?.idToken,
             allowGroqRescue: false,
-            overallTimeoutMs: 7_000,
+            overallTimeoutMs: 4_000,
             maxFallbackRetries: 0,
             cacheInput: { sample: sampleText.slice(0, 1500), rev: 'v4_3provider_topic_strict' },
             runWithModel: async (modelId) =>
@@ -1046,15 +1005,15 @@ export class SubjectDetectionService {
                 modelId,
                 prompt: scopePrompt,
                 thinkingTier: 'minimal',
-                maxOutputTokens: 320,
-                timeoutMs: 5_000,
+                maxOutputTokens: 280,
+                timeoutMs: 3_500,
                 tokensOut,
                 fallbackJson: '{}',
                 groqSchemaHint:
                   '{"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}',
               }),
           }),
-        7_500
+        4_500
       );
 
       const grade: GradeLevel =
@@ -1252,10 +1211,11 @@ export class KnowledgeAnalysisService {
         '- Kiểm tra kỹ mọi từ khóa mang tính bản chất: "không đổi" vs "thay đổi", "tỉ lệ thuận" vs "tỉ lệ nghịch", "tăng" vs "giảm", "cùng chiều" vs "ngược chiều", "bảo toàn" vs "không bảo toàn", điều kiện áp dụng.',
         '- Đối chiếu theo nghĩa học thuật (không bắt bẻ cách diễn đạt tương đương nếu đúng bản chất).',
         '',
-        'LỚP 2 — SOI TỪNG CÔNG THỨC, PHÉP TOÁN & TRÍCH CHÍNH XÁC CỤM SAI (errorSpan):',
+        'LỚP 2 — SOI TỪNG CÔNG THỨC, PHÉP TOÁN & TRÍCH NGUYÊN VĂN CỤM SAI (errorSpan) — CẤM SỬA BẢN GỐC:',
+        '- NGUYÊN TẮC BẤT DI BẤT DỊCH: "sourceText" và "errorSpan" BẮT BUỘC phải là bản SAO CHÉP NGUYÊN VĂN 100% từ tài liệu học sinh — CẤM sửa chữ, sửa công thức hay bỏ sót từ trong sourceText/errorSpan. Hệ thống chỉ gạch chân & tô nổi bật (đỏ = sai, cam = thiếu) ngay trên bản gốc; phần sửa đúng chỉ đặt ở "shortFix" và "suggestedFix".',
         '- Kiểm tra từng dấu phép toán (+, -, ×, ., /, ^), dấu âm/dương, hệ số, chỉ số dưới và kiểm tra thứ nguyên vật lý/toán học (ví dụ: v [m/s] không thể cộng với t [s] trong s = v + t; công thức đúng phải là s = v.t).',
         '- Tách riêng claim cho cụm công thức và claim cho cụm chú thích "Trong đó: ..." đi kèm để phân biệt rõ: công thức đúng nhưng thiếu giải thích biến số khác với công thức viết sai.',
-        '- Với MỌI claim có trạng thái INCORRECT hoặc PARTIALLY_CORRECT: BẮT BUỘC điền trường "errorSpan" trích NGUYÊN VĂN cụm từ/vế/công thức bị sai hoặc thiếu bên trong sourceText (ví dụ: "tốc độ thay đổi theo thời gian", "tỉ lệ nghịch", "s = v + t") để hệ thống gạch chân/tô đỏ chính xác vị trí lỗi, và điền trường "shortFix" (1 câu thật ngắn gọn, trực diện cách sửa nhanh, tối đa 15–20 từ).',
+        '- Với MỌI claim có trạng thái INCORRECT hoặc PARTIALLY_CORRECT: BẮT BUỘC điền trường "errorSpan" trích NGUYÊN VĂN cụm từ/vế/công thức bị sai hoặc thiếu bên trong sourceText (ví dụ: "tốc độ thay đổi theo thời gian", "tỉ lệ nghịch", "s = v + t") để hệ thống gạch chân/tô đỏ hoặc cam chính xác vị trí lỗi, và điền trường "shortFix" (1 câu thật ngắn gọn, trực diện cách sửa nhanh, tối đa 15–20 từ).',
         '',
         'LỚP 3 — KIỂM TRA ĐỘ ĐẦY ĐỦ CHÚ THÍCH KÝ HIỆU & ĐƠN VỊ CỦA MỌI CÔNG THỨC:',
         '- Với MỌI công thức xuất hiện trong tài liệu (ví dụ s = v.t, x = x0 + v.t, F = m.a...), liệt kê TẤT CẢ các ký hiệu/biến số có mặt trong công thức đó và đối chiếu với cụm chú thích ("Trong đó: ...") ngay kế tiếp.',
@@ -1321,7 +1281,7 @@ export class KnowledgeAnalysisService {
           rubricHash: fixedRubric.rubricHash,
           enableWebGrounding: Boolean(enableWebGrounding),
           strictModelLock,
-          adaptiveMode: adaptivePlan.isLongText ? 'long_2api' : 'short_1api',
+          adaptiveMode: 'fixed_1_1_1',
           adaptiveThreshold: adaptivePlan.thresholdChars,
           seed: DETERMINISTIC_GRADING_SEED,
         }),
@@ -1370,7 +1330,7 @@ export class KnowledgeAnalysisService {
             prompt: slotParams.promptText,
             thinkingTier: slotParams.thinkingTier,
             maxOutputTokens: slotParams.maxOutputTokens,
-            timeoutMs: 36_000,
+            timeoutMs: 28_000,
             temperature: 0,
             seed: DETERMINISTIC_GRADING_SEED,
             strictModelLock,
@@ -1383,177 +1343,23 @@ export class KnowledgeAnalysisService {
           }),
       });
 
-    // Stage 2 — Adaptive Grading (1 API for short text, 2 parallel APIs for long text)
-    let rawEval: RawKnowledgeEvalResult;
-    let primaryRoutedResult: RoutedAiTaskResult<ProviderJsonResult<RawKnowledgeEvalResult>>;
-    let gradeModelsUsed: string[] = [];
-    let gradeProvidersUsed: AiProviderId[] = [];
-    let part1ClaimCount = 0;
-
-    if (adaptivePlan.isLongText) {
-      const studentGradingBlocks = pages.flatMap((page) => {
-        if (page.blocks && page.blocks.length > 0) {
-          return page.blocks
-            .map((b) => ({
-              pageNumber: page.pageNumber,
-              blockId: b.blockId,
-              text: String(b.extractedText || '').trim(),
-            }))
-            .filter((b) => b.text.length > 0);
-        }
-        const preferredText = (page.rawText || '').trim();
-        if (!preferredText) return [];
-        const semanticBlocks = groupRawTextIntoSemanticBlocks(preferredText, page.pageNumber, 0.92);
-        return semanticBlocks
-          .map((b) => ({
-            pageNumber: page.pageNumber,
-            blockId: b.blockId,
-            text: String(b.extractedText || '').trim(),
-          }))
-          .filter((b) => b.text.length > 0);
-      });
-      const [half1Blocks, half2Blocks] = splitStudentBlocksIntoTwoHalves(studentGradingBlocks);
-      if (half1Blocks.length > 0 && half2Blocks.length > 0) {
-        const part1Text = formatStudentBlocksForPrompt(half1Blocks).slice(
-          0,
-          Math.floor(MAX_STUDENT_GRADING_CHARS / 2)
-        );
-        const part2Text = formatStudentBlocksForPrompt(half2Blocks).slice(
-          0,
-          Math.floor(MAX_STUDENT_GRADING_CHARS / 2)
-        );
-        const part1Prompt = buildGradingPrompt(
-          part1Text,
-          'Phần 1/2 (nửa đầu tài liệu). Chỉ tách claims xuất hiện trong Phần 1/2.'
-        );
-        const part2Prompt = buildGradingPrompt(
-          part2Text,
-          'Phần 2/2 (nửa sau tài liệu). Chỉ tách claims xuất hiện trong Phần 2/2.'
-        );
-
-        const [res1, res2] = await Promise.all([
-          runGradeSlot({
-            promptText: part1Prompt,
-            preferredPrimaryModelId: MISTRAL_GRADE_MODEL,
-            preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
-            slot: 1,
-            partKey: 'long_part_1',
-            maxOutputTokens: 7168,
-            thinkingTier: 'medium',
-          }),
-          runGradeSlot({
-            promptText: part2Prompt,
-            preferredPrimaryModelId: CF_GRADE_MODEL,
-            preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
-            slot: 2,
-            partKey: 'long_part_2',
-            maxOutputTokens: 7168,
-            thinkingTier: 'medium',
-          }),
-        ]);
-
-        primaryRoutedResult = res1;
-        part1ClaimCount = (res1.data.data.claims || []).length;
-        const normalizeCov = (
-          items?: RawKnowledgeEvalResult['coverageItems']
-        ): Array<{
-          criterionId?: string;
-          concept: string;
-          chapter: string;
-          importanceWeight?: 1 | 2 | 3;
-          status: CoverageStatus;
-          suggestedAddition?: string;
-          referenceExcerpt?: string;
-          referencePage?: number;
-          matchedChunkId?: string;
-        }> =>
-          (items || []).map((it) => ({
-            ...it,
-            chapter: it.chapter || '',
-            importanceWeight:
-              it.importanceWeight === 1 || it.importanceWeight === 2 || it.importanceWeight === 3
-                ? it.importanceWeight
-                : undefined,
-            status: (['COVERED', 'PARTIALLY_COVERED', 'MISSING', 'OUT_OF_SCOPE'].includes(
-              String(it.status || '').toUpperCase()
-            )
-              ? String(it.status).toUpperCase()
-              : 'MISSING') as CoverageStatus,
-          }));
-        const mergedHalves = mergeGradedHalves(
-          {
-            claims: res1.data.data.claims || [],
-            coverageItems: normalizeCov(res1.data.data.coverageItems),
-            strengths: [],
-            weaknesses: [],
-            suggestions: [],
-          },
-          {
-            claims: res2.data.data.claims || [],
-            coverageItems: normalizeCov(res2.data.data.coverageItems),
-            strengths: [],
-            weaknesses: [],
-            suggestions: [],
-          }
-        );
-        const dedupByTitle = <T extends { title?: string }>(a: T[] = [], b: T[] = []): T[] => {
-          const seen = new Set<string>();
-          const out: T[] = [];
-          for (const item of [...a, ...b]) {
-            const key = String(item?.title || '').trim().toLowerCase();
-            if (key && seen.has(key)) continue;
-            if (key) seen.add(key);
-            out.push(item);
-          }
-          return out;
-        };
-        rawEval = {
-          claims: mergedHalves.claims,
-          coverageItems: mergedHalves.coverageItems.map((it) => ({
-            ...it,
-            chapter: it.chapter || '',
-          })),
-          strengths: dedupByTitle(res1.data.data.strengths, res2.data.data.strengths).slice(0, 8),
-          weaknesses: dedupByTitle(res1.data.data.weaknesses, res2.data.data.weaknesses).slice(0, 12),
-          suggestions: dedupByTitle(res1.data.data.suggestions, res2.data.data.suggestions).slice(0, 8),
-        };
-        gradeModelsUsed = [res1.actualModel, res2.actualModel];
-        gradeProvidersUsed = [
-          detectProviderIdFromModel(res1.actualModel),
-          detectProviderIdFromModel(res2.actualModel),
-        ];
-      } else {
-        const singleRes = await runGradeSlot({
-          promptText: analysisPrompt,
-          preferredPrimaryModelId: MISTRAL_GRADE_MODEL,
-          preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
-          slot: 1,
-          partKey: 'long_fallback_single',
-          maxOutputTokens: 7168,
-          thinkingTier: 'medium',
-        });
-        primaryRoutedResult = singleRes;
-        rawEval = singleRes.data.data;
-        part1ClaimCount = (rawEval.claims || []).length;
-        gradeModelsUsed = [singleRes.actualModel];
-        gradeProvidersUsed = [detectProviderIdFromModel(singleRes.actualModel)];
-      }
-    } else {
-      const singleRes = await runGradeSlot({
-        promptText: analysisPrompt,
-        preferredPrimaryModelId: MISTRAL_GRADE_MODEL,
-        preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
-        slot: 1,
-        partKey: 'short_single',
-        maxOutputTokens: pages.length <= 2 && fixedRubric.criteria.length <= 10 ? 4096 : 7168,
-        thinkingTier: pages.length <= 2 && formattedStudentBlocks.length <= 3500 ? 'low' : 'medium',
-      });
-      primaryRoutedResult = singleRes;
-      rawEval = singleRes.data.data;
-      part1ClaimCount = (rawEval.claims || []).length;
-      gradeModelsUsed = [singleRes.actualModel];
-      gradeProvidersUsed = [detectProviderIdFromModel(singleRes.actualModel)];
-    }
+    // Stage 2 — Fixed 1-API Grading regardless of document length (fast & consistent)
+    const singleGradeRes = await runGradeSlot({
+      promptText: analysisPrompt,
+      preferredPrimaryModelId: MISTRAL_GRADE_MODEL,
+      preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
+      slot: 1,
+      partKey: 'single_grade',
+      maxOutputTokens:
+        formattedStudentBlocks.length <= 2800 && fixedRubric.criteria.length <= 10 ? 4096 : 6144,
+      thinkingTier: 'low',
+    });
+    const primaryRoutedResult = singleGradeRes;
+    const rawEval: RawKnowledgeEvalResult = singleGradeRes.data.data;
+    const gradeModelsUsed: string[] = [singleGradeRes.actualModel];
+    const gradeProvidersUsed: AiProviderId[] = [
+      detectProviderIdFromModel(singleGradeRes.actualModel),
+    ];
 
     const validStatuses = new Set<ClaimStatus>([
       'CORRECT',
@@ -1572,7 +1378,7 @@ export class KnowledgeAnalysisService {
       (c) => !isNonGradableLeadInClaim(c.sourceText || '')
     );
 
-    // Stage 3 — Cross-Provider Verification (1 API for short text, 2 parallel APIs for long text)
+    // Stage 3 — Fixed 1-API Cross-Provider Verification (skips cooling-down providers automatically)
     type VerifyAdjustment = {
       claimIndex: number;
       evaluationStatus?: string;
@@ -1584,11 +1390,22 @@ export class KnowledgeAnalysisService {
     };
     type VerifyBatchOutput = { adjustments?: VerifyAdjustment[] };
 
-    const configuredProviders = {
+    const rawConfiguredProviders = {
       mistral: isMistralConfigured(),
       cloudflare: isCloudflareConfigured(),
       groq: isGroqConfigured(),
     };
+    const healthyConfiguredProviders = {
+      mistral: rawConfiguredProviders.mistral && !isProviderCoolingDown('mistral'),
+      cloudflare: rawConfiguredProviders.cloudflare && !isProviderCoolingDown('cloudflare'),
+      groq: rawConfiguredProviders.groq && !isProviderCoolingDown('groq'),
+    };
+    const configuredProviders =
+      healthyConfiguredProviders.mistral ||
+      healthyConfiguredProviders.cloudflare ||
+      healthyConfiguredProviders.groq
+        ? healthyConfiguredProviders
+        : rawConfiguredProviders;
     const verifySchemaHint =
       '{"adjustments":[{"claimIndex":0,"evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|UNVERIFIED|OUT_OF_SCOPE","errorSpan":"...","shortFix":"...","explanation":"...","correctKnowledge":"...","suggestedFix":"..."}]}';
 
@@ -1629,12 +1446,12 @@ export class KnowledgeAnalysisService {
         'NHIỆM VỤ: Kiểm tra lại danh sách mệnh đề đã chấm bên dưới để phát hiện:',
         '1. Mâu thuẫn giữa explanation và evaluationStatus (ví dụ explanation nói sai nhưng lại gắn CORRECT, hoặc nói thiếu ký hiệu/đơn vị nhưng gắn CORRECT).',
         '2. Lỗi báo sai oan (false positive) hoặc bỏ sót lỗi công thức/định nghĩa/đơn vị (false negative).',
-        '3. Đảm bảo mọi claim INCORRECT hoặc PARTIALLY_CORRECT đều có errorSpan trích đúng từ sourceText và shortFix súc tích.',
+        '3. Đảm bảo mọi claim INCORRECT hoặc PARTIALLY_CORRECT đều có errorSpan trích NGUYÊN VĂN 100% từ sourceText (CẤM tự sửa chữ trong errorSpan) và shortFix súc tích.',
         'CHỈ trả về các mục thực sự cần điều chỉnh trong mảng "adjustments" (nếu tất cả đã chính xác và nhất quán, trả về {"adjustments":[]}).',
         '',
         '=== DANH SÁCH CLAIMS CẦN DÒ CHÉO ===',
         JSON.stringify(compactClaimsPayload),
-        textbookSlice ? `\n=== TÓM TẮT NGỮ LIỆU SGK ===\n${textbookSlice.slice(0, 5000)}` : '',
+        textbookSlice ? `\n=== TÓM TẮT NGỮ LIỆU SGK ===\n${textbookSlice.slice(0, 4000)}` : '',
       ]
         .filter(Boolean)
         .join('\n');
@@ -1653,7 +1470,7 @@ export class KnowledgeAnalysisService {
             systemFingerprint: out.systemFingerprint,
           }),
           cacheInput: {
-            verifyRev: 'v4.2_cross_provider',
+            verifyRev: 'v4.3_fixed_1api_verify',
             slot: verifyParams.slot,
             inputHash,
             gradedByProvider: verifyParams.gradedByProvider,
@@ -1667,9 +1484,9 @@ export class KnowledgeAnalysisService {
             generateJsonWithProviderDetailed<VerifyBatchOutput>({
               modelId,
               prompt: verifyPrompt,
-              thinkingTier: 'medium',
-              maxOutputTokens: 3072,
-              timeoutMs: 28_000,
+              thinkingTier: 'low',
+              maxOutputTokens: 2048,
+              timeoutMs: 18_000,
               temperature: 0,
               seed: DETERMINISTIC_GRADING_SEED,
               strictModelLock: false,
@@ -1694,38 +1511,8 @@ export class KnowledgeAnalysisService {
     const indexedAllClaims = filteredRawClaims.map((claim, index) => ({ index, claim }));
     const collectedAdjustments: VerifyAdjustment[] = [];
 
-    if (adaptivePlan.isLongText && indexedAllClaims.length >= 2) {
-      const [verifyHalf1, verifyHalf2] = splitClaimsIntoTwoHalves(indexedAllClaims);
-      const slot1Provider = gradeProvidersUsed[0] || 'mistral';
-      const slot2Provider = gradeProvidersUsed[1] || gradeProvidersUsed[0] || 'cloudflare';
-      const slot1PlannedChoice = selectCrossProviderVerifierModel({
-        gradedByProvider: slot1Provider,
-        slot: 1,
-        configuredProviders,
-      });
-
-      const [v1, v2] = await Promise.all([
-        runVerifySlice({
-          indexedClaims: verifyHalf1,
-          gradedByProvider: slot1Provider,
-          slot: 1,
-        }),
-        runVerifySlice({
-          indexedClaims: verifyHalf2,
-          gradedByProvider: slot2Provider,
-          slot: 2,
-          slot1VerifyModel: slot1PlannedChoice.primaryModel,
-        }),
-      ]);
-
-      for (const vr of [v1, v2]) {
-        if (vr.executed) {
-          verifyExecutedApiCount += 1;
-          if (vr.modelUsed) verifyModelsUsed.push(vr.modelUsed);
-          collectedAdjustments.push(...vr.adjustments);
-        }
-      }
-    } else if (indexedAllClaims.length > 0) {
+    // Fixed 1-API Verify regardless of document length
+    if (indexedAllClaims.length > 0) {
       const slot1Provider = gradeProvidersUsed[0] || 'mistral';
       const v1 = await runVerifySlice({
         indexedClaims: indexedAllClaims,
@@ -1979,7 +1766,6 @@ export class KnowledgeAnalysisService {
       deterministicSeed: DETERMINISTIC_GRADING_SEED,
       adaptiveApiPlan: adaptiveApiPlanAudit,
     };
-    void part1ClaimCount;
 
     const accuracyBreakdown = {
       ...baseAccuracyBreakdown,

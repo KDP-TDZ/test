@@ -729,6 +729,26 @@ export function createApiApp(): express.Express {
         return;
       }
 
+      const unreadablePages = pages
+        .filter((p) => {
+          const clean = (p.rawText || '').replace(/\[KHÔNG NHÌN RÕ\]/gi, '').trim();
+          return !clean || p.ocrAverageConfidence < 0.55 || /\[KHÔNG NHÌN RÕ\]/i.test(p.rawText || '');
+        })
+        .map((p) => p.pageNumber);
+
+      const totalReadableChars = pages
+        .map((p) => (p.rawText || '').replace(/\[KHÔNG NHÌN RÕ\]/gi, '').trim())
+        .join('').length;
+
+      if (pages.length > 0 && totalReadableChars < 5) {
+        res.status(422).json({
+          error:
+            'Không thể nhìn rõ nội dung trong tệp/ảnh vừa tải lên (ảnh bị mờ, thiếu sáng, bị che khuất hoặc không có chữ). Hệ thống không tự đoán nội dung — vui lòng chụp ảnh rõ nét hơn và tải lại.',
+          unreadablePages,
+        });
+        return;
+      }
+
       const combinedForScope = [previousText, ...pages.map((p) => p.rawText)].filter(Boolean).join('\n');
       const heuristicScope = inferGradeAndSubjectFromFileNames([first.originalname]);
       const contentHeuristic = inferScopeFromContentHeuristic(combinedForScope, first.originalname);
@@ -743,7 +763,12 @@ export function createApiApp(): express.Express {
       };
 
       let scopeSuggestion = fallbackScopeSuggestion;
-      if (!skipScope && combinedForScope.trim().length > 15) {
+      // Speed optimization: only invoke extra AI scope detection if heuristic/preset could not identify the subject
+      if (
+        !skipScope &&
+        fallbackScopeSuggestion.suggestedSubject === 'khac' &&
+        combinedForScope.trim().length > 15
+      ) {
         try {
           scopeSuggestion = await callWithTimeout(
             () =>
@@ -751,7 +776,7 @@ export function createApiApp(): express.Express {
                 config: guard.config,
                 idToken: user.idToken,
               }),
-            8_500
+            4_500
           );
         } catch (scopeErr) {
           console.warn('Non-fatal scope detection fallback during /api/ai/extract:', scopeErr);
@@ -769,7 +794,7 @@ export function createApiApp(): express.Express {
       });
       void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
 
-      res.json({ pages, scopeSuggestion, tokenUsage: tokens });
+      res.json({ pages, scopeSuggestion, unreadablePages, tokenUsage: tokens });
     } catch (err) {
       const mapped = mapGeminiErrorResponse(err, user.isSuperAdmin);
       recordUsageEvent({

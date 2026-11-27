@@ -1178,19 +1178,12 @@ var MAX_ADAPTIVE_THRESHOLD_CHARS = 2e4;
 var MISTRAL_GRADE_MODEL = "mistral:mistral-small-latest";
 var MISTRAL_VERIFY_MODEL = "mistral:ministral-8b-latest";
 var MISTRAL_VISION_MODEL = "mistral:mistral-small-latest";
-var CF_GRADE_MODEL = "cf:@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 var CF_VERIFY_MODEL = "cf:@cf/meta/llama-3.1-8b-instruct-fast";
 var CF_VISION_MODEL = "cf:@cf/qwen/qwen3.8-27b";
 var GROQ_SCAN_VISION_MODEL = "groq:qwen/qwen3.8-27b";
 var GROQ_VERIFY_SLOT1_MODEL = "groq:openai/gpt-oss-20b";
 var GROQ_VERIFY_SLOT2_MODEL = "groq:qwen/qwen3.8-27b";
 var GROQ_GRADE_FALLBACK_MODEL = "groq:openai/gpt-oss-120b";
-var COVERAGE_STATUS_RANK = {
-  COVERED: 4,
-  PARTIALLY_COVERED: 3,
-  MISSING: 2,
-  OUT_OF_SCOPE: 1
-};
 function clampAdaptiveThresholdChars(value, fallback = ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD) {
   const safeFallback = typeof fallback === "number" && Number.isFinite(fallback) ? Math.min(MAX_ADAPTIVE_THRESHOLD_CHARS, Math.max(MIN_ADAPTIVE_THRESHOLD_CHARS, Math.round(fallback))) : ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD;
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -1228,15 +1221,13 @@ function computeNormalizedTextLength(input, ocrConfirmed = false) {
 function computeAdaptiveApiPlan(textLength, thresholdChars) {
   const safeLen = Number.isFinite(textLength) && textLength > 0 ? Math.floor(textLength) : 0;
   const threshold = clampAdaptiveThresholdChars(thresholdChars);
-  const isLongText = safeLen >= threshold;
-  const count = isLongText ? 2 : 1;
   return {
     textLength: safeLen,
     thresholdChars: threshold,
-    isLongText,
-    scanApiCount: count,
-    gradeApiCount: count,
-    verifyApiCount: count
+    isLongText: false,
+    scanApiCount: 1,
+    gradeApiCount: 1,
+    verifyApiCount: 1
   };
 }
 function createAdaptiveAuditMetadata(plan, overrides) {
@@ -1251,173 +1242,6 @@ function createAdaptiveAuditMetadata(plan, overrides) {
     verifyAdjustmentsCount: overrides?.verifyAdjustmentsCount ?? 0,
     ...overrides?.gradeModels ? { gradeModels: overrides.gradeModels } : {},
     ...overrides?.verifyModels ? { verifyModels: overrides.verifyModels } : {}
-  };
-}
-function findCleanMidpointSplit(text) {
-  const mid = Math.floor(text.length / 2);
-  const windowRadius = Math.max(40, Math.floor(text.length * 0.2));
-  const minIdx = Math.max(1, mid - windowRadius);
-  const maxIdx = Math.min(text.length - 1, mid + windowRadius);
-  let bestIdx = -1;
-  let bestDist = Infinity;
-  for (let i = minIdx; i <= maxIdx; i++) {
-    if (text[i] === "\n") {
-      const dist = Math.abs(i - mid);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestIdx = i + 1;
-      }
-    }
-  }
-  if (bestIdx > 0 && bestIdx < text.length) return bestIdx;
-  for (let i = minIdx; i <= maxIdx; i++) {
-    const ch = text[i];
-    if ((ch === "." || ch === "!" || ch === "?" || ch === ";") && /\s/.test(text[i + 1] || "")) {
-      const dist = Math.abs(i - mid);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestIdx = i + 1;
-      }
-    }
-  }
-  if (bestIdx > 0 && bestIdx < text.length) return bestIdx;
-  for (let i = minIdx; i <= maxIdx; i++) {
-    if (/\s/.test(text[i])) {
-      const dist = Math.abs(i - mid);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestIdx = i + 1;
-      }
-    }
-  }
-  if (bestIdx > 0 && bestIdx < text.length) return bestIdx;
-  return mid;
-}
-function splitStudentBlocksIntoTwoHalves(blocks) {
-  const clean = blocks.map((b) => ({
-    ...b,
-    text: String(b.text || "").normalize("NFC").trim()
-  })).filter((b) => b.text.length > 0);
-  if (clean.length === 0) return [[], []];
-  if (clean.length === 1) {
-    const only = clean[0];
-    if (only.text.length < 40) {
-      return [[only], []];
-    }
-    const splitAt = findCleanMidpointSplit(only.text);
-    const leftText = only.text.slice(0, splitAt).trim();
-    const rightText = only.text.slice(splitAt).trim();
-    if (!leftText || !rightText) {
-      return [[only], []];
-    }
-    return [
-      [
-        {
-          pageNumber: only.pageNumber,
-          blockId: only.blockId,
-          sourceBlockId: only.sourceBlockId || only.blockId,
-          text: leftText
-        }
-      ],
-      [
-        {
-          pageNumber: only.pageNumber,
-          blockId: `${only.blockId}_part2`,
-          sourceBlockId: only.sourceBlockId || only.blockId,
-          text: rightText
-        }
-      ]
-    ];
-  }
-  const totalChars = clean.reduce((sum, b) => sum + b.text.length, 0);
-  const target = totalChars / 2;
-  let running = 0;
-  let splitIndex = 1;
-  let bestDiff = Infinity;
-  for (let i = 0; i < clean.length - 1; i++) {
-    running += clean[i].text.length;
-    const diff = Math.abs(running - target);
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      splitIndex = i + 1;
-    }
-  }
-  return [clean.slice(0, splitIndex), clean.slice(splitIndex)];
-}
-function formatStudentBlocksForPrompt(blocks) {
-  const byPage = /* @__PURE__ */ new Map();
-  for (const block of blocks) {
-    const arr = byPage.get(block.pageNumber) || [];
-    arr.push(block);
-    byPage.set(block.pageNumber, arr);
-  }
-  const pageNums = Array.from(byPage.keys()).sort((a, b) => a - b);
-  return pageNums.map((pageNumber) => {
-    const items = byPage.get(pageNumber) || [];
-    const lines = items.map((b) => `[${b.blockId}] ${b.text}`).join("\n");
-    return `=== TRANG ${pageNumber} ===
-${lines}`;
-  }).join("\n\n");
-}
-function splitClaimsIntoTwoHalves(claims) {
-  if (!Array.isArray(claims) || claims.length === 0) return [[], []];
-  if (claims.length === 1) return [[claims[0]], []];
-  const mid = Math.ceil(claims.length / 2);
-  return [claims.slice(0, mid), claims.slice(mid)];
-}
-function normalizeMergeKey(val) {
-  return String(val || "").normalize("NFC").toLowerCase().replace(/\s+/g, " ").trim();
-}
-function deduplicateStringsPreserveOrder(listA, listB) {
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const raw of [...listA, ...listB]) {
-    const trimmed = String(raw || "").normalize("NFC").trim();
-    if (!trimmed) continue;
-    const key = normalizeMergeKey(trimmed);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(trimmed);
-  }
-  return out;
-}
-function mergeGradedHalves(part1, part2) {
-  const claims = [...part1.claims || [], ...part2.claims || []];
-  const covMap = /* @__PURE__ */ new Map();
-  const covOrder = [];
-  for (const item of [...part1.coverageItems || [], ...part2.coverageItems || []]) {
-    const key = item.criterionId?.trim() ? `cid:${item.criterionId.trim()}` : `concept:${normalizeMergeKey(item.concept)}`;
-    const existing = covMap.get(key);
-    if (!existing) {
-      covMap.set(key, item);
-      covOrder.push(key);
-      continue;
-    }
-    const existingRank = COVERAGE_STATUS_RANK[existing.status] ?? 0;
-    const incomingRank = COVERAGE_STATUS_RANK[item.status] ?? 0;
-    if (incomingRank > existingRank) {
-      covMap.set(key, {
-        ...existing,
-        ...item,
-        suggestedAddition: item.status === "COVERED" ? item.suggestedAddition || "" : item.suggestedAddition || existing.suggestedAddition || "",
-        referenceExcerpt: item.referenceExcerpt || existing.referenceExcerpt || "",
-        matchedChunkId: item.matchedChunkId || existing.matchedChunkId
-      });
-    } else if (incomingRank === existingRank) {
-      covMap.set(key, {
-        ...existing,
-        suggestedAddition: existing.suggestedAddition || item.suggestedAddition || "",
-        referenceExcerpt: existing.referenceExcerpt || item.referenceExcerpt || "",
-        matchedChunkId: existing.matchedChunkId || item.matchedChunkId
-      });
-    }
-  }
-  return {
-    claims,
-    coverageItems: covOrder.map((k) => covMap.get(k)),
-    strengths: deduplicateStringsPreserveOrder(part1.strengths || [], part2.strengths || []),
-    weaknesses: deduplicateStringsPreserveOrder(part1.weaknesses || [], part2.weaknesses || []),
-    suggestions: deduplicateStringsPreserveOrder(part1.suggestions || [], part2.suggestions || [])
   };
 }
 function detectProviderIdFromModel(modelId) {
@@ -4781,32 +4605,22 @@ function calculateAccuracyScore(claims, hasReferenceTextbook) {
     ocrUncertain: 0,
     outOfScope: 0
   };
-  let totalClaimWeight = 0;
-  let verifiedWeight = 0;
-  let earnedWeight = 0;
   let ocrConfidenceSum = 0;
   let ocrCount = 0;
   for (const claim of claims) {
-    const w = claim.importanceWeight || 1;
     if (claim.evaluationStatus !== "MISSING" && claim.evaluationStatus !== "OUT_OF_SCOPE") {
-      totalClaimWeight += w;
       ocrConfidenceSum += typeof claim.ocrConfidence === "number" ? claim.ocrConfidence : 1;
       ocrCount += 1;
     }
     switch (claim.evaluationStatus) {
       case "CORRECT":
         counts.correct += 1;
-        verifiedWeight += w;
-        earnedWeight += w * 1;
         break;
       case "PARTIALLY_CORRECT":
         counts.partiallyCorrect += 1;
-        verifiedWeight += w;
-        earnedWeight += w * 0.5;
         break;
       case "INCORRECT":
         counts.incorrect += 1;
-        verifiedWeight += w;
         break;
       case "MISSING":
         counts.missing += 1;
@@ -4825,12 +4639,23 @@ function calculateAccuracyScore(claims, hasReferenceTextbook) {
         break;
     }
   }
-  const accuracyScore = verifiedWeight > 0 ? Math.round(earnedWeight / verifiedWeight * 1e3) / 10 : null;
-  const evidenceCoverage = totalClaimWeight > 0 ? Math.round(verifiedWeight / totalClaimWeight * 1e3) / 10 : null;
+  const evaluatedTotal = counts.correct + counts.partiallyCorrect + counts.incorrect;
+  const earnedPoints = counts.correct * 1 + counts.partiallyCorrect * 0.5;
+  const totalGradableClaims = evaluatedTotal + counts.unverified + counts.ambiguous + counts.ocrUncertain;
+  const accuracyScore = evaluatedTotal > 0 ? Math.round(earnedPoints / evaluatedTotal * 1e3) / 10 : null;
+  const correctPercent = accuracyScore;
+  const incorrectPercent = accuracyScore !== null ? Math.round((100 - accuracyScore) * 10) / 10 : null;
+  const exactCorrectPercent = evaluatedTotal > 0 ? Math.round(counts.correct / evaluatedTotal * 1e3) / 10 : null;
+  const partialPercent = evaluatedTotal > 0 ? Math.round(counts.partiallyCorrect / evaluatedTotal * 1e3) / 10 : null;
+  const exactIncorrectPercent = evaluatedTotal > 0 ? Math.round(counts.incorrect / evaluatedTotal * 1e3) / 10 : null;
+  const verifiedWeight = evaluatedTotal;
+  const earnedWeight = earnedPoints;
+  const totalClaimWeight = totalGradableClaims;
+  const evidenceCoverage = totalGradableClaims > 0 ? Math.round(evaluatedTotal / totalGradableClaims * 1e3) / 10 : null;
   const avgOcrConfidence = ocrCount > 0 ? ocrConfidenceSum / ocrCount : 0;
   let confidenceLevel = "Ch\u01B0a \u0111\u1EE7 d\u1EEF li\u1EC7u \u0111\xE1nh gi\xE1";
   let confidenceReason = "Ch\u01B0a c\xF3 \u0111\u1EE7 m\u1EC7nh \u0111\u1EC1 ki\u1EBFn th\u1EE9c \u0111\u01B0\u1EE3c x\xE1c minh \u0111\u1EC3 \u0111\xE1nh gi\xE1 \u0111\u1ED9 tin c\u1EADy.";
-  if (verifiedWeight > 0 && evidenceCoverage !== null) {
+  if (evaluatedTotal > 0 && evidenceCoverage !== null) {
     if (avgOcrConfidence >= 0.85 && evidenceCoverage >= 75 && hasReferenceTextbook) {
       confidenceLevel = "Cao";
       confidenceReason = `\u0110\u1ED9 r\xF5 OCR \u0111\u1EA1t ${Math.round(avgOcrConfidence * 100)}%, t\u1EF7 l\u1EC7 d\u1EABn ch\u1EE9ng ki\u1EC3m ch\u1EE9ng ${evidenceCoverage}% v\xE0 c\xF3 s\xE1ch gi\xE1o khoa tham chi\u1EBFu tr\u1EF1c ti\u1EBFp.`;
@@ -4844,6 +4669,12 @@ function calculateAccuracyScore(claims, hasReferenceTextbook) {
   }
   return {
     accuracyScore,
+    evaluatedTotal,
+    correctPercent,
+    incorrectPercent,
+    exactCorrectPercent,
+    partialPercent,
+    exactIncorrectPercent,
     verifiedWeight,
     earnedWeight,
     totalClaimWeight,
@@ -4875,13 +4706,12 @@ function calculateCompletenessScore(coverageItems, hasValidScope, options = {}) 
   let coveredCount = 0;
   for (const item of coverageItems) {
     if (item.status === "OUT_OF_SCOPE") continue;
-    const w = item.importanceWeight || 1;
-    totalRequiredWeight += w;
+    totalRequiredWeight += 1;
     if (item.status === "COVERED") {
-      coveredWeight += w * 1;
+      coveredWeight += 1;
       coveredCount += 1;
     } else if (item.status === "PARTIALLY_COVERED") {
-      coveredWeight += w * 0.5;
+      coveredWeight += 0.5;
       partialCount += 1;
     } else {
       missingCount += 1;
@@ -6338,7 +6168,7 @@ async function runTaskWithRouter(params) {
     runWithModel: params.runWithModel
   });
 }
-var OCR_FAST_TIMEOUT_MS = 3e4;
+var OCR_FAST_TIMEOUT_MS = 22e3;
 function buildExtractedBlocksFromRawText(rawText, pageNumber, confidence) {
   return groupRawTextIntoSemanticBlocks(rawText, pageNumber, confidence);
 }
@@ -6374,7 +6204,7 @@ var DocumentExtractionService = class {
                 images: [{ mimeType: params.mimeType, base64: params.base64 }],
                 jsonMode: true,
                 jsonSchemaHint: jsonHint,
-                maxOutputTokens: 2048,
+                maxOutputTokens: 3500,
                 temperature: 0,
                 seed: DETERMINISTIC_GRADING_SEED,
                 apiKeyOverride,
@@ -6397,7 +6227,7 @@ var DocumentExtractionService = class {
                 images: [{ mimeType: params.mimeType, base64: params.base64 }],
                 jsonMode: true,
                 jsonSchemaHint: jsonHint,
-                maxOutputTokens: 2048,
+                maxOutputTokens: 3500,
                 temperature: 0,
                 seed: DETERMINISTIC_GRADING_SEED,
                 signal
@@ -6420,7 +6250,7 @@ var DocumentExtractionService = class {
                 images: [{ mimeType: params.mimeType, base64: params.base64 }],
                 jsonMode: true,
                 jsonSchemaHint: jsonHint,
-                maxOutputTokens: 2048,
+                maxOutputTokens: 3500,
                 temperature: 0,
                 seed: DETERMINISTIC_GRADING_SEED,
                 apiKeyOverride,
@@ -6433,16 +6263,26 @@ var DocumentExtractionService = class {
           }
         }
       };
+      const healthyOrder = params.order.filter(
+        (k) => runners[k].enabled && !isProviderCoolingDown(k)
+      );
+      const effectiveOrder = healthyOrder.length > 0 ? healthyOrder : params.order.filter((k) => runners[k].enabled);
       let firstVisionError = null;
       const errorSummary = [];
-      for (const providerKey of params.order) {
+      for (const providerKey of effectiveOrder) {
         const provider = runners[providerKey];
-        if (!provider.enabled) continue;
         try {
           return await provider.run();
         } catch (err) {
           if (!firstVisionError) firstVisionError = err;
           const msg = err instanceof Error ? err.message : String(err);
+          const classified = classifyProviderFailure(err);
+          if (classified.shouldCooldown) {
+            markProviderUnhealthy(providerKey, classified.code, msg, {
+              status: classified.cooldownStatus,
+              ttlMs: classified.cooldownMs
+            });
+          }
           errorSummary.push(`${provider.name}: ${msg.slice(0, 320)}`);
         }
       }
@@ -6467,12 +6307,13 @@ var DocumentExtractionService = class {
           preferredFallbackModelId: CF_VISION_MODEL,
           allowGroqRescue: true,
           groqRescueModelId: GROQ_SCAN_VISION_MODEL,
-          cacheInput: { ocrKind: "image_fast_v4_3provider", mimeType: file.mimeType, sha256: contentHash },
+          cacheInput: { ocrKind: "image_fast_v5_verbatim_1api", mimeType: file.mimeType, sha256: contentHash },
           runWithModel: async (modelId) => {
             const ocrPrompt = [
-              "\u0110\u1ECDc OCR to\xE0n b\u1ED9 v\u0103n b\u1EA3n, c\xF4ng th\u1EE9c v\xE0 ch\u1EEF vi\u1EBFt tay trong trang \u1EA3nh n\xE0y.",
-              "- Gi\u1EEF nguy\xEAn 100% ch\xEDnh t\u1EA3 v\xE0 c\xF4ng th\u1EE9c g\u1ED1c c\u1EE7a h\u1ECDc sinh theo t\u1EEBng d\xF2ng xu\u1ED1ng h\xE0ng (\\n), KH\xD4NG t\u1EF1 s\u1EEDa l\u1ED7i ki\u1EBFn th\u1EE9c, KH\xD4NG b\xECnh lu\u1EADn.",
-              "- Ch\u1EA5m \u0111\u1ED9 r\xF5 n\xE9t ch\u1EEF vi\u1EBFt ocrConfidence (0.0-1.0; n\u1EBFu m\u1EDD/kh\xF3 \u0111\u1ECDc \u0111\u1EB7t < 0.65).",
+              "SAO CH\xC9P NGUY\xCAN V\u0102N 100% to\xE0n b\u1ED9 v\u0103n b\u1EA3n, c\xF4ng th\u1EE9c, k\xFD hi\u1EC7u, d\u1EA5u c\xE2u v\xE0 ch\u1EEF vi\u1EBFt tay trong trang \u1EA3nh n\xE0y t\u1EEB tr\xEAn xu\u1ED1ng d\u01B0\u1EDBi.",
+              "- C\u1EA4M TUY\u1EC6T \u0110\u1ED0I b\u1ECF s\xF3t b\u1EA5t k\u1EF3 d\xF2ng, \u0111o\u1EA1n, k\xFD hi\u1EC7u hay c\xF4ng th\u1EE9c n\xE0o.",
+              "- C\u1EA4M TUY\u1EC6T \u0110\u1ED0I t\u1EF1 \xFD s\u1EEDa l\u1ED7i ch\xEDnh t\u1EA3, s\u1EEDa l\u1ED7i ki\u1EBFn th\u1EE9c, s\u1EEDa c\xF4ng th\u1EE9c sai hay vi\u1EBFt l\u1EA1i c\xE2u c\u1EE7a h\u1ECDc sinh \u2014 h\u1ECDc sinh vi\u1EBFt sai th\u1EBF n\xE0o PH\u1EA2I ch\xE9p y h\u1EC7t nh\u01B0 v\u1EADy, gi\u1EEF nguy\xEAn xu\u1ED1ng d\xF2ng (\\n).",
+              '- N\u1EBEU \u1EA3nh b\u1ECB m\u1EDD, t\u1ED1i, l\xF3a, b\u1ECB che khu\u1EA5t ho\u1EB7c kh\xF4ng th\u1EC3 nh\xECn r\xF5 ch\u1EEF: KH\xD4NG \u0110\u01AF\u1EE2C t\u1EF1 \u0111o\xE1n hay b\u1ECBa n\u1ED9i dung; \u0111\u1EB7t "ocrConfidence" <= 0.35, \u0111\u1EC3 "rawText": "" (n\u1EBFu to\xE0n trang kh\xF4ng \u0111\u1ECDc \u0111\u01B0\u1EE3c) ho\u1EB7c ghi \u0111\xFAng nh\xE3n "[KH\xD4NG NH\xCCN R\xD5]" t\u1EA1i v\u1ECB tr\xED kh\xF4ng \u0111\u1ECDc \u0111\u01B0\u1EE3c.',
               '- Nh\u1EADn di\u1EC7n lu\xF4n l\u1EDBp ("10"|"11"|"12"), m\xF4n h\u1ECDc THPT, t\xEAn ch\u01B0\u01A1ng v\xE0 ti\xEAu \u0111\u1EC1 b\xE0i ghi.'
             ].join("\n");
             const order = isCloudflareModelId(modelId) ? ["cloudflare", "groq", "mistral"] : isMistralModelId(modelId) ? ["mistral", "groq", "cloudflare"] : ["groq", "cloudflare", "mistral"];
@@ -6490,6 +6331,10 @@ var DocumentExtractionService = class {
         if (!rawText && Array.isArray(parsed.blocks) && parsed.blocks.length > 0) {
           rawText = parsed.blocks.map((b) => (b.extractedText || "").trim()).filter(Boolean).join("\n");
         }
+        const readableWithoutMarker = rawText.replace(/\[KHÔNG NHÌN RÕ\]/gi, "").trim();
+        if (!readableWithoutMarker) {
+          avgConf = Math.min(avgConf, 0.25);
+        }
         return {
           file,
           base64,
@@ -6501,58 +6346,7 @@ var DocumentExtractionService = class {
         };
       })
     );
-    const combinedPass1Length = computeNormalizedTextLength(
-      pass1Results.map((r) => ({ rawText: r.rawText }))
-    );
-    const scanPlan = computeAdaptiveApiPlan(
-      combinedPass1Length,
-      cfg.adaptiveLongTextThresholdChars
-    );
-    const refinedResults = scanPlan.isLongText ? await Promise.all(
-      pass1Results.map(async (item) => {
-        if (!item.rawText || item.rawText.length < 40) {
-          return item;
-        }
-        try {
-          const refinePrompt = [
-            "\u0110\u1ECDc \u0111\u1ED1i chi\u1EBFu l\u1EA1i to\xE0n b\u1ED9 trang \u1EA3nh (Pass 2) \u0111\u1EC3 ph\u1EE5c h\u1ED3i c\xE1c d\xF2ng b\u1ECB s\xF3t, c\xF4ng th\u1EE9c to\xE1n/l\xFD/h\xF3a, ch\u1EC9 s\u1ED1 d\u01B0\u1EDBi/tr\xEAn, ph\xE2n s\u1ED1, \u0111\u01A1n v\u1ECB \u0111o v\xE0 d\u1EA5u c\xE2u so v\u1EDBi b\u1EA3n nh\xE1p Pass 1 b\xEAn d\u01B0\u1EDBi.",
-            "- GI\u1EEE NGUY\xCAN 100% l\u1ED7i ki\u1EBFn th\u1EE9c g\u1ED1c c\u1EE7a h\u1ECDc sinh (KH\xD4NG t\u1EF1 s\u1EEDa sai n\u1ED9i dung h\u1ECDc thu\u1EADt), ch\u1EC9 kh\xF4i ph\u1EE5c ch\xEDnh x\xE1c nh\u1EEFng g\xEC th\u1EF1c s\u1EF1 xu\u1EA5t hi\u1EC7n tr\xEAn \u1EA3nh.",
-            '- Tr\u1EA3 v\u1EC1 to\xE0n b\u1ED9 v\u0103n b\u1EA3n \u0111\u1EA7y \u0111\u1EE7 c\u1EE7a trang trong tr\u01B0\u1EDDng "rawText" (kh\xF4ng b\u1ECF b\u1EDBt c\xE1c \u0111o\u1EA1n \u0111\xE3 \u0111\u1ECDc \u0111\xFAng \u1EDF Pass 1).',
-            "",
-            "=== B\u1EA2N NH\xC1P PASS 1 ===",
-            item.rawText.slice(0, 6e3)
-          ].join("\n");
-          const pass2Parsed = await runVisionWithFallback({
-            base64: item.base64,
-            mimeType: item.file.mimeType,
-            prompt: refinePrompt,
-            order: ["cloudflare", "mistral", "groq"],
-            slot: 2
-          });
-          const pass2Text = (pass2Parsed.rawText || "").trim();
-          if (pass2Text.length >= item.rawText.length * 0.65) {
-            const refinedConf = Math.max(
-              item.avgConf,
-              Math.max(0.1, Math.min(1, Number(pass2Parsed.ocrConfidence) || item.avgConf))
-            );
-            return {
-              ...item,
-              rawText: pass2Text,
-              avgConf: refinedConf,
-              parsed: {
-                ...item.parsed,
-                rawText: pass2Text,
-                ocrConfidence: refinedConf
-              }
-            };
-          }
-        } catch (pass2Err) {
-          console.warn(`Adaptive OCR Pass 2 non-fatal fallback on page ${item.pageNum}:`, pass2Err);
-        }
-        return item;
-      })
-    ) : pass1Results;
-    const pages = refinedResults.map((item) => {
+    const pages = pass1Results.map((item) => {
       const blocks = buildExtractedBlocksFromRawText(item.rawText, item.pageNum, item.avgConf);
       const finalConf = blocks.length > 0 ? item.avgConf : 0;
       if (item.rawText && item.parsed.suggestedSubject) {
@@ -6660,21 +6454,21 @@ var SubjectDetectionService = class {
           config: opts?.config,
           idToken: opts?.idToken,
           allowGroqRescue: false,
-          overallTimeoutMs: 7e3,
+          overallTimeoutMs: 4e3,
           maxFallbackRetries: 0,
           cacheInput: { sample: sampleText.slice(0, 1500), rev: "v4_3provider_topic_strict" },
           runWithModel: async (modelId) => generateJsonWithProvider({
             modelId,
             prompt: scopePrompt,
             thinkingTier: "minimal",
-            maxOutputTokens: 320,
-            timeoutMs: 5e3,
+            maxOutputTokens: 280,
+            timeoutMs: 3500,
             tokensOut,
             fallbackJson: "{}",
             groqSchemaHint: '{"suggestedGrade":"10|11|12","suggestedSubject":"toan|vat_ly|hoa_hoc|sinh_hoc|ngu_van|lich_su|dia_ly|tieng_anh|tin_hoc|gdkt_pl|khac","suggestedChapters":["..."],"suggestedTitle":"..."}'
           })
         }),
-        7500
+        4500
       );
       const grade = parsed.suggestedGrade === "11" || parsed.suggestedGrade === "12" ? parsed.suggestedGrade : parsed.suggestedGrade === "10" ? "10" : heuristicFallback.suggestedGrade;
       const subject = parsed.suggestedSubject && parsed.suggestedSubject in SUBJECT_LABELS ? parsed.suggestedSubject : heuristicFallback.suggestedSubject;
@@ -6776,10 +6570,11 @@ ${h.chunk.content}`
       '- Ki\u1EC3m tra k\u1EF9 m\u1ECDi t\u1EEB kh\xF3a mang t\xEDnh b\u1EA3n ch\u1EA5t: "kh\xF4ng \u0111\u1ED5i" vs "thay \u0111\u1ED5i", "t\u1EC9 l\u1EC7 thu\u1EADn" vs "t\u1EC9 l\u1EC7 ngh\u1ECBch", "t\u0103ng" vs "gi\u1EA3m", "c\xF9ng chi\u1EC1u" vs "ng\u01B0\u1EE3c chi\u1EC1u", "b\u1EA3o to\xE0n" vs "kh\xF4ng b\u1EA3o to\xE0n", \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng.',
       "- \u0110\u1ED1i chi\u1EBFu theo ngh\u0129a h\u1ECDc thu\u1EADt (kh\xF4ng b\u1EAFt b\u1EBB c\xE1ch di\u1EC5n \u0111\u1EA1t t\u01B0\u01A1ng \u0111\u01B0\u01A1ng n\u1EBFu \u0111\xFAng b\u1EA3n ch\u1EA5t).",
       "",
-      "L\u1EDAP 2 \u2014 SOI T\u1EEANG C\xD4NG TH\u1EE8C, PH\xC9P TO\xC1N & TR\xCDCH CH\xCDNH X\xC1C C\u1EE4M SAI (errorSpan):",
+      "L\u1EDAP 2 \u2014 SOI T\u1EEANG C\xD4NG TH\u1EE8C, PH\xC9P TO\xC1N & TR\xCDCH NGUY\xCAN V\u0102N C\u1EE4M SAI (errorSpan) \u2014 C\u1EA4M S\u1EECA B\u1EA2N G\u1ED0C:",
+      '- NGUY\xCAN T\u1EAEC B\u1EA4T DI B\u1EA4T D\u1ECACH: "sourceText" v\xE0 "errorSpan" B\u1EAET BU\u1ED8C ph\u1EA3i l\xE0 b\u1EA3n SAO CH\xC9P NGUY\xCAN V\u0102N 100% t\u1EEB t\xE0i li\u1EC7u h\u1ECDc sinh \u2014 C\u1EA4M s\u1EEDa ch\u1EEF, s\u1EEDa c\xF4ng th\u1EE9c hay b\u1ECF s\xF3t t\u1EEB trong sourceText/errorSpan. H\u1EC7 th\u1ED1ng ch\u1EC9 g\u1EA1ch ch\xE2n & t\xF4 n\u1ED5i b\u1EADt (\u0111\u1ECF = sai, cam = thi\u1EBFu) ngay tr\xEAn b\u1EA3n g\u1ED1c; ph\u1EA7n s\u1EEDa \u0111\xFAng ch\u1EC9 \u0111\u1EB7t \u1EDF "shortFix" v\xE0 "suggestedFix".',
       "- Ki\u1EC3m tra t\u1EEBng d\u1EA5u ph\xE9p to\xE1n (+, -, \xD7, ., /, ^), d\u1EA5u \xE2m/d\u01B0\u01A1ng, h\u1EC7 s\u1ED1, ch\u1EC9 s\u1ED1 d\u01B0\u1EDBi v\xE0 ki\u1EC3m tra th\u1EE9 nguy\xEAn v\u1EADt l\xFD/to\xE1n h\u1ECDc (v\xED d\u1EE5: v [m/s] kh\xF4ng th\u1EC3 c\u1ED9ng v\u1EDBi t [s] trong s = v + t; c\xF4ng th\u1EE9c \u0111\xFAng ph\u1EA3i l\xE0 s = v.t).",
       '- T\xE1ch ri\xEAng claim cho c\u1EE5m c\xF4ng th\u1EE9c v\xE0 claim cho c\u1EE5m ch\xFA th\xEDch "Trong \u0111\xF3: ..." \u0111i k\xE8m \u0111\u1EC3 ph\xE2n bi\u1EC7t r\xF5: c\xF4ng th\u1EE9c \u0111\xFAng nh\u01B0ng thi\u1EBFu gi\u1EA3i th\xEDch bi\u1EBFn s\u1ED1 kh\xE1c v\u1EDBi c\xF4ng th\u1EE9c vi\u1EBFt sai.',
-      '- V\u1EDBi M\u1ECCI claim c\xF3 tr\u1EA1ng th\xE1i INCORRECT ho\u1EB7c PARTIALLY_CORRECT: B\u1EAET BU\u1ED8C \u0111i\u1EC1n tr\u01B0\u1EDDng "errorSpan" tr\xEDch NGUY\xCAN V\u0102N c\u1EE5m t\u1EEB/v\u1EBF/c\xF4ng th\u1EE9c b\u1ECB sai ho\u1EB7c thi\u1EBFu b\xEAn trong sourceText (v\xED d\u1EE5: "t\u1ED1c \u0111\u1ED9 thay \u0111\u1ED5i theo th\u1EDDi gian", "t\u1EC9 l\u1EC7 ngh\u1ECBch", "s = v + t") \u0111\u1EC3 h\u1EC7 th\u1ED1ng g\u1EA1ch ch\xE2n/t\xF4 \u0111\u1ECF ch\xEDnh x\xE1c v\u1ECB tr\xED l\u1ED7i, v\xE0 \u0111i\u1EC1n tr\u01B0\u1EDDng "shortFix" (1 c\xE2u th\u1EADt ng\u1EAFn g\u1ECDn, tr\u1EF1c di\u1EC7n c\xE1ch s\u1EEDa nhanh, t\u1ED1i \u0111a 15\u201320 t\u1EEB).',
+      '- V\u1EDBi M\u1ECCI claim c\xF3 tr\u1EA1ng th\xE1i INCORRECT ho\u1EB7c PARTIALLY_CORRECT: B\u1EAET BU\u1ED8C \u0111i\u1EC1n tr\u01B0\u1EDDng "errorSpan" tr\xEDch NGUY\xCAN V\u0102N c\u1EE5m t\u1EEB/v\u1EBF/c\xF4ng th\u1EE9c b\u1ECB sai ho\u1EB7c thi\u1EBFu b\xEAn trong sourceText (v\xED d\u1EE5: "t\u1ED1c \u0111\u1ED9 thay \u0111\u1ED5i theo th\u1EDDi gian", "t\u1EC9 l\u1EC7 ngh\u1ECBch", "s = v + t") \u0111\u1EC3 h\u1EC7 th\u1ED1ng g\u1EA1ch ch\xE2n/t\xF4 \u0111\u1ECF ho\u1EB7c cam ch\xEDnh x\xE1c v\u1ECB tr\xED l\u1ED7i, v\xE0 \u0111i\u1EC1n tr\u01B0\u1EDDng "shortFix" (1 c\xE2u th\u1EADt ng\u1EAFn g\u1ECDn, tr\u1EF1c di\u1EC7n c\xE1ch s\u1EEDa nhanh, t\u1ED1i \u0111a 15\u201320 t\u1EEB).',
       "",
       "L\u1EDAP 3 \u2014 KI\u1EC2M TRA \u0110\u1ED8 \u0110\u1EA6Y \u0110\u1EE6 CH\xDA TH\xCDCH K\xDD HI\u1EC6U & \u0110\u01A0N V\u1ECA C\u1EE6A M\u1ECCI C\xD4NG TH\u1EE8C:",
       '- V\u1EDBi M\u1ECCI c\xF4ng th\u1EE9c xu\u1EA5t hi\u1EC7n trong t\xE0i li\u1EC7u (v\xED d\u1EE5 s = v.t, x = x0 + v.t, F = m.a...), li\u1EC7t k\xEA T\u1EA4T C\u1EA2 c\xE1c k\xFD hi\u1EC7u/bi\u1EBFn s\u1ED1 c\xF3 m\u1EB7t trong c\xF4ng th\u1EE9c \u0111\xF3 v\xE0 \u0111\u1ED1i chi\u1EBFu v\u1EDBi c\u1EE5m ch\xFA th\xEDch ("Trong \u0111\xF3: ...") ngay k\u1EBF ti\u1EBFp.',
@@ -6828,7 +6623,7 @@ ${h.chunk.content}`
         rubricHash: fixedRubric.rubricHash,
         enableWebGrounding: Boolean(enableWebGrounding),
         strictModelLock,
-        adaptiveMode: adaptivePlan.isLongText ? "long_2api" : "short_1api",
+        adaptiveMode: "fixed_1_1_1",
         adaptiveThreshold: adaptivePlan.thresholdChars,
         seed: DETERMINISTIC_GRADING_SEED
       }),
@@ -6865,7 +6660,7 @@ ${h.chunk.content}`
         prompt: slotParams.promptText,
         thinkingTier: slotParams.thinkingTier,
         maxOutputTokens: slotParams.maxOutputTokens,
-        timeoutMs: 36e3,
+        timeoutMs: 28e3,
         temperature: 0,
         seed: DETERMINISTIC_GRADING_SEED,
         strictModelLock,
@@ -6877,151 +6672,21 @@ ${h.chunk.content}`
         groqSchemaHint: gradeSchemaHint
       })
     });
-    let rawEval;
-    let primaryRoutedResult;
-    let gradeModelsUsed = [];
-    let gradeProvidersUsed = [];
-    let part1ClaimCount = 0;
-    if (adaptivePlan.isLongText) {
-      const studentGradingBlocks = pages.flatMap((page) => {
-        if (page.blocks && page.blocks.length > 0) {
-          return page.blocks.map((b) => ({
-            pageNumber: page.pageNumber,
-            blockId: b.blockId,
-            text: String(b.extractedText || "").trim()
-          })).filter((b) => b.text.length > 0);
-        }
-        const preferredText = (page.rawText || "").trim();
-        if (!preferredText) return [];
-        const semanticBlocks = groupRawTextIntoSemanticBlocks(preferredText, page.pageNumber, 0.92);
-        return semanticBlocks.map((b) => ({
-          pageNumber: page.pageNumber,
-          blockId: b.blockId,
-          text: String(b.extractedText || "").trim()
-        })).filter((b) => b.text.length > 0);
-      });
-      const [half1Blocks, half2Blocks] = splitStudentBlocksIntoTwoHalves(studentGradingBlocks);
-      if (half1Blocks.length > 0 && half2Blocks.length > 0) {
-        const part1Text = formatStudentBlocksForPrompt(half1Blocks).slice(
-          0,
-          Math.floor(MAX_STUDENT_GRADING_CHARS / 2)
-        );
-        const part2Text = formatStudentBlocksForPrompt(half2Blocks).slice(
-          0,
-          Math.floor(MAX_STUDENT_GRADING_CHARS / 2)
-        );
-        const part1Prompt = buildGradingPrompt(
-          part1Text,
-          "Ph\u1EA7n 1/2 (n\u1EEDa \u0111\u1EA7u t\xE0i li\u1EC7u). Ch\u1EC9 t\xE1ch claims xu\u1EA5t hi\u1EC7n trong Ph\u1EA7n 1/2."
-        );
-        const part2Prompt = buildGradingPrompt(
-          part2Text,
-          "Ph\u1EA7n 2/2 (n\u1EEDa sau t\xE0i li\u1EC7u). Ch\u1EC9 t\xE1ch claims xu\u1EA5t hi\u1EC7n trong Ph\u1EA7n 2/2."
-        );
-        const [res1, res2] = await Promise.all([
-          runGradeSlot({
-            promptText: part1Prompt,
-            preferredPrimaryModelId: MISTRAL_GRADE_MODEL,
-            preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
-            slot: 1,
-            partKey: "long_part_1",
-            maxOutputTokens: 7168,
-            thinkingTier: "medium"
-          }),
-          runGradeSlot({
-            promptText: part2Prompt,
-            preferredPrimaryModelId: CF_GRADE_MODEL,
-            preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
-            slot: 2,
-            partKey: "long_part_2",
-            maxOutputTokens: 7168,
-            thinkingTier: "medium"
-          })
-        ]);
-        primaryRoutedResult = res1;
-        part1ClaimCount = (res1.data.data.claims || []).length;
-        const normalizeCov = (items) => (items || []).map((it) => ({
-          ...it,
-          chapter: it.chapter || "",
-          importanceWeight: it.importanceWeight === 1 || it.importanceWeight === 2 || it.importanceWeight === 3 ? it.importanceWeight : void 0,
-          status: ["COVERED", "PARTIALLY_COVERED", "MISSING", "OUT_OF_SCOPE"].includes(
-            String(it.status || "").toUpperCase()
-          ) ? String(it.status).toUpperCase() : "MISSING"
-        }));
-        const mergedHalves = mergeGradedHalves(
-          {
-            claims: res1.data.data.claims || [],
-            coverageItems: normalizeCov(res1.data.data.coverageItems),
-            strengths: [],
-            weaknesses: [],
-            suggestions: []
-          },
-          {
-            claims: res2.data.data.claims || [],
-            coverageItems: normalizeCov(res2.data.data.coverageItems),
-            strengths: [],
-            weaknesses: [],
-            suggestions: []
-          }
-        );
-        const dedupByTitle = (a = [], b = []) => {
-          const seen = /* @__PURE__ */ new Set();
-          const out = [];
-          for (const item of [...a, ...b]) {
-            const key = String(item?.title || "").trim().toLowerCase();
-            if (key && seen.has(key)) continue;
-            if (key) seen.add(key);
-            out.push(item);
-          }
-          return out;
-        };
-        rawEval = {
-          claims: mergedHalves.claims,
-          coverageItems: mergedHalves.coverageItems.map((it) => ({
-            ...it,
-            chapter: it.chapter || ""
-          })),
-          strengths: dedupByTitle(res1.data.data.strengths, res2.data.data.strengths).slice(0, 8),
-          weaknesses: dedupByTitle(res1.data.data.weaknesses, res2.data.data.weaknesses).slice(0, 12),
-          suggestions: dedupByTitle(res1.data.data.suggestions, res2.data.data.suggestions).slice(0, 8)
-        };
-        gradeModelsUsed = [res1.actualModel, res2.actualModel];
-        gradeProvidersUsed = [
-          detectProviderIdFromModel(res1.actualModel),
-          detectProviderIdFromModel(res2.actualModel)
-        ];
-      } else {
-        const singleRes = await runGradeSlot({
-          promptText: analysisPrompt,
-          preferredPrimaryModelId: MISTRAL_GRADE_MODEL,
-          preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
-          slot: 1,
-          partKey: "long_fallback_single",
-          maxOutputTokens: 7168,
-          thinkingTier: "medium"
-        });
-        primaryRoutedResult = singleRes;
-        rawEval = singleRes.data.data;
-        part1ClaimCount = (rawEval.claims || []).length;
-        gradeModelsUsed = [singleRes.actualModel];
-        gradeProvidersUsed = [detectProviderIdFromModel(singleRes.actualModel)];
-      }
-    } else {
-      const singleRes = await runGradeSlot({
-        promptText: analysisPrompt,
-        preferredPrimaryModelId: MISTRAL_GRADE_MODEL,
-        preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
-        slot: 1,
-        partKey: "short_single",
-        maxOutputTokens: pages.length <= 2 && fixedRubric.criteria.length <= 10 ? 4096 : 7168,
-        thinkingTier: pages.length <= 2 && formattedStudentBlocks.length <= 3500 ? "low" : "medium"
-      });
-      primaryRoutedResult = singleRes;
-      rawEval = singleRes.data.data;
-      part1ClaimCount = (rawEval.claims || []).length;
-      gradeModelsUsed = [singleRes.actualModel];
-      gradeProvidersUsed = [detectProviderIdFromModel(singleRes.actualModel)];
-    }
+    const singleGradeRes = await runGradeSlot({
+      promptText: analysisPrompt,
+      preferredPrimaryModelId: MISTRAL_GRADE_MODEL,
+      preferredFallbackModelId: GROQ_GRADE_FALLBACK_MODEL,
+      slot: 1,
+      partKey: "single_grade",
+      maxOutputTokens: formattedStudentBlocks.length <= 2800 && fixedRubric.criteria.length <= 10 ? 4096 : 6144,
+      thinkingTier: "low"
+    });
+    const primaryRoutedResult = singleGradeRes;
+    const rawEval = singleGradeRes.data.data;
+    const gradeModelsUsed = [singleGradeRes.actualModel];
+    const gradeProvidersUsed = [
+      detectProviderIdFromModel(singleGradeRes.actualModel)
+    ];
     const validStatuses = /* @__PURE__ */ new Set([
       "CORRECT",
       "PARTIALLY_CORRECT",
@@ -7035,11 +6700,17 @@ ${h.chunk.content}`
     const filteredRawClaims = (rawEval.claims || []).filter(
       (c) => !isNonGradableLeadInClaim(c.sourceText || "")
     );
-    const configuredProviders = {
+    const rawConfiguredProviders = {
       mistral: isMistralConfigured(),
       cloudflare: isCloudflareConfigured(),
       groq: isGroqConfigured()
     };
+    const healthyConfiguredProviders = {
+      mistral: rawConfiguredProviders.mistral && !isProviderCoolingDown("mistral"),
+      cloudflare: rawConfiguredProviders.cloudflare && !isProviderCoolingDown("cloudflare"),
+      groq: rawConfiguredProviders.groq && !isProviderCoolingDown("groq")
+    };
+    const configuredProviders = healthyConfiguredProviders.mistral || healthyConfiguredProviders.cloudflare || healthyConfiguredProviders.groq ? healthyConfiguredProviders : rawConfiguredProviders;
     const verifySchemaHint = '{"adjustments":[{"claimIndex":0,"evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|UNVERIFIED|OUT_OF_SCOPE","errorSpan":"...","shortFix":"...","explanation":"...","correctKnowledge":"...","suggestedFix":"..."}]}';
     const verifyModelsUsed = [];
     let verifyExecutedApiCount = 0;
@@ -7070,14 +6741,14 @@ ${h.chunk.content}`
         "NHI\u1EC6M V\u1EE4: Ki\u1EC3m tra l\u1EA1i danh s\xE1ch m\u1EC7nh \u0111\u1EC1 \u0111\xE3 ch\u1EA5m b\xEAn d\u01B0\u1EDBi \u0111\u1EC3 ph\xE1t hi\u1EC7n:",
         "1. M\xE2u thu\u1EABn gi\u1EEFa explanation v\xE0 evaluationStatus (v\xED d\u1EE5 explanation n\xF3i sai nh\u01B0ng l\u1EA1i g\u1EAFn CORRECT, ho\u1EB7c n\xF3i thi\u1EBFu k\xFD hi\u1EC7u/\u0111\u01A1n v\u1ECB nh\u01B0ng g\u1EAFn CORRECT).",
         "2. L\u1ED7i b\xE1o sai oan (false positive) ho\u1EB7c b\u1ECF s\xF3t l\u1ED7i c\xF4ng th\u1EE9c/\u0111\u1ECBnh ngh\u0129a/\u0111\u01A1n v\u1ECB (false negative).",
-        "3. \u0110\u1EA3m b\u1EA3o m\u1ECDi claim INCORRECT ho\u1EB7c PARTIALLY_CORRECT \u0111\u1EC1u c\xF3 errorSpan tr\xEDch \u0111\xFAng t\u1EEB sourceText v\xE0 shortFix s\xFAc t\xEDch.",
+        "3. \u0110\u1EA3m b\u1EA3o m\u1ECDi claim INCORRECT ho\u1EB7c PARTIALLY_CORRECT \u0111\u1EC1u c\xF3 errorSpan tr\xEDch NGUY\xCAN V\u0102N 100% t\u1EEB sourceText (C\u1EA4M t\u1EF1 s\u1EEDa ch\u1EEF trong errorSpan) v\xE0 shortFix s\xFAc t\xEDch.",
         'CH\u1EC8 tr\u1EA3 v\u1EC1 c\xE1c m\u1EE5c th\u1EF1c s\u1EF1 c\u1EA7n \u0111i\u1EC1u ch\u1EC9nh trong m\u1EA3ng "adjustments" (n\u1EBFu t\u1EA5t c\u1EA3 \u0111\xE3 ch\xEDnh x\xE1c v\xE0 nh\u1EA5t qu\xE1n, tr\u1EA3 v\u1EC1 {"adjustments":[]}).',
         "",
         "=== DANH S\xC1CH CLAIMS C\u1EA6N D\xD2 CH\xC9O ===",
         JSON.stringify(compactClaimsPayload),
         textbookSlice ? `
 === T\xD3M T\u1EAET NG\u1EEE LI\u1EC6U SGK ===
-${textbookSlice.slice(0, 5e3)}` : ""
+${textbookSlice.slice(0, 4e3)}` : ""
       ].filter(Boolean).join("\n");
       try {
         const res = await runTaskWithRouter({
@@ -7093,7 +6764,7 @@ ${textbookSlice.slice(0, 5e3)}` : ""
             systemFingerprint: out.systemFingerprint
           }),
           cacheInput: {
-            verifyRev: "v4.2_cross_provider",
+            verifyRev: "v4.3_fixed_1api_verify",
             slot: verifyParams.slot,
             inputHash,
             gradedByProvider: verifyParams.gradedByProvider,
@@ -7102,9 +6773,9 @@ ${textbookSlice.slice(0, 5e3)}` : ""
           runWithModel: async (modelId) => generateJsonWithProviderDetailed({
             modelId,
             prompt: verifyPrompt,
-            thinkingTier: "medium",
-            maxOutputTokens: 3072,
-            timeoutMs: 28e3,
+            thinkingTier: "low",
+            maxOutputTokens: 2048,
+            timeoutMs: 18e3,
             temperature: 0,
             seed: DETERMINISTIC_GRADING_SEED,
             strictModelLock: false,
@@ -7127,36 +6798,7 @@ ${textbookSlice.slice(0, 5e3)}` : ""
     };
     const indexedAllClaims = filteredRawClaims.map((claim, index) => ({ index, claim }));
     const collectedAdjustments = [];
-    if (adaptivePlan.isLongText && indexedAllClaims.length >= 2) {
-      const [verifyHalf1, verifyHalf2] = splitClaimsIntoTwoHalves(indexedAllClaims);
-      const slot1Provider = gradeProvidersUsed[0] || "mistral";
-      const slot2Provider = gradeProvidersUsed[1] || gradeProvidersUsed[0] || "cloudflare";
-      const slot1PlannedChoice = selectCrossProviderVerifierModel({
-        gradedByProvider: slot1Provider,
-        slot: 1,
-        configuredProviders
-      });
-      const [v1, v2] = await Promise.all([
-        runVerifySlice({
-          indexedClaims: verifyHalf1,
-          gradedByProvider: slot1Provider,
-          slot: 1
-        }),
-        runVerifySlice({
-          indexedClaims: verifyHalf2,
-          gradedByProvider: slot2Provider,
-          slot: 2,
-          slot1VerifyModel: slot1PlannedChoice.primaryModel
-        })
-      ]);
-      for (const vr of [v1, v2]) {
-        if (vr.executed) {
-          verifyExecutedApiCount += 1;
-          if (vr.modelUsed) verifyModelsUsed.push(vr.modelUsed);
-          collectedAdjustments.push(...vr.adjustments);
-        }
-      }
-    } else if (indexedAllClaims.length > 0) {
+    if (indexedAllClaims.length > 0) {
       const slot1Provider = gradeProvidersUsed[0] || "mistral";
       const v1 = await runVerifySlice({
         indexedClaims: indexedAllClaims,
@@ -7346,7 +6988,6 @@ ${textbookSlice.slice(0, 5e3)}` : ""
       deterministicSeed: DETERMINISTIC_GRADING_SEED,
       adaptiveApiPlan: adaptiveApiPlanAudit
     };
-    void part1ClaimCount;
     const accuracyBreakdown = {
       ...baseAccuracyBreakdown,
       gradingAudit
@@ -9005,6 +8646,18 @@ function createApiApp() {
         });
         return;
       }
+      const unreadablePages = pages.filter((p) => {
+        const clean = (p.rawText || "").replace(/\[KHÔNG NHÌN RÕ\]/gi, "").trim();
+        return !clean || p.ocrAverageConfidence < 0.55 || /\[KHÔNG NHÌN RÕ\]/i.test(p.rawText || "");
+      }).map((p) => p.pageNumber);
+      const totalReadableChars = pages.map((p) => (p.rawText || "").replace(/\[KHÔNG NHÌN RÕ\]/gi, "").trim()).join("").length;
+      if (pages.length > 0 && totalReadableChars < 5) {
+        res.status(422).json({
+          error: "Kh\xF4ng th\u1EC3 nh\xECn r\xF5 n\u1ED9i dung trong t\u1EC7p/\u1EA3nh v\u1EEBa t\u1EA3i l\xEAn (\u1EA3nh b\u1ECB m\u1EDD, thi\u1EBFu s\xE1ng, b\u1ECB che khu\u1EA5t ho\u1EB7c kh\xF4ng c\xF3 ch\u1EEF). H\u1EC7 th\u1ED1ng kh\xF4ng t\u1EF1 \u0111o\xE1n n\u1ED9i dung \u2014 vui l\xF2ng ch\u1EE5p \u1EA3nh r\xF5 n\xE9t h\u01A1n v\xE0 t\u1EA3i l\u1EA1i.",
+          unreadablePages
+        });
+        return;
+      }
       const combinedForScope = [previousText, ...pages.map((p) => p.rawText)].filter(Boolean).join("\n");
       const heuristicScope = inferGradeAndSubjectFromFileNames([first.originalname]);
       const contentHeuristic = inferScopeFromContentHeuristic(combinedForScope, first.originalname);
@@ -9015,14 +8668,14 @@ function createApiApp() {
         suggestedTitle: first.originalname.replace(/\.[^.]+$/, "") || contentHeuristic.suggestedTitle
       };
       let scopeSuggestion = fallbackScopeSuggestion;
-      if (!skipScope && combinedForScope.trim().length > 15) {
+      if (!skipScope && fallbackScopeSuggestion.suggestedSubject === "khac" && combinedForScope.trim().length > 15) {
         try {
           scopeSuggestion = await callWithTimeout(
             () => SubjectDetectionService.detectScope(combinedForScope, tokens, {
               config: guard.config,
               idToken: user.idToken
             }),
-            8500
+            4500
           );
         } catch (scopeErr) {
           console.warn("Non-fatal scope detection fallback during /api/ai/extract:", scopeErr);
@@ -9038,7 +8691,7 @@ function createApiApp() {
         totalTokens: tokens.totalTokens
       });
       void persistUsageSnapshot(user.idToken, user.isSuperAdmin, user.uid);
-      res.json({ pages, scopeSuggestion, tokenUsage: tokens });
+      res.json({ pages, scopeSuggestion, unreadablePages, tokenUsage: tokens });
     } catch (err) {
       const mapped = mapGeminiErrorResponse(err, user.isSuperAdmin);
       recordUsageEvent({
