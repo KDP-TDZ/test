@@ -6,6 +6,8 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   ClipboardCheck,
   Copy,
@@ -25,6 +27,7 @@ import {
   Printer,
   RefreshCw,
   Save,
+  Search,
   Server,
   Shield,
   ShieldAlert,
@@ -35,9 +38,11 @@ import {
   Trash2,
   UserCheck,
   Wand2,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { CalmDots, CalmProgressBar } from './CalmLoadingIndicator';
+import { MathText } from './MathText';
 import {
   distributeExamQuestionScores,
   generateShuffledExamVariant,
@@ -269,6 +274,8 @@ export const AdminControlCenter: React.FC = () => {
   const [feedbackList, setFeedbackList] = useState<FeedbackEntry[]>([]);
   const [blueprints, setBlueprints] = useState<ExamBlueprint[]>([]);
   const [exams, setExams] = useState<ExamDocument[]>([]);
+  const [adminExamPage, setAdminExamPage] = useState(1);
+  const [adminExamSearch, setAdminExamSearch] = useState('');
 
   // Overview / AI Switch form
   const [maintenanceMessage, setMaintenanceMessage] = useState('');
@@ -2045,21 +2052,21 @@ export const AdminControlCenter: React.FC = () => {
             {printPreview.questions.map((q) => (
               <div key={q.questionId} className="text-sm space-y-1.5 pb-3 border-b border-slate-100 dark:border-slate-800">
                 <p className="font-semibold">
-                  Câu {q.orderIndex} ({q.scoreWeight} điểm): {q.questionText}
+                  Câu {q.orderIndex} ({q.scoreWeight} điểm): <MathText text={q.questionText} />
                 </p>
                 {q.questionType === 'abcd' && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pl-4 text-xs">
-                    <p>A. {q.optionA}</p>
-                    <p>B. {q.optionB}</p>
-                    <p>C. {q.optionC}</p>
-                    <p>D. {q.optionD}</p>
+                    <p>A. <MathText text={q.optionA || ''} /></p>
+                    <p>B. <MathText text={q.optionB || ''} /></p>
+                    <p>C. <MathText text={q.optionC || ''} /></p>
+                    <p>D. <MathText text={q.optionD || ''} /></p>
                   </div>
                 )}
                 {q.questionType === 'true_false' && (
                   <div className="pl-4 space-y-1 text-xs">
                     {(q.trueFalseStatements || []).map((st) => (
                       <p key={st.label}>
-                        {st.label}) {st.text} (Đúng / Sai)
+                        {st.label}) <MathText text={st.text} /> (Đúng / Sai)
                       </p>
                     ))}
                   </div>
@@ -2087,9 +2094,11 @@ export const AdminControlCenter: React.FC = () => {
                           ? (q.trueFalseStatements || [])
                               .map((s) => `${s.label}:${s.isTrue ? 'Đ' : 'S'}`)
                               .join(', ')
-                          : (q.shortAnswerAccepted || []).join(' / ')}
+                          : <MathText text={(q.shortAnswerAccepted || []).join(' / ')} />}
                     </p>
-                    <p className="text-slate-600 dark:text-slate-300 mt-0.5">{q.explanation}</p>
+                    <p className="text-slate-600 dark:text-slate-300 mt-0.5">
+                      <MathText text={q.explanation} />
+                    </p>
                   </div>
                 ))}
               </div>
@@ -5772,20 +5781,22 @@ type Question = (
                             </div>
                           ) : (
                             <>
-                              <p className="text-sm font-medium">{q.questionText}</p>
+                              <p className="text-sm font-medium">
+                                <MathText text={q.questionText} />
+                              </p>
                               {q.questionType === 'abcd' && (
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-slate-600 dark:text-slate-300">
                                   <p className={q.correctAnswer === 'A' ? 'font-bold text-emerald-700 dark:text-emerald-400' : ''}>
-                                    A. {q.optionA}
+                                    A. <MathText text={q.optionA || ''} />
                                   </p>
                                   <p className={q.correctAnswer === 'B' ? 'font-bold text-emerald-700 dark:text-emerald-400' : ''}>
-                                    B. {q.optionB}
+                                    B. <MathText text={q.optionB || ''} />
                                   </p>
                                   <p className={q.correctAnswer === 'C' ? 'font-bold text-emerald-700 dark:text-emerald-400' : ''}>
-                                    C. {q.optionC}
+                                    C. <MathText text={q.optionC || ''} />
                                   </p>
                                   <p className={q.correctAnswer === 'D' ? 'font-bold text-emerald-700 dark:text-emerald-400' : ''}>
-                                    D. {q.optionD}
+                                    D. <MathText text={q.optionD || ''} />
                                   </p>
                                 </div>
                               )}
@@ -5793,18 +5804,18 @@ type Question = (
                                 <div className="space-y-1 text-slate-600 dark:text-slate-300">
                                   {(q.trueFalseStatements || []).map((st) => (
                                     <p key={st.label}>
-                                      {st.label}) {st.text} → <strong>{st.isTrue ? 'Đúng' : 'Sai'}</strong>
+                                      {st.label}) <MathText text={st.text} /> → <strong>{st.isTrue ? 'Đúng' : 'Sai'}</strong>
                                     </p>
                                   ))}
                                 </div>
                               )}
                               {q.questionType === 'short_answer' && (
                                 <p className="font-mono text-emerald-700 dark:text-emerald-400">
-                                  Đáp án chấp nhận: {(q.shortAnswerAccepted || []).join(' | ')}
+                                  Đáp án chấp nhận: <MathText text={(q.shortAnswerAccepted || []).join(' | ')} />
                                 </p>
                               )}
                               <p className="text-slate-500 dark:text-slate-400">
-                                <strong>Giải thích:</strong> {q.explanation} ({q.sourceReference})
+                                <strong>Giải thích:</strong> <MathText text={q.explanation} /> ({q.sourceReference})
                               </p>
                             </>
                           )}
@@ -5817,87 +5828,263 @@ type Question = (
 
               {/* SAVED EXAMS LIST */}
               <GlassSurface className="rounded-3xl p-6 space-y-4">
-                <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                  Danh sách Đề kiểm tra đã tạo ({exams.length})
-                </h3>
-                {exams.length === 0 ? (
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Chưa có đề kiểm tra nào. Hãy lập Ma trận và Sinh đề thi ở trên.
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {exams.map((ex) => (
-                      <div
-                        key={ex.examId}
-                        className="glass-panel-subtle rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-                      >
-                        <div>
-                          <p className="text-sm font-bold text-[#16243E] dark:text-[#E6EFFC]">{ex.title}</p>
-                          <p className="text-slate-600 dark:text-slate-300 mt-0.5">
-                            {SUBJECT_LABELS[ex.subject]} · Lớp {ex.grade} · {EXAM_TYPE_LABELS[ex.examType]} ·{' '}
-                            {ex.questions.length} câu · {ex.durationMinutes} phút ·{' '}
-                            <strong className={ex.published ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
-                              {ex.published ? 'Đang mở cho HS' : 'Bản nháp'}
-                            </strong>
-                          </p>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const v = generateShuffledExamVariant(ex, '101');
-                              setPrintPreview({
-                                exam: ex,
-                                variantCode: '101',
-                                questions: v.questions,
-                                includeAnswers: true,
-                              });
-                            }}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl glass-control font-semibold cursor-pointer"
-                          >
-                            <Printer className="w-3.5 h-3.5" />
-                            Xuất Mã đề 101/102/103
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setActiveExamDraft(ex)}
-                            className="px-2.5 py-1.5 rounded-xl glass-control font-semibold cursor-pointer"
-                          >
-                            Chỉnh sửa
-                          </button>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              const next = {
-                                ...ex,
-                                published: !ex.published,
-                                updatedAt: new Date().toISOString(),
-                              };
-                              await saveExamDocument(next);
-                              setExams((prev) =>
-                                prev.map((item) => (item.examId === ex.examId ? next : item))
-                              );
-                            }}
-                            className="px-2.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 text-white font-semibold shadow-sm hover:brightness-105 cursor-pointer"
-                          >
-                            {ex.published ? 'Ẩn đề' : 'Xuất bản'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              await deleteExamDocument(ex.examId);
-                              setExams((prev) => prev.filter((item) => item.examId !== ex.examId));
-                            }}
-                            className="p-1.5 rounded-xl border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
-                            aria-label="Xóa đề thi"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                {(() => {
+                  const normalizeText = (val: string) =>
+                    val
+                      .toLowerCase()
+                      .normalize('NFD')
+                      .replace(/[\u0300-\u036f]/g, '')
+                      .replace(/đ/g, 'd')
+                      .replace(/\s+/g, ' ')
+                      .trim();
+                  const rawQ = adminExamSearch.trim().toLowerCase();
+                  const normQ = normalizeText(adminExamSearch);
+                  const filteredAdminExams = exams.filter((ex) => {
+                    if (!rawQ) return true;
+                    const chs = [
+                      ...(ex.chapters || []),
+                      ...(ex.questions || []).map((q) => q.chapterId || ''),
+                    ]
+                      .filter(Boolean)
+                      .join(' ');
+                    const hayRaw = `${ex.title} ${chs} ${ex.description || ''} ${SUBJECT_LABELS[ex.subject] || ''} ${EXAM_TYPE_LABELS[ex.examType] || ''}`.toLowerCase();
+                    const hayNorm = normalizeText(hayRaw);
+                    return hayRaw.includes(rawQ) || (Boolean(normQ) && hayNorm.includes(normQ));
+                  });
+                  const totalAdminPages = Math.max(1, Math.ceil(filteredAdminExams.length / 10));
+                  const currentAdminPage = Math.min(adminExamPage, totalAdminPages);
+
+                  return (
+                    <>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                          Danh sách Đề kiểm tra đã tạo ({filteredAdminExams.length}
+                          {filteredAdminExams.length !== exams.length ? ` / ${exams.length}` : ''})
+                        </h3>
+                        {filteredAdminExams.length > 10 && (
+                          <span className="text-xs text-slate-500 dark:text-slate-400">
+                            Trang {currentAdminPage} / {totalAdminPages}
+                          </span>
+                        )}
                       </div>
-                    ))}
-                  </div>
-                )}
+
+                      {exams.length > 0 && (
+                        <div className="relative w-full">
+                          <Search className="w-4 h-4 text-sky-600 dark:text-sky-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <input
+                            type="search"
+                            value={adminExamSearch}
+                            onChange={(e) => {
+                              setAdminExamSearch(e.target.value);
+                              setAdminExamPage(1);
+                            }}
+                            aria-label="Tìm kiếm đề kiểm tra theo tiêu đề hoặc chương"
+                            placeholder="Tìm nhanh đề theo tiêu đề hoặc chương (VD: Giữa kỳ I, Chương 1, Hàm số...)"
+                            className="glass-control w-full pl-10 pr-20 py-2.5 rounded-2xl text-xs sm:text-sm text-[#16243E] dark:text-[#E6EFFC] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+                          />
+                          {adminExamSearch.trim() && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAdminExamSearch('');
+                                setAdminExamPage(1);
+                              }}
+                              className="absolute right-2.5 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-slate-200/70 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 hover:bg-slate-300/70 cursor-pointer"
+                            >
+                              <X className="w-3 h-3" />
+                              Xóa
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {exams.length === 0 ? (
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Chưa có đề kiểm tra nào. Hãy lập Ma trận và Sinh đề thi ở trên.
+                        </p>
+                      ) : filteredAdminExams.length === 0 ? (
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Không tìm thấy đề kiểm tra nào khớp với từ khóa &ldquo;{adminExamSearch}&rdquo;.
+                        </p>
+                      ) : (
+                        <div className="space-y-3">
+                          {filteredAdminExams
+                            .slice((currentAdminPage - 1) * 10, currentAdminPage * 10)
+                            .map((ex) => {
+                              const uniqueChapters = Array.from(
+                                new Set(
+                                  [
+                                    ...(ex.chapters || []),
+                                    ...(ex.questions || []).map((q) => q.chapterId || ''),
+                                  ]
+                                    .map((c) => c.trim())
+                                    .filter(Boolean)
+                                )
+                              );
+                              return (
+                                <div
+                                  key={ex.examId}
+                                  className="glass-panel-subtle rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                                >
+                                  <div className="space-y-1">
+                                    <p className="text-sm font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                                      <MathText text={ex.title} />
+                                    </p>
+                                    <p className="text-slate-600 dark:text-slate-300">
+                                      {SUBJECT_LABELS[ex.subject]} · Lớp {ex.grade} · {EXAM_TYPE_LABELS[ex.examType]} ·{' '}
+                                      {ex.questions.length} câu · {ex.durationMinutes} phút ·{' '}
+                                      <strong className={ex.published ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
+                                        {ex.published ? 'Đang mở cho HS' : 'Bản nháp'}
+                                      </strong>
+                                    </p>
+                                    {uniqueChapters.length > 0 && (
+                                      <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                                        <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">
+                                          Chương:
+                                        </span>
+                                        {uniqueChapters.slice(0, 4).map((ch) => (
+                                          <button
+                                            key={ch}
+                                            type="button"
+                                            onClick={() => {
+                                              setAdminExamSearch(ch);
+                                              setAdminExamPage(1);
+                                            }}
+                                            className="px-2 py-0.5 rounded-lg text-[11px] bg-sky-500/10 hover:bg-sky-500/20 text-sky-800 dark:text-sky-300 border border-sky-500/20 cursor-pointer"
+                                          >
+                                            <MathText text={ch} />
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const v = generateShuffledExamVariant(ex, '101');
+                                        setPrintPreview({
+                                          exam: ex,
+                                          variantCode: '101',
+                                          questions: v.questions,
+                                          includeAnswers: true,
+                                        });
+                                      }}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl glass-control font-semibold cursor-pointer"
+                                    >
+                                      <Printer className="w-3.5 h-3.5" />
+                                      Xuất Mã đề 101/102/103
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setActiveExamDraft(ex)}
+                                      className="px-2.5 py-1.5 rounded-xl glass-control font-semibold cursor-pointer"
+                                    >
+                                      Chỉnh sửa
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        const next = {
+                                          ...ex,
+                                          published: !ex.published,
+                                          updatedAt: new Date().toISOString(),
+                                        };
+                                        await saveExamDocument(next);
+                                        setExams((prev) =>
+                                          prev.map((item) => (item.examId === ex.examId ? next : item))
+                                        );
+                                      }}
+                                      className="px-2.5 py-1.5 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 text-white font-semibold shadow-sm hover:brightness-105 cursor-pointer"
+                                    >
+                                      {ex.published ? 'Ẩn đề' : 'Xuất bản'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        await deleteExamDocument(ex.examId);
+                                        setExams((prev) => prev.filter((item) => item.examId !== ex.examId));
+                                      }}
+                                      className="p-1.5 rounded-xl border border-rose-200 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                                      aria-label="Xóa đề thi"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+
+                          {filteredAdminExams.length > 10 && (
+                            <div className="pt-3 border-t border-slate-200/60 dark:border-slate-800/70 flex flex-wrap items-center justify-between gap-2 text-xs">
+                              <span className="text-slate-500 dark:text-slate-400">
+                                Hiển thị{' '}
+                                <strong className="text-[#16243E] dark:text-[#E6EFFC]">
+                                  {(currentAdminPage - 1) * 10 + 1}–{Math.min(currentAdminPage * 10, filteredAdminExams.length)}
+                                </strong>{' '}
+                                trên tổng số <strong className="text-[#16243E] dark:text-[#E6EFFC]">{filteredAdminExams.length}</strong> đề
+                              </span>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setAdminExamPage((p) => Math.max(1, p - 1))}
+                                  disabled={currentAdminPage <= 1}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl glass-control font-semibold disabled:opacity-40 cursor-pointer"
+                                >
+                                  <ChevronLeft className="w-3.5 h-3.5" />
+                                  Trước
+                                </button>
+                                {Array.from({ length: totalAdminPages }, (_, idx) => idx + 1)
+                                  .filter(
+                                    (p) =>
+                                      p === 1 ||
+                                      p === totalAdminPages ||
+                                      Math.abs(p - currentAdminPage) <= 1
+                                  )
+                                  .reduce<Array<number | 'ellipsis'>>((acc, p, idx, arr) => {
+                                    if (idx > 0 && p - (arr[idx - 1] as number) > 1) {
+                                      acc.push('ellipsis');
+                                    }
+                                    acc.push(p);
+                                    return acc;
+                                  }, [])
+                                  .map((item, idx) =>
+                                    item === 'ellipsis' ? (
+                                      <span key={`el-${idx}`} className="px-1 text-slate-400">
+                                        …
+                                      </span>
+                                    ) : (
+                                      <button
+                                        key={item}
+                                        type="button"
+                                        onClick={() => setAdminExamPage(item)}
+                                        className={`min-w-[30px] h-7 px-2 rounded-lg font-bold cursor-pointer ${
+                                          item === currentAdminPage
+                                            ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sm'
+                                            : 'glass-control text-slate-600 dark:text-slate-300'
+                                        }`}
+                                      >
+                                        {item}
+                                      </button>
+                                    )
+                                  )}
+                                <button
+                                  type="button"
+                                  onClick={() => setAdminExamPage((p) => Math.min(totalAdminPages, p + 1))}
+                                  disabled={currentAdminPage >= totalAdminPages}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl glass-control font-semibold disabled:opacity-40 cursor-pointer"
+                                >
+                                  Sau
+                                  <ChevronRight className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </GlassSurface>
             </div>
           )}

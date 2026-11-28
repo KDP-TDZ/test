@@ -42,3 +42,41 @@ test('parseMathNotation preserves URLs, currency, and snake_case identifiers unt
   const nodes = parseMathNotation(input);
   assert.deepEqual(nodes, [{ type: 'text', value: input }]);
 });
+
+test('parseMathNotation renders trig, log, limits, blackboard bold sets, integrals, and unbraced tokens without raw backslashes', () => {
+  const trig = formatMathNotationPlainText(
+    'Hàm số $y = \\sin x + \\cos 2x$ xác định trên $\\mathbb{R}$ với $k \\in \\mathbb{Z}$ và $\\log_2 x \\ge 0$.'
+  );
+  assert.equal(
+    trig,
+    'Hàm số y = sin x + cos 2x xác định trên ℝ với k ∈ ℤ và log₂ x ≥ 0.'
+  );
+  assert.ok(!trig.includes('\\'));
+
+  const calc = formatMathNotationPlainText(
+    'Tính $I = \\int_0^1 x^2 dx$, $\\lim_{x \\to 0} \\frac{\\sin x}{x} = 1$, $\\widehat{ABC} = 60^\\circ$, $\\binom{n}{k}$, $\\frac12$, $\\sqrt2$, $\\vec F$.'
+  );
+  assert.ok(!calc.includes('\\'));
+  assert.ok(calc.includes('∫₀¹'));
+  assert.ok(calc.includes('(sin x)/(x)'));
+  assert.ok(calc.includes('∠ABC = 60°'));
+  assert.ok(calc.includes('C(n, k)'));
+  assert.ok(calc.includes('(1)/(2)'));
+  assert.ok(calc.includes('√(2)'));
+  assert.ok(calc.includes('F\u20D7'));
+});
+
+test('parseMathNotation repairs corrupted control chars (\f -> \\frac, \b -> \\beta, \t -> \\theta/\\times) and parses cases & chemistry', () => {
+  const corrupted = 'Ta có $\x0Crac{\x08eta + \theta}{2} \times 3 \neq 0$ và $\\begin{cases} x + y = 2 \\\\ x - y = 0 \\end{cases}$';
+  const plain = formatMathNotationPlainText(corrupted);
+  assert.ok(!plain.includes('\x0C'));
+  assert.ok(!plain.includes('\x08'));
+  assert.ok(plain.includes('(β + θ)/(2) × 3 ≠ 0'));
+  assert.ok(plain.includes('{ x + y = 2 ; x - y = 0 }'));
+
+  const chem = formatMathNotationPlainText('$\\ce{Fe2O3 + 3CO -> Fe + 3CO2}$ và $A \\xrightarrow{t^\\circ} B$');
+  assert.ok(chem.includes('Fe₂O₃'));
+  assert.ok(chem.includes('CO₂'));
+  assert.ok(chem.includes('⟶(t°)'));
+});
+

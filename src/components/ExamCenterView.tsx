@@ -1,13 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Award,
+  BookOpen,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Clock,
   FileCheck2,
   Printer,
   RotateCcw,
+  Search,
   ShieldCheck,
   Trophy,
+  X,
 } from 'lucide-react';
 import { BRAND_CONFIG } from '../config/brand';
 import { useAuth } from '../context/AuthContext';
@@ -60,6 +67,36 @@ function formatClock(totalSeconds: number): string {
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
+function normalizeSearchText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractExamChapters(exam: ExamDocument): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const ch of exam.chapters || []) {
+    const trimmed = (ch || '').trim();
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      result.push(trimmed);
+    }
+  }
+  for (const q of exam.questions || []) {
+    const trimmed = (q.chapterId || '').trim();
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      result.push(trimmed);
+    }
+  }
+  return result;
+}
+
 export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboard }) => {
   const { user, profile, isSuperAdmin } = useAuth();
   const [exams, setExams] = useState<ExamDocument[]>([]);
@@ -69,6 +106,11 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
   const [activeTab, setActiveTab] = useState<'all' | ExamType | 'history'>('all');
   const [gradeFilter, setGradeFilter] = useState<'all' | GradeLevel>('all');
   const [subjectFilter, setSubjectFilter] = useState<'all' | SubjectId>('all');
+  const [chapterFilter, setChapterFilter] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(6);
+  const [historyPage, setHistoryPage] = useState<number>(1);
 
   // Active exam runner state
   const [activeExam, setActiveExam] = useState<ExamDocument | null>(null);
@@ -134,14 +176,86 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
     return map;
   }, [attempts]);
 
+  const availableChapters = useMemo(() => {
+    const chapterSet = new Set<string>();
+    for (const e of exams) {
+      if (activeTab !== 'all' && activeTab !== 'history' && e.examType !== activeTab) continue;
+      if (gradeFilter !== 'all' && e.grade !== gradeFilter) continue;
+      if (subjectFilter !== 'all' && e.subject !== subjectFilter) continue;
+      for (const ch of extractExamChapters(e)) {
+        chapterSet.add(ch);
+      }
+    }
+    return Array.from(chapterSet);
+  }, [exams, activeTab, gradeFilter, subjectFilter]);
+
+  useEffect(() => {
+    if (chapterFilter !== 'all' && !availableChapters.includes(chapterFilter)) {
+      setChapterFilter('all');
+    }
+  }, [availableChapters, chapterFilter]);
+
   const filteredExams = useMemo(() => {
+    const rawQuery = searchQuery.trim().toLowerCase();
+    const normQuery = normalizeSearchText(searchQuery);
     return exams.filter((e) => {
       if (activeTab !== 'all' && activeTab !== 'history' && e.examType !== activeTab) return false;
       if (gradeFilter !== 'all' && e.grade !== gradeFilter) return false;
       if (subjectFilter !== 'all' && e.subject !== subjectFilter) return false;
+      const examChapters = extractExamChapters(e);
+      if (chapterFilter !== 'all' && !examChapters.includes(chapterFilter)) return false;
+      if (rawQuery) {
+        const hayRaw = `${e.title} ${examChapters.join(' ')} ${e.description || ''} ${e.textbookSeries || ''} ${SUBJECT_LABELS[e.subject] || ''} ${EXAM_TYPE_LABELS[e.examType] || ''}`.toLowerCase();
+        const hayNorm = normalizeSearchText(hayRaw);
+        if (!hayRaw.includes(rawQuery) && (!normQuery || !hayNorm.includes(normQuery))) {
+          return false;
+        }
+      }
       return true;
     });
-  }, [exams, activeTab, gradeFilter, subjectFilter]);
+  }, [exams, activeTab, gradeFilter, subjectFilter, chapterFilter, searchQuery]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+    setHistoryPage(1);
+  }, [activeTab, gradeFilter, subjectFilter, chapterFilter, searchQuery, pageSize]);
+
+  const totalExamPages = Math.max(1, Math.ceil(filteredExams.length / pageSize));
+  const safeCurrentPage = Math.min(currentPage, totalExamPages);
+  const paginatedExams = useMemo(() => {
+    const start = (safeCurrentPage - 1) * pageSize;
+    return filteredExams.slice(start, start + pageSize);
+  }, [filteredExams, safeCurrentPage, pageSize]);
+
+  const historyPageSize = 8;
+  const totalHistoryPages = Math.max(1, Math.ceil(attempts.length / historyPageSize));
+  const safeHistoryPage = Math.min(historyPage, totalHistoryPages);
+  const paginatedAttempts = useMemo(() => {
+    const start = (safeHistoryPage - 1) * historyPageSize;
+    return attempts.slice(start, start + historyPageSize);
+  }, [attempts, safeHistoryPage]);
+
+  const goToExamPage = (targetPage: number) => {
+    const clamped = Math.max(1, Math.min(totalExamPages, targetPage));
+    setCurrentPage(clamped);
+    examRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const buildVisiblePageNumbers = (current: number, total: number): Array<number | 'ellipsis-left' | 'ellipsis-right'> => {
+    if (total <= 7) {
+      return Array.from({ length: total }, (_, i) => i + 1);
+    }
+    const pages: Array<number | 'ellipsis-left' | 'ellipsis-right'> = [1];
+    const left = Math.max(2, current - 1);
+    const right = Math.min(total - 1, current + 1);
+    if (left > 2) pages.push('ellipsis-left');
+    for (let p = left; p <= right; p += 1) {
+      pages.push(p);
+    }
+    if (right < total - 1) pages.push('ellipsis-right');
+    pages.push(total);
+    return pages;
+  };
 
   const startExam = (exam: ExamDocument) => {
     setActiveExam(exam);
@@ -351,21 +465,21 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
             {displayedQuestions.map((q, idx) => (
               <div key={q.questionId} className="space-y-2 border-b border-slate-200/70 dark:border-slate-700/70 pb-4">
                 <p className="font-semibold">
-                  Câu {idx + 1} ({q.scoreWeight} điểm): {q.questionText}
+                  Câu {idx + 1} ({q.scoreWeight} điểm): <MathText text={q.questionText} />
                 </p>
                 {q.questionType === 'abcd' && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pl-3 text-xs">
-                    <p>A. {q.optionA}</p>
-                    <p>B. {q.optionB}</p>
-                    <p>C. {q.optionC}</p>
-                    <p>D. {q.optionD}</p>
+                    <p>A. <MathText text={q.optionA} /></p>
+                    <p>B. <MathText text={q.optionB} /></p>
+                    <p>C. <MathText text={q.optionC} /></p>
+                    <p>D. <MathText text={q.optionD} /></p>
                   </div>
                 )}
                 {q.questionType === 'true_false' && q.trueFalseStatements && (
                   <div className="space-y-1 pl-3 text-xs">
                     {q.trueFalseStatements.map((s) => (
                       <p key={s.label}>
-                        {s.label}) {s.text}
+                        {s.label}) <MathText text={s.text} />
                       </p>
                     ))}
                   </div>
@@ -393,9 +507,11 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                         ? (q.trueFalseStatements || [])
                             .map((s) => `${s.label}:${s.isTrue ? 'Đúng' : 'Sai'}`)
                             .join(' | ')
-                        : (q.shortAnswerAccepted || []).join(' hoặc ')}
+                        : <MathText text={(q.shortAnswerAccepted || []).join(' hoặc ')} />}
                     </p>
-                    <p className="text-slate-600 dark:text-slate-300">{q.explanation}</p>
+                    <p className="text-slate-600 dark:text-slate-300">
+                      <MathText text={q.explanation} />
+                    </p>
                   </div>
                 ))}
               </div>
@@ -697,7 +813,8 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                 {latestResult && (
                   <div className="rounded-xl glass-panel-subtle p-3.5 text-xs space-y-1">
                     <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
-                      Đáp án chuẩn: {bk?.correctDisplay} · Bài làm của bạn: {bk?.studentDisplay}
+                      Đáp án chuẩn: <MathText text={bk?.correctDisplay} /> · Bài làm của bạn:{' '}
+                      <MathText text={bk?.studentDisplay} />
                     </p>
                     <p className="text-slate-700 dark:text-slate-300">
                       <MathText text={q.explanation} />
@@ -751,30 +868,113 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
       />
 
       {activeTab !== 'history' && (
-        <GlassSurface className="rounded-3xl p-4 flex flex-wrap gap-3">
-          <select
-            value={gradeFilter}
-            onChange={(e) => setGradeFilter(e.target.value as 'all' | GradeLevel)}
-            className="glass-control px-3.5 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
-          >
-            <option value="all">Tất cả khối (10 / 11 / 12)</option>
-            <option value="10">Khối 10</option>
-            <option value="11">Khối 11</option>
-            <option value="12">Khối 12</option>
-          </select>
+        <GlassSurface className="rounded-3xl p-4 sm:p-5 space-y-3.5">
+          {/* Prominent Search Bar above the exam list */}
+          <div className="relative w-full">
+            <Search className="w-4 h-4 text-sky-600 dark:text-sky-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              aria-label="Tìm kiếm đề thi theo tiêu đề hoặc chương"
+              placeholder="Tìm nhanh đề thi theo tiêu đề hoặc chương (VD: Giữa kỳ I, Chương 1, Hàm số, Dao động điều hòa...)"
+              className="glass-control w-full pl-10 pr-24 py-2.5 rounded-2xl text-xs sm:text-sm text-[#16243E] dark:text-[#E6EFFC] placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+            />
+            {searchQuery.trim() && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                title="Xóa từ khóa tìm kiếm"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-slate-200/70 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 hover:bg-slate-300/70 dark:hover:bg-slate-700 cursor-pointer"
+              >
+                <X className="w-3 h-3" />
+                Xóa
+              </button>
+            )}
+          </div>
 
-          <select
-            value={subjectFilter}
-            onChange={(e) => setSubjectFilter(e.target.value as 'all' | SubjectId)}
-            className="glass-control px-3.5 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
-          >
-            <option value="all">Tất cả môn học</option>
-            {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
-              <option key={s} value={s}>
-                {SUBJECT_LABELS[s]}
-              </option>
-            ))}
-          </select>
+          {/* Filter Row: Grade, Subject, Chapter, and Page Size */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[240px]">
+              <select
+                value={gradeFilter}
+                onChange={(e) => setGradeFilter(e.target.value as 'all' | GradeLevel)}
+                className="glass-control px-3.5 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
+              >
+                <option value="all">Tất cả khối (10 / 11 / 12)</option>
+                <option value="10">Khối 10</option>
+                <option value="11">Khối 11</option>
+                <option value="12">Khối 12</option>
+              </select>
+
+              <select
+                value={subjectFilter}
+                onChange={(e) => setSubjectFilter(e.target.value as 'all' | SubjectId)}
+                className="glass-control px-3.5 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
+              >
+                <option value="all">Tất cả môn học</option>
+                {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
+                  <option key={s} value={s}>
+                    {SUBJECT_LABELS[s]}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={chapterFilter}
+                onChange={(e) => setChapterFilter(e.target.value)}
+                aria-label="Lọc theo chương"
+                className="glass-control px-3.5 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC] max-w-[260px] truncate"
+              >
+                <option value="all">
+                  Tất cả chương ({availableChapters.length})
+                </option>
+                {availableChapters.map((ch) => (
+                  <option key={ch} value={ch}>
+                    {ch}
+                  </option>
+                ))}
+              </select>
+
+              {(gradeFilter !== 'all' ||
+                subjectFilter !== 'all' ||
+                chapterFilter !== 'all' ||
+                searchQuery.trim() !== '') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGradeFilter('all');
+                    setSubjectFilter('all');
+                    setChapterFilter('all');
+                    setSearchQuery('');
+                  }}
+                  className="inline-flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Đặt lại bộ lọc
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 text-xs text-[#475B78] dark:text-[#B4C7E2]">
+              <span className="font-mono tabular-nums font-semibold text-sky-700 dark:text-sky-400">
+                {filteredExams.length} đề
+              </span>
+              <span>·</span>
+              <label className="inline-flex items-center gap-1.5">
+                <span>Hiển thị:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value) || 6)}
+                  className="glass-control px-2.5 py-1.5 rounded-xl text-xs font-mono font-semibold text-[#16243E] dark:text-[#E6EFFC]"
+                >
+                  <option value={6}>6 đề / trang</option>
+                  <option value={12}>12 đề / trang</option>
+                  <option value={24}>24 đề / trang</option>
+                </select>
+              </label>
+            </div>
+          </div>
         </GlassSurface>
       )}
 
@@ -803,32 +1003,84 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
             </p>
           </GlassSurface>
         ) : (
-          <div className="space-y-3">
-            {attempts.map((a) => (
-              <LiquidCard
-                key={a.attemptId}
-                enableTilt={false}
-                className="exam-card rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-              >
-                <div className="space-y-1">
-                  <p className="text-sm font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                    {a.examTitle}
-                  </p>
-                  <p className="text-xs text-[#475B78] dark:text-[#B4C7E2]">
-                    {SUBJECT_LABELS[a.subject]} · Lớp {a.grade} · {EXAM_TYPE_LABELS[a.examType]} ·{' '}
-                    {new Date(a.submittedAt).toLocaleString('vi-VN')}
-                  </p>
+          <div className="space-y-4">
+            <div className="space-y-3">
+              {paginatedAttempts.map((a) => (
+                <LiquidCard
+                  key={a.attemptId}
+                  enableTilt={false}
+                  className="exam-card rounded-3xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                >
+                  <div className="space-y-1">
+                    <p className="text-sm font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                      <MathText text={a.examTitle} />
+                    </p>
+                    <p className="text-xs text-[#475B78] dark:text-[#B4C7E2]">
+                      {SUBJECT_LABELS[a.subject]} · Lớp {a.grade} · {EXAM_TYPE_LABELS[a.examType]} ·{' '}
+                      {new Date(a.submittedAt).toLocaleString('vi-VN')}
+                    </p>
+                  </div>
+                  <div className="text-right font-mono text-xs tabular-nums">
+                    <p className="text-base font-bold text-sky-700 dark:text-sky-400">
+                      {a.earnedScore}/{a.maxScore} ({a.percentScore}%)
+                    </p>
+                    <p className="text-emerald-700 dark:text-emerald-400">
+                      +{a.leaderboardPointsAwarded} điểm Đua Top
+                    </p>
+                  </div>
+                </LiquidCard>
+              ))}
+            </div>
+
+            {totalHistoryPages > 1 && (
+              <GlassSurface className="rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <span className="text-[#475B78] dark:text-[#B4C7E2] font-mono tabular-nums">
+                  Hiển thị {(safeHistoryPage - 1) * historyPageSize + 1}–
+                  {Math.min(attempts.length, safeHistoryPage * historyPageSize)} / {attempts.length} lượt thi (Trang{' '}
+                  {safeHistoryPage}/{totalHistoryPages})
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={safeHistoryPage <= 1}
+                    onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
+                    className="glass-control inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl font-semibold disabled:opacity-40 cursor-pointer disabled:cursor-default"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                    Trước
+                  </button>
+                  {buildVisiblePageNumbers(safeHistoryPage, totalHistoryPages).map((item) =>
+                    typeof item === 'number' ? (
+                      <button
+                        key={item}
+                        type="button"
+                        onClick={() => setHistoryPage(item)}
+                        className={`min-w-[34px] h-8 px-2 rounded-xl font-mono text-xs font-bold cursor-pointer transition-all ${
+                          safeHistoryPage === item
+                            ? 'bg-[#2563EB] text-white shadow-sm'
+                            : 'glass-control text-[#16243E] dark:text-[#E6EFFC]'
+                        }`}
+                      >
+                        {item}
+                      </button>
+                    ) : (
+                      <span key={item} className="px-1 text-slate-400 font-mono">
+                        ...
+                      </span>
+                    )
+                  )}
+                  <button
+                    type="button"
+                    disabled={safeHistoryPage >= totalHistoryPages}
+                    onClick={() => setHistoryPage((p) => Math.min(totalHistoryPages, p + 1))}
+                    className="glass-control inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl font-semibold disabled:opacity-40 cursor-pointer disabled:cursor-default"
+                  >
+                    Sau
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-                <div className="text-right font-mono text-xs tabular-nums">
-                  <p className="text-base font-bold text-sky-700 dark:text-sky-400">
-                    {a.earnedScore}/{a.maxScore} ({a.percentScore}%)
-                  </p>
-                  <p className="text-emerald-700 dark:text-emerald-400">
-                    +{a.leaderboardPointsAwarded} điểm Đua Top
-                  </p>
-                </div>
-              </LiquidCard>
-            ))}
+              </GlassSurface>
+            )}
           </div>
         )
       ) : filteredExams.length === 0 ? (
@@ -849,66 +1101,187 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
           </p>
         </GlassSurface>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {filteredExams.map((exam) => {
-            const bestPct = bestScoreByExam.get(exam.examId);
-            return (
-              <LiquidCard key={exam.examId} className="exam-card rounded-3xl p-6 flex flex-col justify-between gap-4">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2 text-xs">
-                    <span className="font-semibold text-sky-700 dark:text-sky-400">
-                      {EXAM_TYPE_LABELS[exam.examType]}
-                    </span>
-                    <span className="font-mono text-[#475B78] dark:text-[#B4C7E2]">
-                      Khối {exam.grade} · {SUBJECT_LABELS[exam.subject]}
-                    </span>
-                  </div>
-                  <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                    {exam.title}
-                  </h2>
-                  <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] leading-[1.6]">
-                    {exam.description || `Bộ sách ${exam.textbookSeries} · Năm học ${exam.academicYear}`}
-                  </p>
-                  <div className="flex flex-wrap items-center gap-4 pt-1 text-xs font-mono text-[#475B78] dark:text-[#B4C7E2] tabular-nums">
-                    <span className="inline-flex items-center gap-1">
-                      <Clock className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
-                      {exam.durationMinutes} phút
-                    </span>
-                    <span className="inline-flex items-center gap-1">
-                      <FileCheck2 className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
-                      {exam.questions.length} câu ({exam.totalScore} điểm)
-                    </span>
-                    {bestPct !== undefined && (
-                      <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-bold">
-                        <Award className="w-3.5 h-3.5" />
-                        Cao nhất: {bestPct}%
+        <div className="space-y-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {paginatedExams.map((exam) => {
+              const bestPct = bestScoreByExam.get(exam.examId);
+              const examChapters = extractExamChapters(exam);
+              return (
+                <LiquidCard key={exam.examId} className="exam-card rounded-3xl p-6 flex flex-col justify-between gap-4">
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="font-semibold text-sky-700 dark:text-sky-400">
+                        {EXAM_TYPE_LABELS[exam.examType]}
                       </span>
+                      <span className="font-mono text-[#475B78] dark:text-[#B4C7E2]">
+                        Khối {exam.grade} · {SUBJECT_LABELS[exam.subject]}
+                      </span>
+                    </div>
+                    <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                      <MathText text={exam.title} />
+                    </h2>
+                    <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] leading-[1.6]">
+                      <MathText
+                        text={
+                          exam.description ||
+                          `Bộ sách ${exam.textbookSeries} · Năm học ${exam.academicYear}`
+                        }
+                      />
+                    </p>
+                    {examChapters.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                          <BookOpen className="w-3 h-3 text-sky-600 dark:text-sky-400" />
+                          Chương:
+                        </span>
+                        {examChapters.slice(0, 4).map((ch) => (
+                          <button
+                            key={ch}
+                            type="button"
+                            onClick={() => setSearchQuery(ch)}
+                            title={`Lọc nhanh theo chương: ${ch}`}
+                            className="px-2 py-0.5 rounded-lg text-[11px] font-medium bg-sky-500/10 hover:bg-sky-500/20 text-sky-800 dark:text-sky-300 border border-sky-500/20 transition-colors cursor-pointer text-left"
+                          >
+                            <MathText text={ch} />
+                          </button>
+                        ))}
+                        {examChapters.length > 4 && (
+                          <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
+                            +{examChapters.length - 4} chương
+                          </span>
+                        )}
+                      </div>
                     )}
+                    <div className="flex flex-wrap items-center gap-4 pt-1 text-xs font-mono text-[#475B78] dark:text-[#B4C7E2] tabular-nums">
+                      <span className="inline-flex items-center gap-1">
+                        <Clock className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+                        {exam.durationMinutes} phút
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <FileCheck2 className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+                        {exam.questions.length} câu ({exam.totalScore} điểm)
+                      </span>
+                      {bestPct !== undefined && (
+                        <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-bold">
+                          <Award className="w-3.5 h-3.5" />
+                          Cao nhất: {bestPct}%
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-sky-200/60 dark:border-slate-700/70">
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-sky-200/60 dark:border-slate-700/70">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPrintExam(exam);
+                        setPrintVariantSeed(0);
+                        setPrintIncludeKey(false);
+                      }}
+                      className="glass-control inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium cursor-pointer"
+                    >
+                      <Printer className="w-3.5 h-3.5" />
+                      In / Đảo mã đề
+                    </button>
+
+                    <WaterRippleButton size="sm" onClick={() => startExam(exam)}>
+                      <ShieldCheck className="w-4 h-4" />
+                      {bestPct !== undefined && exam.allowRetake ? 'Làm lại bài thi' : 'Vào phòng thi'}
+                    </WaterRippleButton>
+                  </div>
+                </LiquidCard>
+              );
+            })}
+          </div>
+
+          {/* Bottom Pagination Controls for Exam Center */}
+          <GlassSurface className="rounded-3xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-[#475B78] dark:text-[#B4C7E2] font-mono tabular-nums">
+              <span>
+                Hiển thị{' '}
+                <strong className="text-[#16243E] dark:text-[#E6EFFC]">
+                  {(safeCurrentPage - 1) * pageSize + 1}–
+                  {Math.min(filteredExams.length, safeCurrentPage * pageSize)}
+                </strong>{' '}
+                trong tổng số{' '}
+                <strong className="text-sky-700 dark:text-sky-400">{filteredExams.length}</strong> đề
+              </span>
+              <span>·</span>
+              <span>
+                Trang <strong>{safeCurrentPage}</strong>/{totalExamPages}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-center gap-1.5">
+              <button
+                type="button"
+                disabled={safeCurrentPage <= 1}
+                onClick={() => goToExamPage(1)}
+                title="Trang đầu"
+                aria-label="Trang đầu"
+                className="glass-control inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold disabled:opacity-40 cursor-pointer disabled:cursor-default"
+              >
+                <ChevronsLeft className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Đầu</span>
+              </button>
+              <button
+                type="button"
+                disabled={safeCurrentPage <= 1}
+                onClick={() => goToExamPage(safeCurrentPage - 1)}
+                title="Trang trước"
+                aria-label="Trang trước"
+                className="glass-control inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold disabled:opacity-40 cursor-pointer disabled:cursor-default"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                <span>Trước</span>
+              </button>
+
+              {buildVisiblePageNumbers(safeCurrentPage, totalExamPages).map((item) =>
+                typeof item === 'number' ? (
                   <button
+                    key={item}
                     type="button"
-                    onClick={() => {
-                      setPrintExam(exam);
-                      setPrintVariantSeed(0);
-                      setPrintIncludeKey(false);
-                    }}
-                    className="glass-control inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium cursor-pointer"
+                    onClick={() => goToExamPage(item)}
+                    aria-current={safeCurrentPage === item ? 'page' : undefined}
+                    className={`min-w-[34px] h-8 px-2.5 rounded-xl font-mono text-xs font-bold cursor-pointer transition-all ${
+                      safeCurrentPage === item
+                        ? 'bg-[#2563EB] text-white shadow-sm'
+                        : 'glass-control text-[#16243E] dark:text-[#E6EFFC] hover:border-[#2563EB]/60'
+                    }`}
                   >
-                    <Printer className="w-3.5 h-3.5" />
-                    In / Đảo mã đề
+                    {item}
                   </button>
+                ) : (
+                  <span key={item} className="px-1 text-slate-400 font-mono text-xs select-none">
+                    ...
+                  </span>
+                )
+              )}
 
-                  <WaterRippleButton size="sm" onClick={() => startExam(exam)}>
-                    <ShieldCheck className="w-4 h-4" />
-                    {bestPct !== undefined && exam.allowRetake ? 'Làm lại bài thi' : 'Vào phòng thi'}
-                  </WaterRippleButton>
-                </div>
-              </LiquidCard>
-            );
-          })}
+              <button
+                type="button"
+                disabled={safeCurrentPage >= totalExamPages}
+                onClick={() => goToExamPage(safeCurrentPage + 1)}
+                title="Trang sau"
+                aria-label="Trang sau"
+                className="glass-control inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold disabled:opacity-40 cursor-pointer disabled:cursor-default"
+              >
+                <span>Sau</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                disabled={safeCurrentPage >= totalExamPages}
+                onClick={() => goToExamPage(totalExamPages)}
+                title="Trang cuối"
+                aria-label="Trang cuối"
+                className="glass-control inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold disabled:opacity-40 cursor-pointer disabled:cursor-default"
+              >
+                <span className="hidden sm:inline">Cuối</span>
+                <ChevronsRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </GlassSurface>
         </div>
       )}
     </div>
