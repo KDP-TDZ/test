@@ -343,8 +343,239 @@ export function validateAndApplyVerifierAdjustments(
   return { claims, appliedCount, rejectedCount, addedCount, notes };
 }
 
+const CONTEXT_STOPWORDS = new Set([
+  'bổ',
+  'sung',
+  'thiếu',
+  'cần',
+  'thêm',
+  'nêu',
+  'rõ',
+  'ghi',
+  'chú',
+  'thích',
+  'điều',
+  'kiện',
+  'đơn',
+  'vị',
+  'công',
+  'thức',
+  'trong',
+  'đó',
+  'của',
+  'cho',
+  'với',
+  'khi',
+  'hoặc',
+  'và',
+  'là',
+  'các',
+  'một',
+  'được',
+  'theo',
+  'phải',
+  'chưa',
+  'không',
+  'nhắc',
+  'lại',
+  'phần',
+  'trên',
+  'dưới',
+  'câu',
+  'đoạn',
+  'bài',
+  'làm',
+  'học',
+  'sinh',
+  'sửa',
+  'thành',
+  'chuẩn',
+  'sgk',
+]);
+
+function extractAcademicContextTokens(text: string): string[] {
+  const normalized = (text || '').normalize('NFC').toLowerCase();
+  const rawTokens =
+    normalized.match(/[a-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ/²³°_+-]+/gi) ||
+    [];
+  return rawTokens
+    .map((t) => t.replace(/^[+-/]+|[+-/]+$/g, ''))
+    .filter((t) => {
+      if (!t) return false;
+      // Keep explicit units like m/s, m/s², kg, mol, °c, etc.
+      if (t.includes('/') || /[²³°]/.test(t) || /^(kg|mol|atm|bar|hz|kcal|kj|ev)$/i.test(t)) {
+        return true;
+      }
+      if (t.length < 3) return false;
+      if (CONTEXT_STOPWORDS.has(t)) return false;
+      return true;
+    });
+}
+
+function isOmissionOnlyExplanation(claim: ExtractedClaim): boolean {
+  const text = `${claim.explanation || ''} ${claim.shortFix || ''}`
+    .normalize('NFC')
+    .toLowerCase();
+  if (!text.trim()) return false;
+
+  const hasOmissionCue =
+    /(thiếu|chưa\s+nêu|chưa\s+ghi|không\s+nêu|không\s+nhắc\s+lại|chưa\s+giải\s+thích|bỏ\s+sót|cần\s+bổ\s+sung|bổ\s+sung\s+đơn\s+vị|bổ\s+sung\s+điều\s+kiện|chưa\s+có\s+đơn\s+vị|chưa\s+nêu\s+điều\s+kiện)/i.test(
+      text
+    );
+  const hasFactualContradiction =
+    /(sai\s+công\s+thức|sai\s+phép\s+toán|sai\s+bản\s+chất|sai\s+dấu|ngược\s+lại|mâu\s+thuẫn|tỉ\s+lệ\s+nghịch|tốc\s+độ\s+thay\s+đổi|không\s+thể\s+cộng)/i.test(
+      text
+    );
+
+  if (claim.evaluationStatus === 'PARTIALLY_CORRECT' || claim.evaluationStatus === 'MISSING') {
+    return hasOmissionCue && !hasFactualContradiction;
+  }
+  if (claim.evaluationStatus === 'INCORRECT') {
+    return hasOmissionCue && !hasFactualContradiction;
+  }
+  return false;
+}
+
+/**
+ * Reconciles claims against the WHOLE DOCUMENT CONTEXT:
+ * If an earlier/other section of the student's document already stated a definition, condition,
+ * assumption, symbol meaning, or unit correctly, downstream related sentences/formulas that omit
+ * repeating that context must NOT be flagged as wrong/missing (`PARTIALLY_CORRECT` / `MISSING` / omission-only `INCORRECT`).
+ */
+export function reconcileClaimsWithWholeDocumentContext(
+  claims: ExtractedClaim[],
+  pages: ExtractedPage[]
+): { claims: ExtractedClaim[]; contextUpgradedCount: number } {
+  if (!Array.isArray(claims) || claims.length === 0 || !Array.isArray(pages) || pages.length === 0) {
+    return { claims: claims || [], contextUpgradedCount: 0 };
+  }
+
+  const orderedBlocks: Array<{ blockId: string; pageNumber: number; text: string; globalIdx: number }> = [];
+  const sortedPages = [...pages].sort((a, b) => a.pageNumber - b.pageNumber);
+  for (const page of sortedPages) {
+    for (const block of page.blocks || []) {
+      orderedBlocks.push({
+        blockId: block.blockId,
+        pageNumber: page.pageNumber,
+        text: (block.extractedText || '').normalize('NFC'),
+        globalIdx: orderedBlocks.length,
+      });
+    }
+  }
+
+  // If the entire document has only 1 block and <= 1 claim, there is no separate upstream section to inherit from
+  if (orderedBlocks.length <= 1 && claims.length <= 1) {
+    return { claims, contextUpgradedCount: 0 };
+  }
+
+  const blockIndexById = new Map<string, number>();
+  for (const b of orderedBlocks) {
+    blockIndexById.set(b.blockId, b.globalIdx);
+  }
+
+  let contextUpgradedCount = 0;
+  const outClaims: ExtractedClaim[] = [];
+
+  for (let i = 0; i < claims.length; i += 1) {
+    const claim = claims[i];
+    if (!isOmissionOnlyExplanation(claim)) {
+      outClaims.push(claim);
+      continue;
+    }
+
+    const claimBlockIdx =
+      claim.blockId && blockIndexById.has(claim.blockId)
+        ? blockIndexById.get(claim.blockId)!
+        : orderedBlocks.findIndex((b) => b.pageNumber === (claim.sourcePage || 1));
+
+    // Only consider inheriting context when there is actual upstream or sibling document context outside this claim
+    const otherBlocksText = orderedBlocks
+      .filter((b) => {
+        if (claim.blockId && b.blockId === claim.blockId) return false;
+        // Prefer upstream blocks (or any block on the same/earlier page)
+        if (claimBlockIdx >= 0) return b.globalIdx < claimBlockIdx || b.pageNumber <= (claim.sourcePage || 1);
+        return true;
+      })
+      .map((b) => b.text)
+      .join('\n')
+      .normalize('NFC')
+      .toLowerCase();
+
+    const correctClaimsText = claims
+      .filter((c, idx) => idx !== i && c.evaluationStatus === 'CORRECT')
+      .map((c) => `${c.sourceText || ''} ${c.concept || ''}`)
+      .join('\n')
+      .normalize('NFC')
+      .toLowerCase();
+
+    const globalContextCorpus = `${otherBlocksText}\n${correctClaimsText}`.trim();
+    if (!globalContextCorpus) {
+      outClaims.push(claim);
+      continue;
+    }
+
+    const claimSourceTokens = new Set(
+      claim.evaluationStatus === 'MISSING'
+        ? []
+        : extractAcademicContextTokens(claim.sourceText || '')
+    );
+    const requiredFixSource =
+      claim.shortFix || claim.explanation || claim.suggestedFix || claim.correctKnowledge || '';
+    const candidateMissingTokens = Array.from(
+      new Set(extractAcademicContextTokens(requiredFixSource))
+    ).filter((tok) => !claimSourceTokens.has(tok));
+
+    if (candidateMissingTokens.length === 0) {
+      outClaims.push(claim);
+      continue;
+    }
+
+    const corpusTokenSet = new Set(extractAcademicContextTokens(globalContextCorpus));
+    const matchedInContext = candidateMissingTokens.filter(
+      (tok) => corpusTokenSet.has(tok) || globalContextCorpus.includes(tok)
+    );
+
+    const coverageRatio = matchedInContext.length / candidateMissingTokens.length;
+    const isCoveredByWholeContext =
+      (candidateMissingTokens.length >= 2 && coverageRatio >= 0.75) ||
+      (candidateMissingTokens.length === 1 &&
+        matchedInContext.length === 1 &&
+        (candidateMissingTokens[0].includes('/') || candidateMissingTokens[0].length >= 4));
+
+    if (!isCoveredByWholeContext) {
+      outClaims.push(claim);
+      continue;
+    }
+
+    contextUpgradedCount += 1;
+
+    // If a MISSING claim was already covered earlier in the document, omit the false MISSING claim
+    if (claim.evaluationStatus === 'MISSING') {
+      continue;
+    }
+
+    outClaims.push({
+      ...claim,
+      evaluationStatus: 'CORRECT',
+      errorSpan: undefined,
+      startOffset: undefined,
+      endOffset: undefined,
+      locationStatus: undefined,
+      shortFix: undefined,
+      suggestedFix: undefined,
+      explanation: `${claim.explanation} (Đã đối chiếu ngữ cảnh toàn bài: nội dung/điều kiện liên quan đã được nêu đúng ở phần trên của tài liệu).`,
+      verificationNote:
+        'Đã đối chiếu ngữ cảnh toàn bài: nội dung/điều kiện này đã được trình bày đúng ở phần trên của tài liệu.',
+    });
+  }
+
+  return { claims: outClaims, contextUpgradedCount };
+}
+
 /**
  * Post-processes graded & verified claims against actual OCR pages/blocks:
+ * 0. Reconciles claims across the whole-document context so downstream sections are never penalized
+ *    for not repeating definitions, conditions, or units already stated earlier in the document.
  * 1. Enforces block-level OCR confidence & `[KHÔNG NHÌN RÕ]` protection (never guess unreadable regions,
  *    while still grading clearly readable blocks on the same page).
  * 2. Verifies & anchors every `errorSpan` to exact UTF-16 `[startOffset, endOffset)` on its real block text,
@@ -557,8 +788,11 @@ export function anchorClaimsAndBuildAnnotations(params: {
     return claim;
   });
 
+  // Reconcile claims against the whole-document context after blockIds are resolved
+  const contextReconciled = reconcileClaimsWithWholeDocumentContext(processedClaims, pages);
+
   // Sort deterministically by real appearance order in the student document
-  const sortedClaims = sortClaimsByDocumentPosition(processedClaims, pages);
+  const sortedClaims = sortClaimsByDocumentPosition(contextReconciled.claims, pages);
 
   // Build deduplicated annotations including MISSING & unverified-location claims
   const annotations: AnnotationItem[] = [];

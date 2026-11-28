@@ -683,3 +683,71 @@ test('hasMeaningfulReadableContent distinguishes readable docs from empty/unread
     100
   );
 });
+
+// ============================================================================
+// CASE J: Whole-Document Context Inheritance prevents false downstream omission errors
+// ============================================================================
+test('Case J: downstream formula/paragraph inherits conditions and units already stated in upstream blocks instead of being falsely flagged as PARTIALLY_CORRECT or MISSING', () => {
+  const pages = [
+    makePage(1, [
+      {
+        blockId: 'p1_b1',
+        pageNumber: 1,
+        textType: 'paragraph',
+        extractedText:
+          'Xét chuyển động thẳng đều trên quỹ đạo thẳng với tốc độ v (m/s) không đổi theo thời gian t (s), quãng đường đi được là s (m).',
+        confidence: 0.98,
+      },
+      {
+        blockId: 'p1_b2',
+        pageNumber: 1,
+        textType: 'formula',
+        extractedText: 'Do đó công thức tính quãng đường ở đoạn sau là: s = v.t',
+        confidence: 0.98,
+      },
+    ]),
+  ];
+
+  const { claims, annotations } = anchorClaimsAndBuildAnnotations({
+    pages,
+    ocrConfirmed: false,
+    claims: [
+      makeClaim({
+        claimId: 'c_upstream',
+        blockId: 'p1_b1',
+        sourceText:
+          'Xét chuyển động thẳng đều trên quỹ đạo thẳng với tốc độ v (m/s) không đổi theo thời gian t (s), quãng đường đi được là s (m).',
+        evaluationStatus: 'CORRECT',
+        explanation: 'Đã nêu đầy đủ định nghĩa, điều kiện quỹ đạo thẳng và đơn vị m/s, s, m.',
+      }),
+      makeClaim({
+        claimId: 'c_downstream_false_partial',
+        blockId: 'p1_b2',
+        sourceText: 'Do đó công thức tính quãng đường ở đoạn sau là: s = v.t',
+        errorSpan: 's = v.t',
+        evaluationStatus: 'PARTIALLY_CORRECT',
+        explanation: 'Thiếu đơn vị đo m/s của tốc độ v và chưa nêu rõ điều kiện chuyển động thẳng đều trên quỹ đạo thẳng.',
+        shortFix: 'Bổ sung đơn vị m/s và điều kiện quỹ đạo thẳng.',
+      }),
+      makeClaim({
+        claimId: 'c_downstream_false_missing',
+        blockId: 'p1_b2',
+        sourceText: '',
+        concept: 'Đơn vị tốc độ m/s trong chuyển động thẳng đều',
+        evaluationStatus: 'MISSING',
+        explanation: 'Thiếu nêu đơn vị tốc độ m/s và thời gian s.',
+      }),
+    ],
+  });
+
+  // Downstream false PARTIALLY_CORRECT must be upgraded to CORRECT via whole-document context inheritance,
+  // and redundant false MISSING claim must be dropped!
+  assert.equal(claims.length, 2);
+  assert.equal(claims[0].evaluationStatus, 'CORRECT');
+  assert.equal(claims[1].claimId, 'c_downstream_false_partial');
+  assert.equal(claims[1].evaluationStatus, 'CORRECT');
+  assert.equal(claims[1].errorSpan, undefined);
+  // Zero false error/partial annotations!
+  assert.equal(annotations.length, 0);
+});
+

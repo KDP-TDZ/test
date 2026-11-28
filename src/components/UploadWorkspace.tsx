@@ -590,7 +590,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       const ocrTextHash =
         draft.ocrTextHash ||
         computeStableTextDigest(draft.pages.map((p) => p.rawText).join('\n'));
-      const idempotencyKey = `${draft.documentId}_${draft.grade}_${draft.subject}_${ocrTextHash.slice(0, 10)}`;
+      const idempotencyKey = `${draft.grade}_${draft.subject}_${ocrTextHash.slice(0, 16)}`;
       const res = await authorizedFetch('/api/ai/analyze', {
         method: 'POST',
         timeoutMs: 65_000,
@@ -941,7 +941,10 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
           );
           suggestion = {
             suggestedGrade:
-              manualGrade || fileGuess.grade || contentGuess.suggestedGrade || '10',
+              (manualSubject || gradeTouched ? manualGrade : undefined) ||
+              fileGuess.grade ||
+              contentGuess.suggestedGrade ||
+              '10',
             suggestedSubject:
               manualSubject ||
               fileGuess.subject ||
@@ -1013,12 +1016,17 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       const nextTitle = repairUtf8Mojibake(
         suggestion.suggestedTitle || rawFileName.replace(/\.[^.]+$/, '') || 'Tài liệu học tập'
       );
-      const nextGrade: GradeLevel = manualSubject
-        ? manualGrade
-        : suggestion.suggestedGrade || profile?.grade || '10';
+      const fallbackContentGuess = inferScopeFromContentHeuristic(
+        pages.map((p) => p.rawText).join('\n'),
+        rawFileName
+      );
+      const nextGrade: GradeLevel =
+        manualSubject || gradeTouched
+          ? manualGrade
+          : suggestion.suggestedGrade || fallbackContentGuess.suggestedGrade || '10';
       const nextSubject: SubjectId = manualSubject
         ? manualSubject
-        : suggestion.suggestedSubject || 'khac';
+        : suggestion.suggestedSubject || fallbackContentGuess.suggestedSubject || 'khac';
       const nextChapters: string[] = Array.isArray(suggestion.suggestedChapters)
         ? suggestion.suggestedChapters.slice(0, 5)
         : [];

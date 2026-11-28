@@ -1,6 +1,7 @@
 import type { AdaptiveApiPlanAudit, AiProviderId, CoverageStatus } from './types.js';
 
-export const ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD = 1500;
+export const ADAPTIVE_LONG_TEXT_WORD_THRESHOLD = 1500;
+export const ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD = ADAPTIVE_LONG_TEXT_WORD_THRESHOLD;
 export const MIN_ADAPTIVE_THRESHOLD_CHARS = 300;
 export const MAX_ADAPTIVE_THRESHOLD_CHARS = 20000;
 
@@ -22,6 +23,7 @@ export type AdaptiveSlotNumber = 1 | 2;
 
 export interface AdaptiveApiPlan {
   textLength: number;
+  wordCount?: number;
   thresholdChars: number;
   isLongText: boolean;
   scanApiCount: 1 | 2;
@@ -40,7 +42,8 @@ export interface AdaptiveTextPageLike {
   pageNumber?: number;
   rawText?: string;
   confirmedText?: string;
-  textBlocks?: Array<{ blockId?: string; text?: string }>;
+  blocks?: Array<{ blockId?: string; extractedText?: string; text?: string }>;
+  textBlocks?: Array<{ blockId?: string; text?: string; extractedText?: string }>;
 }
 
 export interface ConfiguredProvidersMap {
@@ -55,8 +58,8 @@ export interface CoverageMergeCandidate {
   concept: string;
   chapter?: string;
   lesson?: string;
-  importanceWeight?: 1 | 2 | 3;
-  status: CoverageStatus;
+  importanceWeight?: number;
+  status: CoverageStatus | string;
   suggestedAddition?: string;
   referenceExcerpt?: string;
   referencePage?: number;
@@ -71,7 +74,7 @@ export interface GradedHalfPayload<TClaim = Record<string, unknown>, TCov extend
   suggestions: string[];
 }
 
-const COVERAGE_STATUS_RANK: Record<CoverageStatus, number> = {
+const COVERAGE_STATUS_RANK: Record<string, number> = {
   COVERED: 4,
   PARTIALLY_COVERED: 3,
   MISSING: 2,
@@ -79,16 +82,16 @@ const COVERAGE_STATUS_RANK: Record<CoverageStatus, number> = {
 };
 
 /**
- * Clamp Admin-configurable threshold strictly to [300, 20000], defaulting to 1500.
+ * Clamp Admin-configurable threshold strictly to [300, 20000], defaulting to 1500 words.
  */
 export function clampAdaptiveThresholdChars(
   value: unknown,
-  fallback = ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD
+  fallback = ADAPTIVE_LONG_TEXT_WORD_THRESHOLD
 ): number {
   const safeFallback =
     typeof fallback === 'number' && Number.isFinite(fallback)
       ? Math.min(MAX_ADAPTIVE_THRESHOLD_CHARS, Math.max(MIN_ADAPTIVE_THRESHOLD_CHARS, Math.round(fallback)))
-      : ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD;
+      : ADAPTIVE_LONG_TEXT_WORD_THRESHOLD;
 
   if (typeof value === 'number' && Number.isFinite(value)) {
     return Math.min(
@@ -108,28 +111,37 @@ export function clampAdaptiveThresholdChars(
   return safeFallback;
 }
 
-/**
- * Compute deterministic normalized (NFC + trimmed) character count from text or pages.
- */
-export function computeNormalizedTextLength(
+function extractCombinedNormalizedText(
   input: string | AdaptiveTextPageLike[],
   ocrConfirmed = false
-): number {
+): string {
   if (typeof input === 'string') {
-    return input.normalize('NFC').trim().length;
+    return input
+      .normalize('NFC')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .trim();
   }
-  if (!Array.isArray(input) || input.length === 0) return 0;
+  if (!Array.isArray(input) || input.length === 0) return '';
 
-  const combined = input
+  const sortedPages = [...input].sort(
+    (a, b) => (Number(a.pageNumber) || 1) - (Number(b.pageNumber) || 1)
+  );
+
+  const combined = sortedPages
     .map((page) => {
       const preferred =
         ocrConfirmed && page.confirmedText && page.confirmedText.trim()
           ? page.confirmedText
           : page.rawText || page.confirmedText || '';
       if (preferred.trim()) return preferred.normalize('NFC').trim();
-      if (Array.isArray(page.textBlocks) && page.textBlocks.length > 0) {
-        return page.textBlocks
-          .map((b) => String(b?.text || '').normalize('NFC').trim())
+      const blocksList = Array.isArray(page.blocks)
+        ? page.blocks
+        : Array.isArray(page.textBlocks)
+        ? page.textBlocks
+        : [];
+      if (blocksList.length > 0) {
+        return blocksList
+          .map((b) => String(b?.extractedText || b?.text || '').normalize('NFC').trim())
           .filter(Boolean)
           .join('\n');
       }
@@ -138,26 +150,62 @@ export function computeNormalizedTextLength(
     .filter(Boolean)
     .join('\n');
 
-  return combined.normalize('NFC').trim().length;
+  return combined
+    .normalize('NFC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim();
 }
 
 /**
- * Fixed 1-1-1 API plan: regardless of document length (short or long),
- * always run strictly 1 Scan API, 1 Grade API, and 1 Verify API.
+ * Compute deterministic normalized (NFC + trimmed) character count from text or pages.
+ */
+export function computeNormalizedTextLength(
+  input: string | AdaptiveTextPageLike[],
+  ocrConfirmed = false
+): number {
+  return extractCombinedNormalizedText(input, ocrConfirmed).length;
+}
+
+/**
+ * Compute deterministic normalized word count ("số chữ") from text or pages.
+ * Used to determine whether a document reaches the >= 1,500-word threshold
+ * requiring 2 parallel grading APIs + 1 verification API.
+ */
+export function computeNormalizedWordCount(
+  input: string | AdaptiveTextPageLike[],
+  ocrConfirmed = false
+): number {
+  const combined = extractCombinedNormalizedText(input, ocrConfirmed);
+  if (!combined) return 0;
+  return combined.split(/\s+/).filter((token) => token.length > 0).length;
+}
+
+/**
+ * Adaptive API Plan:
+ * - Tasks with < threshold words (default 1,500 chữ): 1 Scan API, 1 Grade API, 1 Verify API (1-1-1).
+ * - Tasks with >= threshold words (từ 1,500 chữ trở lên): 1 Scan API, 2 Parallel Grade APIs, 1 Verify API (1-2-1).
  */
 export function computeAdaptiveApiPlan(
-  textLength: number,
-  thresholdChars?: number
+  wordOrTextCount: number,
+  thresholdWords?: number,
+  explicitCharLength?: number
 ): AdaptiveApiPlan {
-  const safeLen = Number.isFinite(textLength) && textLength > 0 ? Math.floor(textLength) : 0;
-  const threshold = clampAdaptiveThresholdChars(thresholdChars);
+  const safeCount =
+    Number.isFinite(wordOrTextCount) && wordOrTextCount > 0 ? Math.floor(wordOrTextCount) : 0;
+  const threshold = clampAdaptiveThresholdChars(thresholdWords);
+  const isLongText = safeCount >= threshold;
+  const reportedLength =
+    typeof explicitCharLength === 'number' && Number.isFinite(explicitCharLength) && explicitCharLength >= 0
+      ? Math.floor(explicitCharLength)
+      : safeCount;
 
   return {
-    textLength: safeLen,
+    textLength: reportedLength,
+    wordCount: safeCount,
     thresholdChars: threshold,
-    isLongText: false,
+    isLongText,
     scanApiCount: 1,
-    gradeApiCount: 1,
+    gradeApiCount: isLongText ? 2 : 1,
     verifyApiCount: 1,
   };
 }
@@ -409,6 +457,248 @@ export function mergeGradedHalves<
     strengths: deduplicateStringsPreserveOrder(part1.strengths || [], part2.strengths || []),
     weaknesses: deduplicateStringsPreserveOrder(part1.weaknesses || [], part2.weaknesses || []),
     suggestions: deduplicateStringsPreserveOrder(part1.suggestions || [], part2.suggestions || []),
+  };
+}
+
+export interface ReconcilableRawClaim {
+  blockId?: string;
+  blockIds?: string[];
+  sourcePage: number;
+  sourceText: string;
+  errorSpan?: string;
+  contextBefore?: string;
+  contextAfter?: string;
+  startOffset?: number;
+  endOffset?: number;
+  shortFix?: string;
+  chapter: string;
+  concept: string;
+  importanceWeight: number;
+  knowledgeType?: string;
+  evaluationStatus: string;
+  explanation: string;
+  correctKnowledge: string;
+  suggestedFix?: string;
+  matchedChunkId?: string;
+  matchedExcerpt?: string;
+  matchedPage?: number;
+}
+
+function isPureOmissionComplaint(explanation: string | undefined): boolean {
+  const text = String(explanation || '').normalize('NFC').toLowerCase();
+  if (!text) return false;
+  const hasOmission =
+    /\b(thiếu|chưa\s+nêu|chưa\s+ghi|không\s+nêu|không\s+nhắc\s+lại|chưa\s+giải\s+thích|bỏ\s+sót|chưa\s+bổ\s+sung)\b/i.test(
+      text
+    );
+  const hasHardFactualError =
+    /\b(sai\s+công\s+thức|sai\s+bản\s+chất|ngược\s+lại|mâu\s+thuẫn|nhầm\s+lẫn|tỉ\s+lệ\s+nghịch|tốc\s+độ\s+thay\s+đổi)\b/i.test(
+      text
+    );
+  return hasOmission && !hasHardFactualError;
+}
+
+/**
+ * Deterministically reconcile 2 parallel full-context grading outputs (for tasks >= 1,500 words)
+ * before sending the unified claim list to the 1 Verifier API ("2 API cùng chấm và 1 API dò lại"):
+ * - Deduplicates overlapping claims on the same blockId/page + sourceText.
+ * - If one grader marks a claim CORRECT in whole-document context while the other marks it
+ *   PARTIALLY_CORRECT or MISSING purely for not repeating an earlier condition/unit, resolves to CORRECT.
+ * - If either grader flags a concrete INCORRECT factual/formula error with a verbatim errorSpan,
+ *   retains the INCORRECT candidate so the 1 Verifier API can audit and confirm/overturn it.
+ */
+export function reconcileDualFullContextGradings<
+  TClaim extends ReconcilableRawClaim = ReconcilableRawClaim,
+  TCov extends CoverageMergeCandidate = CoverageMergeCandidate,
+  TStrength extends { title: string; detail: string; sourceExcerpt?: string; pageNumber?: number } = {
+    title: string;
+    detail: string;
+    sourceExcerpt?: string;
+    pageNumber?: number;
+  },
+  TWeakness extends { title: string; detail: string; pageNumber?: number } = {
+    title: string;
+    detail: string;
+    pageNumber?: number;
+  },
+  TSuggestion extends { priority: number; title: string; description: string } = {
+    priority: number;
+    title: string;
+    description: string;
+  },
+>(
+  eval1: {
+    claims?: TClaim[];
+    coverageItems?: TCov[];
+    strengths?: TStrength[];
+    weaknesses?: TWeakness[];
+    suggestions?: TSuggestion[];
+  },
+  eval2: {
+    claims?: TClaim[];
+    coverageItems?: TCov[];
+    strengths?: TStrength[];
+    weaknesses?: TWeakness[];
+    suggestions?: TSuggestion[];
+  }
+): {
+  claims: TClaim[];
+  coverageItems: TCov[];
+  strengths: TStrength[];
+  weaknesses: TWeakness[];
+  suggestions: TSuggestion[];
+} {
+  const claimMap = new Map<string, TClaim>();
+  const claimOrder: string[] = [];
+
+  const makeClaimKey = (c: TClaim): string => {
+    const loc = (c.blockId || `p${c.sourcePage || 1}`).trim().replace(/_part2$/, '');
+    const src = normalizeMergeKey(c.sourceText).slice(0, 140);
+    return `${loc}|${src}`;
+  };
+
+  for (const c of [...(eval1.claims || []), ...(eval2.claims || [])]) {
+    if (!c || !String(c.sourceText || '').trim()) continue;
+    const key = makeClaimKey(c);
+    const existing = claimMap.get(key);
+    if (!existing) {
+      claimMap.set(key, { ...c });
+      claimOrder.push(key);
+      continue;
+    }
+
+    const st1 = existing.evaluationStatus;
+    const st2 = c.evaluationStatus;
+
+    // Context-aware consensus: if one grader says CORRECT and the other says PARTIALLY_CORRECT/MISSING
+    // purely due to an omission complaint, prefer CORRECT (inheriting whole-document context).
+    if (
+      st1 === 'CORRECT' &&
+      (st2 === 'PARTIALLY_CORRECT' || st2 === 'MISSING') &&
+      isPureOmissionComplaint(c.explanation)
+    ) {
+      continue;
+    }
+    if (
+      st2 === 'CORRECT' &&
+      (st1 === 'PARTIALLY_CORRECT' || st1 === 'MISSING') &&
+      isPureOmissionComplaint(existing.explanation)
+    ) {
+      claimMap.set(key, {
+        ...existing,
+        ...c,
+        errorSpan: undefined,
+        shortFix: undefined,
+        suggestedFix: undefined,
+      });
+      continue;
+    }
+
+    // If incoming claim found a concrete INCORRECT error with errorSpan while existing was not INCORRECT, keep it for Verifier audit
+    if (st2 === 'INCORRECT' && st1 !== 'INCORRECT' && c.errorSpan?.trim()) {
+      claimMap.set(key, {
+        ...existing,
+        ...c,
+      });
+      continue;
+    }
+
+    // Otherwise enrich existing claim with any missing fields
+    claimMap.set(key, {
+      ...existing,
+      blockId: existing.blockId || c.blockId,
+      errorSpan: existing.errorSpan || c.errorSpan,
+      shortFix: existing.shortFix || c.shortFix,
+      matchedChunkId: existing.matchedChunkId || c.matchedChunkId,
+      matchedExcerpt: existing.matchedExcerpt || c.matchedExcerpt,
+      matchedPage: existing.matchedPage ?? c.matchedPage,
+    });
+  }
+
+  // Merge coverage items using mergeGradedHalves logic
+  const mergedHalves = mergeGradedHalves<TClaim, TCov>(
+    {
+      claims: [],
+      coverageItems: eval1.coverageItems || [],
+      strengths: [],
+      weaknesses: [],
+      suggestions: [],
+    },
+    {
+      claims: [],
+      coverageItems: eval2.coverageItems || [],
+      strengths: [],
+      weaknesses: [],
+      suggestions: [],
+    }
+  );
+
+  const dedupByTitle = <T extends { title: string }>(arrA: T[], arrB: T[]): T[] => {
+    const seen = new Set<string>();
+    const out: T[] = [];
+    for (const item of [...arrA, ...arrB]) {
+      if (!item || !String(item.title || '').trim()) continue;
+      const k = normalizeMergeKey(item.title);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(item);
+    }
+    return out;
+  };
+
+  return {
+    claims: claimOrder.map((k) => claimMap.get(k)!),
+    coverageItems: mergedHalves.coverageItems,
+    strengths: dedupByTitle(eval1.strengths || [], eval2.strengths || []).slice(0, 6),
+    weaknesses: dedupByTitle(eval1.weaknesses || [], eval2.weaknesses || []).slice(0, 10),
+    suggestions: dedupByTitle(eval1.suggestions || [], eval2.suggestions || [])
+      .slice(0, 6)
+      .map((s, idx) => ({ ...s, priority: idx + 1 })),
+  };
+}
+
+/**
+ * Select the primary and fallback models for Grader Slot 2 when `gradeApiCount === 2` (>= 1,500 words).
+ * Prefers a distinct provider from Slot 1 whenever >= 2 providers are configured.
+ */
+export function selectSecondGraderModel(params: {
+  slot1Provider: AiProviderId;
+  configuredProviders: ConfiguredProvidersMap;
+}): { primaryModel: string; fallbackModel: string; primaryProvider: AiProviderId } {
+  const { slot1Provider, configuredProviders } = params;
+  const modelForGraderProvider = (p: AiProviderId): string => {
+    if (p === 'cloudflare') return CF_GRADE_MODEL;
+    if (p === 'groq') return GROQ_GRADE_FALLBACK_MODEL;
+    return MISTRAL_GRADE_MODEL;
+  };
+
+  const preferredOrder: AiProviderId[] = ['cloudflare', 'groq', 'mistral'];
+  const crossConfigured = preferredOrder.filter(
+    (p) => p !== slot1Provider && configuredProviders[p]
+  );
+
+  if (crossConfigured.length >= 2) {
+    return {
+      primaryModel: modelForGraderProvider(crossConfigured[0]),
+      fallbackModel: modelForGraderProvider(crossConfigured[1]),
+      primaryProvider: crossConfigured[0],
+    };
+  }
+
+  if (crossConfigured.length === 1) {
+    const primary = crossConfigured[0];
+    return {
+      primaryModel: modelForGraderProvider(primary),
+      fallbackModel: modelForGraderProvider(slot1Provider),
+      primaryProvider: primary,
+    };
+  }
+
+  const fallbackP = preferredOrder.find((p) => p !== slot1Provider) || 'groq';
+  return {
+    primaryModel: modelForGraderProvider(slot1Provider),
+    fallbackModel: modelForGraderProvider(fallbackP),
+    primaryProvider: slot1Provider,
   };
 }
 

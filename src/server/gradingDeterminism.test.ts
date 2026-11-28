@@ -12,7 +12,10 @@ import { calculateAccuracyScore, calculateCompletenessScore } from '../core/scor
 import type { ExtractedClaim, ReferenceChunk, SystemAiConfig } from '../core/types.js';
 import { DEFAULT_TASK_MODELS } from './modelDefaults.js';
 import { clearAiResponseCache, executeRoutedAiTask } from './modelRouter.js';
-import { parseAndValidateKnowledgeEvalJson } from './geminiPipeline.js';
+import {
+  normalizePagesForCanonicalGrading,
+  parseAndValidateKnowledgeEvalJson,
+} from './geminiPipeline.js';
 
 function makeTestConfig(primaryModel: string, fallbackModel: string): SystemAiConfig {
   return {
@@ -547,3 +550,66 @@ test(
     }
   })
 );
+
+test('Cross-user canonical page normalization yields 100% identical structure and hashes for the same file uploaded by different users', () => {
+  const userAPages = normalizePagesForCanonicalGrading([
+    {
+      pageNumber: 1,
+      rawText: 'Chương 1: Chuyển động thẳng đều\r\ns = v.t   \r\nTrong đó v là tốc độ (m/s), t là thời gian (s).',
+      ocrAverageConfidence: 0.99,
+      blocks: [
+        {
+          blockId: 'userA_custom_1',
+          pageNumber: 1,
+          readingOrder: 1,
+          textType: 'paragraph',
+          extractedText: 'Chương 1: Chuyển động thẳng đều\r\ns = v.t   ',
+          confidence: 0.99,
+        },
+        {
+          blockId: 'userA_custom_2',
+          pageNumber: 1,
+          readingOrder: 2,
+          textType: 'paragraph',
+          extractedText: 'Trong đó v là tốc độ (m/s), t là thời gian (s).\u200B',
+          confidence: 0.94,
+        },
+      ],
+    },
+  ]);
+
+  const userBPages = normalizePagesForCanonicalGrading([
+    {
+      pageNumber: 1,
+      rawText: 'Chương 1: Chuyển động thẳng đều\ns = v.t\nTrong đó v là tốc độ (m/s), t là thời gian (s).'.normalize(
+        'NFD'
+      ),
+      ocrAverageConfidence: 0.95,
+      blocks: [
+        {
+          blockId: 'b_random_99',
+          pageNumber: 1,
+          readingOrder: 1,
+          textType: 'paragraph',
+          extractedText: 'Chương 1: Chuyển động thẳng đều\ns = v.t'.normalize('NFD'),
+          confidence: 0.91,
+        },
+        {
+          blockId: 'b_random_100',
+          pageNumber: 1,
+          readingOrder: 2,
+          textType: 'paragraph',
+          extractedText: 'Trong đó   v là tốc độ (m/s), t là thời gian (s).',
+          confidence: 0.97,
+        },
+      ],
+    },
+  ]);
+
+  assert.equal(userAPages[0].rawText, userBPages[0].rawText);
+  assert.deepEqual(
+    userAPages[0].blocks.map((b) => [b.blockId, b.extractedText, b.confidence]),
+    userBPages[0].blocks.map((b) => [b.blockId, b.extractedText, b.confidence])
+  );
+});
+

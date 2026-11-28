@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD,
+  ADAPTIVE_LONG_TEXT_WORD_THRESHOLD,
+  CF_GRADE_MODEL,
   CF_VERIFY_MODEL,
   GROQ_VERIFY_SLOT1_MODEL,
   GROQ_VERIFY_SLOT2_MODEL,
@@ -11,17 +13,21 @@ import {
   clampAdaptiveThresholdChars,
   computeAdaptiveApiPlan,
   computeNormalizedTextLength,
+  computeNormalizedWordCount,
   formatStudentBlocksForPrompt,
   mergeGradedHalves,
+  reconcileDualFullContextGradings,
   resolveScopedStageApiKey,
   selectCrossProviderVerifierModel,
+  selectSecondGraderModel,
   splitClaimsIntoTwoHalves,
   splitStudentBlocksIntoTwoHalves,
 } from './adaptiveApiPlan.js';
 
-describe('adaptiveApiPlan — threshold clamping & short/long classification', () => {
-  it('clamps threshold to [300, 20000] and defaults to 1500', () => {
-    assert.equal(clampAdaptiveThresholdChars(undefined), ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD);
+describe('adaptiveApiPlan — threshold clamping & short/long classification (1500-word rule)', () => {
+  it('clamps threshold to [300, 20000] and defaults to 1500 words', () => {
+    assert.equal(clampAdaptiveThresholdChars(undefined), ADAPTIVE_LONG_TEXT_WORD_THRESHOLD);
+    assert.equal(ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD, 1500);
     assert.equal(clampAdaptiveThresholdChars(null), 1500);
     assert.equal(clampAdaptiveThresholdChars('not-a-number'), 1500);
     assert.equal(clampAdaptiveThresholdChars(120), MIN_ADAPTIVE_THRESHOLD_CHARS);
@@ -30,7 +36,7 @@ describe('adaptiveApiPlan — threshold clamping & short/long classification', (
     assert.equal(clampAdaptiveThresholdChars(1799.6), 1800);
   });
 
-  it('always returns fixed 1-1-1 plan regardless of short or long document length', () => {
+  it('returns 1-1-1 plan for < 1500 words and 1-2-1 plan (2 Grade APIs + 1 Verify API) for >= 1500 words', () => {
     const shortPlan = computeAdaptiveApiPlan(1499);
     assert.equal(shortPlan.isLongText, false);
     assert.equal(shortPlan.thresholdChars, 1500);
@@ -39,23 +45,26 @@ describe('adaptiveApiPlan — threshold clamping & short/long classification', (
     assert.equal(shortPlan.verifyApiCount, 1);
 
     const boundaryPlan = computeAdaptiveApiPlan(1500);
-    assert.equal(boundaryPlan.isLongText, false);
+    assert.equal(boundaryPlan.isLongText, true);
     assert.equal(boundaryPlan.scanApiCount, 1);
-    assert.equal(boundaryPlan.gradeApiCount, 1);
+    assert.equal(boundaryPlan.gradeApiCount, 2);
     assert.equal(boundaryPlan.verifyApiCount, 1);
 
-    const longPlan = computeAdaptiveApiPlan(15000, 800);
-    assert.equal(longPlan.isLongText, false);
-    assert.equal(longPlan.thresholdChars, 800);
+    const longPlan = computeAdaptiveApiPlan(2500, 1500, 14200);
+    assert.equal(longPlan.isLongText, true);
+    assert.equal(longPlan.wordCount, 2500);
+    assert.equal(longPlan.textLength, 14200);
+    assert.equal(longPlan.thresholdChars, 1500);
     assert.equal(longPlan.scanApiCount, 1);
-    assert.equal(longPlan.gradeApiCount, 1);
+    assert.equal(longPlan.gradeApiCount, 2);
     assert.equal(longPlan.verifyApiCount, 1);
   });
 
-  it('computes NFC-normalized trimmed text length from strings and pages', () => {
+  it('computes NFC-normalized trimmed text length and word count from strings and pages', () => {
     // Decomposed Vietnamese 'e' + combining acute vs NFC composed 'é'
     const nfd = '  e\u0301  ';
     assert.equal(computeNormalizedTextLength(nfd), 1);
+    assert.equal(computeNormalizedWordCount(nfd), 1);
 
     const pages = [
       { pageNumber: 1, rawText: 'Trang 1 raw', confirmedText: 'Trang 1 confirmed!' },
@@ -69,6 +78,97 @@ describe('adaptiveApiPlan — threshold clamping & short/long classification', (
       computeNormalizedTextLength(pages, false),
       'Trang 1 raw\nTrang 2 raw'.length
     );
+    assert.equal(computeNormalizedWordCount(pages, true), 6);
+
+    const longEssay = Array.from({ length: 1500 }, (_, i) => `chữ_${i + 1}`).join(' ');
+    assert.equal(computeNormalizedWordCount(longEssay), 1500);
+    const planFor1500Words = computeAdaptiveApiPlan(computeNormalizedWordCount(longEssay));
+    assert.equal(planFor1500Words.gradeApiCount, 2);
+    assert.equal(planFor1500Words.verifyApiCount, 1);
+  });
+
+  it('reconciles dual full-context gradings by preferring CORRECT over pure omission complaints while keeping real INCORRECT errors', () => {
+    const eval1 = {
+      claims: [
+        {
+          blockId: 'p1_b2',
+          sourcePage: 1,
+          sourceText: 'Khi đó quãng đường đi được là s = v.t',
+          chapter: 'Chương 1',
+          concept: 'Quãng đường chuyển động thẳng đều',
+          importanceWeight: 3,
+          evaluationStatus: 'PARTIALLY_CORRECT',
+          explanation: 'Thiếu nêu điều kiện vận tốc không đổi và chưa giải thích đơn vị ở dòng này.',
+          correctKnowledge: 's = v.t với v không đổi (m/s), t (s)',
+          errorSpan: 's = v.t',
+          shortFix: 'Bổ sung điều kiện v không đổi.',
+        },
+        {
+          blockId: 'p1_b3',
+          sourcePage: 1,
+          sourceText: 'Gia tốc trong chuyển động thẳng đều tăng dần theo thời gian.',
+          chapter: 'Chương 1',
+          concept: 'Gia tốc chuyển động thẳng đều',
+          importanceWeight: 3,
+          evaluationStatus: 'CORRECT',
+          explanation: 'Đúng.',
+          correctKnowledge: 'a = 0',
+        },
+      ],
+      coverageItems: [],
+      strengths: [{ title: 'Trình bày mạch lạc', detail: 'Đủ các mục' }],
+      weaknesses: [],
+      suggestions: [],
+    };
+
+    const eval2 = {
+      claims: [
+        {
+          blockId: 'p1_b2',
+          sourcePage: 1,
+          sourceText: 'Khi đó quãng đường đi được là s = v.t',
+          chapter: 'Chương 1',
+          concept: 'Quãng đường chuyển động thẳng đều',
+          importanceWeight: 3,
+          evaluationStatus: 'CORRECT',
+          explanation: 'Đúng vì điều kiện chuyển động thẳng đều và đơn vị đã nêu ở đoạn 1 phía trên.',
+          correctKnowledge: 's = v.t',
+        },
+        {
+          blockId: 'p1_b3',
+          sourcePage: 1,
+          sourceText: 'Gia tốc trong chuyển động thẳng đều tăng dần theo thời gian.',
+          chapter: 'Chương 1',
+          concept: 'Gia tốc chuyển động thẳng đều',
+          importanceWeight: 3,
+          evaluationStatus: 'INCORRECT',
+          explanation: 'Sai bản chất: chuyển động thẳng đều có vận tốc không đổi nên gia tốc bằng 0.',
+          correctKnowledge: 'a = 0',
+          errorSpan: 'tăng dần theo thời gian',
+          shortFix: 'Sửa thành gia tốc luôn bằng 0.',
+        },
+      ],
+      coverageItems: [],
+      strengths: [{ title: 'Trình bày mạch lạc', detail: 'Đủ các mục' }],
+      weaknesses: [{ title: 'Nhầm gia tốc chuyển động thẳng đều', detail: 'Gia tốc phải bằng 0' }],
+      suggestions: [],
+    };
+
+    const reconciled = reconcileDualFullContextGradings(eval1, eval2);
+    assert.equal(reconciled.claims.length, 2);
+    // Claim 1: resolved to CORRECT because eval2 recognized upstream context and eval1 was only an omission complaint
+    assert.equal(reconciled.claims[0].evaluationStatus, 'CORRECT');
+    assert.equal(reconciled.claims[0].errorSpan, undefined);
+    // Claim 2: retained INCORRECT with errorSpan so the 1 Verifier API can audit it
+    assert.equal(reconciled.claims[1].evaluationStatus, 'INCORRECT');
+    assert.equal(reconciled.claims[1].errorSpan, 'tăng dần theo thời gian');
+
+    const secondGrader = selectSecondGraderModel({
+      slot1Provider: 'mistral',
+      configuredProviders: { mistral: true, cloudflare: true, groq: true },
+    });
+    assert.equal(secondGrader.primaryProvider, 'cloudflare');
+    assert.equal(secondGrader.primaryModel, CF_GRADE_MODEL);
   });
 });
 

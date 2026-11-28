@@ -50,6 +50,7 @@ import {
   FeedbackAnalysisService,
   FlashcardGenerationService,
   KnowledgeAnalysisService,
+  normalizePagesForCanonicalGrading,
   QuizGenerationService,
   SubjectDetectionService,
   TextbookSynthesisService,
@@ -863,6 +864,36 @@ export function createApiApp(): express.Express {
       return;
     }
 
+    const canonicalPages = normalizePagesForCanonicalGrading(pages);
+    const canonicalDocSignature = crypto
+      .createHash('sha256')
+      .update(
+        JSON.stringify({
+          rev: 'v4.5_canonical_whole_context_1500w',
+          pages: canonicalPages.map((p) => ({
+            pageNumber: p.pageNumber,
+            rawText: p.rawText,
+            blocks: p.blocks.map((b) => ({
+              blockId: b.blockId,
+              text: b.extractedText,
+              lowConf: b.confidence < 0.65 ? b.confidence : 0.96,
+            })),
+          })),
+          grade: grade || '10',
+          subject: subject || 'khac',
+          textbookReferenceId: (textbookReferenceId || '').trim(),
+          selectedChapters: Array.from(
+            new Set((selectedChapters || []).map((c) => (c || '').trim().normalize('NFC')).filter(Boolean))
+          ).sort(),
+          scope: (scope || '').trim().normalize('NFC'),
+          chunkIds: (referenceChunks || []).map((c) => c.chunkId).sort(),
+        }),
+        'utf8'
+      )
+      .digest('hex')
+      .slice(0, 32);
+    const canonicalAnalyzeCacheKey = `global:analyze:${canonicalDocSignature}`;
+
     let jobStarted = false;
     let guardPassed = false;
     const tokens: TokenTelemetry = { promptTokens: 0, candidateTokens: 0, totalTokens: 0 };
@@ -874,6 +905,22 @@ export function createApiApp(): express.Express {
           error: `Số trang (${pages.length}) vượt quá giới hạn tối đa (${preCfg.rateLimitConfig.maximumPagesPerAnalysis}).`,
         });
         return;
+      }
+
+      const hasOneTimeOverride = Boolean(
+        preCfg.taskModels?.knowledge_analysis?.oneTimeOverrideModel
+      );
+      if (!hasOneTimeOverride) {
+        const canonicalCached = getIdempotentResult(canonicalAnalyzeCacheKey) as
+          | Record<string, unknown>
+          | undefined;
+        if (canonicalCached) {
+          if (idempotencyKey) {
+            setIdempotentResult(`${user.uid}:analyze:${idempotencyKey}`, canonicalCached);
+          }
+          res.json(canonicalCached);
+          return;
+        }
       }
 
       const guard = await checkAiRequestGuard({
@@ -891,7 +938,7 @@ export function createApiApp(): express.Express {
       incrementConcurrentJob(user.uid);
       jobStarted = true;
       const result = await KnowledgeAnalysisService.runFullVerification({
-        pages,
+        pages: canonicalPages,
         grade: grade || '10',
         subject: subject || 'khac',
         textbookReferenceId: textbookReferenceId || '',
@@ -913,6 +960,9 @@ export function createApiApp(): express.Express {
       const payload = { ...result, tokenUsage: tokens };
       if (idempotencyKey) {
         setIdempotentResult(`${user.uid}:analyze:${idempotencyKey}`, payload);
+      }
+      if (!result.gradingAudit?.usedOverride) {
+        setIdempotentResult(canonicalAnalyzeCacheKey, payload);
       }
 
       recordUsageEvent({

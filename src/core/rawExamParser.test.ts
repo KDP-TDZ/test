@@ -1,9 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildSampleExamFileJson,
   generateExamBatchFromRawQuestions,
+  parseExamFileJson,
   parseRawExamQuestions,
   parseTrueFalseAnswerKey,
+  type Exam,
+  type ExamFile,
+  type Question,
   type RawBatchExamConfig,
 } from './rawExamParser.js';
 
@@ -229,3 +234,171 @@ test('generateExamBatchFromRawQuestions creates multiple non-overlapping or shuf
     }
   }
 });
+
+test('parseRawExamQuestions & parseExamFileJson parse ExamFile JSON format with LaTeX $...$ and all 3 Question variants', () => {
+  const sampleJson = buildSampleExamFileJson();
+  const parsed = parseRawExamQuestions(sampleJson);
+
+  assert.equal(parsed.format, 'exam_file');
+  assert.equal(parsed.examCount, 1);
+  assert.equal(parsed.questions.length, 4);
+  assert.equal(parsed.abcdCount, 2);
+  assert.equal(parsed.trueFalseCount, 1);
+  assert.equal(parsed.shortAnswerCount, 1);
+  assert.equal(parsed.answeredCount, 4);
+  assert.equal(parsed.warnings.length, 0);
+
+  const examDoc = parsed.examDocuments?.[0];
+  assert.ok(examDoc);
+  assert.equal(examDoc.title, 'Đề kiểm tra Giữa kỳ I - Toán 11 (THPT Việt Đức 2025-2026)');
+  assert.equal(examDoc.subject, 'toan');
+  assert.equal(examDoc.grade, '11');
+  assert.equal(examDoc.textbookSeries, 'Kết nối tri thức với cuộc sống');
+  assert.equal(examDoc.examType, 'giua_ky_1');
+  assert.equal(examDoc.academicYear, '2025-2026');
+  assert.equal(examDoc.semester, '1');
+  assert.equal(examDoc.durationMinutes, 45);
+  assert.equal(examDoc.totalScore, 10);
+  assert.equal(examDoc.published, true);
+  assert.equal(examDoc.chapters.length, 2);
+
+  const qAbcd = examDoc.questions[0];
+  assert.equal(qAbcd.questionType, 'abcd');
+  assert.equal(qAbcd.optionA, '$T = 2\\pi$');
+  assert.equal(qAbcd.optionC, '$T = \\frac{\\pi}{2}$');
+  assert.equal(qAbcd.correctAnswer, 'A');
+  assert.equal(qAbcd.cognitiveLevel, 'nhan_biet');
+  assert.equal(qAbcd.chapterId, 'Chương I: Hàm số lượng giác và phương trình lượng giác');
+
+  const qTf = examDoc.questions[2];
+  assert.equal(qTf.questionType, 'true_false');
+  assert.equal(qTf.trueFalseStatements?.length, 4);
+  assert.deepEqual(
+    qTf.trueFalseStatements?.map((s) => s.label),
+    ['a', 'b', 'c', 'd']
+  );
+  assert.deepEqual(
+    qTf.trueFalseStatements?.map((s) => s.isTrue),
+    [true, false, true, true]
+  );
+  assert.equal(qTf.cognitiveLevel, 'van_dung');
+
+  const qSa = examDoc.questions[3];
+  assert.equal(qSa.questionType, 'short_answer');
+  assert.deepEqual(qSa.shortAnswerAccepted, ['6', '6.0', '6,0']);
+  assert.equal(qSa.cognitiveLevel, 'van_dung_cao');
+});
+
+test('parseExamFileJson recovers unescaped single-backslash LaTeX commands inside JSON strings and handles 60-exam subject files', () => {
+  // Raw string containing single-backslash \frac, \beta, \theta, \tau, \tan, \neq, \rightarrow, \sqrt
+  const rawWithUnescapedLatex = `{
+    "exams": [
+      {
+        "title": "Đề Vật lý 12 - Chuẩn LaTeX",
+        "description": "Kiểm tra công thức LaTeX",
+        "subject": "vat_ly",
+        "grade": "12",
+        "textbookSeries": "Kết nối tri thức với cuộc sống",
+        "examType": "cuoi_ky_1",
+        "academicYear": "2025-2026",
+        "semester": "1",
+        "durationMinutes": 50,
+        "totalScore": 10,
+        "published": true,
+        "chapters": ["Chương 1: Vật lý nhiệt"],
+        "questions": [
+          {
+            "questionType": "abcd",
+            "options": ["$\\frac{\\beta + \\theta}{\\tau}$", "$\\tan x \\neq 0$", "$\\sqrt{2}$", "$A \\rightarrow B$"],
+            "correctAnswer": "A",
+            "chapterId": "Chương 1: Vật lý nhiệt",
+            "cognitiveLevel": "thong_hieu",
+            "questionText": "Biểu thức nào chứa $\\frac{\\beta + \\theta}{\\tau}$?",
+            "explanation": "Ta có $\\frac{\\beta + \\theta}{\\tau}$ là đáp án A.",
+            "sourceReference": "Đề gốc THPT"
+          }
+        ]
+      }
+    ]
+  }`;
+
+  const latexRes = parseExamFileJson(rawWithUnescapedLatex);
+  assert.ok(latexRes);
+  assert.equal(latexRes.examCount, 1);
+  assert.equal(latexRes.questions.length, 1);
+  assert.equal(latexRes.questions[0].optionA, '$\\frac{\\beta + \\theta}{\\tau}$');
+  assert.equal(latexRes.questions[0].optionB, '$\\tan x \\neq 0$');
+
+  // Test a full 60-exam ExamFile with 20 questions per exam (1,200 questions total)
+  const makeQuestion = (qIdx: number): Question => {
+    if (qIdx % 10 === 8) {
+      return {
+        questionType: 'true_false',
+        statements: [
+          { text: 'Mệnh đề a với $x^2 \\ge 0$', isTrue: true },
+          { text: 'Mệnh đề b', isTrue: false },
+          { text: 'Mệnh đề c', isTrue: true },
+          { text: 'Mệnh đề d', isTrue: false },
+        ],
+        chapterId: 'Chương 1',
+        cognitiveLevel: 'van_dung',
+        questionText: `Câu Đúng/Sai số ${qIdx + 1}`,
+        explanation: 'Giải thích chi tiết',
+        sourceReference: 'Nguồn đề gốc',
+      };
+    }
+    if (qIdx % 10 === 9) {
+      return {
+        questionType: 'short_answer',
+        shortAnswerAccepted: ['6', '6.0', '6,0'],
+        chapterId: 'Chương 2',
+        cognitiveLevel: 'van_dung_cao',
+        questionText: `Câu trả lời ngắn số ${qIdx + 1}`,
+        explanation: 'Giải thích chi tiết',
+        sourceReference: 'Nguồn đề gốc',
+      };
+    }
+    return {
+      questionType: 'abcd',
+      options: ['Phương án A', 'Phương án B', 'Phương án C', 'Phương án D'],
+      correctAnswer: 'B',
+      chapterId: 'Chương 1',
+      cognitiveLevel: 'nhan_biet',
+      questionText: `Câu ABCD số ${qIdx + 1}: Tính $\\int_0^1 x dx$`,
+      explanation: 'Lời giải chi tiết',
+      sourceReference: 'Nguồn đề gốc',
+    };
+  };
+
+  const exams60: Exam[] = Array.from({ length: 60 }, (_, eIdx) => ({
+    title: `Đề kiểm tra Giữa kỳ I - Toán 11 - Đề số ${eIdx + 1}`,
+    description: 'Đề chuẩn 20 câu',
+    subject: 'toan',
+    grade: '11',
+    textbookSeries: 'Kết nối tri thức với cuộc sống',
+    examType: 'giua_ky_1',
+    academicYear: '2025-2026',
+    semester: '1',
+    durationMinutes: 45,
+    totalScore: 10,
+    published: true,
+    chapters: ['Chương 1', 'Chương 2'],
+    questions: Array.from({ length: 20 }, (__, qIdx) => makeQuestion(qIdx)),
+  }));
+
+  const examFile60: ExamFile = { exams: exams60 };
+  const parsed60 = parseRawExamQuestions(JSON.stringify(examFile60));
+  assert.equal(parsed60.format, 'exam_file');
+  assert.equal(parsed60.examCount, 60);
+  assert.equal(parsed60.questions.length, 60 * 20);
+
+  const generatedDocs = generateExamBatchFromRawQuestions({
+    pool: parsed60.questions,
+    examFile: parsed60.examFile,
+    config: { ...BASE_CONFIG, mode: 'exam_file', shuffleOptionsInVariants: false },
+  });
+  assert.equal(generatedDocs.length, 60);
+  assert.equal(generatedDocs[0].questions.length, 20);
+  assert.equal(generatedDocs[59].title, 'Đề kiểm tra Giữa kỳ I - Toán 11 - Đề số 60');
+});
+

@@ -1,5 +1,6 @@
 import { distributeExamQuestionScores, syncShuffledAbcdExplanation } from './quizValidation.js';
 import type {
+  CognitiveLevel,
   ExamDocument,
   ExamQuestion,
   ExamType,
@@ -7,6 +8,64 @@ import type {
   SubjectId,
   TrueFalseStatement,
 } from './types.js';
+
+export type ExamFileSubject =
+  | 'toan'
+  | 'vat_ly'
+  | 'hoa_hoc'
+  | 'sinh_hoc'
+  | 'ngu_van'
+  | 'lich_su'
+  | 'dia_ly'
+  | 'tieng_anh'
+  | 'tin_hoc'
+  | 'gdkt_pl';
+
+export type ExamFileExamType = 'giua_ky_1' | 'cuoi_ky_1' | 'giua_ky_2' | 'cuoi_ky_2';
+
+export type ExamFileAcademicYear = '2025-2026' | '2026-2027';
+
+export type Question = (
+  | {
+      questionType: 'abcd';
+      options: [string, string, string, string]; // Đủ 4 phương án A, B, C, D
+      correctAnswer: 'A' | 'B' | 'C' | 'D';
+    }
+  | {
+      questionType: 'true_false';
+      statements: Array<{ text: string; isTrue: boolean }>; // Đủ 4 ý a, b, c, d
+    }
+  | {
+      questionType: 'short_answer';
+      shortAnswerAccepted: string[]; // Các đáp số chấp nhận, VD: ["6", "6.0", "6,0"]
+    }
+) & {
+  chapterId: string;
+  cognitiveLevel: 'nhan_biet' | 'thong_hieu' | 'van_dung' | 'van_dung_cao';
+  questionText: string; // Có công thức LaTeX trong $...$
+  explanation: string; // Lời giải chi tiết
+  sourceReference: string; // Nguồn đề gốc
+};
+
+export interface Exam {
+  title: string; // VD: "Đề kiểm tra Giữa kỳ I - Toán 11 (THPT Việt Đức 2025-2026)"
+  description: string;
+  subject: ExamFileSubject;
+  grade: '10' | '11' | '12';
+  textbookSeries: string; // VD: "Kết nối tri thức với cuộc sống"
+  examType: ExamFileExamType;
+  academicYear: ExamFileAcademicYear;
+  semester: '1' | '2';
+  durationMinutes: number; // 45 hoặc 50
+  totalScore: number; // 10
+  published: boolean; // true
+  chapters: string[]; // Danh sách tên chương có trong đề
+  questions: Question[]; // 20–28 câu/đề
+}
+
+export interface ExamFile {
+  exams: Exam[]; // Mỗi file môn học gồm 60 đề
+}
 
 export interface ParsedRawQuestion {
   sourceIndex: number;
@@ -20,11 +79,18 @@ export interface ParsedRawQuestion {
   trueFalseStatements?: TrueFalseStatement[];
   shortAnswerAccepted?: string[];
   explanation?: string;
+  chapterId?: string;
+  cognitiveLevel?: CognitiveLevel;
+  sourceReference?: string;
   hasExplicitAnswer: boolean;
   warnings: string[];
 }
 
 export interface RawParseResult {
+  format?: 'exam_file' | 'legacy_raw' | 'empty';
+  examFile?: ExamFile;
+  examDocuments?: ExamDocument[];
+  examCount?: number;
   questions: ParsedRawQuestion[];
   warnings: string[];
   answeredCount: number;
@@ -34,6 +100,7 @@ export interface RawParseResult {
 }
 
 export type BatchGenerationMode =
+  | 'exam_file'
   | 'split_sequential'
   | 'split_random'
   | 'shuffle_variants'
@@ -1250,18 +1317,727 @@ function parseGeneralQuestionBlock(
   return null;
 }
 
+const VALID_EXAM_SUBJECTS = new Set<string>([
+  'toan',
+  'vat_ly',
+  'hoa_hoc',
+  'sinh_hoc',
+  'ngu_van',
+  'lich_su',
+  'dia_ly',
+  'tieng_anh',
+  'tin_hoc',
+  'gdkt_pl',
+]);
+
+const VALID_GRADES = new Set<string>(['10', '11', '12']);
+
+const VALID_EXAM_TYPES = new Set<string>([
+  'giua_ky_1',
+  'cuoi_ky_1',
+  'giua_ky_2',
+  'cuoi_ky_2',
+]);
+
+const VALID_COGNITIVE_LEVELS = new Set<string>([
+  'nhan_biet',
+  'thong_hieu',
+  'van_dung',
+  'van_dung_cao',
+]);
+
 /**
- * Parses raw question & answer text (supporting positional `Câu hỏi:A:B:C:D:Đáp án`,
- * explicit `Q1:...:A..:B...:C...:D...`, `[ĐS]`/`[TF]` True/False 4-statement blocks,
- * `[TLN]`/`[SA]` short-answer blocks, CSV/TSV tables, multi-line blocks, `*` answer markers,
- * and trailing answer key sections).
+ * Safely escapes unescaped single-backslash LaTeX commands inside JSON string literals
+ * (such as \frac, \sqrt, \alpha, \beta, \theta, \tau, \tan, \times, \neq, \nabla, \right)
+ * while leaving already-escaped \\frac and genuine JSON escapes (\n, \", \\) intact.
+ */
+export function sanitizeLatexJsonInput(rawJson: string): string {
+  const stripped = rawJson
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  const latexCollisionRegex =
+    /^(?:frac|forall|fbox|flat|beta|bar|begin|binom|big|Big|boxed|bullet|backslash|bf\b|bm\b|bot\b|theta|tau|tan|tanh|times|text|textbf|textit|textrm|tfrac|to\b|top\b|triangle|tilde|neq|nabla|nu\b|notin|natural|neg\b|newline|nmid|ni\b|right|rightarrow|Rightarrow|rho|rangle|rceil|rfloor|mathrm|mathbf|mathcal|mathbb|sqrt|sin|sum|sigma|alpha|Delta|delta|pi|omega|Omega|lambda|Lambda|mu|epsilon|varepsilon|phi|varphi|gamma|Gamma|infty|int|pm|mp|leq|geq|approx|equiv|subset|subseteq|cup|cap|in\b|cdot|dots|ldots|cdots|vec|hat|overline|underline|left)/;
+
+  let out = '';
+  let inString = false;
+  let i = 0;
+  const len = stripped.length;
+
+  while (i < len) {
+    const ch = stripped[i];
+    if (!inString) {
+      if (ch === '"') {
+        inString = true;
+      }
+      out += ch;
+      i += 1;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = false;
+      out += ch;
+      i += 1;
+      continue;
+    }
+
+    if (ch === '\\') {
+      const next = stripped[i + 1];
+      if (next === undefined) {
+        out += '\\\\';
+        i += 1;
+        continue;
+      }
+      // Already escaped backslash \\ or escaped quote \" or \/
+      if (next === '\\' || next === '"' || next === '/') {
+        out += '\\' + next;
+        i += 2;
+        continue;
+      }
+      // Unicode escape \uXXXX
+      if (next === 'u' && /^[0-9a-fA-F]{4}/.test(stripped.slice(i + 2, i + 6))) {
+        out += stripped.slice(i, i + 6);
+        i += 6;
+        continue;
+      }
+      // Single-char JSON control escapes (\b, \f, \n, \r, \t) — check if actually a LaTeX command
+      if (next === 'b' || next === 'f' || next === 'n' || next === 'r' || next === 't') {
+        const lookahead = stripped.slice(i + 1, i + 16);
+        if (latexCollisionRegex.test(lookahead)) {
+          out += '\\\\';
+          i += 1;
+          continue;
+        }
+        out += '\\' + next;
+        i += 2;
+        continue;
+      }
+      // Any other backslash inside a JSON string (e.g. \sqrt, \alpha, \Delta, \left, \{, \}, \,)
+      out += '\\\\';
+      i += 1;
+      continue;
+    }
+
+    out += ch;
+    i += 1;
+  }
+
+  return out;
+}
+
+function normalizeQuestionFromExamFile(
+  rawQ: Record<string, unknown>,
+  sourceIndex: number,
+  examTitle?: string
+): { parsed: ParsedRawQuestion; normalized: Question; warnings: string[] } | null {
+  const warnings: string[] = [];
+  const rawType = String(rawQ.questionType || '').trim().toLowerCase();
+  const questionText = String(rawQ.questionText ?? rawQ.stem ?? rawQ.question ?? '').trim();
+  if (!questionText) {
+    return null;
+  }
+
+  const chapterId = String(rawQ.chapterId || '').trim() || 'Chương tổng hợp';
+  const rawCog = String(rawQ.cognitiveLevel || 'thong_hieu').trim().toLowerCase();
+  const cognitiveLevel: CognitiveLevel = VALID_COGNITIVE_LEVELS.has(rawCog)
+    ? (rawCog as CognitiveLevel)
+    : 'thong_hieu';
+  const explanation = String(rawQ.explanation ?? '').trim();
+  const sourceReference =
+    String(rawQ.sourceReference || '').trim() || examTitle || 'Đề kiểm tra chuẩn cấu trúc ExamFile';
+
+  if (
+    rawType === 'true_false' ||
+    (Array.isArray(rawQ.statements) && rawQ.statements.length > 0) ||
+    (Array.isArray(rawQ.trueFalseStatements) && rawQ.trueFalseStatements.length > 0)
+  ) {
+    const rawStmts = Array.isArray(rawQ.statements)
+      ? rawQ.statements
+      : Array.isArray(rawQ.trueFalseStatements)
+      ? rawQ.trueFalseStatements
+      : [];
+
+    const statements: Array<{ text: string; isTrue: boolean }> = [0, 1, 2, 3].map((idx) => {
+      const item = rawStmts[idx] as Record<string, unknown> | undefined;
+      if (!item || typeof item !== 'object') {
+        warnings.push(`Câu ${sourceIndex}: thiếu mệnh đề Đúng/Sai thứ ${idx + 1}, đã điền mặc định.`);
+        return { text: `Mệnh đề ${TF_LABELS[idx]}`, isTrue: false };
+      }
+      const text = String(item.text ?? item.statement ?? '').trim() || `Mệnh đề ${TF_LABELS[idx]}`;
+      const isTrue =
+        typeof item.isTrue === 'boolean'
+          ? item.isTrue
+          : parseBooleanToken(String(item.isTrue ?? 'false')) ?? false;
+      return { text, isTrue };
+    });
+
+    if (rawStmts.length !== 4) {
+      warnings.push(`Câu ${sourceIndex}: câu Đúng/Sai cần đủ 4 ý a, b, c, d (hiện có ${rawStmts.length} ý).`);
+    }
+
+    const tfWithLabels: TrueFalseStatement[] = statements.map((s, idx) => ({
+      label: TF_LABELS[idx],
+      text: s.text,
+      isTrue: s.isTrue,
+    }));
+
+    const normalized: Question = {
+      questionType: 'true_false',
+      statements,
+      chapterId,
+      cognitiveLevel,
+      questionText,
+      explanation,
+      sourceReference,
+    };
+
+    return {
+      parsed: {
+        sourceIndex,
+        questionType: 'true_false',
+        questionText,
+        trueFalseStatements: tfWithLabels,
+        explanation: explanation || undefined,
+        chapterId,
+        cognitiveLevel,
+        sourceReference,
+        hasExplicitAnswer: rawStmts.length >= 4,
+        warnings,
+      },
+      normalized,
+      warnings,
+    };
+  }
+
+  if (
+    rawType === 'short_answer' ||
+    (Array.isArray(rawQ.shortAnswerAccepted) && rawQ.shortAnswerAccepted.length > 0)
+  ) {
+    const rawAccepted = Array.isArray(rawQ.shortAnswerAccepted)
+      ? rawQ.shortAnswerAccepted.map((v) => String(v ?? '').trim()).filter(Boolean)
+      : typeof rawQ.shortAnswerAccepted === 'string'
+      ? rawQ.shortAnswerAccepted
+          .split(/[|;]/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+
+    if (rawAccepted.length === 0) {
+      warnings.push(`Câu ${sourceIndex}: câu trả lời ngắn chưa có mảng shortAnswerAccepted.`);
+    }
+
+    const shortAnswerAccepted = rawAccepted.length > 0 ? rawAccepted : [''];
+
+    const normalized: Question = {
+      questionType: 'short_answer',
+      shortAnswerAccepted,
+      chapterId,
+      cognitiveLevel,
+      questionText,
+      explanation,
+      sourceReference,
+    };
+
+    return {
+      parsed: {
+        sourceIndex,
+        questionType: 'short_answer',
+        questionText,
+        shortAnswerAccepted,
+        explanation: explanation || undefined,
+        chapterId,
+        cognitiveLevel,
+        sourceReference,
+        hasExplicitAnswer: rawAccepted.length > 0,
+        warnings,
+      },
+      normalized,
+      warnings,
+    };
+  }
+
+  // Default to "abcd"
+  let optionsTuple: [string, string, string, string];
+  let hasFourOptions = false;
+  if (Array.isArray(rawQ.options) && rawQ.options.length >= 4) {
+    const rawOpts = rawQ.options.slice(0, 4).map((o) => String(o ?? '').trim());
+    const allPrefixed =
+      /^[A][.)]\s+/i.test(rawOpts[0]) &&
+      /^[B][.)]\s+/i.test(rawOpts[1]) &&
+      /^[C][.)]\s+/i.test(rawOpts[2]) &&
+      /^[D][.)]\s+/i.test(rawOpts[3]);
+    const cleanedOpts = allPrefixed
+      ? rawOpts.map((o) => o.replace(/^[A-D][.)]\s+/i, '').trim())
+      : rawOpts;
+    optionsTuple = [
+      cleanedOpts[0] || '—',
+      cleanedOpts[1] || '—',
+      cleanedOpts[2] || '—',
+      cleanedOpts[3] || '—',
+    ];
+    hasFourOptions = true;
+  } else if (
+    rawQ.optionA !== undefined ||
+    rawQ.optionB !== undefined ||
+    rawQ.optionC !== undefined ||
+    rawQ.optionD !== undefined
+  ) {
+    optionsTuple = [
+      String(rawQ.optionA ?? '—').trim() || '—',
+      String(rawQ.optionB ?? '—').trim() || '—',
+      String(rawQ.optionC ?? '—').trim() || '—',
+      String(rawQ.optionD ?? '—').trim() || '—',
+    ];
+    hasFourOptions = Boolean(rawQ.optionA && rawQ.optionB && rawQ.optionC && rawQ.optionD);
+  } else {
+    const partial = Array.isArray(rawQ.options)
+      ? rawQ.options.map((o) => String(o ?? '').trim())
+      : [];
+    warnings.push(`Câu ${sourceIndex}: câu trắc nghiệm ABCD cần đủ 4 phương án trong options: [A, B, C, D].`);
+    optionsTuple = [
+      partial[0] || 'Phương án A',
+      partial[1] || 'Phương án B',
+      partial[2] || 'Phương án C',
+      partial[3] || 'Phương án D',
+    ];
+  }
+
+  const rawCorrect = String(rawQ.correctAnswer ?? '').trim().toUpperCase();
+  const hasValidCorrect =
+    rawCorrect === 'A' || rawCorrect === 'B' || rawCorrect === 'C' || rawCorrect === 'D';
+  if (!hasValidCorrect) {
+    warnings.push(`Câu ${sourceIndex}: thiếu hoặc sai correctAnswer ("A" | "B" | "C" | "D"), tạm đặt "A".`);
+  }
+  const correctAnswer: 'A' | 'B' | 'C' | 'D' = hasValidCorrect
+    ? (rawCorrect as 'A' | 'B' | 'C' | 'D')
+    : 'A';
+
+  const normalized: Question = {
+    questionType: 'abcd',
+    options: optionsTuple,
+    correctAnswer,
+    chapterId,
+    cognitiveLevel,
+    questionText,
+    explanation,
+    sourceReference,
+  };
+
+  return {
+    parsed: {
+      sourceIndex,
+      questionType: 'abcd',
+      questionText,
+      optionA: optionsTuple[0],
+      optionB: optionsTuple[1],
+      optionC: optionsTuple[2],
+      optionD: optionsTuple[3],
+      correctAnswer,
+      explanation: explanation || undefined,
+      chapterId,
+      cognitiveLevel,
+      sourceReference,
+      hasExplicitAnswer: hasValidCorrect && hasFourOptions,
+      warnings,
+    },
+    normalized,
+    warnings,
+  };
+}
+
+export function convertExamToExamDocument(
+  exam: Exam,
+  index: number,
+  options?: {
+    createdBy?: string;
+    baseStamp?: number;
+    shuffleOptions?: boolean;
+    allowRetake?: boolean;
+  }
+): { examDoc: ExamDocument; parsedQuestions: ParsedRawQuestion[]; normalizedExam: Exam; warnings: string[] } {
+  const now = new Date().toISOString();
+  const baseStamp = options?.baseStamp ?? Date.now();
+  const warnings: string[] = [];
+
+  const title = String(exam.title || '').trim() || `Đề kiểm tra số ${String(index + 1).padStart(2, '0')}`;
+  const rawSubject = String(exam.subject || 'toan').trim().toLowerCase();
+  const subject: ExamFileSubject = VALID_EXAM_SUBJECTS.has(rawSubject)
+    ? (rawSubject as ExamFileSubject)
+    : 'toan';
+
+  const rawGrade = String(exam.grade || '12').trim();
+  const grade: GradeLevel = VALID_GRADES.has(rawGrade) ? (rawGrade as GradeLevel) : '12';
+
+  const textbookSeries = String(exam.textbookSeries || 'Kết nối tri thức với cuộc sống').trim();
+
+  const rawExamType = String(exam.examType || 'giua_ky_1').trim().toLowerCase();
+  const examType: ExamFileExamType = VALID_EXAM_TYPES.has(rawExamType)
+    ? (rawExamType as ExamFileExamType)
+    : 'giua_ky_1';
+
+  const rawAcademicYear = String(exam.academicYear || '2025-2026').trim();
+  const academicYear: ExamFileAcademicYear =
+    rawAcademicYear === '2026-2027' ? '2026-2027' : '2025-2026';
+
+  const rawSemester = String(exam.semester || (examType.endsWith('_2') ? '2' : '1')).trim();
+  const semester: '1' | '2' = rawSemester === '2' ? '2' : '1';
+
+  const durationMinutes = Math.max(
+    5,
+    Math.min(180, Math.floor(Number(exam.durationMinutes) || 45))
+  );
+  const totalScore = Math.max(1, Math.min(100, Number(exam.totalScore) || 10));
+  const published = typeof exam.published === 'boolean' ? exam.published : true;
+
+  const rawQuestionsList = Array.isArray(exam.questions) ? exam.questions : [];
+  const parsedQuestions: ParsedRawQuestion[] = [];
+  const normalizedQuestions: Question[] = [];
+
+  rawQuestionsList.forEach((rawQ, qIdx) => {
+    if (!rawQ || typeof rawQ !== 'object') return;
+    const res = normalizeQuestionFromExamFile(
+      rawQ as unknown as Record<string, unknown>,
+      qIdx + 1,
+      title
+    );
+    if (!res) {
+      warnings.push(`${title} - Câu ${qIdx + 1}: thiếu nội dung questionText.`);
+      return;
+    }
+    parsedQuestions.push(res.parsed);
+    normalizedQuestions.push(res.normalized);
+    res.warnings.forEach((w) => warnings.push(`${title}: ${w}`));
+  });
+
+  const chaptersFromExam = Array.isArray(exam.chapters)
+    ? exam.chapters.map((c) => String(c || '').trim()).filter(Boolean)
+    : [];
+  const chaptersFromQuestions = Array.from(
+    new Set(normalizedQuestions.map((q) => q.chapterId).filter(Boolean))
+  );
+  const chapters =
+    chaptersFromExam.length > 0
+      ? chaptersFromExam
+      : chaptersFromQuestions.length > 0
+      ? chaptersFromQuestions
+      : ['Chương tổng hợp'];
+
+  const description =
+    String(exam.description || '').trim() ||
+    `${title} (${normalizedQuestions.length} câu · ${durationMinutes} phút · ${totalScore} điểm)`;
+
+  const deterministicSuffix = deterministicHash(`${title}:${subject}:${grade}:${index}`).toString(36);
+  const examId = `exam_file_${baseStamp}_${index + 1}_${deterministicSuffix}`;
+
+  const cappedParsed = parsedQuestions.slice(0, 60);
+  const examQuestions = distributeExamQuestionScores(
+    cappedParsed.map((q, qIdx) =>
+      toExamQuestion(q, qIdx + 1, `${examId}_${title}`, Boolean(options?.shuffleOptions))
+    ),
+    totalScore
+  );
+
+  const needsReview = examQuestions.some((q) => q.validationStatus === 'needs_review');
+
+  const normalizedExam: Exam = {
+    title,
+    description,
+    subject,
+    grade,
+    textbookSeries,
+    examType,
+    academicYear,
+    semester,
+    durationMinutes,
+    totalScore,
+    published,
+    chapters,
+    questions: normalizedQuestions,
+  };
+
+  const examDoc: ExamDocument = {
+    examId,
+    blueprintId: 'exam_file_json',
+    title: title.slice(0, 200),
+    description: description.slice(0, 1000),
+    grade,
+    subject,
+    textbookSeries,
+    examType,
+    academicYear,
+    semester,
+    chapters,
+    durationMinutes,
+    totalScore,
+    allowRetake: options?.allowRetake ?? true,
+    published,
+    validationStatus: needsReview ? 'needs_review' : 'passed',
+    questions: examQuestions,
+    createdBy: options?.createdBy || 'admin',
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  return {
+    examDoc,
+    parsedQuestions,
+    normalizedExam,
+    warnings,
+  };
+}
+
+function extractRawExamsFromParsedJson(parsed: unknown): Record<string, unknown>[] | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  if (Array.isArray(parsed)) {
+    const validItems = parsed.filter(
+      (item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === 'object' && Array.isArray((item as Record<string, unknown>).questions))
+    );
+    return validItems.length > 0 ? validItems : null;
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  if (Array.isArray(obj.exams)) {
+    const validExams = obj.exams.filter(
+      (item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === 'object' && Array.isArray((item as Record<string, unknown>).questions))
+    );
+    return validExams;
+  }
+
+  if (Array.isArray(obj.questions)) {
+    return [obj];
+  }
+
+  return null;
+}
+
+/**
+ * Parses a JSON string matching `ExamFile` (`{ exams: Exam[] }`), `Exam[]`, or a single `Exam`
+ * (including multi-file concatenated blocks separated by `// === TỆP: ... ===`).
+ */
+export function parseExamFileJson(
+  rawText: string,
+  options?: {
+    createdBy?: string;
+    baseStamp?: number;
+    shuffleOptions?: boolean;
+    allowRetake?: boolean;
+  }
+): RawParseResult | null {
+  const trimmed = (rawText || '').replace(/^\uFEFF/, '').trim();
+  if (!trimmed) return null;
+
+  // Split multi-file segments if concatenated via "// === TỆP: ... ==="
+  const segments = trimmed
+    .split(/(?:^|\n)\/\/\s*===\s*TỆP:[^\n]*===\s*(?:\n|$)/i)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const candidateSegments = segments.length > 0 ? segments : [trimmed];
+  const allRawExams: Record<string, unknown>[] = [];
+  const parseErrors: string[] = [];
+
+  for (const seg of candidateSegments) {
+    const cleanedSeg = seg
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+    if (!/^(?:\{\s*"|\[\s*\{)/.test(cleanedSeg)) {
+      return null;
+    }
+
+    let parsedJson: unknown;
+    try {
+      parsedJson = JSON.parse(cleanedSeg);
+    } catch {
+      try {
+        const sanitized = sanitizeLatexJsonInput(cleanedSeg);
+        parsedJson = JSON.parse(sanitized);
+      } catch (err) {
+        parseErrors.push(
+          `Lỗi cú pháp JSON ExamFile: ${err instanceof Error ? err.message : 'Định dạng JSON không hợp lệ'}`
+        );
+        continue;
+      }
+    }
+
+    const extracted = extractRawExamsFromParsedJson(parsedJson);
+    if (!extracted) {
+      return null;
+    }
+    allRawExams.push(...extracted);
+  }
+
+  if (allRawExams.length === 0) {
+    if (parseErrors.length > 0 && /"(?:exams|questions|questionType)"\s*:/.test(trimmed)) {
+      return {
+        questions: [],
+        warnings: parseErrors,
+        answeredCount: 0,
+        abcdCount: 0,
+        trueFalseCount: 0,
+        shortAnswerCount: 0,
+        format: 'exam_file',
+        examCount: 0,
+      };
+    }
+    return null;
+  }
+
+  const baseStamp = options?.baseStamp ?? Date.now();
+  const allParsedQuestions: ParsedRawQuestion[] = [];
+  const normalizedExams: Exam[] = [];
+  const examDocuments: ExamDocument[] = [];
+  const warnings: string[] = [...parseErrors];
+
+  allRawExams.forEach((rawExam, idx) => {
+    const converted = convertExamToExamDocument(rawExam as unknown as Exam, idx, {
+      ...options,
+      baseStamp,
+    });
+    normalizedExams.push(converted.normalizedExam);
+    examDocuments.push(converted.examDoc);
+    converted.parsedQuestions.forEach((q) => {
+      allParsedQuestions.push({
+        ...q,
+        sourceIndex: allParsedQuestions.length + 1,
+      });
+    });
+    warnings.push(...converted.warnings);
+  });
+
+  const answeredCount = allParsedQuestions.filter((q) => q.hasExplicitAnswer).length;
+  const abcdCount = allParsedQuestions.filter((q) => q.questionType === 'abcd').length;
+  const trueFalseCount = allParsedQuestions.filter((q) => q.questionType === 'true_false').length;
+  const shortAnswerCount = allParsedQuestions.filter((q) => q.questionType === 'short_answer').length;
+
+  return {
+    questions: allParsedQuestions,
+    warnings: Array.from(new Set(warnings)),
+    answeredCount,
+    abcdCount,
+    trueFalseCount,
+    shortAnswerCount,
+    format: 'exam_file',
+    examFile: { exams: normalizedExams },
+    examDocuments,
+    examCount: normalizedExams.length,
+  };
+}
+
+/**
+ * Builds a complete, valid sample `ExamFile` JSON string illustrating the exact
+ * `ExamFile` -> `Exam` -> `Question` (`abcd` | `true_false` | `short_answer`) schema with LaTeX `$...$`.
+ */
+export function buildSampleExamFileJson(): string {
+  const sample: ExamFile = {
+    exams: [
+      {
+        title: 'Đề kiểm tra Giữa kỳ I - Toán 11 (THPT Việt Đức 2025-2026)',
+        description:
+          'Đề chuẩn cấu trúc THPT 2025 gồm 3 phần: Trắc nghiệm ABCD, Đúng/Sai 4 ý và Trả lời ngắn có công thức LaTeX.',
+        subject: 'toan',
+        grade: '11',
+        textbookSeries: 'Kết nối tri thức với cuộc sống',
+        examType: 'giua_ky_1',
+        academicYear: '2025-2026',
+        semester: '1',
+        durationMinutes: 45,
+        totalScore: 10,
+        published: true,
+        chapters: [
+          'Chương I: Hàm số lượng giác và phương trình lượng giác',
+          'Chương II: Dãy số. Cấp số cộng và cấp số nhân',
+        ],
+        questions: [
+          {
+            questionType: 'abcd',
+            options: ['$T = 2\\pi$', '$T = \\pi$', '$T = \\frac{\\pi}{2}$', '$T = 4\\pi$'],
+            correctAnswer: 'A',
+            chapterId: 'Chương I: Hàm số lượng giác và phương trình lượng giác',
+            cognitiveLevel: 'nhan_biet',
+            questionText: 'Chu kỳ tuần hoàn của hàm số $y = \\sin x$ là bao nhiêu?',
+            explanation: 'Hàm số $y = \\sin x$ tuần hoàn với chu kỳ cơ sở $T = 2\\pi$.',
+            sourceReference: 'Đề kiểm tra Giữa kỳ I - Toán 11 (THPT Việt Đức 2025-2026)',
+          },
+          {
+            questionType: 'abcd',
+            options: [
+              '$x = \\frac{\\pi}{6} + k2\\pi$ hoặc $x = \\frac{5\\pi}{6} + k2\\pi$ ($k \\in \\mathbb{Z}$)',
+              '$x = \\frac{\\pi}{3} + k2\\pi$ ($k \\in \\mathbb{Z}$)',
+              '$x = \\pm \\frac{\\pi}{6} + k2\\pi$ ($k \\in \\mathbb{Z}$)',
+              '$x = \\frac{\\pi}{6} + k\\pi$ ($k \\in \\mathbb{Z}$)',
+            ],
+            correctAnswer: 'A',
+            chapterId: 'Chương I: Hàm số lượng giác và phương trình lượng giác',
+            cognitiveLevel: 'thong_hieu',
+            questionText: 'Nghiệm của phương trình $\\sin x = \\frac{1}{2}$ là:',
+            explanation:
+              'Ta có $\\sin x = \\frac{1}{2} = \\sin\\frac{\\pi}{6} \\Leftrightarrow x = \\frac{\\pi}{6} + k2\\pi$ hoặc $x = \\pi - \\frac{\\pi}{6} + k2\\pi = \\frac{5\\pi}{6} + k2\\pi$ ($k \\in \\mathbb{Z}$).',
+            sourceReference: 'Đề kiểm tra Giữa kỳ I - Toán 11 (THPT Việt Đức 2025-2026)',
+          },
+          {
+            questionType: 'true_false',
+            statements: [
+              {
+                text: 'Tập xác định của hàm số $y = \\cos 2x$ là $\\mathbb{R}$.',
+                isTrue: true,
+              },
+              {
+                text: 'Giá trị lớn nhất của hàm số $y = 2\\cos 2x - 1$ bằng $3$.',
+                isTrue: false,
+              },
+              {
+                text: 'Hàm số $y = \\cos 2x$ là hàm số chẵn trên $\\mathbb{R}$.',
+                isTrue: true,
+              },
+              {
+                text: 'Phương trình $\\cos 2x = 1$ có đúng $2$ nghiệm thuộc đoạn $[0; \\pi]$.',
+                isTrue: true,
+              },
+            ],
+            chapterId: 'Chương I: Hàm số lượng giác và phương trình lượng giác',
+            cognitiveLevel: 'van_dung',
+            questionText: 'Cho hàm số lượng giác $f(x) = \\cos 2x$. Xét tính đúng sai của các mệnh đề sau:',
+            explanation:
+              'a) Đúng vì $\\cos 2x$ xác định với mọi $x \\in \\mathbb{R}$. b) Sai vì $\\max(2\\cos 2x - 1) = 2(1) - 1 = 1$. c) Đúng vì $\\cos(-2x) = \\cos 2x$. d) Đúng vì $\\cos 2x = 1 \\Leftrightarrow x = k\\pi$, trên $[0; \\pi]$ có $x = 0$ và $x = \\pi$.',
+            sourceReference: 'Đề kiểm tra Giữa kỳ I - Toán 11 (THPT Việt Đức 2025-2026)',
+          },
+          {
+            questionType: 'short_answer',
+            shortAnswerAccepted: ['6', '6.0', '6,0'],
+            chapterId: 'Chương II: Dãy số. Cấp số cộng và cấp số nhân',
+            cognitiveLevel: 'van_dung_cao',
+            questionText:
+              'Cho cấp số cộng $(u_n)$ có số hạng đầu $u_1 = 2$ và công sai $d = 4$. Tìm số hạng thứ hai $u_2$ của cấp số cộng đó.',
+            explanation: 'Áp dụng công thức $u_2 = u_1 + d = 2 + 4 = 6$.',
+            sourceReference: 'Đề kiểm tra Giữa kỳ I - Toán 11 (THPT Việt Đức 2025-2026)',
+          },
+        ],
+      },
+    ],
+  };
+
+  return JSON.stringify(sample, null, 2);
+}
+
+/**
+ * Parses raw question & answer data.
+ * First checks for structured `ExamFile` JSON (`{ exams: Exam[] }`, `Exam[]`, or single `Exam`),
+ * then falls back to delimited tables and legacy text blocks.
  */
 export function parseRawExamQuestions(rawText: string): RawParseResult {
   const cleanedInput = (rawText || '').replace(/^\uFEFF/, '').trim();
   if (!cleanedInput) {
     return {
       questions: [],
-      warnings: ['Nội dung văn bản thô đang trống.'],
+      warnings: ['Nội dung dữ liệu nạp đề đang trống.'],
       answeredCount: 0,
       abcdCount: 0,
       trueFalseCount: 0,
@@ -1269,7 +2045,11 @@ export function parseRawExamQuestions(rawText: string): RawParseResult {
     };
   }
 
-  // Try structured CSV / TSV table first
+  // 1. Try ExamFile JSON format first ({ exams: Exam[] } | Exam[] | Exam)
+  const examFileResult = parseExamFileJson(cleanedInput);
+  if (examFileResult) return examFileResult;
+
+  // 2. Try structured CSV / TSV table
   const tableResult = tryParseDelimitedTable(cleanedInput);
   if (tableResult) return tableResult;
 
@@ -1377,6 +2157,7 @@ export function parseRawExamQuestions(rawText: string): RawParseResult {
     abcdCount,
     trueFalseCount,
     shortAnswerCount,
+    format: 'legacy_raw',
   };
 }
 
@@ -1387,6 +2168,9 @@ function toExamQuestion(
   shuffleOptions: boolean
 ): ExamQuestion {
   const qId = `eq_raw_${deterministicHash(`${examSeed}:${orderIndex}:${parsed.questionText}`).toString(36)}_${orderIndex}`;
+  const chapterId = (parsed.chapterId || 'Tổng hợp từ ngân hàng chữ thô').slice(0, 200);
+  const cognitiveLevel: CognitiveLevel = parsed.cognitiveLevel || 'thong_hieu';
+  const sourceReference = (parsed.sourceReference || 'Admin nhập từ tệp chữ thô').slice(0, 300);
 
   if (parsed.questionType === 'true_false') {
     const rawStatements = (parsed.trueFalseStatements || []).slice(0, 4);
@@ -1400,10 +2184,10 @@ function toExamQuestion(
     return {
       questionId: qId,
       orderIndex,
-      chapterId: 'Tổng hợp từ ngân hàng chữ thô',
-      conceptId: 'Theo nội dung đề nhập',
+      chapterId,
+      conceptId: chapterId,
       learningOutcome: 'Đánh giá Đúng / Sai 4 mệnh đề',
-      cognitiveLevel: 'thong_hieu',
+      cognitiveLevel,
       questionType: 'true_false',
       scoreWeight: 1.0,
       questionText: parsed.questionText.slice(0, 2000),
@@ -1414,7 +2198,7 @@ function toExamQuestion(
           ? `Đáp án chuẩn: ${answerSummary}.`
           : `Chưa có đáp án gốc cho 4 mệnh đề (${answerSummary}) — Admin vui lòng kiểm tra lại.`)
       ).slice(0, 2000),
-      sourceReference: 'Admin nhập từ tệp chữ thô',
+      sourceReference,
       sourceType: 'teacher_material',
       validationStatus: parsed.hasExplicitAnswer ? 'passed' : 'needs_review',
       validationIssues: parsed.warnings.length > 0 ? parsed.warnings : undefined,
@@ -1425,10 +2209,10 @@ function toExamQuestion(
     return {
       questionId: qId,
       orderIndex,
-      chapterId: 'Tổng hợp từ ngân hàng chữ thô',
-      conceptId: 'Theo nội dung đề nhập',
+      chapterId,
+      conceptId: chapterId,
       learningOutcome: 'Trả lời ngắn theo đề gốc',
-      cognitiveLevel: 'thong_hieu',
+      cognitiveLevel,
       questionType: 'short_answer',
       scoreWeight: 0.5,
       questionText: parsed.questionText.slice(0, 2000),
@@ -1437,7 +2221,7 @@ function toExamQuestion(
         parsed.explanation ||
         `Đáp án đúng: ${(parsed.shortAnswerAccepted || []).join(' | ')}.`
       ).slice(0, 2000),
-      sourceReference: 'Admin nhập từ tệp chữ thô',
+      sourceReference,
       sourceType: 'teacher_material',
       validationStatus: parsed.hasExplicitAnswer ? 'passed' : 'needs_review',
       validationIssues: parsed.warnings.length > 0 ? parsed.warnings : undefined,
@@ -1481,10 +2265,10 @@ function toExamQuestion(
   return {
     questionId: qId,
     orderIndex,
-    chapterId: 'Tổng hợp từ ngân hàng chữ thô',
-    conceptId: 'Theo nội dung đề nhập',
+    chapterId,
+    conceptId: chapterId,
     learningOutcome: 'Kiến thức theo tệp câu hỏi gốc',
-    cognitiveLevel: 'thong_hieu',
+    cognitiveLevel,
     questionType: 'abcd',
     scoreWeight: 0.25,
     questionText: parsed.questionText.slice(0, 2000),
@@ -1494,7 +2278,7 @@ function toExamQuestion(
     optionD,
     correctAnswer,
     explanation: syncedExplanation.slice(0, 2000),
-    sourceReference: 'Admin nhập từ tệp chữ thô',
+    sourceReference,
     sourceType: 'teacher_material',
     validationStatus: parsed.hasExplicitAnswer ? 'passed' : 'needs_review',
     validationIssues: parsed.warnings.length > 0 ? parsed.warnings : undefined,
@@ -1502,18 +2286,33 @@ function toExamQuestion(
 }
 
 /**
- * Generates one or multiple ExamDocuments from parsed raw questions according to the chosen batch mode.
+ * Generates one or multiple ExamDocuments from parsed raw questions or an ExamFile structure.
+ * Supports 60+ exams per subject file when `examFile` is provided.
  */
 export function generateExamBatchFromRawQuestions(params: {
   pool: ParsedRawQuestion[];
-  fileGroups?: Array<{ fileName: string; questions: ParsedRawQuestion[] }>;
+  fileGroups?: Array<{ fileName: string; questions: ParsedRawQuestion[]; examDocuments?: ExamDocument[] }>;
+  examFile?: ExamFile;
   config: RawBatchExamConfig;
 }): ExamDocument[] {
-  const { pool, fileGroups, config } = params;
+  const { pool, fileGroups, examFile, config } = params;
   const now = new Date().toISOString();
   const baseStamp = Date.now();
   const clampedPerExam = Math.max(1, Math.min(60, Math.floor(config.questionsPerExam) || 10));
-  const clampedExamCount = Math.max(1, Math.min(20, Math.floor(config.examCount) || 1));
+  const clampedExamCount = Math.max(1, Math.min(120, Math.floor(config.examCount) || 1));
+
+  // If ExamFile JSON with structured exams is provided, convert every Exam in the ExamFile (e.g., 60 exams/file)
+  if (examFile && Array.isArray(examFile.exams) && examFile.exams.length > 0 && config.mode === 'exam_file') {
+    return examFile.exams.map((exam, idx) => {
+      const converted = convertExamToExamDocument(exam, idx, {
+        createdBy: config.createdBy || 'admin',
+        baseStamp,
+        shuffleOptions: config.shuffleOptionsInVariants,
+        allowRetake: config.allowRetake,
+      });
+      return converted.examDoc;
+    });
+  }
 
   const buildExamDoc = (
     rawQuestions: ParsedRawQuestion[],
@@ -1531,19 +2330,22 @@ export function generateExamBatchFromRawQuestions(params: {
 
     const baseTitle = config.baseTitle.trim() || 'Đề kiểm tra từ kho câu hỏi thô';
     const fullTitle = `${baseTitle}${titleSuffix}`.slice(0, 200);
+    const derivedChapters = Array.from(
+      new Set(capped.map((q) => q.chapterId).filter((c): c is string => Boolean(c)))
+    );
 
     return {
       examId,
       blueprintId: 'raw_text_batch',
       title: fullTitle,
-      description: `Tạo từ nguồn văn bản thô (${examQuestions.length} câu · ${config.totalScore} điểm).`,
+      description: `Tạo từ nguồn dữ liệu thô (${examQuestions.length} câu · ${config.totalScore} điểm).`,
       grade: config.grade,
       subject: config.subject,
       textbookSeries: config.textbookSeries,
       examType: config.examType,
       academicYear: config.academicYear,
       semester: config.semester,
-      chapters: ['Tổng hợp từ tệp chữ thô'],
+      chapters: derivedChapters.length > 0 ? derivedChapters : ['Tổng hợp từ tệp chữ thô'],
       durationMinutes: Math.max(5, Math.min(180, Math.floor(config.durationMinutes) || 45)),
       totalScore: Math.max(1, Math.min(100, Number(config.totalScore) || 10)),
       allowRetake: config.allowRetake,
@@ -1557,19 +2359,25 @@ export function generateExamBatchFromRawQuestions(params: {
   };
 
   if (config.mode === 'per_file' && fileGroups && fileGroups.length > 0) {
-    return fileGroups
-      .filter((g) => g.questions.length > 0)
-      .slice(0, 20)
-      .map((group, idx) => {
-        const cleanFileLabel = group.fileName.replace(/\.[^.]+$/, '').trim();
-        const suffix = fileGroups.length > 1 || !config.baseTitle.trim() ? ` - ${cleanFileLabel}` : '';
-        return buildExamDoc(
+    const outDocs: ExamDocument[] = [];
+    for (const group of fileGroups) {
+      if (group.examDocuments && group.examDocuments.length > 0) {
+        outDocs.push(...group.examDocuments);
+        continue;
+      }
+      if (group.questions.length === 0) continue;
+      const cleanFileLabel = group.fileName.replace(/\.[^.]+$/, '').trim();
+      const suffix = fileGroups.length > 1 || !config.baseTitle.trim() ? ` - ${cleanFileLabel}` : '';
+      outDocs.push(
+        buildExamDoc(
           group.questions,
           suffix,
-          idx,
+          outDocs.length,
           config.shuffleOptionsInVariants
-        );
-      });
+        )
+      );
+    }
+    return outDocs.slice(0, 120);
   }
 
   if (pool.length === 0) return [];
@@ -1580,7 +2388,7 @@ export function generateExamBatchFromRawQuestions(params: {
         ? shuffleWithSeed(pool, `split_rand_${baseStamp}_${pool.length}`)
         : pool;
     const chunks: ParsedRawQuestion[][] = [];
-    for (let i = 0; i < orderedPool.length && chunks.length < 20; i += clampedPerExam) {
+    for (let i = 0; i < orderedPool.length && chunks.length < 120; i += clampedPerExam) {
       chunks.push(orderedPool.slice(i, i + clampedPerExam));
     }
     return chunks.map((chunk, idx) =>
@@ -1610,3 +2418,4 @@ export function generateExamBatchFromRawQuestions(params: {
   }
   return docs;
 }
+

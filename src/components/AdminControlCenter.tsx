@@ -44,6 +44,7 @@ import {
   validateExamBlueprint,
 } from '../core/quizValidation';
 import {
+  buildSampleExamFileJson,
   generateExamBatchFromRawQuestions,
   parseRawExamQuestions,
   type BatchGenerationMode,
@@ -420,19 +421,26 @@ export const AdminControlCenter: React.FC = () => {
   const [importingSampleExam, setImportingSampleExam] = useState(false);
   const [editingExamQuestionId, setEditingExamQuestionId] = useState<string | null>(null);
 
-  // Raw Text Batch Exam Generator State (Admin-only)
+  // Raw ExamFile / Text Batch Exam Generator State (Admin-only)
   const [rawTextInput, setRawTextInput] = useState('');
   const [rawTextFiles, setRawTextFiles] = useState<
-    Array<{ fileName: string; rawText: string; questions: ParsedRawQuestion[] }>
+    Array<{
+      fileName: string;
+      rawText: string;
+      questions: ParsedRawQuestion[];
+      examCount?: number;
+      examDocuments?: ExamDocument[];
+    }>
   >([]);
-  const [rawBatchMode, setRawBatchMode] = useState<BatchGenerationMode>('split_sequential');
+  const [rawBatchMode, setRawBatchMode] = useState<BatchGenerationMode>('exam_file');
   const [rawBatchExamCount, setRawBatchExamCount] = useState(3);
-  const [rawQuestionsPerExam, setRawQuestionsPerExam] = useState(10);
-  const [rawShuffleOptions, setRawShuffleOptions] = useState(true);
-  const [rawPublishImmediately, setRawPublishImmediately] = useState(false);
+  const [rawQuestionsPerExam, setRawQuestionsPerExam] = useState(25);
+  const [rawShuffleOptions, setRawShuffleOptions] = useState(false);
+  const [rawPublishImmediately, setRawPublishImmediately] = useState(true);
   const [rawAllowRetake, setRawAllowRetake] = useState(true);
   const [rawBatchDrafts, setRawBatchDrafts] = useState<ExamDocument[]>([]);
   const [savingRawBatch, setSavingRawBatch] = useState(false);
+  const [showExamFileSchemaRef, setShowExamFileSchemaRef] = useState(false);
 
   // Exam Print Variant Preview
   const [printPreview, setPrintPreview] = useState<{
@@ -1749,9 +1757,14 @@ export const AdminControlCenter: React.FC = () => {
   };
 
   const handleRawTextFilesSelected = async (files: File[]) => {
-    const validFiles = files.filter((f) => /\.(txt|md|csv|tsv|log)$/i.test(f.name) || f.type.startsWith('text/'));
+    const validFiles = files.filter(
+      (f) =>
+        /\.(json|txt|md|csv|tsv|log)$/i.test(f.name) ||
+        f.type === 'application/json' ||
+        f.type.startsWith('text/')
+    );
     if (validFiles.length === 0) {
-      setError('Vui lòng chọn tệp văn bản thô (.txt, .md, .csv).');
+      setError('Vui lòng chọn tệp dữ liệu đề định dạng chuẩn ExamFile (.json) hoặc tệp văn bản (.txt, .md, .csv).');
       return;
     }
     setError(null);
@@ -1763,34 +1776,71 @@ export const AdminControlCenter: React.FC = () => {
           fileName: f.name,
           rawText: text,
           questions: parsed.questions,
+          examCount: parsed.examCount,
+          examDocuments: parsed.examDocuments,
         };
       })
     );
     setRawTextFiles(loaded);
-    const combined = loaded.map((item) => item.rawText.trim()).filter(Boolean).join('\n\n');
+    const hasJsonExamFile = loaded.some((item) => (item.examCount ?? 0) > 0);
+    const combined = loaded
+      .map((item) =>
+        loaded.length > 1 && hasJsonExamFile
+          ? `// === TỆP: ${item.fileName} ===\n${item.rawText.trim()}`
+          : item.rawText.trim()
+      )
+      .filter(Boolean)
+      .join('\n\n');
     setRawTextInput(combined);
-    if (loaded.length > 1) {
-      setRawBatchMode('per_file');
+
+    const totalQuestions = loaded.reduce((s, item) => s + item.questions.length, 0);
+    const totalExams = loaded.reduce((s, item) => s + (item.examCount ?? 0), 0);
+
+    if (hasJsonExamFile) {
+      setRawBatchMode('exam_file');
+      const allExamDocs = loaded.flatMap((item) => item.examDocuments ?? []);
+      if (allExamDocs.length > 0) {
+        setRawBatchDrafts(allExamDocs);
+      }
+      setNotice(
+        `Đã nạp ${loaded.length} tệp ExamFile JSON: nhận diện ${totalExams} bộ đề với tổng cộng ${totalQuestions} câu hỏi. Bạn có thể bấm "Lưu tất cả ${allExamDocs.length} bộ đề" ngay.`
+      );
+    } else {
+      if (loaded.length > 1) {
+        setRawBatchMode('per_file');
+      } else if (rawBatchMode === 'exam_file') {
+        setRawBatchMode('split_sequential');
+      }
+      setNotice(`Đã đọc ${loaded.length} tệp dữ liệu thô và nhận diện ${totalQuestions} câu hỏi.`);
     }
-    const totalCount = loaded.reduce((s, item) => s + item.questions.length, 0);
-    setNotice(`Đã đọc ${loaded.length} tệp văn bản thô và nhận diện ${totalCount} câu hỏi.`);
   };
 
   const handleInsertRawSample = () => {
-    const sample = [
-      'Câu 1:Liên kết hydrogen chỉ hình thành mạnh nhất giữa nguyên tử H với các nguyên tử có độ âm điện lớn nào sau đây?:F, O, N:C, Si, P:Na, K, Ca:He, Ne, Ar:A:Hợp chất chứa F, O, N phân cực liên kết với H đủ mạnh để tạo liên kết hydrogen.',
-      'Câu 2:Thủ đô của nước Việt Nam là thành phố nào?:Thành phố Hồ Chí Minh:*Hà Nội:Đà Nẵng:Hải Phòng:Đáp án là Hà Nội.',
-      'Giá trị của biểu thức 2x + 5 tại x = 3 bằng bao nhiêu?:9:10:11:12:C',
-      '[ĐS] Xét các nhận định sau về cấu tạo nguyên tử và bảng tuần hoàn:|a) Hạt nhân nguyên tử chứa proton và neutron (trừ H-1).|b) Nguyên tử trung hòa điện có số proton bằng số electron.|c) Các nguyên tố cùng chu kỳ có cùng số electron lớp ngoài cùng.|d) Độ âm điện nhóm A thường tăng từ trái sang phải trong cùng chu kỳ.:Đ-Đ-S-Đ:Ý c sai vì cùng chu kỳ có cùng số lớp electron.',
-      '[ĐS] Cho hàm số y = x^2 - 4x + 3.|*a) Đồ thị là parabol có bề lõm hướng lên trên.|*b) Trục đối xứng là đường thẳng x = 2.|c) Giá trị nhỏ nhất của hàm số bằng 1.|*d) Phương trình x^2 - 4x + 3 = 0 có hai nghiệm x = 1 và x = 3.',
-      '[TLN] Kết quả của phép tính 25 x 4 + 12 bằng bao nhiêu?:112',
-      '[TLN] Hình chữ nhật dài 8,5 cm, rộng 4 cm có diện tích bao nhiêu cm²?:34 | 34,0 | 34 cm2',
-    ].join('\n');
+    const sample = buildSampleExamFileJson();
     setRawTextFiles([]);
     setRawTextInput(sample);
-    setRawQuestionsPerExam(4);
+    setRawBatchMode('exam_file');
+    const parsed = parseRawExamQuestions(sample);
+    if (parsed.examDocuments && parsed.examDocuments.length > 0) {
+      setRawBatchDrafts(parsed.examDocuments);
+    }
     setError(null);
-    setNotice('Đã chèn dữ liệu mẫu đủ 3 dạng (ABCD rút gọn, Đúng/Sai 4 ý, Trả lời ngắn). Bạn có thể chỉnh sửa hoặc tạo đề ngay.');
+    setNotice(
+      'Đã chèn mẫu chuẩn ExamFile JSON (gồm Exam và đủ 3 dạng Question: abcd, true_false 4 ý, short_answer có công thức LaTeX $...$).'
+    );
+  };
+
+  const handleDownloadSampleExamFile = () => {
+    const sample = buildSampleExamFileJson();
+    const blob = new Blob([sample], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'sample_exam_file_toan_11.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const handleGenerateRawBatch = () => {
@@ -1798,15 +1848,27 @@ export const AdminControlCenter: React.FC = () => {
     setNotice(null);
     const pool = rawParsedPreview.questions;
     if (pool.length === 0) {
-      setError('Chưa nhận diện được câu hỏi hợp lệ nào. Hãy kiểm tra lại định dạng chữ thô hoặc bấm "Chèn mẫu thử".');
+      setError('Chưa nhận diện được đề hoặc câu hỏi hợp lệ nào. Hãy kiểm tra lại định dạng ExamFile JSON hoặc bấm "Chèn mẫu ExamFile".');
       return;
     }
 
+    const effectiveMode: BatchGenerationMode =
+      rawParsedPreview.format === 'exam_file' && rawParsedPreview.examFile?.exams.length
+        ? 'exam_file'
+        : rawBatchMode === 'exam_file'
+        ? 'split_sequential'
+        : rawBatchMode;
+
     const drafts = generateExamBatchFromRawQuestions({
       pool,
+      examFile: rawParsedPreview.examFile,
       fileGroups:
         rawTextFiles.length > 0
-          ? rawTextFiles.map((f) => ({ fileName: f.fileName, questions: f.questions }))
+          ? rawTextFiles.map((f) => ({
+              fileName: f.fileName,
+              questions: f.questions,
+              examDocuments: f.examDocuments,
+            }))
           : undefined,
       config: {
         baseTitle: examTitle.trim() || `${SUBJECT_LABELS[examSubject]} Lớp ${examGrade}`,
@@ -1821,7 +1883,7 @@ export const AdminControlCenter: React.FC = () => {
         allowRetake: rawAllowRetake,
         published: rawPublishImmediately,
         createdBy: user?.uid || 'admin',
-        mode: rawBatchMode,
+        mode: effectiveMode,
         examCount: rawBatchExamCount,
         questionsPerExam: rawQuestionsPerExam,
         shuffleOptionsInVariants: rawShuffleOptions,
@@ -1829,13 +1891,13 @@ export const AdminControlCenter: React.FC = () => {
     });
 
     if (drafts.length === 0) {
-      setError('Không thể tạo bộ đề từ danh sách câu hỏi hiện tại.');
+      setError('Không thể tạo bộ đề từ dữ liệu hiện tại.');
       return;
     }
 
     setRawBatchDrafts(drafts);
     setNotice(
-      `Đã tạo xem trước ${drafts.length} bộ đề từ ${pool.length} câu hỏi thô. Kiểm tra rồi bấm "Lưu tất cả ${drafts.length} bộ đề".`
+      `Đã tạo xem trước ${drafts.length} bộ đề (${pool.length} câu hỏi). Kiểm tra rồi bấm "Lưu tất cả ${drafts.length} bộ đề".`
     );
   };
 
@@ -1845,29 +1907,33 @@ export const AdminControlCenter: React.FC = () => {
     setError(null);
     setNotice(null);
     try {
-      const savedList: ExamDocument[] = [];
-      for (const draft of rawBatchDrafts) {
-        const sanitized: ExamDocument = {
-          ...draft,
-          title: draft.title.trim().slice(0, 200) || 'Đề kiểm tra',
-          questions: draft.questions.slice(0, 60).map((q, idx) => ({
-            ...q,
-            orderIndex: idx + 1,
-          })),
-          updatedAt: new Date().toISOString(),
-        };
-        await saveExamDocument(sanitized);
-        savedList.push(sanitized);
+      const now = new Date().toISOString();
+      const sanitizedList: ExamDocument[] = rawBatchDrafts.map((draft) => ({
+        ...draft,
+        title: draft.title.trim().slice(0, 200) || 'Đề kiểm tra',
+        questions: draft.questions.slice(0, 60).map((q, idx) => ({
+          ...q,
+          orderIndex: idx + 1,
+        })),
+        createdBy: user?.uid || draft.createdBy || 'admin',
+        updatedAt: now,
+      }));
+
+      // Save in parallel chunks of 10 so 60-exam subject files save quickly and reliably
+      const chunkSize = 10;
+      for (let i = 0; i < sanitizedList.length; i += chunkSize) {
+        const batch = sanitizedList.slice(i, i + chunkSize);
+        await Promise.all(batch.map((doc) => saveExamDocument(doc)));
       }
 
       setExams((prev) => {
-        const savedIds = new Set(savedList.map((s) => s.examId));
-        return [...savedList, ...prev.filter((ex) => !savedIds.has(ex.examId))];
+        const savedIds = new Set(sanitizedList.map((s) => s.examId));
+        return [...sanitizedList, ...prev.filter((ex) => !savedIds.has(ex.examId))];
       });
       setRawBatchDrafts([]);
-      const publishedCount = savedList.filter((d) => d.published).length;
+      const publishedCount = sanitizedList.filter((d) => d.published).length;
       setNotice(
-        `Đã lưu thành công ${savedList.length} bộ đề vào Firestore (${publishedCount} đề đang mở cho học sinh, ${savedList.length - publishedCount} bản nháp).`
+        `Đã lưu thành công ${sanitizedList.length} bộ đề vào Firestore (${publishedCount} đề đang mở cho học sinh, ${sanitizedList.length - publishedCount} bản nháp).`
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Lỗi khi lưu hàng loạt bộ đề.');
@@ -4312,7 +4378,7 @@ export const AdminControlCenter: React.FC = () => {
                   }`}
                 >
                   <Layers className="w-3.5 h-3.5" />
-                  Tạo nhiều đề từ file chữ thô (0 tốn AI)
+                  Nạp đề từ dữ liệu thô (ExamFile JSON · 60 đề/file)
                 </button>
                 <button
                   type="button"
@@ -4333,160 +4399,227 @@ export const AdminControlCenter: React.FC = () => {
                   <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                     <div>
                       <p className="text-xs font-semibold text-sky-700 dark:text-sky-400">
-                        Chỉ dành cho Admin · Xử lý trực tiếp, không tốn lượt AI
+                        Chuẩn cấu trúc ExamFile JSON · 60 đề/file môn học · 20–28 câu/đề · 0 tốn lượt AI
                       </p>
                       <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC] mt-0.5">
-                        Tạo nhiều bộ đề từ tệp / văn bản câu hỏi &amp; đáp án thô
+                        Nạp đề từ dữ liệu thô chuẩn <code className="font-mono text-base">ExamFile</code> (<code className="font-mono text-base">exams: Exam[]</code>)
                       </h2>
                       <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] mt-1 leading-[1.6]">
-                        Hỗ trợ đủ 3 dạng GDPT 2018: ABCD rút gọn (<code className="font-mono">Câu hỏi:A:B:C:D:Đáp án</code> hoặc <code className="font-mono">*Đáp án</code>),
-                        Đúng/Sai 4 ý (<code className="font-mono">[ĐS] ... | a)... | b)... | c)... | d)... : Đ-Đ-S-Đ</code>), Trả lời ngắn (<code className="font-mono">[TLN] ...:đáp số</code>) và bảng <code className="font-mono">.csv / .tsv</code>.
+                        Định dạng chuẩn <code className="font-mono">interface ExamFile &#123; exams: Exam[] &#125;</code> (mỗi file môn học gồm 60 đề, 20–28 câu/đề, hỗ trợ công thức LaTeX trong <code className="font-mono">$...$</code>).
+                        Hỗ trợ 3 kiểu câu hỏi: <code className="font-mono">&quot;abcd&quot;</code> (<code className="font-mono">options: [A, B, C, D]</code>),{' '}
+                        <code className="font-mono">&quot;true_false&quot;</code> (<code className="font-mono">statements: [&#123; text, isTrue &#125; x 4]</code>) và{' '}
+                        <code className="font-mono">&quot;short_answer&quot;</code> (<code className="font-mono">shortAnswerAccepted: string[]</code>).
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleInsertRawSample}
-                      className="px-3 py-2 rounded-xl glass-control text-xs font-semibold shrink-0 cursor-pointer"
-                    >
-                      Chèn mẫu thử
-                    </button>
-                  </div>
-
-                  {/* Metadata + Batch Controls */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Tên bộ đề gốc
-                      </label>
-                      <input
-                        type="text"
-                        value={examTitle}
-                        onChange={(e) => setExamTitle(e.target.value)}
-                        placeholder="VD: Đề ôn tập Chương 1 Hóa 10"
-                        className={INPUT_CLASS}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Khối lớp
-                      </label>
-                      <select
-                        value={examGrade}
-                        onChange={(e) => setExamGrade(e.target.value as GradeLevel)}
-                        className={INPUT_CLASS}
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setShowExamFileSchemaRef((prev) => !prev)}
+                        className="px-3 py-2 rounded-xl glass-control text-xs font-semibold cursor-pointer"
                       >
-                        <option value="10">Lớp 10</option>
-                        <option value="11">Lớp 11</option>
-                        <option value="12">Lớp 12</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Môn học
-                      </label>
-                      <select
-                        value={examSubject}
-                        onChange={(e) => setExamSubject(e.target.value as SubjectId)}
-                        className={INPUT_CLASS}
+                        {showExamFileSchemaRef ? 'Ẩn cấu trúc TypeScript' : 'Xem cấu trúc ExamFile'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDownloadSampleExamFile}
+                        className="px-3 py-2 rounded-xl glass-control text-xs font-semibold cursor-pointer"
                       >
-                        {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
-                          <option key={s} value={s}>
-                            {SUBJECT_LABELS[s]}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Kỳ kiểm tra
-                      </label>
-                      <select
-                        value={examType}
-                        onChange={(e) => setExamType(e.target.value as ExamType)}
-                        className={INPUT_CLASS}
+                        Tải file mẫu .json
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleInsertRawSample}
+                        className="px-3 py-2 rounded-xl glass-control text-xs font-semibold cursor-pointer"
                       >
-                        {(Object.keys(EXAM_TYPE_LABELS) as ExamType[]).map((et) => (
-                          <option key={et} value={et}>
-                            {EXAM_TYPE_LABELS[et]}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Cách tạo nhiều bộ đề
-                      </label>
-                      <select
-                        value={rawBatchMode}
-                        onChange={(e) => setRawBatchMode(e.target.value as BatchGenerationMode)}
-                        className={INPUT_CLASS}
-                      >
-                        <option value="split_sequential">Chia lần lượt thành nhiều đề (không trùng câu)</option>
-                        <option value="split_random">Xáo trộn rồi chia thành nhiều đề (không trùng)</option>
-                        <option value="shuffle_variants">Tạo N bộ đề trộn câu &amp; đảo đáp án từ kho</option>
-                        <option value="per_file">Mỗi tệp tải lên thành 1 bộ đề riêng</option>
-                      </select>
-                    </div>
-                    {rawBatchMode !== 'per_file' && (
-                      <div>
-                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                          Số câu mỗi đề (tối đa 60)
-                        </label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={60}
-                          value={rawQuestionsPerExam}
-                          onChange={(e) =>
-                            setRawQuestionsPerExam(Math.max(1, Math.min(60, Number(e.target.value) || 10)))
-                          }
-                          className={INPUT_CLASS}
-                        />
-                      </div>
-                    )}
-                    {rawBatchMode === 'shuffle_variants' && (
-                      <div>
-                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                          Số bộ đề muốn tạo (1–20)
-                        </label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={20}
-                          value={rawBatchExamCount}
-                          onChange={(e) =>
-                            setRawBatchExamCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))
-                          }
-                          className={INPUT_CLASS}
-                        />
-                      </div>
-                    )}
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Thời gian (phút) / Thang điểm
-                      </label>
-                      <div className="flex gap-2">
-                        <input
-                          type="number"
-                          min={5}
-                          max={180}
-                          value={examDuration}
-                          onChange={(e) => setExamDuration(Math.max(5, Number(e.target.value) || 45))}
-                          className={INPUT_CLASS}
-                        />
-                        <input
-                          type="number"
-                          min={1}
-                          max={100}
-                          value={examTotalScore}
-                          onChange={(e) => setExamTotalScore(Math.max(1, Number(e.target.value) || 10))}
-                          className={INPUT_CLASS}
-                        />
-                      </div>
+                        Chèn mẫu ExamFile
+                      </button>
                     </div>
                   </div>
 
-                  {/* Upload Multiple .txt / .md / .csv Files OR Paste Raw Text */}
+                  {showExamFileSchemaRef && (
+                    <div className="rounded-2xl border border-sky-200/80 dark:border-sky-800/70 bg-slate-950 text-slate-100 p-4 text-[11px] font-mono overflow-x-auto leading-relaxed">
+                      <pre>{`interface ExamFile {
+  exams: Exam[]; // Mỗi file môn học gồm 60 đề
+}
+
+interface Exam {
+  title: string;           // VD: "Đề kiểm tra Giữa kỳ I - Toán 11 (THPT Việt Đức 2025-2026)"
+  description: string;
+  subject: "toan" | "vat_ly" | "hoa_hoc" | "sinh_hoc" | "ngu_van" | "lich_su" | "dia_ly" | "tieng_anh" | "tin_hoc" | "gdkt_pl";
+  grade: "10" | "11" | "12";
+  textbookSeries: string;  // VD: "Kết nối tri thức với cuộc sống"
+  examType: "giua_ky_1" | "cuoi_ky_1" | "giua_ky_2" | "cuoi_ky_2";
+  academicYear: "2025-2026" | "2026-2027";
+  semester: "1" | "2";
+  durationMinutes: number; // 45 hoặc 50
+  totalScore: number;      // 10
+  published: boolean;      // true
+  chapters: string[];      // Danh sách tên chương có trong đề
+  questions: Question[];   // 20–28 câu/đề
+}
+
+type Question = (
+  | {
+      questionType: "abcd";
+      options: [string, string, string, string]; // Đủ 4 phương án A, B, C, D
+      correctAnswer: "A" | "B" | "C" | "D";
+    }
+  | {
+      questionType: "true_false";
+      statements: Array<{ text: string; isTrue: boolean }>; // Đủ 4 ý a, b, c, d
+    }
+  | {
+      questionType: "short_answer";
+      shortAnswerAccepted: string[]; // Các đáp số chấp nhận, VD: ["6", "6.0", "6,0"]
+    }
+) & {
+  chapterId: string;
+  cognitiveLevel: "nhan_biet" | "thong_hieu" | "van_dung" | "van_dung_cao";
+  questionText: string;    // Có công thức LaTeX trong $...$
+  explanation: string;     // Lời giải chi tiết
+  sourceReference: string; // Nguồn đề gốc
+};`}</pre>
+                    </div>
+                  )}
+
+                  {/* Metadata + Batch Controls (used when input is legacy text or for overriding batch options) */}
+                  {rawParsedPreview.format !== 'exam_file' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                          Tên bộ đề gốc
+                        </label>
+                        <input
+                          type="text"
+                          value={examTitle}
+                          onChange={(e) => setExamTitle(e.target.value)}
+                          placeholder="VD: Đề kiểm tra Giữa kỳ I - Toán 11"
+                          className={INPUT_CLASS}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                          Khối lớp
+                        </label>
+                        <select
+                          value={examGrade}
+                          onChange={(e) => setExamGrade(e.target.value as GradeLevel)}
+                          className={INPUT_CLASS}
+                        >
+                          <option value="10">Lớp 10</option>
+                          <option value="11">Lớp 11</option>
+                          <option value="12">Lớp 12</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                          Môn học
+                        </label>
+                        <select
+                          value={examSubject}
+                          onChange={(e) => setExamSubject(e.target.value as SubjectId)}
+                          className={INPUT_CLASS}
+                        >
+                          {(Object.keys(SUBJECT_LABELS) as SubjectId[]).map((s) => (
+                            <option key={s} value={s}>
+                              {SUBJECT_LABELS[s]}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                          Kỳ kiểm tra
+                        </label>
+                        <select
+                          value={examType}
+                          onChange={(e) => setExamType(e.target.value as ExamType)}
+                          className={INPUT_CLASS}
+                        >
+                          {(Object.keys(EXAM_TYPE_LABELS) as ExamType[]).map((et) => (
+                            <option key={et} value={et}>
+                              {EXAM_TYPE_LABELS[et]}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                          Chế độ nạp đề
+                        </label>
+                        <select
+                          value={rawBatchMode}
+                          onChange={(e) => setRawBatchMode(e.target.value as BatchGenerationMode)}
+                          className={INPUT_CLASS}
+                        >
+                          <option value="exam_file">Chuẩn ExamFile JSON (exams: Exam[] · 60 đề/file)</option>
+                          <option value="split_sequential">Chia lần lượt thành nhiều đề (không trùng câu)</option>
+                          <option value="split_random">Xáo trộn rồi chia thành nhiều đề (không trùng)</option>
+                          <option value="shuffle_variants">Tạo N bộ đề trộn câu &amp; đảo đáp án từ kho</option>
+                          <option value="per_file">Mỗi tệp tải lên thành 1 bộ đề riêng</option>
+                        </select>
+                      </div>
+                      {rawBatchMode !== 'per_file' && rawBatchMode !== 'exam_file' && (
+                        <div>
+                          <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                            Số câu mỗi đề (20–28 hoặc tối đa 60)
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={60}
+                            value={rawQuestionsPerExam}
+                            onChange={(e) =>
+                              setRawQuestionsPerExam(Math.max(1, Math.min(60, Number(e.target.value) || 25)))
+                            }
+                            className={INPUT_CLASS}
+                          />
+                        </div>
+                      )}
+                      {rawBatchMode === 'shuffle_variants' && (
+                        <div>
+                          <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                            Số bộ đề muốn tạo (1–60)
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={60}
+                            value={rawBatchExamCount}
+                            onChange={(e) =>
+                              setRawBatchExamCount(Math.max(1, Math.min(60, Number(e.target.value) || 1)))
+                            }
+                            className={INPUT_CLASS}
+                          />
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                          Thời gian (phút) / Thang điểm
+                        </label>
+                        <div className="flex gap-2">
+                          <input
+                            type="number"
+                            min={5}
+                            max={180}
+                            value={examDuration}
+                            onChange={(e) => setExamDuration(Math.max(5, Number(e.target.value) || 45))}
+                            className={INPUT_CLASS}
+                          />
+                          <input
+                            type="number"
+                            min={1}
+                            max={100}
+                            value={examTotalScore}
+                            onChange={(e) => setExamTotalScore(Math.max(1, Number(e.target.value) || 10))}
+                            className={INPUT_CLASS}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Upload Multiple .json (ExamFile) / .txt / .md / .csv Files OR Paste ExamFile JSON */}
                   <div
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => {
@@ -4499,19 +4632,19 @@ export const AdminControlCenter: React.FC = () => {
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
                         <p className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
-                          Chọn 1 hoặc nhiều tệp chữ thô (.txt, .md, .csv) hoặc kéo thả vào đây
+                          Chọn tệp <code className="font-mono">.json</code> chuẩn <code className="font-mono">ExamFile</code> (60 đề/file môn học) hoặc kéo thả vào đây
                         </p>
                         <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2] mt-0.5">
-                          Có thể tải lên nhiều tệp đề cùng lúc, hoặc dán thẳng danh sách câu hỏi vào khung bên dưới.
+                          Hỗ trợ tải lên một hoặc nhiều tệp <code className="font-mono">.json</code> (cũng tương thích ngược với <code className="font-mono">.txt, .csv</code>) hoặc dán trực tiếp JSON <code className="font-mono">&#123; &quot;exams&quot;: [ ... ] &#125;</code> vào khung bên dưới.
                         </p>
                       </div>
                       <label className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-gradient-to-r from-sky-500 to-blue-600 text-white text-xs font-semibold cursor-pointer shadow-sm hover:brightness-105">
                         <FileUp className="w-3.5 h-3.5" />
-                        Chọn tệp chữ thô
+                        Chọn tệp ExamFile (.json)
                         <input
                           type="file"
                           multiple
-                          accept=".txt,.md,.csv,.tsv,.log,text/plain"
+                          accept=".json,application/json,.txt,.md,.csv,.tsv,.log,text/plain"
                           className="hidden"
                           onChange={(e) => {
                             const list = Array.from(e.target.files || []);
@@ -4530,15 +4663,25 @@ export const AdminControlCenter: React.FC = () => {
                           >
                             <FileText className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
                             <span>
-                              {f.fileName} ({f.questions.length} câu)
+                              {f.fileName} (
+                              {f.examCount ? `${f.examCount} đề · ` : ''}
+                              {f.questions.length} câu)
                             </span>
                             <button
                               type="button"
                               onClick={() => {
                                 const remaining = rawTextFiles.filter((_, fIdx) => fIdx !== idx);
                                 setRawTextFiles(remaining);
+                                const hasJson = remaining.some((item) => (item.examCount ?? 0) > 0);
                                 setRawTextInput(
-                                  remaining.map((item) => item.rawText.trim()).filter(Boolean).join('\n\n')
+                                  remaining
+                                    .map((item) =>
+                                      remaining.length > 1 && hasJson
+                                        ? `// === TỆP: ${item.fileName} ===\n${item.rawText.trim()}`
+                                        : item.rawText.trim()
+                                    )
+                                    .filter(Boolean)
+                                    .join('\n\n')
                                 );
                               }}
                               className="text-rose-600 hover:text-rose-700 ml-1 cursor-pointer"
@@ -4552,24 +4695,29 @@ export const AdminControlCenter: React.FC = () => {
                     )}
 
                     <textarea
-                      rows={8}
+                      rows={10}
                       value={rawTextInput}
                       onChange={(e) => {
                         setRawTextInput(e.target.value);
                         if (rawTextFiles.length > 0) setRawTextFiles([]);
                       }}
-                      placeholder={'Ví dụ:\nCâu 1:Thủ đô Việt Nam là gì?:TP.HCM:*Hà Nội:Đà Nẵng:Huế\n[ĐS] Xét các mệnh đề:|a) Ý 1|b) Ý 2|c) Ý 3|d) Ý 4:Đ-Đ-S-Đ\n[TLN] Tính 15 x 4?:60 | 60,0'}
-                      className={`${INPUT_CLASS} font-mono leading-relaxed`}
+                      placeholder={`{\n  "exams": [\n    {\n      "title": "Đề kiểm tra Giữa kỳ I - Toán 11 (THPT Việt Đức 2025-2026)",\n      "description": "Đề chuẩn cấu trúc THPT 2025",\n      "subject": "toan",\n      "grade": "11",\n      "textbookSeries": "Kết nối tri thức với cuộc sống",\n      "examType": "giua_ky_1",\n      "academicYear": "2025-2026",\n      "semester": "1",\n      "durationMinutes": 45,\n      "totalScore": 10,\n      "published": true,\n      "chapters": ["Chương I: Hàm số lượng giác và phương trình lượng giác"],\n      "questions": [\n        {\n          "questionType": "abcd",\n          "options": ["$T = 2\\\\pi$", "$T = \\\\pi$", "$T = \\\\frac{\\\\pi}{2}$", "$T = 4\\\\pi$"],\n          "correctAnswer": "A",\n          "chapterId": "Chương I: Hàm số lượng giác và phương trình lượng giác",\n          "cognitiveLevel": "nhan_biet",\n          "questionText": "Chu kỳ tuần hoàn của hàm số $y = \\\\sin x$ là:",\n          "explanation": "Hàm số $y = \\\\sin x$ có chu kỳ $T = 2\\\\pi$.",\n          "sourceReference": "THPT Việt Đức 2025-2026"\n        }\n      ]\n    }\n  ]\n}`}
+                      className={`${INPUT_CLASS} font-mono leading-relaxed text-xs`}
                     />
 
                     {/* Live Parse Stats */}
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono tabular-nums">
+                        {rawParsedPreview.format === 'exam_file' && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold">
+                            Chuẩn ExamFile: {rawParsedPreview.examCount ?? 0} đề
+                          </span>
+                        )}
                         <span className="font-semibold text-sky-700 dark:text-sky-300">
-                          Nhận diện: {rawParsedPreview.questions.length} câu
+                          Tổng số câu: {rawParsedPreview.questions.length} câu
                         </span>
                         <span className="text-[#475B78] dark:text-[#B4C7E2]">
-                          Trắc nghiệm ABCD: {rawParsedPreview.abcdCount} · Đúng/Sai 4 ý: {rawParsedPreview.trueFalseCount} · Trả lời ngắn: {rawParsedPreview.shortAnswerCount} · Có đáp án:{' '}
+                          ABCD: {rawParsedPreview.abcdCount} · Đúng/Sai 4 ý: {rawParsedPreview.trueFalseCount} · Trả lời ngắn: {rawParsedPreview.shortAnswerCount} · Đủ đáp án:{' '}
                           {rawParsedPreview.answeredCount}/{rawParsedPreview.questions.length}
                         </span>
                         {rawParsedPreview.questions.length - rawParsedPreview.answeredCount > 0 && (
@@ -4595,14 +4743,16 @@ export const AdminControlCenter: React.FC = () => {
                           />
                           <span>Cho phép thi lại</span>
                         </label>
-                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={rawPublishImmediately}
-                            onChange={(e) => setRawPublishImmediately(e.target.checked)}
-                          />
-                          <span>Xuất bản ngay cho HS</span>
-                        </label>
+                        {rawParsedPreview.format !== 'exam_file' && (
+                          <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={rawPublishImmediately}
+                              onChange={(e) => setRawPublishImmediately(e.target.checked)}
+                            />
+                            <span>Xuất bản ngay cho HS</span>
+                          </label>
+                        )}
                       </div>
                     </div>
 
@@ -4621,8 +4771,10 @@ export const AdminControlCenter: React.FC = () => {
 
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">
-                      {rawBatchMode === 'split_sequential' || rawBatchMode === 'split_random'
-                        ? `Dự kiến chia thành ${Math.max(1, Math.min(20, Math.ceil(rawParsedPreview.questions.length / Math.max(1, rawQuestionsPerExam))))} bộ đề.`
+                      {rawParsedPreview.format === 'exam_file'
+                        ? `Nhận diện đúng chuẩn ExamFile: ${rawParsedPreview.examCount ?? 0} bộ đề (${rawParsedPreview.questions.length} câu hỏi, giữ nguyên metadata môn/lớp/bộ sách/chương/LaTeX của từng đề).`
+                        : rawBatchMode === 'split_sequential' || rawBatchMode === 'split_random'
+                        ? `Dự kiến chia thành ${Math.max(1, Math.min(120, Math.ceil(rawParsedPreview.questions.length / Math.max(1, rawQuestionsPerExam))))} bộ đề.`
                         : rawBatchMode === 'per_file'
                         ? `Sẽ tạo ${rawTextFiles.filter((f) => f.questions.length > 0).length || 0} bộ đề theo từng tệp.`
                         : `Sẽ tạo ${rawBatchExamCount} bộ đề (tối đa ${Math.min(rawQuestionsPerExam, rawParsedPreview.questions.length)} câu/đề).`}
@@ -4633,7 +4785,9 @@ export const AdminControlCenter: React.FC = () => {
                       onClick={handleGenerateRawBatch}
                     >
                       <ListChecks className="w-4 h-4" />
-                      Tạo xem trước bộ đề
+                      {rawParsedPreview.format === 'exam_file'
+                        ? `Nạp ${rawParsedPreview.examCount ?? 0} đề từ ExamFile`
+                        : 'Tạo xem trước bộ đề'}
                     </WaterRippleButton>
                   </div>
 
@@ -4692,9 +4846,16 @@ export const AdminControlCenter: React.FC = () => {
                                 }
                                 className="w-full font-display text-sm font-bold text-[#16243E] dark:text-[#E6EFFC] bg-transparent border-b border-sky-200/70 dark:border-slate-700 focus:outline-none focus:border-sky-500 pb-0.5"
                               />
-                              <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#475B78] dark:text-[#B4C7E2] font-mono tabular-nums">
+                              <div className="flex flex-wrap items-center gap-2.5 text-[11px] text-[#475B78] dark:text-[#B4C7E2] font-mono tabular-nums">
                                 <span>Đề #{dIdx + 1}</span>
+                                <span className="font-sans font-semibold text-sky-700 dark:text-sky-300">
+                                  {SUBJECT_LABELS[draft.subject] || draft.subject} {draft.grade}
+                                </span>
+                                <span className="font-sans">
+                                  {EXAM_TYPE_LABELS[draft.examType] || draft.examType} ({draft.academicYear} · HK{draft.semester})
+                                </span>
                                 <span>{draft.questions.length} câu</span>
+                                <span>{draft.chapters.length} chương</span>
                                 <span>{draft.durationMinutes} phút</span>
                                 <span>{draft.totalScore} điểm</span>
                                 <span
