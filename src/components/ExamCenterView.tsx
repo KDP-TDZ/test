@@ -133,25 +133,30 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
   const [printIncludeKey, setPrintIncludeKey] = useState(false);
   const examRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  const reloadExams = React.useCallback(async () => {
     setLoading(true);
-    Promise.allSettled([
-      listExams(true),
-      user ? listUserExamAttempts(user.uid) : Promise.resolve([]),
-    ])
-      .then(([exRes, attRes]) => {
-        if (cancelled) return;
-        setExams(exRes.status === 'fulfilled' ? exRes.value : []);
-        setAttempts(attRes.status === 'fulfilled' ? attRes.value : []);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    try {
+      const [exRes, attRes] = await Promise.allSettled([
+        listExams(true),
+        user ? listUserExamAttempts(user.uid) : Promise.resolve([]),
+      ]);
+      setExams(exRes.status === 'fulfilled' ? exRes.value : []);
+      setAttempts(attRes.status === 'fulfilled' ? attRes.value : []);
+    } finally {
+      setLoading(false);
+    }
   }, [user]);
+
+  useEffect(() => {
+    void reloadExams();
+    const onExamsUpdated = () => {
+      void reloadExams();
+    };
+    window.addEventListener('studycheck:exams-updated', onExamsUpdated);
+    return () => {
+      window.removeEventListener('studycheck:exams-updated', onExamsUpdated);
+    };
+  }, [reloadExams]);
 
   useEffect(() => {
     if (!activeExam || latestResult) return;
@@ -957,6 +962,15 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
             </div>
 
             <div className="flex items-center gap-2 text-xs text-[#475B78] dark:text-[#B4C7E2]">
+              <button
+                type="button"
+                onClick={() => void reloadExams()}
+                title="Làm mới danh sách đề thi"
+                className="glass-control inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-semibold text-sky-700 dark:text-sky-400 cursor-pointer"
+              >
+                <RotateCcw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                Làm mới
+              </button>
               <span className="font-mono tabular-nums font-semibold text-sky-700 dark:text-sky-400">
                 {filteredExams.length} đề
               </span>

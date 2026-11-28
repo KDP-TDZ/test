@@ -101,6 +101,7 @@ import {
   listReferenceChunksForBook,
   saveExamBlueprint,
   saveExamDocument,
+  saveExamDocumentsBatch,
   saveReferenceBookProgress,
   saveReferenceBookRecord,
   saveReferenceBookWithChunks,
@@ -1617,6 +1618,7 @@ export const AdminControlCenter: React.FC = () => {
       setActiveExamDraft(updated);
       setEditingExamQuestionId(null);
       setExams((prev) => [updated, ...prev.filter((e) => e.examId !== updated.examId)]);
+      window.dispatchEvent(new CustomEvent('studycheck:exams-updated'));
       setNotice(
         updated.published
           ? `Đã lưu và XUẤT BẢN đề "${updated.title}" lên Trung tâm Đề kiểm tra học sinh.`
@@ -1914,33 +1916,30 @@ export const AdminControlCenter: React.FC = () => {
     setError(null);
     setNotice(null);
     try {
-      const now = new Date().toISOString();
-      const sanitizedList: ExamDocument[] = rawBatchDrafts.map((draft) => ({
+      const baseMs = Date.now();
+      const sanitizedList: ExamDocument[] = rawBatchDrafts.map((draft, idx) => ({
         ...draft,
         title: draft.title.trim().slice(0, 200) || 'Đề kiểm tra',
-        questions: draft.questions.slice(0, 60).map((q, idx) => ({
+        published: typeof draft.published === 'boolean' ? draft.published : true,
+        questions: draft.questions.slice(0, 60).map((q, qIdx) => ({
           ...q,
-          orderIndex: idx + 1,
+          orderIndex: qIdx + 1,
         })),
         createdBy: user?.uid || draft.createdBy || 'admin',
-        updatedAt: now,
+        updatedAt: new Date(baseMs + (rawBatchDrafts.length - idx)).toISOString(),
       }));
 
-      // Save in parallel chunks of 10 so 60-exam subject files save quickly and reliably
-      const chunkSize = 10;
-      for (let i = 0; i < sanitizedList.length; i += chunkSize) {
-        const batch = sanitizedList.slice(i, i + chunkSize);
-        await Promise.all(batch.map((doc) => saveExamDocument(doc)));
-      }
+      const savedDocs = await saveExamDocumentsBatch(sanitizedList);
 
       setExams((prev) => {
-        const savedIds = new Set(sanitizedList.map((s) => s.examId));
-        return [...sanitizedList, ...prev.filter((ex) => !savedIds.has(ex.examId))];
+        const savedIds = new Set(savedDocs.map((s) => s.examId));
+        return [...savedDocs, ...prev.filter((ex) => !savedIds.has(ex.examId))];
       });
       setRawBatchDrafts([]);
-      const publishedCount = sanitizedList.filter((d) => d.published).length;
+      window.dispatchEvent(new CustomEvent('studycheck:exams-updated'));
+      const publishedCount = savedDocs.filter((d) => d.published).length;
       setNotice(
-        `Đã lưu thành công ${sanitizedList.length} bộ đề vào Firestore (${publishedCount} đề đang mở cho học sinh, ${sanitizedList.length - publishedCount} bản nháp).`
+        `Đã lưu và đồng bộ thành công ${savedDocs.length} bộ đề vào Trung tâm Đề kiểm tra (${publishedCount} đề đang mở cho học sinh, ${savedDocs.length - publishedCount} bản nháp).`
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Lỗi khi lưu hàng loạt bộ đề.');
@@ -5857,15 +5856,51 @@ type Question = (
                   return (
                     <>
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                          Danh sách Đề kiểm tra đã tạo ({filteredAdminExams.length}
-                          {filteredAdminExams.length !== exams.length ? ` / ${exams.length}` : ''})
-                        </h3>
-                        {filteredAdminExams.length > 10 && (
-                          <span className="text-xs text-slate-500 dark:text-slate-400">
-                            Trang {currentAdminPage} / {totalAdminPages}
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                            Danh sách Đề kiểm tra đã tạo ({filteredAdminExams.length}
+                            {filteredAdminExams.length !== exams.length ? ` / ${exams.length}` : ''})
+                          </h3>
+                          <span className="text-xs text-emerald-700 dark:text-emerald-400 font-semibold">
+                            · Đang mở ở tab Đề kiểm tra: {exams.filter((e) => e.published).length} đề
                           </span>
-                        )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {exams.some((e) => !e.published) && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const draftsToPublish = exams
+                                  .filter((e) => !e.published)
+                                  .map((e) => ({
+                                    ...e,
+                                    published: true,
+                                    updatedAt: new Date().toISOString(),
+                                  }));
+                                if (draftsToPublish.length === 0) return;
+                                await saveExamDocumentsBatch(draftsToPublish);
+                                const pubIds = new Set(draftsToPublish.map((d) => d.examId));
+                                setExams((prev) =>
+                                  prev.map((item) =>
+                                    pubIds.has(item.examId) ? { ...item, published: true } : item
+                                  )
+                                );
+                                window.dispatchEvent(new CustomEvent('studycheck:exams-updated'));
+                                setNotice(
+                                  `Đã xuất bản toàn bộ ${draftsToPublish.length} đề nháp sang tab Đề kiểm tra.`
+                                );
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white text-xs font-semibold shadow-sm hover:brightness-105 cursor-pointer"
+                            >
+                              Xuất bản tất cả đề nháp ({exams.filter((e) => !e.published).length})
+                            </button>
+                          )}
+                          {filteredAdminExams.length > 10 && (
+                            <span className="text-xs text-slate-500 dark:text-slate-400">
+                              Trang {currentAdminPage} / {totalAdminPages}
+                            </span>
+                          )}
+                        </div>
                       </div>
 
                       {exams.length > 0 && (

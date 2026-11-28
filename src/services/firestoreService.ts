@@ -992,25 +992,101 @@ export async function deleteExamBlueprint(blueprintId: string): Promise<void> {
   }
 }
 
+function sanitizeExamForFirestore(
+  exam: import('../core/types').ExamDocument
+): import('../core/types').ExamDocument {
+  const safeId = makeSafeId(exam.examId);
+  const now = new Date().toISOString();
+  const validGrades = new Set(['10', '11', '12']);
+  const validExamTypes = new Set([
+    'giua_ky_1',
+    'cuoi_ky_1',
+    'giua_ky_2',
+    'cuoi_ky_2',
+    'on_tap_tong_hop',
+  ]);
+  const grade = (validGrades.has(String(exam.grade)) ? exam.grade : '12') as GradeLevel;
+  const examType = (
+    validExamTypes.has(String(exam.examType)) ? exam.examType : 'giua_ky_1'
+  ) as import('../core/types').ExamType;
+
+  return stripUndefinedDeep({
+    examId: safeId,
+    blueprintId: String(exam.blueprintId || 'exam_file_json').slice(0, 128),
+    title: (String(exam.title || 'Đề kiểm tra').trim().slice(0, 200)) || 'Đề kiểm tra',
+    description: String(exam.description || '').trim().slice(0, 1000),
+    grade,
+    subject: (String(exam.subject || 'toan').trim().slice(0, 40) || 'toan') as SubjectId,
+    textbookSeries:
+      String(exam.textbookSeries || 'Kết nối tri thức với cuộc sống').trim().slice(0, 120) ||
+      'Kết nối tri thức với cuộc sống',
+    examType,
+    academicYear: String(exam.academicYear || '2025-2026').trim().slice(0, 32) || '2025-2026',
+    semester: exam.semester === '2' ? '2' : '1',
+    chapters: Array.isArray(exam.chapters)
+      ? exam.chapters.map((c) => String(c || '').trim()).filter(Boolean).slice(0, 40)
+      : ['Chương tổng hợp'],
+    durationMinutes: Math.max(5, Math.min(180, Number(exam.durationMinutes) || 45)),
+    totalScore: Math.max(1, Math.min(100, Number(exam.totalScore) || 10)),
+    allowRetake: typeof exam.allowRetake === 'boolean' ? exam.allowRetake : true,
+    published: typeof exam.published === 'boolean' ? exam.published : true,
+    validationStatus:
+      exam.validationStatus === 'repaired' || exam.validationStatus === 'needs_review'
+        ? exam.validationStatus
+        : 'passed',
+    questions: (exam.questions || []).slice(0, 60).map((q, idx) => ({
+      ...q,
+      orderIndex: idx + 1,
+    })),
+    createdBy: String(exam.createdBy || 'admin').slice(0, 128),
+    createdAt: String(exam.createdAt || now).slice(0, 64),
+    updatedAt: String(exam.updatedAt || now).slice(0, 64),
+  });
+}
+
 export async function listExams(onlyPublished = true): Promise<import('../core/types').ExamDocument[]> {
   const path = 'exams';
   try {
     const q = onlyPublished
-      ? query(collection(db, 'exams'), where('published', '==', true), limit(100))
-      : query(collection(db, 'exams'), orderBy('updatedAt', 'desc'), limit(100));
+      ? query(collection(db, 'exams'), where('published', '==', true))
+      : query(collection(db, 'exams'));
     const snap = await getDocs(q);
     const docs = snap.docs.map((d) => d.data() as import('../core/types').ExamDocument);
-    return docs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return docs.sort((a, b) =>
+      (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || '')
+    );
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
   }
 }
 
 export async function saveExamDocument(exam: import('../core/types').ExamDocument): Promise<void> {
-  const safeId = makeSafeId(exam.examId);
-  const path = `exams/${safeId}`;
+  const clean = sanitizeExamForFirestore(exam);
+  const path = `exams/${clean.examId}`;
   try {
-    await setDoc(doc(db, 'exams', safeId), stripUndefinedDeep({ ...exam, examId: safeId }));
+    await setDoc(doc(db, 'exams', clean.examId), clean);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function saveExamDocumentsBatch(
+  examsList: import('../core/types').ExamDocument[]
+): Promise<import('../core/types').ExamDocument[]> {
+  if (examsList.length === 0) return [];
+  const path = 'exams';
+  const cleaned = examsList.map((e) => sanitizeExamForFirestore(e));
+  try {
+    const BATCH_LIMIT = 25;
+    for (let i = 0; i < cleaned.length; i += BATCH_LIMIT) {
+      const slice = cleaned.slice(i, i + BATCH_LIMIT);
+      const batch = writeBatch(db);
+      for (const item of slice) {
+        batch.set(doc(db, 'exams', item.examId), item);
+      }
+      await batch.commit();
+    }
+    return cleaned;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
