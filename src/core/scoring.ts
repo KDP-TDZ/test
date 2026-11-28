@@ -22,13 +22,76 @@ export const DEFAULT_MASTERY_RULE: MasteryRuleConfig = {
 };
 
 /**
+ * Largest-remainder rounding to 1 decimal place so non-zero buckets ALWAYS sum to exact 100.0
+ * while zero-count buckets remain strictly 0.
+ */
+function computeNormalizedThreeGroupPercents(
+  correct: number,
+  partial: number,
+  incorrect: number
+): {
+  exactCorrectPercent: number | null;
+  partialPercent: number | null;
+  exactIncorrectPercent: number | null;
+  notFullyCorrectPercent: number | null;
+} {
+  const total = correct + partial + incorrect;
+  if (total <= 0) {
+    return {
+      exactCorrectPercent: null,
+      partialPercent: null,
+      exactIncorrectPercent: null,
+      notFullyCorrectPercent: null,
+    };
+  }
+
+  const counts = [correct, partial, incorrect];
+  // Scale to tenths of a percent (target sum = 1000)
+  const rawTenths = counts.map((c) => (c / total) * 1000);
+  const floored = rawTenths.map((v) => Math.floor(v));
+  let remainder = 1000 - floored.reduce((acc, v) => acc + v, 0);
+
+  const order = counts
+    .map((count, idx) => ({
+      idx,
+      count,
+      frac: rawTenths[idx] - floored[idx],
+    }))
+    .filter((entry) => entry.count > 0)
+    .sort((a, b) => {
+      if (b.frac !== a.frac) return b.frac - a.frac;
+      return b.idx - a.idx;
+    });
+
+  let cursor = 0;
+  while (remainder > 0 && order.length > 0) {
+    floored[order[cursor % order.length].idx] += 1;
+    remainder -= 1;
+    cursor += 1;
+  }
+
+  const exactCorrectPercent = floored[0] / 10;
+  const partialPercent = floored[1] / 10;
+  const exactIncorrectPercent = floored[2] / 10;
+  const notFullyCorrectPercent = Math.round((100 - exactCorrectPercent) * 10) / 10;
+
+  return {
+    exactCorrectPercent,
+    partialPercent,
+    exactIncorrectPercent,
+    notFullyCorrectPercent,
+  };
+}
+
+/**
  * Computes transparent Accuracy Score & Total Correct / Wrong percentages strictly from evaluated claims.
- * Every evaluated claim counts equally (1 unit) so counts and percentages ALWAYS match 100% transparently:
+ * Every evaluated written claim counts equally (1 unit) so counts and percentages ALWAYS match 100% transparently:
  * - CORRECT = 1.0 điểm
- * - PARTIALLY_CORRECT = 0.5 điểm (đúng một phần / thiếu điều kiện)
+ * - PARTIALLY_CORRECT = 0.5 điểm (đúng một phần / thiếu đơn vị / thiếu điều kiện)
  * - INCORRECT = 0.0 điểm
- * - UNVERIFIED, OCR_UNCERTAIN, OUT_OF_SCOPE, AMBIGUOUS, MISSING are excluded from the evaluated denominator.
- * - Guarantees correctPercent + incorrectPercent === 100 when evaluatedTotal > 0.
+ * - UNVERIFIED, OCR_UNCERTAIN, OUT_OF_SCOPE, AMBIGUOUS are excluded from evaluatedTotal.
+ * - MISSING is tracked separately in counts.missing (and Completeness) to prevent double-counting.
+ * - Guarantees exactCorrectPercent + partialPercent + exactIncorrectPercent === 100 AND correctPercent + incorrectPercent === 100 when evaluatedTotal > 0.
  * Never returns a fabricated 100% when there are zero evaluated claims.
  */
 export function calculateAccuracyScore(
@@ -94,12 +157,13 @@ export function calculateAccuracyScore(
   const correctPercent = accuracyScore;
   const incorrectPercent =
     accuracyScore !== null ? Math.round((100 - accuracyScore) * 10) / 10 : null;
-  const exactCorrectPercent =
-    evaluatedTotal > 0 ? Math.round((counts.correct / evaluatedTotal) * 1000) / 10 : null;
-  const partialPercent =
-    evaluatedTotal > 0 ? Math.round((counts.partiallyCorrect / evaluatedTotal) * 1000) / 10 : null;
-  const exactIncorrectPercent =
-    evaluatedTotal > 0 ? Math.round((counts.incorrect / evaluatedTotal) * 1000) / 10 : null;
+
+  const {
+    exactCorrectPercent,
+    partialPercent,
+    exactIncorrectPercent,
+    notFullyCorrectPercent,
+  } = computeNormalizedThreeGroupPercents(counts.correct, counts.partiallyCorrect, counts.incorrect);
 
   const verifiedWeight = evaluatedTotal;
   const earnedWeight = earnedPoints;
@@ -138,6 +202,7 @@ export function calculateAccuracyScore(
     exactCorrectPercent,
     partialPercent,
     exactIncorrectPercent,
+    notFullyCorrectPercent,
     verifiedWeight,
     earnedWeight,
     totalClaimWeight,
@@ -153,6 +218,7 @@ export interface ClaimScoreSummary {
   correctCount: number;
   partialCount: number;
   incorrectCount: number;
+  missingCount: number;
   wrongOrNeedFixCount: number;
   unverifiedCount: number;
   earnedPoints: number;
@@ -161,10 +227,11 @@ export interface ClaimScoreSummary {
   exactCorrectPercent: number | null;
   partialPercent: number | null;
   exactIncorrectPercent: number | null;
+  notFullyCorrectPercent: number | null;
 }
 
 /**
- * Pure helper for UI & reports to always display consistent Total Correct/Wrong and % Correct/% Wrong
+ * Pure helper for UI & reports to always display consistent counts and percentages
  * even for historical AnalysisRecord entries saved before the breakdown fields were added.
  */
 export function computeClaimScoreSummary(
@@ -178,6 +245,8 @@ export function computeClaimScoreSummary(
     claims.filter((c) => c.evaluationStatus === 'PARTIALLY_CORRECT').length;
   const incorrectCount =
     breakdown?.counts?.incorrect ?? claims.filter((c) => c.evaluationStatus === 'INCORRECT').length;
+  const missingCount =
+    breakdown?.counts?.missing ?? claims.filter((c) => c.evaluationStatus === 'MISSING').length;
   const unverifiedCount =
     breakdown?.counts
       ? breakdown.counts.unverified + breakdown.counts.ambiguous + breakdown.counts.ocrUncertain
@@ -195,22 +264,28 @@ export function computeClaimScoreSummary(
   const incorrectPercent =
     correctPercent !== null ? Math.round((100 - correctPercent) * 10) / 10 : null;
 
+  const {
+    exactCorrectPercent,
+    partialPercent,
+    exactIncorrectPercent,
+    notFullyCorrectPercent,
+  } = computeNormalizedThreeGroupPercents(correctCount, partialCount, incorrectCount);
+
   return {
     evaluatedTotal,
     correctCount,
     partialCount,
     incorrectCount,
-    wrongOrNeedFixCount: incorrectCount + partialCount,
+    missingCount,
+    wrongOrNeedFixCount: incorrectCount + partialCount + missingCount,
     unverifiedCount,
     earnedPoints,
     correctPercent,
     incorrectPercent,
-    exactCorrectPercent:
-      evaluatedTotal > 0 ? Math.round((correctCount / evaluatedTotal) * 1000) / 10 : null,
-    partialPercent:
-      evaluatedTotal > 0 ? Math.round((partialCount / evaluatedTotal) * 1000) / 10 : null,
-    exactIncorrectPercent:
-      evaluatedTotal > 0 ? Math.round((incorrectCount / evaluatedTotal) * 1000) / 10 : null,
+    exactCorrectPercent,
+    partialPercent,
+    exactIncorrectPercent,
+    notFullyCorrectPercent,
   };
 }
 

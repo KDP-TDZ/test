@@ -4593,6 +4593,45 @@ async function getAuditLogs(idToken) {
 import crypto6 from "node:crypto";
 
 // src/core/scoring.ts
+function computeNormalizedThreeGroupPercents(correct, partial, incorrect) {
+  const total = correct + partial + incorrect;
+  if (total <= 0) {
+    return {
+      exactCorrectPercent: null,
+      partialPercent: null,
+      exactIncorrectPercent: null,
+      notFullyCorrectPercent: null
+    };
+  }
+  const counts = [correct, partial, incorrect];
+  const rawTenths = counts.map((c) => c / total * 1e3);
+  const floored = rawTenths.map((v) => Math.floor(v));
+  let remainder = 1e3 - floored.reduce((acc, v) => acc + v, 0);
+  const order = counts.map((count, idx) => ({
+    idx,
+    count,
+    frac: rawTenths[idx] - floored[idx]
+  })).filter((entry) => entry.count > 0).sort((a, b) => {
+    if (b.frac !== a.frac) return b.frac - a.frac;
+    return b.idx - a.idx;
+  });
+  let cursor = 0;
+  while (remainder > 0 && order.length > 0) {
+    floored[order[cursor % order.length].idx] += 1;
+    remainder -= 1;
+    cursor += 1;
+  }
+  const exactCorrectPercent = floored[0] / 10;
+  const partialPercent = floored[1] / 10;
+  const exactIncorrectPercent = floored[2] / 10;
+  const notFullyCorrectPercent = Math.round((100 - exactCorrectPercent) * 10) / 10;
+  return {
+    exactCorrectPercent,
+    partialPercent,
+    exactIncorrectPercent,
+    notFullyCorrectPercent
+  };
+}
 function calculateAccuracyScore(claims, hasReferenceTextbook) {
   const counts = {
     total: claims.length,
@@ -4645,9 +4684,12 @@ function calculateAccuracyScore(claims, hasReferenceTextbook) {
   const accuracyScore = evaluatedTotal > 0 ? Math.round(earnedPoints / evaluatedTotal * 1e3) / 10 : null;
   const correctPercent = accuracyScore;
   const incorrectPercent = accuracyScore !== null ? Math.round((100 - accuracyScore) * 10) / 10 : null;
-  const exactCorrectPercent = evaluatedTotal > 0 ? Math.round(counts.correct / evaluatedTotal * 1e3) / 10 : null;
-  const partialPercent = evaluatedTotal > 0 ? Math.round(counts.partiallyCorrect / evaluatedTotal * 1e3) / 10 : null;
-  const exactIncorrectPercent = evaluatedTotal > 0 ? Math.round(counts.incorrect / evaluatedTotal * 1e3) / 10 : null;
+  const {
+    exactCorrectPercent,
+    partialPercent,
+    exactIncorrectPercent,
+    notFullyCorrectPercent
+  } = computeNormalizedThreeGroupPercents(counts.correct, counts.partiallyCorrect, counts.incorrect);
   const verifiedWeight = evaluatedTotal;
   const earnedWeight = earnedPoints;
   const totalClaimWeight = totalGradableClaims;
@@ -4675,6 +4717,7 @@ function calculateAccuracyScore(claims, hasReferenceTextbook) {
     exactCorrectPercent,
     partialPercent,
     exactIncorrectPercent,
+    notFullyCorrectPercent,
     verifiedWeight,
     earnedWeight,
     totalClaimWeight,
@@ -5645,6 +5688,673 @@ ${nextLine}`,
   }
   return blocks;
 }
+function normalizeCompact(text) {
+  return (text || "").normalize("NFC").toLowerCase().replace(/\s+/g, "");
+}
+function buildNormalizedIndexMap(text, stripWhitespace) {
+  const units = [];
+  let i = 0;
+  while (i < text.length) {
+    const cp = text.codePointAt(i);
+    const baseLen = cp > 65535 ? 2 : 1;
+    let clusterEnd = i + baseLen;
+    while (clusterEnd < text.length) {
+      const nextCp = text.codePointAt(clusterEnd);
+      const nextLen = nextCp > 65535 ? 2 : 1;
+      const nextChar = text.slice(clusterEnd, clusterEnd + nextLen);
+      if (new RegExp("^\\p{M}$", "u").test(nextChar)) {
+        clusterEnd += nextLen;
+      } else {
+        break;
+      }
+    }
+    const rawCluster = text.slice(i, clusterEnd);
+    if (stripWhitespace && /^\s+$/u.test(rawCluster)) {
+      i = clusterEnd;
+      continue;
+    }
+    const nfcLower = rawCluster.normalize("NFC").toLowerCase();
+    for (let k = 0; k < nfcLower.length; k += 1) {
+      units.push({
+        char: nfcLower[k],
+        origStart: i,
+        origEnd: clusterEnd
+      });
+    }
+    i = clusterEnd;
+  }
+  return {
+    normalized: units.map((u) => u.char).join(""),
+    units
+  };
+}
+function findAllFlexibleSubstringRanges(haystack, needle) {
+  if (!haystack || !needle) return [];
+  const trimmedNeedle = needle.trim();
+  if (trimmedNeedle.length < 2) return [];
+  const normNeedle = trimmedNeedle.normalize("NFC").toLowerCase();
+  const hayDirect = buildNormalizedIndexMap(haystack, false);
+  const directMatches = [];
+  if (normNeedle.length >= 2) {
+    let from2 = 0;
+    while (from2 <= hayDirect.normalized.length - normNeedle.length) {
+      const idx = hayDirect.normalized.indexOf(normNeedle, from2);
+      if (idx < 0) break;
+      const start = hayDirect.units[idx].origStart;
+      const end = hayDirect.units[idx + normNeedle.length - 1].origEnd;
+      directMatches.push({ start, end });
+      from2 = idx + Math.max(1, normNeedle.length);
+    }
+  }
+  if (directMatches.length > 0) {
+    return directMatches;
+  }
+  const compactNeedle = normNeedle.replace(/\s+/gu, "");
+  if (compactNeedle.length < 2) return [];
+  const hayCompact = buildNormalizedIndexMap(haystack, true);
+  const compactMatches = [];
+  let from = 0;
+  while (from <= hayCompact.normalized.length - compactNeedle.length) {
+    const idx = hayCompact.normalized.indexOf(compactNeedle, from);
+    if (idx < 0) break;
+    const start = hayCompact.units[idx].origStart;
+    const end = hayCompact.units[idx + compactNeedle.length - 1].origEnd;
+    compactMatches.push({ start, end });
+    from = idx + Math.max(1, compactNeedle.length);
+  }
+  return compactMatches;
+}
+function scoreContextMatch(haystack, range, contextBefore, contextAfter) {
+  let score = 0;
+  const normBefore = normalizeCompact(contextBefore || "");
+  const normAfter = normalizeCompact(contextAfter || "");
+  if (normBefore.length >= 2) {
+    const windowBefore = normalizeCompact(haystack.slice(Math.max(0, range.start - 64), range.start));
+    if (windowBefore.endsWith(normBefore)) {
+      score += normBefore.length * 3;
+    } else if (windowBefore.includes(normBefore)) {
+      score += normBefore.length;
+    }
+  }
+  if (normAfter.length >= 2) {
+    const windowAfter = normalizeCompact(haystack.slice(range.end, Math.min(haystack.length, range.end + 64)));
+    if (windowAfter.startsWith(normAfter)) {
+      score += normAfter.length * 3;
+    } else if (windowAfter.includes(normAfter)) {
+      score += normAfter.length;
+    }
+  }
+  return score;
+}
+function verifyAndAnchorErrorSpan(params) {
+  const {
+    blockText,
+    errorSpan,
+    sourceText,
+    startOffset,
+    endOffset,
+    contextBefore,
+    contextAfter,
+    isMissing,
+    allowLegacyBlockFallback = false
+  } = params;
+  if (isMissing) {
+    return {
+      locationStatus: "anchor_missing",
+      reason: "missing_content_anchor"
+    };
+  }
+  if (!blockText) {
+    return {
+      locationStatus: "unverified",
+      reason: "empty_block_text"
+    };
+  }
+  const trimmedErrorSpan = (errorSpan || "").trim();
+  const trimmedSourceText = (sourceText || "").trim();
+  if (typeof startOffset === "number" && typeof endOffset === "number" && Number.isInteger(startOffset) && Number.isInteger(endOffset) && startOffset >= 0 && endOffset > startOffset && endOffset <= blockText.length) {
+    const slice = blockText.slice(startOffset, endOffset);
+    const expected = trimmedErrorSpan || trimmedSourceText;
+    if (!expected || normalizeCompact(slice) === normalizeCompact(expected)) {
+      return {
+        locationStatus: "verified",
+        startOffset,
+        endOffset,
+        verifiedSpan: slice
+      };
+    }
+  }
+  const pickUniqueOccurrence = (ranges, enclosingRanges) => {
+    if (ranges.length === 0) {
+      return { locationStatus: "unverified", reason: "span_not_found" };
+    }
+    if (ranges.length === 1) {
+      const r = ranges[0];
+      return {
+        locationStatus: "verified",
+        startOffset: r.start,
+        endOffset: r.end,
+        verifiedSpan: blockText.slice(r.start, r.end)
+      };
+    }
+    if (enclosingRanges && enclosingRanges.length === 1) {
+      const enc = enclosingRanges[0];
+      const inside = ranges.filter((r) => r.start >= enc.start && r.end <= enc.end);
+      if (inside.length === 1) {
+        return {
+          locationStatus: "verified",
+          startOffset: inside[0].start,
+          endOffset: inside[0].end,
+          verifiedSpan: blockText.slice(inside[0].start, inside[0].end)
+        };
+      }
+      if (inside.length > 1) {
+        ranges = inside;
+      }
+    }
+    if (contextBefore && contextBefore.trim() || contextAfter && contextAfter.trim()) {
+      const scored = ranges.map((r) => ({ r, score: scoreContextMatch(blockText, r, contextBefore, contextAfter) })).sort((a, b) => b.score - a.score);
+      if (scored[0].score > 0 && (scored.length === 1 || scored[0].score > scored[1].score)) {
+        return {
+          locationStatus: "verified",
+          startOffset: scored[0].r.start,
+          endOffset: scored[0].r.end,
+          verifiedSpan: blockText.slice(scored[0].r.start, scored[0].r.end)
+        };
+      }
+    }
+    if (typeof startOffset === "number" && Number.isFinite(startOffset)) {
+      const byDist = ranges.map((r) => ({ r, dist: Math.abs(r.start - startOffset) })).sort((a, b) => a.dist - b.dist);
+      if (byDist[0].dist <= 5 && (byDist.length === 1 || byDist[0].dist < byDist[1].dist)) {
+        return {
+          locationStatus: "verified",
+          startOffset: byDist[0].r.start,
+          endOffset: byDist[0].r.end,
+          verifiedSpan: blockText.slice(byDist[0].r.start, byDist[0].r.end)
+        };
+      }
+    }
+    return {
+      locationStatus: "unverified",
+      reason: "ambiguous_duplicate_span"
+    };
+  };
+  if (trimmedErrorSpan.length >= 2) {
+    const errorRanges = findAllFlexibleSubstringRanges(blockText, trimmedErrorSpan);
+    const sourceRanges = trimmedSourceText.length >= 2 ? findAllFlexibleSubstringRanges(blockText, trimmedSourceText) : void 0;
+    const resolved = pickUniqueOccurrence(errorRanges, sourceRanges);
+    if (resolved.locationStatus === "verified") {
+      return resolved;
+    }
+    return {
+      locationStatus: "unverified",
+      reason: errorRanges.length > 1 ? "ambiguous_duplicate_span" : "error_span_not_found"
+    };
+  }
+  if (trimmedSourceText.length >= 2) {
+    const sourceRanges = findAllFlexibleSubstringRanges(blockText, trimmedSourceText);
+    const resolved = pickUniqueOccurrence(sourceRanges);
+    if (resolved.locationStatus === "verified") {
+      return resolved;
+    }
+    const lines = blockText.split("\n");
+    if (lines.length === 2 && isLeadInLabel(lines[0]) && isFormulaLine(lines[1])) {
+      const formulaStart = blockText.indexOf(lines[1]);
+      if (formulaStart >= 0 && (normalizeCompact(trimmedSourceText).includes(normalizeCompact(lines[1])) || allowLegacyBlockFallback)) {
+        return {
+          locationStatus: "verified",
+          startOffset: formulaStart,
+          endOffset: formulaStart + lines[1].length,
+          verifiedSpan: lines[1]
+        };
+      }
+    }
+    if (allowLegacyBlockFallback) {
+      const trimmedBlock = blockText.trim();
+      if (trimmedBlock.length >= 6 && findAllFlexibleSubstringRanges(trimmedSourceText, trimmedBlock).length > 0) {
+        return {
+          locationStatus: "verified",
+          startOffset: 0,
+          endOffset: blockText.length,
+          verifiedSpan: blockText
+        };
+      }
+    }
+  }
+  return {
+    locationStatus: "unverified",
+    reason: "span_not_found"
+  };
+}
+function sortClaimsByDocumentPosition(claims, pages) {
+  const blockOrderByPage = /* @__PURE__ */ new Map();
+  for (const page of pages) {
+    const map = /* @__PURE__ */ new Map();
+    (page.blocks || []).forEach((block, idx) => {
+      map.set(block.blockId, idx);
+    });
+    blockOrderByPage.set(page.pageNumber, map);
+  }
+  return claims.map((claim, originalIndex) => {
+    const pageNum = claim.sourcePage || 1;
+    const pageBlockMap = blockOrderByPage.get(pageNum);
+    const primaryBlockId = claim.blockId || claim.blockIds?.[0];
+    const blockIdx = primaryBlockId && pageBlockMap?.has(primaryBlockId) ? pageBlockMap.get(primaryBlockId) : Number.MAX_SAFE_INTEGER;
+    const isMissing = claim.evaluationStatus === "MISSING" ? 1 : 0;
+    const offset = typeof claim.startOffset === "number" && Number.isFinite(claim.startOffset) ? claim.startOffset : Number.MAX_SAFE_INTEGER;
+    return { claim, originalIndex, pageNum, blockIdx, isMissing, offset };
+  }).sort((a, b) => {
+    if (a.pageNum !== b.pageNum) return a.pageNum - b.pageNum;
+    if (a.blockIdx !== b.blockIdx) return a.blockIdx - b.blockIdx;
+    if (a.isMissing !== b.isMissing) return a.isMissing - b.isMissing;
+    if (a.offset !== b.offset) return a.offset - b.offset;
+    return a.originalIndex - b.originalIndex;
+  }).map((entry) => entry.claim);
+}
+
+// src/core/verificationPostProcess.ts
+var OCR_BLOCK_LOW_CONFIDENCE_THRESHOLD = 0.65;
+var UNREADABLE_OCR_MARKER = "[KH\xD4NG NH\xCCN R\xD5]";
+function normalizeCompactKey(text) {
+  return (text || "").normalize("NFC").toLowerCase().replace(/\s+/g, "");
+}
+function hasMeaningfulReadableContent(pages) {
+  const combined = pages.map((p) => {
+    if (Array.isArray(p.blocks) && p.blocks.length > 0) {
+      return p.blocks.map((b) => b.extractedText || "").join("\n");
+    }
+    return p.rawText || "";
+  }).join("\n").replace(/\[KHÔNG NHÌN RÕ\]/gi, "").replace(/[\s\p{P}\p{S}]+/gu, "");
+  return combined.length >= 12;
+}
+function isBlockOcrUncertain(block, ocrConfirmed) {
+  const text = block.extractedText || "";
+  if (text.includes(UNREADABLE_OCR_MARKER)) return true;
+  if (!ocrConfirmed && typeof block.confidence === "number" && block.confidence < OCR_BLOCK_LOW_CONFIDENCE_THRESHOLD) {
+    return true;
+  }
+  return false;
+}
+function buildBlockLookup(pages) {
+  const map = /* @__PURE__ */ new Map();
+  for (const page of pages) {
+    (page.blocks || []).forEach((block, orderIndex) => {
+      if (block.blockId) {
+        map.set(block.blockId, { block, pageNumber: page.pageNumber, orderIndex });
+      }
+    });
+  }
+  return map;
+}
+var VALID_CLAIM_STATUSES = /* @__PURE__ */ new Set([
+  "CORRECT",
+  "PARTIALLY_CORRECT",
+  "INCORRECT",
+  "MISSING",
+  "UNVERIFIED",
+  "AMBIGUOUS",
+  "OCR_UNCERTAIN",
+  "OUT_OF_SCOPE"
+]);
+function validateAndApplyVerifierAdjustments(originalClaims, adjustments, pages) {
+  const claims = originalClaims.map((c) => ({ ...c }));
+  const blockLookup = buildBlockLookup(pages);
+  const notes = [];
+  let appliedCount = 0;
+  let rejectedCount = 0;
+  let addedCount = 0;
+  if (!Array.isArray(adjustments) || adjustments.length === 0) {
+    return { claims, appliedCount: 0, rejectedCount: 0, addedCount: 0, notes };
+  }
+  for (const adj of adjustments) {
+    if (!adj || typeof adj !== "object") {
+      rejectedCount += 1;
+      continue;
+    }
+    const nextStatus = adj.evaluationStatus;
+    if (!VALID_CLAIM_STATUSES.has(nextStatus)) {
+      rejectedCount += 1;
+      notes.push(`B\u1ECF qua \u0111i\u1EC1u ch\u1EC9nh tr\u1EA1ng th\xE1i kh\xF4ng h\u1EE3p l\u1EC7: ${String(nextStatus)}`);
+      continue;
+    }
+    const reason = (adj.reason || "").trim();
+    if (reason.length < 6) {
+      rejectedCount += 1;
+      notes.push("B\u1ECF qua \u0111i\u1EC1u ch\u1EC9nh thi\u1EBFu l\xFD do \u0111\u1ED1i chi\u1EBFu c\u1EE5 th\u1EC3.");
+      continue;
+    }
+    let targetIdx = -1;
+    if (adj.claimId) {
+      targetIdx = claims.findIndex((c) => c.claimId === adj.claimId);
+    }
+    if (targetIdx < 0 && typeof adj.claimIndex === "number" && Number.isInteger(adj.claimIndex) && adj.claimIndex >= 0 && adj.claimIndex < claims.length) {
+      targetIdx = adj.claimIndex;
+    }
+    if (targetIdx < 0 && adj.claimIndex === -1 && (nextStatus === "INCORRECT" || nextStatus === "PARTIALLY_CORRECT")) {
+      const sourceText = (adj.sourceText || "").trim();
+      if (sourceText.length < 2) {
+        rejectedCount += 1;
+        continue;
+      }
+      const blockInfo = adj.blockId ? blockLookup.get(adj.blockId) : void 0;
+      const targetText = blockInfo?.block.extractedText || "";
+      const anchor = targetText ? verifyAndAnchorErrorSpan({
+        blockText: targetText,
+        errorSpan: adj.errorSpan,
+        sourceText,
+        contextBefore: adj.contextBefore,
+        contextAfter: adj.contextAfter
+      }) : null;
+      const dupKey = normalizeCompactKey(adj.errorSpan || sourceText);
+      const isDuplicate = claims.some(
+        (existing) => existing.blockId === adj.blockId && existing.evaluationStatus === nextStatus && normalizeCompactKey(existing.errorSpan || existing.sourceText) === dupKey
+      );
+      if (isDuplicate) {
+        rejectedCount += 1;
+        notes.push("B\u1ECF qua l\u1ED7i b\u1ED5 sung b\u1ECB tr\xF9ng l\u1EB7p t\u1EEB b\u01B0\u1EDBc D\xF2.");
+        continue;
+      }
+      const template = claims[0];
+      const newClaim = {
+        claimId: `claim_verify_${claims.length + 1}`,
+        sourceText,
+        normalizedMeaning: (adj.concept || sourceText).slice(0, 120),
+        subject: template?.subject || "khac",
+        chapter: (adj.chapter || template?.chapter || "To\xE0n b\u1ED9 t\xE0i li\u1EC7u").trim(),
+        concept: (adj.concept || "N\u1ED9i dung ph\xE1t hi\u1EC7n th\xEAm khi d\xF2 ch\xE9o").trim(),
+        importanceLevel: nextStatus === "INCORRECT" ? "core" : "supporting",
+        importanceWeight: nextStatus === "INCORRECT" ? 3 : 2,
+        sourcePage: blockInfo?.pageNumber || adj.sourcePage || 1,
+        blockId: blockInfo?.block.blockId || adj.blockId,
+        blockIds: blockInfo?.block.blockId ? [blockInfo.block.blockId] : void 0,
+        errorSpan: anchor?.verifiedSpan || adj.errorSpan?.trim() || void 0,
+        startOffset: anchor?.startOffset,
+        endOffset: anchor?.endOffset,
+        contextBefore: adj.contextBefore?.trim() || void 0,
+        contextAfter: adj.contextAfter?.trim() || void 0,
+        locationStatus: anchor?.locationStatus || "unverified",
+        verificationNote: `B\u01B0\u1EDBc D\xF2 b\u1ED5 sung: ${reason}`,
+        shortFix: (adj.shortFix || adj.suggestedFix || adj.correctKnowledge || "").trim() || void 0,
+        ocrConfidence: blockInfo?.block.confidence ?? 0.9,
+        knowledgeType: "textbook_core",
+        evaluationStatus: nextStatus,
+        explanation: (adj.explanation || reason).trim(),
+        correctKnowledge: (adj.correctKnowledge || adj.shortFix || "").trim(),
+        suggestedFix: (adj.suggestedFix || adj.shortFix || "").trim() || void 0,
+        evidences: []
+      };
+      claims.push(newClaim);
+      appliedCount += 1;
+      addedCount += 1;
+      continue;
+    }
+    if (targetIdx < 0) {
+      rejectedCount += 1;
+      notes.push(`Kh\xF4ng t\xECm th\u1EA5y m\u1EC7nh \u0111\u1EC1 m\u1EE5c ti\xEAu cho \u0111i\u1EC1u ch\u1EC9nh (${String(adj.claimId ?? adj.claimIndex)}).`);
+      continue;
+    }
+    const target = claims[targetIdx];
+    if (adj.previousStatus && adj.previousStatus !== target.evaluationStatus) {
+      rejectedCount += 1;
+      notes.push(
+        `T\u1EEB ch\u1ED1i \u0111i\u1EC1u ch\u1EC9nh cho ${target.claimId}: tr\u1EA1ng th\xE1i c\u0169 kh\xF4ng kh\u1EDBp (${adj.previousStatus} != ${target.evaluationStatus}).`
+      );
+      continue;
+    }
+    if (target.evaluationStatus === "INCORRECT" && nextStatus === "CORRECT") {
+      const basis = (adj.evidenceBasis || "").trim();
+      if (basis.length < 8 || reason.length < 12) {
+        rejectedCount += 1;
+        target.verificationNote = `B\u01B0\u1EDBc D\xF2 nghi ng\u1EDD l\u1ED7i nh\u01B0ng thi\u1EBFu c\u0103n c\u1EE9 c\u1EE5 th\u1EC3 (${reason}); gi\u1EEF nguy\xEAn \u0111\u1EC3 ng\u01B0\u1EDDi h\u1ECDc ki\u1EC3m tra.`;
+        notes.push(`T\u1EEB ch\u1ED1i h\u1EA1 l\u1ED7i ${target.claimId} t\u1EEB INCORRECT -> CORRECT do thi\u1EBFu evidenceBasis.`);
+        continue;
+      }
+    }
+    let nextErrorSpan = target.errorSpan;
+    let nextStartOffset = target.startOffset;
+    let nextEndOffset = target.endOffset;
+    let nextLocationStatus = target.locationStatus;
+    if (nextStatus === "CORRECT") {
+      nextErrorSpan = void 0;
+      nextStartOffset = void 0;
+      nextEndOffset = void 0;
+      nextLocationStatus = void 0;
+    } else if (nextStatus === "MISSING") {
+      nextErrorSpan = void 0;
+      nextStartOffset = void 0;
+      nextEndOffset = void 0;
+      nextLocationStatus = "anchor_missing";
+    } else if (adj.errorSpan && adj.errorSpan.trim()) {
+      const blockInfo = target.blockId ? blockLookup.get(target.blockId) : void 0;
+      if (blockInfo) {
+        const verified = verifyAndAnchorErrorSpan({
+          blockText: blockInfo.block.extractedText,
+          errorSpan: adj.errorSpan.trim(),
+          sourceText: target.sourceText,
+          contextBefore: adj.contextBefore || target.contextBefore,
+          contextAfter: adj.contextAfter || target.contextAfter
+        });
+        if (verified.locationStatus === "verified") {
+          nextErrorSpan = verified.verifiedSpan;
+          nextStartOffset = verified.startOffset;
+          nextEndOffset = verified.endOffset;
+          nextLocationStatus = "verified";
+        } else if (!target.errorSpan) {
+          nextErrorSpan = adj.errorSpan.trim();
+          nextStartOffset = void 0;
+          nextEndOffset = void 0;
+          nextLocationStatus = "unverified";
+        }
+      } else {
+        nextErrorSpan = adj.errorSpan.trim();
+      }
+    }
+    const updated = {
+      ...target,
+      evaluationStatus: nextStatus,
+      errorSpan: nextErrorSpan,
+      startOffset: nextStartOffset,
+      endOffset: nextEndOffset,
+      locationStatus: nextLocationStatus,
+      contextBefore: adj.contextBefore?.trim() || target.contextBefore,
+      contextAfter: adj.contextAfter?.trim() || target.contextAfter,
+      shortFix: nextStatus === "CORRECT" ? void 0 : (adj.shortFix || target.shortFix || adj.suggestedFix || "").trim() || void 0,
+      explanation: (adj.explanation || target.explanation || reason).trim(),
+      correctKnowledge: (adj.correctKnowledge || target.correctKnowledge || "").trim(),
+      suggestedFix: nextStatus === "CORRECT" ? void 0 : (adj.suggestedFix || target.suggestedFix || adj.shortFix || "").trim() || void 0,
+      verificationNote: `D\xF2 ch\xE9o (${target.evaluationStatus} \u2192 ${nextStatus}): ${reason}`
+    };
+    claims[targetIdx] = updated;
+    appliedCount += 1;
+  }
+  return { claims, appliedCount, rejectedCount, addedCount, notes };
+}
+function anchorClaimsAndBuildAnnotations(params) {
+  const { pages, ocrConfirmed } = params;
+  const blockLookup = buildBlockLookup(pages);
+  const lowConfidenceBlockIds = [];
+  for (const page of pages) {
+    for (const block of page.blocks || []) {
+      if (isBlockOcrUncertain(block, ocrConfirmed)) {
+        lowConfidenceBlockIds.push(block.blockId);
+      }
+    }
+  }
+  const findUniqueBlockForClaim = (claim) => {
+    if (claim.blockId && blockLookup.has(claim.blockId)) {
+      const found = blockLookup.get(claim.blockId);
+      return { block: found.block, pageNumber: found.pageNumber };
+    }
+    if (Array.isArray(claim.blockIds)) {
+      for (const bid of claim.blockIds) {
+        if (blockLookup.has(bid)) {
+          const found = blockLookup.get(bid);
+          return { block: found.block, pageNumber: found.pageNumber };
+        }
+      }
+    }
+    const targetPages = pages.filter((p) => p.pageNumber === (claim.sourcePage || 1));
+    const searchPool = targetPages.length > 0 ? targetPages : pages;
+    const matchingBlocks = [];
+    for (const page of searchPool) {
+      for (const block of page.blocks || []) {
+        const res = verifyAndAnchorErrorSpan({
+          blockText: block.extractedText,
+          errorSpan: claim.errorSpan,
+          sourceText: claim.sourceText,
+          contextBefore: claim.contextBefore,
+          contextAfter: claim.contextAfter,
+          allowLegacyBlockFallback: !claim.errorSpan
+        });
+        if (res.locationStatus === "verified") {
+          matchingBlocks.push({ block, pageNumber: page.pageNumber });
+        }
+      }
+    }
+    if (matchingBlocks.length === 1) {
+      return matchingBlocks[0];
+    }
+    return null;
+  };
+  const processedClaims = params.claims.map((rawClaim) => {
+    const claim = { ...rawClaim };
+    const matched = findUniqueBlockForClaim(claim);
+    if (matched) {
+      claim.blockId = matched.block.blockId;
+      claim.blockIds = Array.from(/* @__PURE__ */ new Set([matched.block.blockId, ...claim.blockIds || []]));
+      claim.sourcePage = matched.pageNumber;
+      claim.boundingBox = claim.boundingBox ?? matched.block.boundingBox ?? null;
+    }
+    if (claim.evaluationStatus === "MISSING") {
+      if (!claim.blockId) {
+        const page = pages.find((p) => p.pageNumber === (claim.sourcePage || 1)) || pages[0];
+        const lastBlock = page?.blocks?.[page.blocks.length - 1];
+        if (lastBlock) {
+          claim.blockId = lastBlock.blockId;
+          claim.blockIds = [lastBlock.blockId];
+        }
+      }
+      claim.errorSpan = void 0;
+      claim.startOffset = void 0;
+      claim.endOffset = void 0;
+      claim.locationStatus = "anchor_missing";
+      return claim;
+    }
+    const targetBlock = claim.blockId ? blockLookup.get(claim.blockId)?.block : void 0;
+    const sourceContainsUnreadable = (claim.sourceText || "").includes(UNREADABLE_OCR_MARKER) || (claim.errorSpan || "").includes(UNREADABLE_OCR_MARKER);
+    const blockReadableWithoutMarker = targetBlock ? targetBlock.extractedText.replace(/\[KHÔNG NHÌN RÕ\]/gi, "").replace(/[\s\p{P}]+/gu, "") : "";
+    const blockMostlyUnreadable = Boolean(
+      targetBlock && targetBlock.extractedText.includes(UNREADABLE_OCR_MARKER) && blockReadableWithoutMarker.length < 8
+    );
+    const blockLowConf = Boolean(
+      targetBlock && !ocrConfirmed && typeof targetBlock.confidence === "number" && targetBlock.confidence < OCR_BLOCK_LOW_CONFIDENCE_THRESHOLD
+    );
+    if (claim.evaluationStatus !== "OUT_OF_SCOPE" && (sourceContainsUnreadable || blockMostlyUnreadable || blockLowConf)) {
+      const confVal = targetBlock && typeof targetBlock.confidence === "number" ? Math.min(claim.ocrConfidence ?? 1, targetBlock.confidence) : Math.min(claim.ocrConfidence ?? 0.5, 0.5);
+      claim.ocrConfidence = Math.round(confVal * 100) / 100;
+      if (claim.evaluationStatus === "INCORRECT" || claim.evaluationStatus === "CORRECT" || claim.evaluationStatus === "PARTIALLY_CORRECT") {
+        claim.evaluationStatus = "OCR_UNCERTAIN";
+        claim.explanation = sourceContainsUnreadable || blockMostlyUnreadable ? "\u0110o\u1EA1n n\xE0y ch\u1EE9a v\xF9ng OCR kh\xF4ng nh\xECn r\xF5 ([KH\xD4NG NH\xCCN R\xD5]); h\u1EC7 th\u1ED1ng kh\xF4ng suy \u0111o\xE1n \u0111\u1EC3 tr\xE1nh ch\u1EA5m sai. Vui l\xF2ng ch\u1EE5p r\xF5 h\u01A1n ho\u1EB7c s\u1EEDa l\u1EA1i v\u0103n b\u1EA3n OCR." : `\u0110\u1ED9 tin c\u1EADy OCR c\u1EE7a \u0111o\u1EA1n n\xE0y th\u1EA5p (${Math.round(claim.ocrConfidence * 100)}%); h\u1EC7 th\u1ED1ng t\u1EA1m \u0111\xE1nh d\u1EA5u c\u1EA7n ki\u1EC3m tra l\u1EA1i ch\u1EEF nh\u1EADn d\u1EA1ng tr\u01B0\u1EDBc khi k\u1EBFt lu\u1EADn \u0111\xFAng/sai.`;
+        claim.shortFix = "Ki\u1EC3m tra l\u1EA1i ch\u1EEF OCR \u1EDF \u0111o\u1EA1n n\xE0y v\xE0 \u0111\u1ED1i chi\u1EBFu v\u1EDBi b\xE0i l\xE0m g\u1ED1c.";
+      }
+    }
+    if (!targetBlock) {
+      if (claim.evaluationStatus === "INCORRECT" || claim.evaluationStatus === "PARTIALLY_CORRECT" || claim.evaluationStatus === "OCR_UNCERTAIN" || claim.evaluationStatus === "UNVERIFIED" || claim.evaluationStatus === "AMBIGUOUS") {
+        claim.startOffset = void 0;
+        claim.endOffset = void 0;
+        claim.locationStatus = "unverified";
+        if (!claim.verificationNote) {
+          claim.verificationNote = "Kh\xF4ng x\xE1c \u0111\u1ECBnh \u0111\u01B0\u1EE3c duy nh\u1EA5t \u0111o\u1EA1n v\u0103n b\u1EA3n ch\u1EE9a l\u1ED7i tr\xEAn b\u1EA3n g\u1ED1c.";
+        }
+      }
+      return claim;
+    }
+    const anchored = verifyAndAnchorErrorSpan({
+      blockText: targetBlock.extractedText,
+      errorSpan: claim.evaluationStatus === "CORRECT" || claim.evaluationStatus === "OUT_OF_SCOPE" ? void 0 : claim.errorSpan,
+      sourceText: claim.sourceText,
+      startOffset: claim.startOffset,
+      endOffset: claim.endOffset,
+      contextBefore: claim.contextBefore,
+      contextAfter: claim.contextAfter,
+      allowLegacyBlockFallback: !claim.errorSpan
+    });
+    if (anchored.locationStatus === "verified" && typeof anchored.startOffset === "number" && typeof anchored.endOffset === "number") {
+      claim.startOffset = anchored.startOffset;
+      claim.endOffset = anchored.endOffset;
+      if (claim.evaluationStatus !== "CORRECT" && claim.evaluationStatus !== "OUT_OF_SCOPE") {
+        claim.errorSpan = anchored.verifiedSpan;
+        claim.locationStatus = "verified";
+      }
+    } else if (claim.evaluationStatus === "INCORRECT" || claim.evaluationStatus === "PARTIALLY_CORRECT" || claim.evaluationStatus === "OCR_UNCERTAIN" || claim.evaluationStatus === "UNVERIFIED" || claim.evaluationStatus === "AMBIGUOUS") {
+      claim.startOffset = void 0;
+      claim.endOffset = void 0;
+      claim.locationStatus = "unverified";
+      if (!claim.verificationNote) {
+        claim.verificationNote = anchored.reason === "ambiguous_duplicate_span" ? "C\u1EE5m t\u1EEB xu\u1EA5t hi\u1EC7n nhi\u1EC1u l\u1EA7n trong \u0111o\u1EA1n nh\u01B0ng thi\u1EBFu ng\u1EEF c\u1EA3nh \u0111\u1ECBnh v\u1ECB duy nh\u1EA5t." : "C\u1EE5m t\u1EEB l\u1ED7i do AI tr\xEDch kh\xF4ng kh\u1EDBp ch\xEDnh x\xE1c v\u1EDBi v\u0103n b\u1EA3n nguy\xEAn b\u1EA3n.";
+      }
+    }
+    return claim;
+  });
+  const sortedClaims = sortClaimsByDocumentPosition(processedClaims, pages);
+  const annotations = [];
+  const seenAnnotationKeys = /* @__PURE__ */ new Set();
+  for (const claim of sortedClaims) {
+    if (claim.evaluationStatus === "CORRECT" || claim.evaluationStatus === "OUT_OF_SCOPE") {
+      continue;
+    }
+    let color = "yellow";
+    let kind = "ocr_warning";
+    if (claim.evaluationStatus === "INCORRECT") {
+      color = "red";
+      kind = "error";
+    } else if (claim.evaluationStatus === "PARTIALLY_CORRECT") {
+      color = "orange";
+      kind = "partial";
+    } else if (claim.evaluationStatus === "MISSING") {
+      color = "orange";
+      kind = "missing";
+    } else {
+      color = "yellow";
+      kind = "ocr_warning";
+    }
+    const dedupKey = [
+      claim.sourcePage || 1,
+      claim.blockId || "no_block",
+      claim.evaluationStatus,
+      claim.locationStatus || "unknown",
+      claim.startOffset ?? "na",
+      claim.endOffset ?? "na",
+      normalizeCompactKey(claim.errorSpan || claim.concept || claim.sourceText).slice(0, 80)
+    ].join("|");
+    if (seenAnnotationKeys.has(dedupKey)) {
+      continue;
+    }
+    seenAnnotationKeys.add(dedupKey);
+    annotations.push({
+      annotationId: `ann_${annotations.length + 1}`,
+      pageNumber: claim.sourcePage || 1,
+      blockId: claim.blockId,
+      blockIds: claim.blockIds,
+      textExcerpt: claim.sourceText,
+      errorSpan: claim.errorSpan,
+      startOffset: claim.startOffset,
+      endOffset: claim.endOffset,
+      locationStatus: claim.locationStatus,
+      annotationKind: kind,
+      claimId: claim.claimId,
+      boundingBox: claim.boundingBox ?? null,
+      annotationColor: color,
+      reason: claim.explanation,
+      evidenceId: claim.evidences[0]?.evidenceId
+    });
+  }
+  return {
+    claims: sortedClaims,
+    annotations,
+    lowConfidenceBlockIds
+  };
+}
 
 // src/core/uploadBatching.ts
 var MAX_IMAGE_UPLOAD_MB = 5;
@@ -5943,7 +6653,7 @@ function normalizeJsonEscapeAndControlChars(jsonCandidate) {
   return out.replace(/,\s*([}\]])/g, "$1");
 }
 var DETERMINISTIC_GRADING_SEED = 20261123;
-var GRADING_PROMPT_VERSION = "v4.2_3provider_adaptive";
+var GRADING_PROMPT_VERSION = "v4.4_strict_audit_anchored";
 var MAX_STUDENT_GRADING_CHARS = 48e3;
 var MAX_TEXTBOOK_GRADING_CHARS = 24e3;
 function parseAndValidateKnowledgeEvalJson(rawText) {
@@ -6556,45 +7266,54 @@ ${h.chunk.content}`
     ].join("\n") : "";
     const coverageInstruction = rubricMode === "fixed_textbook_rubric" ? `- \u0110\xC1NH GI\xC1 \u0110\u1ED8 \u0110\u1EA6Y \u0110\u1EE6 (coverageItems): B\u1EAET BU\u1ED8C ch\u1EA5m \u0111\u1EE7 T\u1EA4T C\u1EA2 ${fixedRubric.criteria.length} ti\xEAu ch\xED KT01..KT${String(fixedRubric.criteria.length).padStart(2, "0")} t\u1EEB b\u1EA3ng Rubric c\u1ED1 \u0111\u1ECBnh b\xEAn d\u01B0\u1EDBi. Ghi \u0111\xFAng tr\u01B0\u1EDDng "criterionId", gi\u1EEF nguy\xEAn "importanceWeight" c\u1EE7a rubric, tr\xEDch d\u1EABn \u0111\xFAng "matchedChunkId" & "referenceExcerpt". KH\xD4NG gi\u1EDBi h\u1EA1n 10 \xFD v\xE0 KH\xD4NG b\u1ECF s\xF3t ti\xEAu ch\xED n\xE0o.` : rubricMode === "scope_guided" ? "- \u0110\xC1NH GI\xC1 \u0110\u1ED8 \u0110\u1EA6Y \u0110\u1EE6 (coverageItems): \u0110\xE1nh gi\xE1 \u0111\u1EA7y \u0111\u1EE7 c\xE1c \xFD tr\u1ECDng t\xE2m theo ph\u1EA1m vi ch\u01B0\u01A1ng \u0111\xE3 ch\u1ECDn (kh\xF4ng t\u1EF1 c\u1EAFt ng\u1EAFn khi t\xE0i li\u1EC7u d\xE0i), ph\xE2n lo\u1EA1i r\xF5 COVERED / PARTIALLY_COVERED / MISSING." : "- Kh\xF4ng c\xF3 SGK hay ph\u1EA1m vi ch\u01B0\u01A1ng c\u1ED1 \u0111\u1ECBnh: ch\u1EC9 ghi nh\u1EADn c\xE1c thi\u1EBFu s\xF3t tr\u1EF1c ti\u1EBFp trong b\xE0i vi\u1EBFt (nh\u01B0 thi\u1EBFu ch\xFA th\xEDch k\xFD hi\u1EC7u/\u0111\u01A1n v\u1ECB c\u1EE7a c\xF4ng th\u1EE9c) n\u1EBFu th\u1EF1c s\u1EF1 t\u1ED3n t\u1EA1i.";
     const buildGradingPrompt = (studentBodyText, partNote) => [
-      "B\u1EA1n l\xE0 chuy\xEAn gia ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c gi\xE1o d\u1EE5c THPT Vi\u1EC7t Nam c\u1EE7a StudyCheck AI. H\xE3y ch\u1EA5m c\u1EF1c k\u1EF3 ch\xEDnh x\xE1c, ch\u1EB7t ch\u1EBD, nh\u1EA5t qu\xE1n tuy\u1EC7t \u0111\u1ED1i gi\u1EEFa tr\u1EA1ng th\xE1i, l\u1EDDi gi\u1EA3i th\xEDch v\xE0 \u0111\xE1p \xE1n s\u1EEDa chu\u1EA9n.",
+      "B\u1EA1n l\xE0 chuy\xEAn gia ki\u1EC3m \u0111\u1ECBnh ki\u1EBFn th\u1EE9c gi\xE1o d\u1EE5c THPT Vi\u1EC7t Nam c\u1EE7a StudyCheck AI. H\xE3y ch\u1EA5m c\u1EF1c k\u1EF3 ch\xEDnh x\xE1c, ch\u1EB7t ch\u1EBD, kh\xE1ch quan theo s\u1EF1 th\u1EADt khoa h\u1ECDc \u2014 TUY\u1EC6T \u0110\u1ED0I CH\u1ED0NG CH\u1EA4M D\u1EC4 D\xC3I.",
       `M\xF4n h\u1ECDc: ${subjectName} | L\u1EDBp: ${grade} | S\xE1ch tham chi\u1EBFu: ${textbookTitle || "Chu\u1EA9n ch\u01B0\u01A1ng tr\xECnh GDPT 2018 & ki\u1EBFn th\u1EE9c khoa h\u1ECDc ph\u1ED5 th\xF4ng"} | Ph\u1EA1m vi: ${scope || selectedChapters.join(", ") || "Theo \u0111\xFAng ch\u1EE7 \u0111\u1EC1 ch\xEDnh trong t\xE0i li\u1EC7u"}`,
       partNote ? `PH\u1EA0M VI PH\u1EA6N \u0110ANG CH\u1EA4M: ${partNote}` : "",
       "",
+      "NGUY\xCAN T\u1EAEC CH\u1ED0NG CH\u1EA4M D\u1EC4 D\xC3I (ANTI-LENIENCY) & \u0110\xC1NH GI\xC1 THEO NG\u1EEE C\u1EA2NH:",
+      "- KH\xD4NG BAO GI\u1EDC m\u1EB7c \u0111\u1ECBnh n\u1ED9i dung h\u1ECDc sinh l\xE0 CORRECT. Ph\u1EA3i t\u1EF1 ki\u1EC3m ch\u1EE9ng l\u1EA1i t\u1EEBng \u0111\u1ECBnh ngh\u0129a, t\xEDnh ch\u1EA5t, quan h\u1EC7, c\xF4ng th\u1EE9c, ph\xE9p to\xE1n, \u0111\u01A1n v\u1ECB, \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng v\xE0 suy lu\u1EADn d\u1EF1a tr\xEAn ki\u1EBFn th\u1EE9c khoa h\u1ECDc chu\u1EA9n x\xE1c.",
+      "- \u0110\xE1nh gi\xE1 t\u1EEBng m\u1EC7nh \u0111\u1EC1 \u0111\u1EB7t trong TO\xC0N B\u1ED8 NG\u1EEE C\u1EA2NH li\xEAn quan c\u1EE7a b\xE0i l\xE0m (kh\xF4ng ch\u1EC9 \u0111\u1ECDc r\u1EDDi r\u1EA1c t\u1EEBng d\xF2ng):",
+      "  + N\u1EBFu h\u1ECDc sinh \u0110\xC3 n\xEAu r\xF5 \u0111\u01A1n v\u1ECB/k\xFD hi\u1EC7u/\u0111i\u1EC1u ki\u1EC7n \u1EDF \u0111o\u1EA1n tr\u01B0\u1EDBc c\xF9ng ng\u1EEF c\u1EA3nh b\xE0i l\xE0m \u2192 KH\xD4NG b\u1EAFt l\u1ED7i l\u1EB7p l\u1EA1i oan.",
+      "  + N\u1EBFu h\u1ECDc sinh KH\xD4NG n\xEAu \u0111\u01A1n v\u1ECB b\u1EAFt bu\u1ED9c, \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng ho\u1EB7c gi\u1EA3i th\xEDch k\xFD hi\u1EC7u \u1EDF B\u1EA4T K\u1EF2 \u0110\xC2U trong ng\u1EEF c\u1EA3nh li\xEAn quan \u2192 B\u1EAET BU\u1ED8C \u0111\xE1nh PARTIALLY_CORRECT.",
+      '- C\u1EA4M h\u1EA1 nh\u1EB9 l\u1ED7i sai ki\u1EBFn th\u1EE9c/sai c\xF4ng th\u1EE9c (v\xED d\u1EE5 "s = v + t", "t\u1ED1c \u0111\u1ED9 thay \u0111\u1ED5i", "t\u1EC9 l\u1EC7 ngh\u1ECBch") xu\u1ED1ng PARTIALLY_CORRECT hay CORRECT.',
+      '- KH\xD4NG suy \u0111o\xE1n c\xE1c v\xF9ng c\xF3 k\xFD hi\u1EC7u "[KH\xD4NG NH\xCCN R\xD5]" ho\u1EB7c ch\u1EEF OCR qu\xE1 m\u1EDD \u0111\u1EC3 \xE9p ch\u1EA5m CORRECT/INCORRECT \u2014 h\xE3y g\u1EAFn OCR_UNCERTAIN cho \u0111o\u1EA1n m\u1EDD \u0111\xF3, \u0111\u1ED3ng th\u1EDDi V\u1EAAN ch\u1EA5m nghi\xEAm t\xFAc c\xE1c \u0111o\u1EA1n \u0111\u1ECDc r\xF5 kh\xE1c trong c\xF9ng b\xE0i.',
+      "",
       "NGU\u1ED2N C\u0102N C\u1EE8 \u0110\u1ED0I CHI\u1EBEU:",
-      hasIndexedTextbookChunks ? "- \u01AFu ti\xEAn \u0111\u1ED1i chi\u1EBFu tr\u1EF1c ti\u1EBFp c\xE1c \u0111o\u1EA1n tr\xEDch SGK b\xEAn d\u01B0\u1EDBi v\xE0 g\u1EAFn \u0111\xFAng matchedChunkId, matchedPage. V\u1EDBi ki\u1EBFn th\u1EE9c khoa h\u1ECDc ph\u1ED5 th\xF4ng kh\xF4ng xu\u1EA5t hi\u1EC7n tr\u1EF1c ti\u1EBFp trong \u0111o\u1EA1n tr\xEDch nh\u01B0ng thu\u1ED9c chu\u1EA9n GDPT 2018, v\u1EABn ki\u1EC3m \u0111\u1ECBnh chu\u1EA9n x\xE1c theo khoa h\u1ECDc ph\u1ED5 th\xF4ng." : '- Hi\u1EC7n ch\u01B0a c\xF3 \u0111o\u1EA1n tr\xEDch SGK trong kho cho b\xE0i n\xE0y. B\u1EAET BU\u1ED8C d\xF9ng chu\u1EA9n ki\u1EBFn th\u1EE9c khoa h\u1ECDc ch\xEDnh th\u1ED1ng v\xE0 ch\u01B0\u01A1ng tr\xECnh GDPT 2018 c\u1EE7a B\u1ED9 GD&\u0110T \u0111\u1EC3 ki\u1EC3m \u0111\u1ECBnh d\u1EE9t kho\xE1t m\u1ECDi \u0111\u1ECBnh ngh\u0129a, \u0111\u1ECBnh lu\u1EADt, c\xF4ng th\u1EE9c, t\xEDnh ch\u1EA5t v\xE0 \u0111\u01A1n v\u1ECB \u0111o. TUY\u1EC6T \u0110\u1ED0I KH\xD4NG \u0111\xE1nh UNVERIFIED v\u1EDBi l\u1ED7i sai ki\u1EBFn th\u1EE9c hay sai c\xF4ng th\u1EE9c ph\u1ED5 th\xF4ng r\xF5 r\xE0ng (v\xED d\u1EE5: sai "t\u1ED1c \u0111\u1ED9 thay \u0111\u1ED5i" trong chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u, sai "t\u1EC9 l\u1EC7 ngh\u1ECBch", sai ph\xE9p to\xE1n "s = v + t").',
+      hasIndexedTextbookChunks ? "- \u01AFu ti\xEAn \u0111\u1ED1i chi\u1EBFu tr\u1EF1c ti\u1EBFp c\xE1c \u0111o\u1EA1n tr\xEDch SGK b\xEAn d\u01B0\u1EDBi v\xE0 ch\u1EC9 g\u1EAFn matchedChunkId, matchedPage khi tr\xEDch \u0111\xFAng t\u1EEB \u0111o\u1EA1n tr\xEDch SGK c\xF3 th\u1EADt b\xEAn d\u01B0\u1EDBi. V\u1EDBi ki\u1EBFn th\u1EE9c khoa h\u1ECDc ph\u1ED5 th\xF4ng chu\u1EA9n GDPT 2018 ngo\xE0i \u0111o\u1EA1n tr\xEDch, v\u1EABn ki\u1EC3m \u0111\u1ECBnh d\u1EE9t kho\xE1t theo khoa h\u1ECDc ph\u1ED5 th\xF4ng nh\u01B0ng KH\xD4NG b\u1ECBa matchedPage." : '- Hi\u1EC7n ch\u01B0a c\xF3 \u0111o\u1EA1n tr\xEDch SGK trong kho cho b\xE0i n\xE0y. B\u1EAET BU\u1ED8C d\xF9ng chu\u1EA9n ki\u1EBFn th\u1EE9c khoa h\u1ECDc ch\xEDnh th\u1ED1ng v\xE0 ch\u01B0\u01A1ng tr\xECnh GDPT 2018 c\u1EE7a B\u1ED9 GD&\u0110T \u0111\u1EC3 ki\u1EC3m \u0111\u1ECBnh d\u1EE9t kho\xE1t m\u1ECDi \u0111\u1ECBnh ngh\u0129a, \u0111\u1ECBnh lu\u1EADt, c\xF4ng th\u1EE9c, t\xEDnh ch\u1EA5t v\xE0 \u0111\u01A1n v\u1ECB \u0111o. TUY\u1EC6T \u0110\u1ED0I KH\xD4NG \u0111\xE1nh UNVERIFIED cho l\u1ED7i sai ki\u1EBFn th\u1EE9c/c\xF4ng th\u1EE9c ph\u1ED5 th\xF4ng r\xF5 r\xE0ng (v\xED d\u1EE5: "t\u1ED1c \u0111\u1ED9 thay \u0111\u1ED5i" trong chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u, "t\u1EC9 l\u1EC7 ngh\u1ECBch", "s = v + t"), v\xE0 KH\xD4NG b\u1ECBa matchedPage/matchedChunkId.',
       "",
       "QUY TR\xCCNH KI\u1EC2M \u0110\u1ECANH 4 L\u1EDAP B\u1EAET BU\u1ED8C:",
       "L\u1EDAP 1 \u2014 T\xC1CH M\u1EC6NH \u0110\u1EC0 NG\u1EEE NGH\u0128A & C\u1EA4M CH\u1EA4M TI\xCAU \u0110\u1EC0 D\u1EAAN NH\u1EACP:",
-      '- T\xE1ch t\xE0i li\u1EC7u h\u1ECDc sinh th\xE0nh t\u1EEBng \u0111\u01A1n v\u1ECB ki\u1EBFn th\u1EE9c \u0111\u1ED9c l\u1EADp theo \u0111\xFAng t\u1EEBng c\xE2u, t\u1EEBng c\u1EE5m c\xF4ng th\u1EE9c (nh\xE3n d\u1EABn nh\u1EADp + c\xF4ng th\u1EE9c) v\xE0 t\u1EEBng c\u1EE5m gi\u1EA3i th\xEDch "Trong \u0111\xF3: ..." (kh\xF4ng g\u1ED9p nhi\u1EC1u l\u1ED7i kh\xE1c nhau v\xE0o chung 1 claim).',
-      '- TUY\u1EC6T \u0110\u1ED0I KH\xD4NG t\u1EA1o claim \u0111\u1ED9c l\u1EADp cho d\xF2ng nh\xE3n d\u1EABn nh\u1EADp / ti\xEAu \u0111\u1EC1 ng\u1EAFn k\u1EBFt th\xFAc b\u1EB1ng d\u1EA5u hai ch\u1EA5m (v\xED d\u1EE5: "C\xF4ng th\u1EE9c t\xEDnh qu\xE3ng \u0111\u01B0\u1EDDng:", "Ph\u01B0\u01A1ng tr\xECnh chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u:", "Trong \u0111\xF3:", "\u0110\u1ECBnh ngh\u0129a:"). H\xE3y gi\u1EEF nh\xE3n d\u1EABn nh\u1EADp g\u1EAFn li\u1EC1n v\u1EDBi c\xF4ng th\u1EE9c ho\u1EB7c n\u1ED9i dung ph\xEDa sau th\xE0nh 1 claim duy nh\u1EA5t \u0111\u1EC3 kh\xF4ng b\u01A1m \u0111i\u1EC3m Ch\xEDnh x\xE1c \u1EA3o.',
-      '- Ki\u1EC3m tra k\u1EF9 m\u1ECDi t\u1EEB kh\xF3a mang t\xEDnh b\u1EA3n ch\u1EA5t: "kh\xF4ng \u0111\u1ED5i" vs "thay \u0111\u1ED5i", "t\u1EC9 l\u1EC7 thu\u1EADn" vs "t\u1EC9 l\u1EC7 ngh\u1ECBch", "t\u0103ng" vs "gi\u1EA3m", "c\xF9ng chi\u1EC1u" vs "ng\u01B0\u1EE3c chi\u1EC1u", "b\u1EA3o to\xE0n" vs "kh\xF4ng b\u1EA3o to\xE0n", \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng.',
-      "- \u0110\u1ED1i chi\u1EBFu theo ngh\u0129a h\u1ECDc thu\u1EADt (kh\xF4ng b\u1EAFt b\u1EBB c\xE1ch di\u1EC5n \u0111\u1EA1t t\u01B0\u01A1ng \u0111\u01B0\u01A1ng n\u1EBFu \u0111\xFAng b\u1EA3n ch\u1EA5t).",
+      '- T\xE1ch t\xE0i li\u1EC7u h\u1ECDc sinh th\xE0nh t\u1EEBng \u0111\u01A1n v\u1ECB ki\u1EBFn th\u1EE9c \u0111\u1ED9c l\u1EADp theo t\u1EEBng c\xE2u, t\u1EEBng c\u1EE5m c\xF4ng th\u1EE9c v\xE0 t\u1EEBng c\u1EE5m gi\u1EA3i th\xEDch "Trong \u0111\xF3: ..." (kh\xF4ng g\u1ED9p nhi\u1EC1u l\u1ED7i kh\xE1c nhau v\xE0o chung 1 claim). G\u1EAFn \u0111\xFAng blockId t\u1EEB [BLOCK id=...].',
+      '- TUY\u1EC6T \u0110\u1ED0I KH\xD4NG t\u1EA1o claim \u0111\u1ED9c l\u1EADp cho d\xF2ng nh\xE3n d\u1EABn nh\u1EADp / ti\xEAu \u0111\u1EC1 ng\u1EAFn k\u1EBFt th\xFAc b\u1EB1ng d\u1EA5u hai ch\u1EA5m (v\xED d\u1EE5: "C\xF4ng th\u1EE9c t\xEDnh qu\xE3ng \u0111\u01B0\u1EDDng:", "Ph\u01B0\u01A1ng tr\xECnh chuy\u1EC3n \u0111\u1ED9ng th\u1EB3ng \u0111\u1EC1u:", "Trong \u0111\xF3:", "\u0110\u1ECBnh ngh\u0129a:"). H\xE3y gi\u1EEF nh\xE3n d\u1EABn nh\u1EADp g\u1EAFn li\u1EC1n v\u1EDBi c\xF4ng th\u1EE9c ho\u1EB7c n\u1ED9i dung ph\xEDa sau th\xE0nh 1 claim duy nh\u1EA5t \u0111\u1EC3 kh\xF4ng b\u01A1m \u0111i\u1EC3m \u1EA3o.',
+      '- Soi k\u1EF9 m\u1ECDi t\u1EEB kh\xF3a b\u1EA3n ch\u1EA5t: "kh\xF4ng \u0111\u1ED5i" vs "thay \u0111\u1ED5i", "t\u1EC9 l\u1EC7 thu\u1EADn" vs "t\u1EC9 l\u1EC7 ngh\u1ECBch", "t\u0103ng" vs "gi\u1EA3m", "c\xF9ng chi\u1EC1u" vs "ng\u01B0\u1EE3c chi\u1EC1u", "b\u1EA3o to\xE0n" vs "kh\xF4ng b\u1EA3o to\xE0n", mi\u1EC1n x\xE1c \u0111\u1ECBnh, \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng, nguy\xEAn nh\xE2n \u2013 h\u1EC7 qu\u1EA3.',
+      "- Ch\u1EA5p nh\u1EADn c\xE1ch di\u1EC5n \u0111\u1EA1t t\u01B0\u01A1ng \u0111\u01B0\u01A1ng n\u1EBFu \u0111\xFAng b\u1EA3n ch\u1EA5t khoa h\u1ECDc; kh\xF4ng b\u1EAFt b\u1EBB l\u1ED7i ch\xEDnh t\u1EA3 v\u1EB7t n\u1EBFu kh\xF4ng l\xE0m sai ngh\u0129a h\u1ECDc thu\u1EADt.",
       "",
-      "L\u1EDAP 2 \u2014 SOI T\u1EEANG C\xD4NG TH\u1EE8C, PH\xC9P TO\xC1N & TR\xCDCH NGUY\xCAN V\u0102N C\u1EE4M SAI (errorSpan) \u2014 C\u1EA4M S\u1EECA B\u1EA2N G\u1ED0C:",
-      '- NGUY\xCAN T\u1EAEC B\u1EA4T DI B\u1EA4T D\u1ECACH: "sourceText" v\xE0 "errorSpan" B\u1EAET BU\u1ED8C ph\u1EA3i l\xE0 b\u1EA3n SAO CH\xC9P NGUY\xCAN V\u0102N 100% t\u1EEB t\xE0i li\u1EC7u h\u1ECDc sinh \u2014 C\u1EA4M s\u1EEDa ch\u1EEF, s\u1EEDa c\xF4ng th\u1EE9c hay b\u1ECF s\xF3t t\u1EEB trong sourceText/errorSpan. H\u1EC7 th\u1ED1ng ch\u1EC9 g\u1EA1ch ch\xE2n & t\xF4 n\u1ED5i b\u1EADt (\u0111\u1ECF = sai, cam = thi\u1EBFu) ngay tr\xEAn b\u1EA3n g\u1ED1c; ph\u1EA7n s\u1EEDa \u0111\xFAng ch\u1EC9 \u0111\u1EB7t \u1EDF "shortFix" v\xE0 "suggestedFix".',
-      "- Ki\u1EC3m tra t\u1EEBng d\u1EA5u ph\xE9p to\xE1n (+, -, \xD7, ., /, ^), d\u1EA5u \xE2m/d\u01B0\u01A1ng, h\u1EC7 s\u1ED1, ch\u1EC9 s\u1ED1 d\u01B0\u1EDBi v\xE0 ki\u1EC3m tra th\u1EE9 nguy\xEAn v\u1EADt l\xFD/to\xE1n h\u1ECDc (v\xED d\u1EE5: v [m/s] kh\xF4ng th\u1EC3 c\u1ED9ng v\u1EDBi t [s] trong s = v + t; c\xF4ng th\u1EE9c \u0111\xFAng ph\u1EA3i l\xE0 s = v.t).",
-      '- T\xE1ch ri\xEAng claim cho c\u1EE5m c\xF4ng th\u1EE9c v\xE0 claim cho c\u1EE5m ch\xFA th\xEDch "Trong \u0111\xF3: ..." \u0111i k\xE8m \u0111\u1EC3 ph\xE2n bi\u1EC7t r\xF5: c\xF4ng th\u1EE9c \u0111\xFAng nh\u01B0ng thi\u1EBFu gi\u1EA3i th\xEDch bi\u1EBFn s\u1ED1 kh\xE1c v\u1EDBi c\xF4ng th\u1EE9c vi\u1EBFt sai.',
-      '- V\u1EDBi M\u1ECCI claim c\xF3 tr\u1EA1ng th\xE1i INCORRECT ho\u1EB7c PARTIALLY_CORRECT: B\u1EAET BU\u1ED8C \u0111i\u1EC1n tr\u01B0\u1EDDng "errorSpan" tr\xEDch NGUY\xCAN V\u0102N c\u1EE5m t\u1EEB/v\u1EBF/c\xF4ng th\u1EE9c b\u1ECB sai ho\u1EB7c thi\u1EBFu b\xEAn trong sourceText (v\xED d\u1EE5: "t\u1ED1c \u0111\u1ED9 thay \u0111\u1ED5i theo th\u1EDDi gian", "t\u1EC9 l\u1EC7 ngh\u1ECBch", "s = v + t") \u0111\u1EC3 h\u1EC7 th\u1ED1ng g\u1EA1ch ch\xE2n/t\xF4 \u0111\u1ECF ho\u1EB7c cam ch\xEDnh x\xE1c v\u1ECB tr\xED l\u1ED7i, v\xE0 \u0111i\u1EC1n tr\u01B0\u1EDDng "shortFix" (1 c\xE2u th\u1EADt ng\u1EAFn g\u1ECDn, tr\u1EF1c di\u1EC7n c\xE1ch s\u1EEDa nhanh, t\u1ED1i \u0111a 15\u201320 t\u1EEB).',
+      "L\u1EDAP 2 \u2014 SOI T\u1EEANG C\xD4NG TH\u1EE8C, PH\xC9P TO\xC1N & TR\xCDCH NGUY\xCAN V\u0102N errorSpan (C\u1EA4M S\u1EECA B\u1EA2N G\u1ED0C):",
+      '- NGUY\xCAN T\u1EAEC B\u1EA4T DI B\u1EA4T D\u1ECACH: "sourceText" v\xE0 "errorSpan" B\u1EAET BU\u1ED8C ph\u1EA3i l\xE0 b\u1EA3n SAO CH\xC9P NGUY\xCAN V\u0102N 100% t\u1EEB b\xE0i l\xE0m h\u1ECDc sinh \u2014 C\u1EA4M t\u1EF1 s\u1EEDa ch\u1EEF, s\u1EEDa c\xF4ng th\u1EE9c, \u0111\u1ED5i d\u1EA5u hay \u0111i\u1EC1n \u0111\xE1p \xE1n \u0111\xFAng v\xE0o errorSpan! V\xED d\u1EE5: n\u1EBFu h\u1ECDc sinh vi\u1EBFt "s = v + t", th\xEC errorSpan PH\u1EA2I l\xE0 "s = v + t" (TUY\u1EC6T \u0110\u1ED0I KH\xD4NG vi\u1EBFt "s = v.t" trong errorSpan). Ph\u1EA7n s\u1EEDa \u0111\xFAng ch\u1EC9 ghi \u1EDF "shortFix" v\xE0 "suggestedFix".',
+      "- Ki\u1EC3m tra t\u1EEBng d\u1EA5u ph\xE9p to\xE1n (+, -, \xD7, ., /, ^), d\u1EA5u \xE2m/d\u01B0\u01A1ng, h\u1EC7 s\u1ED1, ch\u1EC9 s\u1ED1 d\u01B0\u1EDBi/tr\xEAn, c\xE2n b\u1EB1ng ph\u01B0\u01A1ng tr\xECnh h\xF3a h\u1ECDc, th\u1EE9 nguy\xEAn v\u1EADt l\xFD/to\xE1n h\u1ECDc (v\xED d\u1EE5: v [m/s] kh\xF4ng th\u1EC3 c\u1ED9ng v\u1EDBi t [s] trong s = v + t; c\xF4ng th\u1EE9c \u0111\xFAng ph\u1EA3i l\xE0 s = v.t).",
+      '- T\xE1ch ri\xEAng claim cho c\xF4ng th\u1EE9c v\xE0 claim cho c\u1EE5m ch\xFA th\xEDch "Trong \u0111\xF3: ..." \u0111\u1EC3 ph\xE2n bi\u1EC7t r\xF5 c\xF4ng th\u1EE9c sai (INCORRECT) v\u1EDBi thi\u1EBFu \u0111\u01A1n v\u1ECB/gi\u1EA3i th\xEDch k\xFD hi\u1EC7u (PARTIALLY_CORRECT).',
+      "- V\u1EDBi M\u1ECCI claim INCORRECT ho\u1EB7c PARTIALLY_CORRECT:",
+      '  + B\u1EAET BU\u1ED8C \u0111i\u1EC1n "errorSpan" l\xE0 chu\u1ED7i con NGUY\xCAN V\u0102N ng\u1EAFn g\u1ECDn, ch\xEDnh x\xE1c c\u1EE7a ph\u1EA7n b\u1ECB sai/thi\u1EBFu trong block t\u01B0\u01A1ng \u1EE9ng.',
+      '  + N\u1EBFu c\u1EE5m t\u1EEB l\u1ED7i c\xF3 th\u1EC3 l\u1EB7p l\u1EA1i nhi\u1EC1u l\u1EA7n trong c\xF9ng \u0111o\u1EA1n, B\u1EAET BU\u1ED8C \u0111i\u1EC1n th\xEAm "contextBefore" v\xE0 "contextAfter" (5\u201320 k\xFD t\u1EF1 nguy\xEAn v\u0103n ngay tr\u01B0\u1EDBc/sau errorSpan) \u0111\u1EC3 \u0111\u1ECBnh v\u1ECB ch\xEDnh x\xE1c 100%.',
+      '  + B\u1EAET BU\u1ED8C \u0111i\u1EC1n "shortFix" (1 c\xE2u ng\u1EAFn g\u1ECDn, tr\u1EF1c di\u1EC7n c\xE1ch s\u1EEDa chu\u1EA9n, t\u1ED1i \u0111a 15\u201320 t\u1EEB).',
       "",
-      "L\u1EDAP 3 \u2014 KI\u1EC2M TRA \u0110\u1ED8 \u0110\u1EA6Y \u0110\u1EE6 CH\xDA TH\xCDCH K\xDD HI\u1EC6U & \u0110\u01A0N V\u1ECA C\u1EE6A M\u1ECCI C\xD4NG TH\u1EE8C:",
-      '- V\u1EDBi M\u1ECCI c\xF4ng th\u1EE9c xu\u1EA5t hi\u1EC7n trong t\xE0i li\u1EC7u (v\xED d\u1EE5 s = v.t, x = x0 + v.t, F = m.a...), li\u1EC7t k\xEA T\u1EA4T C\u1EA2 c\xE1c k\xFD hi\u1EC7u/bi\u1EBFn s\u1ED1 c\xF3 m\u1EB7t trong c\xF4ng th\u1EE9c \u0111\xF3 v\xE0 \u0111\u1ED1i chi\u1EBFu v\u1EDBi c\u1EE5m ch\xFA th\xEDch ("Trong \u0111\xF3: ...") ngay k\u1EBF ti\u1EBFp.',
-      "- N\u1EBFu h\u1ECDc sinh B\u1ECE S\xD3T gi\u1EA3i th\xEDch \xFD ngh\u0129a HO\u1EB6C thi\u1EBFu \u0111\u01A1n v\u1ECB \u0111o c\u1EE7a b\u1EA5t k\u1EF3 k\xFD hi\u1EC7u n\xE0o:",
-      "  + \u0110\xE1nh gi\xE1 c\u1EE5m ch\xFA th\xEDch \u0111\xF3 l\xE0 PARTIALLY_CORRECT (Thi\u1EBFu th\xF4ng tin / \u0110i\u1EC1u ki\u1EC7n), n\xEAu \u0110\xCDCH DANH k\xFD hi\u1EC7u v\xE0 \u0111\u01A1n v\u1ECB c\xF2n thi\u1EBFu trong explanation, ghi r\xF5 c\xE1ch b\u1ED5 sung ng\u1EAFn g\u1ECDn trong shortFix v\xE0 tr\u1ECDn b\u1ED9 ch\xFA th\xEDch \u0111\u1EA7y \u0111\u1EE7 trong suggestedFix.",
-      '  + Ghi nh\u1EADn thi\u1EBFu s\xF3t t\u01B0\u01A1ng \u1EE9ng v\xE0o weaknesses \u0111\u1EC3 hi\u1EC3n th\u1ECB r\xF5 trong danh s\xE1ch "Thi\u1EBFu th\xF4ng tin".',
+      "L\u1EDAP 3 \u2014 KI\u1EC2M TRA CH\xDA TH\xCDCH K\xDD HI\u1EC6U, \u0110\u01A0N V\u1ECA & \u0110I\u1EC0U KI\u1EC6N \xC1P D\u1EE4NG:",
+      "- V\u1EDBi M\u1ECCI c\xF4ng th\u1EE9c xu\u1EA5t hi\u1EC7n trong b\xE0i (s = v.t, x = x0 + v.t, F = m.a, ...), \u0111\u1ED1i chi\u1EBFu to\xE0n b\u1ED9 bi\u1EBFn s\u1ED1/k\xFD hi\u1EC7u v\u1EDBi ph\u1EA7n gi\u1EA3i th\xEDch v\xE0 \u0111\u01A1n v\u1ECB trong ng\u1EEF c\u1EA3nh li\xEAn quan.",
+      '- N\u1EBFu thi\u1EBFu \u0111\u01A1n v\u1ECB \u0111o b\u1EAFt bu\u1ED9c (v\xED d\u1EE5 ch\u1EC9 vi\u1EBFt "v l\xE0 t\u1ED1c \u0111\u1ED9" m\xE0 kh\xF4ng c\xF3 m/s hay \u0111\u01A1n v\u1ECB h\u1EE3p l\u1EC7 n\xE0o trong ng\u1EEF c\u1EA3nh), thi\u1EBFu gi\u1EA3i th\xEDch k\xFD hi\u1EC7u, ho\u1EB7c thi\u1EBFu \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng quan tr\u1ECDng \u2192 \u0111\xE1nh PARTIALLY_CORRECT, ch\u1EC9 \u0111\xEDch danh thi\u1EBFu g\xEC trong explanation v\xE0 c\xE1ch b\u1ED5 sung chu\u1EA9n trong shortFix.',
       "",
-      "L\u1EDAP 4 \u2014 T\u1EF0 KI\u1EC2M CH\xC9O NH\u1EA4T QU\xC1N TR\u01AF\u1EDAC KHI TR\u1EA2 K\u1EBET QU\u1EA2:",
-      "- Ph\xE2n lo\u1EA1i tr\u1EA1ng th\xE1i chu\u1EA9n:",
-      "  + CORRECT: ho\xE0n to\xE0n \u0111\xFAng b\u1EA3n ch\u1EA5t, kh\xF4ng thi\u1EBFu k\xFD hi\u1EC7u hay \u0111i\u1EC1u ki\u1EC7n quan tr\u1ECDng.",
-      "  + INCORRECT: sai b\u1EA3n ch\u1EA5t ki\u1EBFn th\u1EE9c, sai quan h\u1EC7, sai c\xF4ng th\u1EE9c/ph\xE9p to\xE1n.",
-      "  + PARTIALLY_CORRECT: c\xF3 ph\u1EA7n \u0111\xFAng nh\u01B0ng thi\u1EBFu th\xF4ng tin quan tr\u1ECDng (thi\u1EBFu gi\u1EA3i th\xEDch k\xFD hi\u1EC7u/\u0111\u01A1n v\u1ECB, thi\u1EBFu \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng, ph\xE1t bi\u1EC3u ch\u01B0a tr\u1ECDn v\u1EB9n).",
-      "  + UNVERIFIED: CH\u1EC8 d\xF9ng khi th\xF4ng tin ri\xEAng l\u1EBB/m\u01A1 h\u1ED3/kh\xF4ng \u0111\u1EE7 ng\u1EEF c\u1EA3nh \u0111\u1EC3 x\xE1c minh. KH\xD4NG d\xF9ng cho \u0111\u1ECBnh ngh\u0129a/c\xF4ng th\u1EE9c ph\u1ED5 th\xF4ng.",
-      ocrConfirmed ? "  + L\u01B0u \xFD OCR: V\u0103n b\u1EA3n \u0111\xE3 \u0111\u01B0\u1EE3c ng\u01B0\u1EDDi d\xF9ng ki\u1EC3m tra/x\xE1c nh\u1EADn n\xEAn KH\xD4NG t\u1EF1 \xFD g\u1EAFn OCR_UNCERTAIN tr\u1EEB khi c\xE2u ch\u1EEF b\u1ECB m\u1EA5t k\xFD t\u1EF1 kh\xF4ng th\u1EC3 hi\u1EC3u ngh\u0129a." : "  + OCR_UNCERTAIN: \u0111\u1ED9 tin c\u1EADy OCR < 0.65.",
-      "  + OUT_OF_SCOPE: n\u1ED9i dung l\u1EA1c \u0111\u1EC1 ho\xE0n to\xE0n kh\u1ECFi m\xF4n h\u1ECDc.",
-      "- KI\u1EC2M TRA CH\xC9O: N\u1EBFu explanation ch\u1EC9 ra h\u1ECDc sinh vi\u1EBFt sai \u2192 evaluationStatus B\u1EAET BU\u1ED8C l\xE0 INCORRECT. N\u1EBFu explanation ch\u1EC9 ra h\u1ECDc sinh vi\u1EBFt thi\u1EBFu k\xFD hi\u1EC7u/\u0111\u01A1n v\u1ECB/\u0111i\u1EC1u ki\u1EC7n \u2192 evaluationStatus B\u1EAET BU\u1ED8C l\xE0 PARTIALLY_CORRECT. C\u1EA4M TUY\u1EC6T \u0110\u1ED0I vi\u1EC7c gi\u1EA3i th\xEDch 1 \u0111\u1EB1ng m\xE0 ch\u1EA5m tr\u1EA1ng th\xE1i 1 n\u1EBBo.",
-      "- G\xE1n tr\u1ECDng s\u1ED1 importanceWeight cho claims theo quy t\u1EAFc c\u1ED1 \u0111\u1ECBnh: 3 (\u0111\u1ECBnh ngh\u0129a/\u0111\u1ECBnh lu\u1EADt/c\xF4ng th\u1EE9c c\u1ED1t l\xF5i), 2 (h\u1ED7 tr\u1EE3/ch\xFA th\xEDch k\xFD hi\u1EC7u/\u0111i\u1EC1u ki\u1EC7n), 1 (chi ti\u1EBFt/v\xED d\u1EE5 m\u1EDF r\u1ED9ng).",
+      "L\u1EDAP 4 \u2014 RANH GI\u1EDAI TR\u1EA0NG TH\xC1I CH\u1EB6T CH\u1EBC & T\u1EF0 KI\u1EC2M CH\xC9O NH\u1EA4T QU\xC1N:",
+      "- CORRECT: \u0110\xFAng b\u1EA3n ch\u1EA5t ki\u1EBFn th\u1EE9c, \u0111\xFAng c\xF4ng th\u1EE9c/ph\xE9p to\xE1n/l\u1EADp lu\u1EADn, \u0111\u1EA7y \u0111\u1EE7 \u0111\u01A1n v\u1ECB & \u0111i\u1EC1u ki\u1EC7n b\u1EAFt bu\u1ED9c trong ng\u1EEF c\u1EA3nh.",
+      "- INCORRECT: Sai b\u1EA3n ch\u1EA5t ki\u1EBFn th\u1EE9c, sai quan h\u1EC7, sai c\xF4ng th\u1EE9c/ph\xE9p to\xE1n/d\u1EA5u/\u0111\u1ECBnh lu\u1EADt, sai ph\u01B0\u01A1ng tr\xECnh ho\u1EB7c sai b\u01B0\u1EDBc suy lu\u1EADn.",
+      "- PARTIALLY_CORRECT: \xDD c\u1ED1t l\xF5i \u0111\xFAng nh\u01B0ng thi\u1EBFu \u0111\u01A1n v\u1ECB, thi\u1EBFu \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng, thi\u1EBFu mi\u1EC1n x\xE1c \u0111\u1ECBnh, thi\u1EBFu gi\u1EA3i th\xEDch bi\u1EBFn s\u1ED1 ho\u1EB7c di\u1EC5n \u0111\u1EA1t thi\u1EBFu \xFD quan tr\u1ECDng.",
+      rubricMode === "unscoped" ? "- MISSING: KH\xD4NG t\u1EF1 b\u1ECBa claim MISSING khi kh\xF4ng c\xF3 \u0111\u1EC1 b\xE0i hay ph\u1EA1m vi rubric c\u1ED1 \u0111\u1ECBnh y\xEAu c\u1EA7u." : "- MISSING: CH\u1EC8 d\xF9ng khi thi\u1EBFu h\u1EB3n m\u1ED9t \xFD/y\xEAu c\u1EA7u b\u1EAFt bu\u1ED9c theo ph\u1EA1m vi ho\u1EB7c rubric \u0111\xE3 cho; KH\xD4NG t\u1EA1o errorSpan gi\u1EA3 cho MISSING.",
+      "- UNVERIFIED / AMBIGUOUS: CH\u1EC8 d\xF9ng khi m\u1EC7nh \u0111\u1EC1 th\u1EF1c s\u1EF1 m\u01A1 h\u1ED3 ho\u1EB7c kh\xF4ng \u0111\u1EE7 ng\u1EEF c\u1EA3nh x\xE1c minh. C\u1EA4M d\xF9ng cho ki\u1EBFn th\u1EE9c/c\xF4ng th\u1EE9c ph\u1ED5 th\xF4ng c\u01A1 b\u1EA3n.",
+      ocrConfirmed ? '- OCR_UNCERTAIN: V\u0103n b\u1EA3n \u0111\xE3 \u0111\u01B0\u1EE3c ng\u01B0\u1EDDi h\u1ECDc x\xE1c nh\u1EADn n\xEAn CH\u1EC8 d\xF9ng khi c\xF2n d\u1EA5u "[KH\xD4NG NH\xCCN R\xD5]" ho\u1EB7c m\u1EA5t k\xFD t\u1EF1 kh\xF4ng \u0111\u1ECDc \u0111\u01B0\u1EE3c ngh\u0129a.' : '- OCR_UNCERTAIN: D\xF9ng khi \u0111o\u1EA1n ch\u1EE9a "[KH\xD4NG NH\xCCN R\xD5]" ho\u1EB7c ch\u1EEF OCR qu\xE1 m\u1EDD/\u0111\u1ED9 tin c\u1EADy < 0.65 \u2014 kh\xF4ng \u0111o\xE1n b\u1EEBa.',
+      "- OUT_OF_SCOPE: N\u1ED9i dung ho\xE0n to\xE0n l\u1EA1c \u0111\u1EC1 ngo\xE0i m\xF4n h\u1ECDc.",
+      "- KI\u1EC2M TRA CH\xC9O NH\u1EA4T QU\xC1N: N\u1EBFu explanation n\xEAu l\u1ED7i sai \u2192 evaluationStatus B\u1EAET BU\u1ED8C l\xE0 INCORRECT. N\u1EBFu explanation n\xEAu thi\u1EBFu \u0111\u01A1n v\u1ECB/k\xFD hi\u1EC7u/\u0111i\u1EC1u ki\u1EC7n \u2192 evaluationStatus B\u1EAET BU\u1ED8C l\xE0 PARTIALLY_CORRECT. C\u1EA4M gi\u1EA3i th\xEDch ch\u1EC9 l\u1ED7i m\xE0 l\u1EA1i g\u1EAFn CORRECT.",
+      "- G\xE1n importanceWeight: 3 (\u0111\u1ECBnh ngh\u0129a/\u0111\u1ECBnh lu\u1EADt/c\xF4ng th\u1EE9c c\u1ED1t l\xF5i), 2 (ch\xFA th\xEDch k\xFD hi\u1EC7u/\u0111\u01A1n v\u1ECB/\u0111i\u1EC1u ki\u1EC7n), 1 (v\xED d\u1EE5/chi ti\u1EBFt ph\u1EE5).",
       coverageInstruction,
-      "- Tuy\u1EC7t \u0111\u1ED1i KH\xD4NG b\u1ECBa URL hay s\u1ED1 trang SGK n\u1EBFu kh\xF4ng c\xF3 trong ng\u1EEF c\u1EA3nh.",
-      "- Vi\u1EBFt r\xF5 r\xE0ng, tr\u1EF1c di\u1EC7n, s\xFAc t\xEDch (m\u1ED7i shortFix t\u1ED1i \u0111a 1 c\xE2u ng\u1EAFn g\u1ECDn; explanation/correctKnowledge/suggestedFix t\u1ED1i \u0111a 2-3 c\xE2u \u0111i th\u1EB3ng v\xE0o b\u1EA3n ch\u1EA5t kh\xE1i ni\u1EC7m; weaknesses t\u1ED1i \u0111a 10 \xFD; strengths t\u1ED1i \u0111a 5 \xFD; suggestions t\u1ED1i \u0111a 5 \xFD).",
+      "- Tuy\u1EC7t \u0111\u1ED1i KH\xD4NG b\u1ECBa URL, t\xEAn s\xE1ch, hay s\u1ED1 trang SGK n\u1EBFu kh\xF4ng c\xF3 trong \u0111o\u1EA1n tr\xEDch SGK th\u1EADt b\xEAn d\u01B0\u1EDBi.",
+      "- Vi\u1EBFt s\xFAc t\xEDch, \u0111i th\u1EB3ng v\xE0o b\u1EA3n ch\u1EA5t (shortFix 1 d\xF2ng ng\u1EAFn; explanation/correctKnowledge/suggestedFix t\u1ED1i \u0111a 2-3 c\xE2u; weaknesses t\u1ED1i \u0111a 10 \xFD; strengths t\u1ED1i \u0111a 5 \xFD; suggestions t\u1ED1i \u0111a 5 \xFD).",
       "",
       rubricSection,
       "=== T\xC0I LI\u1EC6U C\u1EE6A H\u1ECCC SINH ===",
@@ -6604,7 +7323,7 @@ ${h.chunk.content}`
       textbookSlice
     ].filter((line) => line !== void 0).join("\n");
     const analysisPrompt = buildGradingPrompt(studentSlice);
-    const gradeSchemaHint = '{"claims":[{"blockId":"...","blockIds":["..."],"sourcePage":1,"sourceText":"...","errorSpan":"c\u1EE5m t\u1EEB/c\xF4ng th\u1EE9c sai tr\xEDch nguy\xEAn v\u0103n t\u1EEB sourceText","shortFix":"c\xE2u s\u1EEDa ng\u1EAFn g\u1ECDn 1 d\xF2ng","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"...","matchedChunkId":"...","matchedExcerpt":"...","matchedPage":1}],"coverageItems":[{"criterionId":"KT01","concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1,"matchedChunkId":"..."}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}';
+    const gradeSchemaHint = '{"claims":[{"blockId":"...","blockIds":["..."],"sourcePage":1,"sourceText":"nguy\xEAn v\u0103n t\u1EEB b\xE0i h\u1ECDc sinh","errorSpan":"c\u1EE5m sai/thi\u1EBFu tr\xEDch nguy\xEAn v\u0103n t\u1EEB b\xE0i","contextBefore":"5-15 k\xFD t\u1EF1 ngay tr\u01B0\u1EDBc errorSpan","contextAfter":"5-15 k\xFD t\u1EF1 ngay sau errorSpan","shortFix":"c\xE2u s\u1EEDa ng\u1EAFn g\u1ECDn 1 d\xF2ng","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"...","matchedChunkId":"...","matchedExcerpt":"...","matchedPage":1}],"coverageItems":[{"criterionId":"KT01","concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1,"matchedChunkId":"..."}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}';
     const fullStudentTextHash = crypto6.createHash("sha256").update(formattedStudentBlocks, "utf8").digest("hex");
     const fullPromptHash = crypto6.createHash("sha256").update(analysisPrompt, "utf8").digest("hex");
     const inputHash = crypto6.createHash("sha256").update(
@@ -6700,151 +7419,12 @@ ${h.chunk.content}`
     const filteredRawClaims = (rawEval.claims || []).filter(
       (c) => !isNonGradableLeadInClaim(c.sourceText || "")
     );
-    const rawConfiguredProviders = {
-      mistral: isMistralConfigured(),
-      cloudflare: isCloudflareConfigured(),
-      groq: isGroqConfigured()
-    };
-    const healthyConfiguredProviders = {
-      mistral: rawConfiguredProviders.mistral && !isProviderCoolingDown("mistral"),
-      cloudflare: rawConfiguredProviders.cloudflare && !isProviderCoolingDown("cloudflare"),
-      groq: rawConfiguredProviders.groq && !isProviderCoolingDown("groq")
-    };
-    const configuredProviders = healthyConfiguredProviders.mistral || healthyConfiguredProviders.cloudflare || healthyConfiguredProviders.groq ? healthyConfiguredProviders : rawConfiguredProviders;
-    const verifySchemaHint = '{"adjustments":[{"claimIndex":0,"evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|UNVERIFIED|OUT_OF_SCOPE","errorSpan":"...","shortFix":"...","explanation":"...","correctKnowledge":"...","suggestedFix":"..."}]}';
-    const verifyModelsUsed = [];
-    let verifyExecutedApiCount = 0;
-    let verifyAdjustmentsCount = 0;
-    const runVerifySlice = async (verifyParams) => {
-      if (verifyParams.indexedClaims.length === 0) {
-        return { adjustments: [], executed: false };
-      }
-      const verifierChoice = selectCrossProviderVerifierModel({
-        gradedByProvider: verifyParams.gradedByProvider,
-        slot: verifyParams.slot,
-        configuredProviders,
-        slot1VerifyModel: verifyParams.slot1VerifyModel
-      });
-      const compactClaimsPayload = verifyParams.indexedClaims.map(({ index, claim }) => ({
-        claimIndex: index,
-        sourcePage: claim.sourcePage,
-        sourceText: (claim.sourceText || "").slice(0, 360),
-        concept: claim.concept,
-        evaluationStatus: claim.evaluationStatus,
-        errorSpan: claim.errorSpan || "",
-        shortFix: claim.shortFix || "",
-        explanation: (claim.explanation || "").slice(0, 320),
-        correctKnowledge: (claim.correctKnowledge || "").slice(0, 320)
-      }));
-      const verifyPrompt = [
-        `B\u1EA1n l\xE0 H\u1ED9i \u0111\u1ED3ng d\xF2 ch\xE9o \u0111\u1ED9c l\u1EADp (Cross-Provider Verifier) c\u1EE7a StudyCheck AI cho m\xF4n ${subjectName} l\u1EDBp ${grade}.`,
-        "NHI\u1EC6M V\u1EE4: Ki\u1EC3m tra l\u1EA1i danh s\xE1ch m\u1EC7nh \u0111\u1EC1 \u0111\xE3 ch\u1EA5m b\xEAn d\u01B0\u1EDBi \u0111\u1EC3 ph\xE1t hi\u1EC7n:",
-        "1. M\xE2u thu\u1EABn gi\u1EEFa explanation v\xE0 evaluationStatus (v\xED d\u1EE5 explanation n\xF3i sai nh\u01B0ng l\u1EA1i g\u1EAFn CORRECT, ho\u1EB7c n\xF3i thi\u1EBFu k\xFD hi\u1EC7u/\u0111\u01A1n v\u1ECB nh\u01B0ng g\u1EAFn CORRECT).",
-        "2. L\u1ED7i b\xE1o sai oan (false positive) ho\u1EB7c b\u1ECF s\xF3t l\u1ED7i c\xF4ng th\u1EE9c/\u0111\u1ECBnh ngh\u0129a/\u0111\u01A1n v\u1ECB (false negative).",
-        "3. \u0110\u1EA3m b\u1EA3o m\u1ECDi claim INCORRECT ho\u1EB7c PARTIALLY_CORRECT \u0111\u1EC1u c\xF3 errorSpan tr\xEDch NGUY\xCAN V\u0102N 100% t\u1EEB sourceText (C\u1EA4M t\u1EF1 s\u1EEDa ch\u1EEF trong errorSpan) v\xE0 shortFix s\xFAc t\xEDch.",
-        'CH\u1EC8 tr\u1EA3 v\u1EC1 c\xE1c m\u1EE5c th\u1EF1c s\u1EF1 c\u1EA7n \u0111i\u1EC1u ch\u1EC9nh trong m\u1EA3ng "adjustments" (n\u1EBFu t\u1EA5t c\u1EA3 \u0111\xE3 ch\xEDnh x\xE1c v\xE0 nh\u1EA5t qu\xE1n, tr\u1EA3 v\u1EC1 {"adjustments":[]}).',
-        "",
-        "=== DANH S\xC1CH CLAIMS C\u1EA6N D\xD2 CH\xC9O ===",
-        JSON.stringify(compactClaimsPayload),
-        textbookSlice ? `
-=== T\xD3M T\u1EAET NG\u1EEE LI\u1EC6U SGK ===
-${textbookSlice.slice(0, 4e3)}` : ""
-      ].filter(Boolean).join("\n");
-      try {
-        const res = await runTaskWithRouter({
-          taskType: "claim_validation",
-          config: effectiveConfig,
-          idToken,
-          strictModelLock: false,
-          allowGroqRescue: true,
-          preferredPrimaryModelId: verifierChoice.primaryModel,
-          preferredFallbackModelId: verifierChoice.fallbackModel,
-          extractExecutionMeta: (out) => ({
-            actualModel: out.resolvedModel,
-            systemFingerprint: out.systemFingerprint
-          }),
-          cacheInput: {
-            verifyRev: "v4.3_fixed_1api_verify",
-            slot: verifyParams.slot,
-            inputHash,
-            gradedByProvider: verifyParams.gradedByProvider,
-            claimDigest: crypto6.createHash("sha256").update(JSON.stringify(compactClaimsPayload), "utf8").digest("hex").slice(0, 24)
-          },
-          runWithModel: async (modelId) => generateJsonWithProviderDetailed({
-            modelId,
-            prompt: verifyPrompt,
-            thinkingTier: "low",
-            maxOutputTokens: 2048,
-            timeoutMs: 18e3,
-            temperature: 0,
-            seed: DETERMINISTIC_GRADING_SEED,
-            strictModelLock: false,
-            stage: "DO",
-            slot: verifyParams.slot,
-            tokensOut,
-            fallbackJson: '{"adjustments":[]}',
-            groqSchemaHint: verifySchemaHint
-          })
-        });
-        return {
-          adjustments: Array.isArray(res.data.data?.adjustments) ? res.data.data.adjustments : [],
-          modelUsed: res.actualModel,
-          executed: true
-        };
-      } catch (verifyErr) {
-        console.warn(`Cross-provider verification non-fatal fallback (slot ${verifyParams.slot}):`, verifyErr);
-        return { adjustments: [], executed: false };
-      }
-    };
-    const indexedAllClaims = filteredRawClaims.map((claim, index) => ({ index, claim }));
-    const collectedAdjustments = [];
-    if (indexedAllClaims.length > 0) {
-      const slot1Provider = gradeProvidersUsed[0] || "mistral";
-      const v1 = await runVerifySlice({
-        indexedClaims: indexedAllClaims,
-        gradedByProvider: slot1Provider,
-        slot: 1
-      });
-      if (v1.executed) {
-        verifyExecutedApiCount += 1;
-        if (v1.modelUsed) verifyModelsUsed.push(v1.modelUsed);
-        collectedAdjustments.push(...v1.adjustments);
-      }
+    const docHasReadableContent = hasMeaningfulReadableContent(pages);
+    if (docHasReadableContent && filteredRawClaims.length === 0) {
+      throw new Error(
+        "GRADING_JSON_INVALID: B\xE0i l\xE0m c\xF3 n\u1ED9i dung h\u1EE3p l\u1EC7 nh\u01B0ng AI kh\xF4ng tr\xEDch xu\u1EA5t \u0111\u01B0\u1EE3c m\u1EC7nh \u0111\u1EC1 ki\u1EC3m \u0111\u1ECBnh n\xE0o. H\u1EC7 th\u1ED1ng kh\xF4ng l\u01B0u b\xE1o c\xE1o r\u1ED7ng gi\u1EA3 \u2014 vui l\xF2ng ki\u1EC3m \u0111\u1ECBnh l\u1EA1i."
+      );
     }
-    for (const adj of collectedAdjustments) {
-      const idx = Number(adj?.claimIndex);
-      if (!Number.isInteger(idx) || idx < 0 || idx >= filteredRawClaims.length) continue;
-      const target = filteredRawClaims[idx];
-      let mutated = false;
-      if (typeof adj.evaluationStatus === "string" && validStatuses.has(adj.evaluationStatus) && adj.evaluationStatus !== target.evaluationStatus) {
-        target.evaluationStatus = adj.evaluationStatus;
-        mutated = true;
-      }
-      if (typeof adj.errorSpan === "string" && adj.errorSpan.trim().length >= 2) {
-        target.errorSpan = adj.errorSpan.trim();
-        mutated = true;
-      }
-      if (typeof adj.shortFix === "string" && adj.shortFix.trim().length > 0) {
-        target.shortFix = adj.shortFix.trim();
-        mutated = true;
-      }
-      if (typeof adj.explanation === "string" && adj.explanation.trim().length >= 8) {
-        target.explanation = adj.explanation.trim();
-        mutated = true;
-      }
-      if (typeof adj.correctKnowledge === "string" && adj.correctKnowledge.trim().length >= 4) {
-        target.correctKnowledge = adj.correctKnowledge.trim();
-        mutated = true;
-      }
-      if (typeof adj.suggestedFix === "string" && adj.suggestedFix.trim().length >= 4) {
-        target.suggestedFix = adj.suggestedFix.trim();
-        mutated = true;
-      }
-      if (mutated) {
-        verifyAdjustmentsCount += 1;
-      }
-    }
-    const modelUsed = gradeModelsUsed.length > 1 ? Array.from(new Set(gradeModelsUsed)).join(" + ") : primaryRoutedResult.actualModel;
     const blockMap = /* @__PURE__ */ new Map();
     for (const p of pages) {
       for (const b of p.blocks) {
@@ -6855,16 +7435,13 @@ ${textbookSlice.slice(0, 4e3)}` : ""
     for (const c of referenceChunks) {
       chunkMap.set(c.chunkId, c);
     }
-    const claims = filteredRawClaims.map((c, idx) => {
+    const initialClaims = filteredRawClaims.map((c, idx) => {
       const normalizedBlockIds = Array.isArray(c.blockIds) ? c.blockIds.filter((id) => typeof id === "string" && blockMap.has(id)) : [];
       const primaryBlockId = (c.blockId && blockMap.has(c.blockId) ? c.blockId : normalizedBlockIds[0]) || void 0;
       const matchedBlock = primaryBlockId ? blockMap.get(primaryBlockId) : void 0;
       const rawOcrConf = matchedBlock ? matchedBlock.confidence : 0.9;
       const ocrConf = ocrConfirmed ? Math.max(rawOcrConf, 0.95) : rawOcrConf;
-      let status = validStatuses.has(c.evaluationStatus) ? c.evaluationStatus : "UNVERIFIED";
-      if (!ocrConfirmed && ocrConf < 0.65 && status === "INCORRECT") {
-        status = "OCR_UNCERTAIN";
-      }
+      const status = validStatuses.has(c.evaluationStatus) ? c.evaluationStatus : "UNVERIFIED";
       const wRaw = Number(c.importanceWeight);
       const importanceWeight = wRaw === 3 ? 3 : wRaw === 1 ? 1 : 2;
       const evidences = [];
@@ -6881,13 +7458,12 @@ ${textbookSlice.slice(0, 4e3)}` : ""
           pageNumber: ch.pageNumber,
           excerpt: c.matchedExcerpt || ch.content.slice(0, 320)
         });
-      } else if (c.matchedExcerpt) {
+      } else if (hasIndexedTextbookChunks && c.matchedExcerpt) {
         evidences.push({
           evidenceId: `ev_${idx + 1}_ref`,
           sourceType: "textbook",
           ...textbookReferenceId ? { referenceId: textbookReferenceId } : {},
           title: textbookTitle || "Chu\u1EA9n ch\u01B0\u01A1ng tr\xECnh GDPT 2018",
-          ...typeof c.matchedPage === "number" && c.matchedPage > 0 ? { pageNumber: c.matchedPage } : {},
           excerpt: c.matchedExcerpt
         });
       }
@@ -6911,6 +7487,10 @@ ${textbookSlice.slice(0, 4e3)}` : ""
         ...matchedBlock?.blockId ? { blockId: matchedBlock.blockId } : {},
         ...normalizedBlockIds.length > 0 ? { blockIds: normalizedBlockIds } : {},
         ...resolvedErrorSpan ? { errorSpan: resolvedErrorSpan } : {},
+        ...typeof c.startOffset === "number" ? { startOffset: c.startOffset } : {},
+        ...typeof c.endOffset === "number" ? { endOffset: c.endOffset } : {},
+        ...typeof c.contextBefore === "string" && c.contextBefore.trim() ? { contextBefore: c.contextBefore.trim() } : {},
+        ...typeof c.contextAfter === "string" && c.contextAfter.trim() ? { contextAfter: c.contextAfter.trim() } : {},
         ...resolvedShortFix ? { shortFix: resolvedShortFix } : {},
         boundingBox: matchedBlock?.boundingBox || null,
         ocrConfidence: ocrConf,
@@ -6922,6 +7502,161 @@ ${textbookSlice.slice(0, 4e3)}` : ""
         evidences
       };
     });
+    const rawConfiguredProviders = {
+      mistral: isMistralConfigured(),
+      cloudflare: isCloudflareConfigured(),
+      groq: isGroqConfigured()
+    };
+    const healthyConfiguredProviders = {
+      mistral: rawConfiguredProviders.mistral && !isProviderCoolingDown("mistral"),
+      cloudflare: rawConfiguredProviders.cloudflare && !isProviderCoolingDown("cloudflare"),
+      groq: rawConfiguredProviders.groq && !isProviderCoolingDown("groq")
+    };
+    const configuredProviders = healthyConfiguredProviders.mistral || healthyConfiguredProviders.cloudflare || healthyConfiguredProviders.groq ? healthyConfiguredProviders : rawConfiguredProviders;
+    const verifySchemaHint = '{"adjustments":[{"claimIndex":0,"claimId":"...","previousStatus":"CORRECT","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","reason":"l\xFD do c\u1EE5 th\u1EC3","evidenceBasis":"c\u0103n c\u1EE9 khoa h\u1ECDc/SGK c\u1EE5 th\u1EC3","blockId":"...","sourceText":"...","errorSpan":"tr\xEDch nguy\xEAn v\u0103n t\u1EEB b\xE0i h\u1ECDc sinh","contextBefore":"...","contextAfter":"...","shortFix":"...","explanation":"...","correctKnowledge":"...","suggestedFix":"..."}]}';
+    const verifyModelsUsed = [];
+    let verifyExecutedApiCount = 0;
+    let verifyAdjustmentsCount = 0;
+    const verifierStudentBlocksPayload = pages.flatMap(
+      (page) => (page.blocks || []).map((block) => ({
+        blockId: block.blockId,
+        pageNumber: page.pageNumber,
+        confidence: Math.round((block.confidence ?? 1) * 100) / 100,
+        text: block.extractedText
+      }))
+    );
+    const verifierStudentBlocksJson = JSON.stringify(verifierStudentBlocksPayload).slice(0, 12e3);
+    const verifierRubricSummary = fixedRubric.criteria.length > 0 ? fixedRubric.criteria.slice(0, 20).map((cr) => `${cr.criterionId}: ${cr.concept} (${cr.chapter})`).join("\n") : "";
+    const runVerifySlice = async (verifyParams) => {
+      if (verifyParams.indexedClaims.length === 0) {
+        return { adjustments: [], executed: false };
+      }
+      const verifierChoice = selectCrossProviderVerifierModel({
+        gradedByProvider: verifyParams.gradedByProvider,
+        slot: verifyParams.slot,
+        configuredProviders,
+        slot1VerifyModel: verifyParams.slot1VerifyModel
+      });
+      const fullClaimsPayload = verifyParams.indexedClaims.map(({ index, claim }) => ({
+        claimIndex: index,
+        claimId: claim.claimId,
+        blockId: claim.blockId || "",
+        sourcePage: claim.sourcePage,
+        sourceText: claim.sourceText,
+        concept: claim.concept,
+        evaluationStatus: claim.evaluationStatus,
+        errorSpan: claim.errorSpan || "",
+        shortFix: claim.shortFix || "",
+        explanation: claim.explanation,
+        correctKnowledge: claim.correctKnowledge
+      }));
+      const verifyPrompt = [
+        `B\u1EA1n l\xE0 H\u1ED9i \u0111\u1ED3ng D\xF2 Ch\xE9o \u0110\u1ED9c L\u1EADp (Cross-Provider Verifier) c\u1EE7a StudyCheck AI cho m\xF4n ${subjectName} l\u1EDBp ${grade}.`,
+        "B\u1EAET BU\u1ED8C ki\u1EC3m tra \u0110\u1ED8C L\u1EACP d\u1EF1a tr\xEAn B\xC0I L\xC0M NGUY\xCAN B\u1EA2N C\u1EE6A H\u1ECCC SINH b\xEAn d\u01B0\u1EDBi theo \u0110\u1EE6 2 CHI\u1EC0U:",
+        "",
+        "CHI\u1EC0U 1 \u2014 S\u0102N L\u1ED6I B\u1ECA B\u1ECE S\xD3T (CH\u1ED0NG CH\u1EA4M D\u1EC4 D\xC3I):",
+        '- R\xE0 so\xE1t \u0110\u1ED8C L\u1EACP T\u1EA4T C\u1EA2 c\xE1c m\u1EC7nh \u0111\u1EC1 \u0111ang b\u1ECB ch\u1EA5m "CORRECT" so v\u1EDBi b\xE0i l\xE0m nguy\xEAn b\u1EA3n.',
+        '- N\u1EBFu h\u1ECDc sinh vi\u1EBFt sai ki\u1EBFn th\u1EE9c, sai c\xF4ng th\u1EE9c/ph\xE9p to\xE1n (vd: s = v + t), sai quan h\u1EC7 ("t\u1EC9 l\u1EC7 ngh\u1ECBch", "t\u1ED1c \u0111\u1ED9 thay \u0111\u1ED5i"), sai d\u1EA5u/h\u1EC7 s\u1ED1 \u2192 B\u1EAET BU\u1ED8C tr\u1EA3 adjustment chuy\u1EC3n th\xE0nh INCORRECT (k\xE8m previousStatus="CORRECT", reason, evidenceBasis, errorSpan NGUY\xCAN V\u0102N t\u1EEB b\xE0i h\u1ECDc sinh, shortFix chu\u1EA9n).',
+        "- N\u1EBFu h\u1ECDc sinh thi\u1EBFu \u0111\u01A1n v\u1ECB \u0111o b\u1EAFt bu\u1ED9c, thi\u1EBFu \u0111i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng ho\u1EB7c thi\u1EBFu gi\u1EA3i th\xEDch k\xFD hi\u1EC7u m\xE0 KH\xD4NG xu\u1EA5t hi\u1EC7n \u1EDF \u0111\xE2u trong ng\u1EEF c\u1EA3nh b\xE0i l\xE0m \u2192 B\u1EAET BU\u1ED8C tr\u1EA3 adjustment chuy\u1EC3n th\xE0nh PARTIALLY_CORRECT.",
+        '- N\u1EBFu ph\xE1t hi\u1EC7n m\xE2u thu\u1EABn gi\u1EEFa explanation (\u0111ang ch\u1EC9 l\u1ED7i) v\xE0 evaluationStatus="CORRECT" \u2192 s\u1EEDa ngay tr\u1EA1ng th\xE1i cho nh\u1EA5t qu\xE1n.',
+        "- N\u1EBFu trong b\xE0i l\xE0m nguy\xEAn b\u1EA3n c\xF3 l\u1ED7i r\xF5 r\xE0ng m\xE0 danh s\xE1ch claims ho\xE0n to\xE0n b\u1ECF s\xF3t ch\u01B0a t\u1EA1o claim \u2192 c\xF3 th\u1EC3 th\xEAm ph\u1EA7n t\u1EED v\u1EDBi claimIndex: -1, blockId, sourceText, errorSpan nguy\xEAn v\u0103n, shortFix, reason, evidenceBasis.",
+        "",
+        "CHI\u1EC0U 2 \u2014 R\xC0 SO\xC1T L\u1ED6I B\u1EAET OAN, TR\xD9NG L\u1EB6P & \u0110\u1ED8 CH\xCDNH X\xC1C C\u1EE6A errorSpan:",
+        "- Ki\u1EC3m tra m\u1ECDi claim INCORRECT / PARTIALLY_CORRECT / MISSING:",
+        "  + C\xF3 b\u1EAFt oan h\u1ECDc sinh khi \u0111\u01A1n v\u1ECB/\u0111i\u1EC1u ki\u1EC7n \u0111\xE3 n\xEAu r\xF5 \u1EDF c\xE2u tr\u01B0\u1EDBc c\xF9ng ng\u1EEF c\u1EA3nh kh\xF4ng?",
+        "  + C\xF3 b\u1ECBa MISSING khi kh\xF4ng c\xF3 y\xEAu c\u1EA7u/rubric kh\xF4ng?",
+        '  + "errorSpan" c\xF3 ph\u1EA3i l\xE0 chu\u1ED7i con NGUY\xCAN V\u0102N 100% c\xF3 th\u1EADt trong block b\xE0i l\xE0m kh\xF4ng? N\u1EBFu AI ch\u1EA5m l\u1EE1 \u0111i\u1EC1n \u0111\xE1p \xE1n s\u1EEDa v\xE0o errorSpan, h\xE3y s\u1EEDa errorSpan v\u1EC1 \u0111\xFAng c\u1EE5m sai nguy\xEAn v\u0103n tr\xEAn b\xE0i l\xE0m (k\xE8m contextBefore/contextAfter n\u1EBFu c\u1EE5m \u0111\xF3 l\u1EB7p l\u1EA1i).',
+        '  + "shortFix" v\xE0 "correctKnowledge" c\xF3 \u0111\xFAng khoa h\u1ECDc kh\xF4ng?',
+        "- QUY T\u1EAEC CH\u1EB6T: KH\xD4NG h\u1EA1 m\u1ED9t l\u1ED7i t\u1EEB INCORRECT xu\u1ED1ng CORRECT n\u1EBFu kh\xF4ng c\xF3 evidenceBasis khoa h\u1ECDc c\u1EE5 th\u1EC3 ch\u1EE9ng minh h\u1ECDc sinh vi\u1EBFt \u0111\xFAng.",
+        '- CH\u1EC8 tr\u1EA3 v\u1EC1 c\xE1c m\u1EE5c th\u1EF1c s\u1EF1 c\u1EA7n \u0111i\u1EC1u ch\u1EC9nh trong m\u1EA3ng "adjustments" (n\u1EBFu t\u1EA5t c\u1EA3 \u0111\xE3 chu\u1EA9n, tr\u1EA3 {"adjustments":[]}).',
+        "",
+        "=== B\xC0I L\xC0M NGUY\xCAN B\u1EA2N THEO BLOCK ===",
+        verifierStudentBlocksJson,
+        "",
+        "=== DANH S\xC1CH CLAIMS \u0110\xC3 CH\u1EA4M C\u1EA6N D\xD2 CH\xC9O ===",
+        JSON.stringify(fullClaimsPayload),
+        verifierRubricSummary ? `
+=== RUBRIC Y\xCAU C\u1EA6U ===
+${verifierRubricSummary}` : "",
+        textbookSlice ? `
+=== \u0110O\u1EA0N TR\xCDCH SGK THAM CHI\u1EBEU ===
+${textbookSlice.slice(0, 4500)}` : ""
+      ].filter(Boolean).join("\n");
+      try {
+        const res = await runTaskWithRouter({
+          taskType: "claim_validation",
+          config: effectiveConfig,
+          idToken,
+          strictModelLock: false,
+          allowGroqRescue: true,
+          preferredPrimaryModelId: verifierChoice.primaryModel,
+          preferredFallbackModelId: verifierChoice.fallbackModel,
+          extractExecutionMeta: (out) => ({
+            actualModel: out.resolvedModel,
+            systemFingerprint: out.systemFingerprint
+          }),
+          cacheInput: {
+            verifyRev: "v4.4_two_way_independent_verify",
+            slot: verifyParams.slot,
+            inputHash,
+            gradedByProvider: verifyParams.gradedByProvider,
+            claimDigest: crypto6.createHash("sha256").update(JSON.stringify(fullClaimsPayload), "utf8").digest("hex").slice(0, 24)
+          },
+          runWithModel: async (modelId) => generateJsonWithProviderDetailed({
+            modelId,
+            prompt: verifyPrompt,
+            thinkingTier: "low",
+            maxOutputTokens: 2560,
+            timeoutMs: 18e3,
+            temperature: 0,
+            seed: DETERMINISTIC_GRADING_SEED,
+            strictModelLock: false,
+            stage: "DO",
+            slot: verifyParams.slot,
+            tokensOut,
+            fallbackJson: '{"adjustments":[]}',
+            groqSchemaHint: verifySchemaHint
+          })
+        });
+        return {
+          adjustments: Array.isArray(res.data.data?.adjustments) ? res.data.data.adjustments : [],
+          modelUsed: res.actualModel,
+          executed: true
+        };
+      } catch (verifyErr) {
+        console.warn(`Cross-provider verification non-fatal fallback (slot ${verifyParams.slot}):`, verifyErr);
+        return { adjustments: [], executed: false };
+      }
+    };
+    const indexedAllClaims = initialClaims.map((claim, index) => ({ index, claim }));
+    const collectedAdjustments = [];
+    if (indexedAllClaims.length > 0) {
+      const slot1Provider = gradeProvidersUsed[0] || "mistral";
+      const v1 = await runVerifySlice({
+        indexedClaims: indexedAllClaims,
+        gradedByProvider: slot1Provider,
+        slot: 1
+      });
+      if (v1.executed) {
+        verifyExecutedApiCount += 1;
+        if (v1.modelUsed) verifyModelsUsed.push(v1.modelUsed);
+        collectedAdjustments.push(...v1.adjustments);
+      }
+    }
+    const reconciliation = validateAndApplyVerifierAdjustments(
+      initialClaims,
+      collectedAdjustments,
+      pages
+    );
+    verifyAdjustmentsCount = reconciliation.appliedCount;
+    const anchoredResult = anchorClaimsAndBuildAnnotations({
+      claims: reconciliation.claims,
+      pages,
+      ocrConfirmed
+    });
+    const claims = anchoredResult.claims;
+    const annotations = anchoredResult.annotations;
+    const modelUsed = gradeModelsUsed.length > 1 ? Array.from(new Set(gradeModelsUsed)).join(" + ") : primaryRoutedResult.actualModel;
     let coverageItems = [];
     let extraCoverageCount = 0;
     if (rubricMode === "fixed_textbook_rubric") {
@@ -6944,8 +7679,8 @@ ${textbookSlice.slice(0, 4e3)}` : ""
           status: validCov,
           suggestedAddition: item.suggestedAddition || "",
           referenceExcerpt: item.referenceExcerpt || "",
-          ...typeof item.referencePage === "number" && item.referencePage > 0 ? { referencePage: item.referencePage } : {},
-          ...item.matchedChunkId ? { matchedChunkId: item.matchedChunkId } : {}
+          ...hasIndexedTextbookChunks && typeof item.referencePage === "number" && item.referencePage > 0 ? { referencePage: item.referencePage } : {},
+          ...item.matchedChunkId && chunkMap.has(item.matchedChunkId) ? { matchedChunkId: item.matchedChunkId } : {}
         };
       });
     }
@@ -6992,25 +7727,6 @@ ${textbookSlice.slice(0, 4e3)}` : ""
       ...baseAccuracyBreakdown,
       gradingAudit
     };
-    const annotations = [];
-    for (const claim of claims) {
-      if (claim.evaluationStatus === "MISSING" || claim.evaluationStatus === "OUT_OF_SCOPE") continue;
-      const color = claim.evaluationStatus === "INCORRECT" ? "red" : claim.evaluationStatus === "PARTIALLY_CORRECT" ? "orange" : claim.evaluationStatus === "UNVERIFIED" || claim.evaluationStatus === "OCR_UNCERTAIN" || claim.evaluationStatus === "AMBIGUOUS" ? "yellow" : "green";
-      annotations.push({
-        annotationId: `ann_${claim.claimId}`,
-        pageNumber: claim.sourcePage,
-        ...claim.blockId ? { blockId: claim.blockId } : {},
-        ...claim.blockIds && claim.blockIds.length > 0 ? { blockIds: claim.blockIds } : {},
-        textExcerpt: claim.sourceText,
-        ...claim.errorSpan ? { errorSpan: claim.errorSpan } : {},
-        claimId: claim.claimId,
-        ...claim.evidences[0]?.referenceId ? { referenceId: claim.evidences[0].referenceId } : {},
-        boundingBox: claim.boundingBox || null,
-        annotationColor: color,
-        reason: claim.explanation,
-        ...claim.evidences[0]?.evidenceId ? { evidenceId: claim.evidences[0].evidenceId } : {}
-      });
-    }
     const mappedWeaknesses = (rawEval.weaknesses || []).map((w) => ({
       title: w.title,
       category: "knowledge_error",

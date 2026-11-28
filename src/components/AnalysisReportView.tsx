@@ -755,20 +755,26 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
             value={scoreSummary.correctPercent ?? analysis.accuracyScore}
             subtitle={
               scoreSummary.evaluatedTotal > 0
-                ? `Tổng ${scoreSummary.evaluatedTotal} ý: ${scoreSummary.correctCount} đúng · ${scoreSummary.partialCount} thiếu/1 phần · ${scoreSummary.incorrectCount} sai`
+                ? `Tổng ${scoreSummary.evaluatedTotal} ý: ${scoreSummary.correctCount} đúng · ${scoreSummary.partialCount} thiếu/1 phần · ${scoreSummary.incorrectCount} sai${
+                    scoreSummary.missingCount > 0 ? ` · ${scoreSummary.missingCount} thiếu ý` : ''
+                  }`
                 : 'Chưa đủ mệnh đề xác minh để tính điểm'
             }
             color="sky"
           />
           {scoreSummary.evaluatedTotal > 0 &&
-            scoreSummary.correctPercent !== null &&
-            scoreSummary.incorrectPercent !== null && (
-              <div className="pt-2 border-t border-slate-200/70 dark:border-slate-700/70 flex items-center justify-between text-xs font-mono tabular-nums">
+            scoreSummary.exactCorrectPercent !== null &&
+            scoreSummary.partialPercent !== null &&
+            scoreSummary.exactIncorrectPercent !== null && (
+              <div className="pt-2 border-t border-slate-200/70 dark:border-slate-700/70 flex flex-wrap items-center justify-between gap-1 text-[11px] font-mono tabular-nums">
                 <span className="font-semibold text-emerald-700 dark:text-emerald-400">
-                  Đúng {scoreSummary.correctPercent}%
+                  Đúng {scoreSummary.exactCorrectPercent}%
+                </span>
+                <span className="font-semibold text-amber-700 dark:text-amber-400">
+                  Một phần {scoreSummary.partialPercent}%
                 </span>
                 <span className="font-semibold text-rose-700 dark:text-rose-400">
-                  Sai {scoreSummary.incorrectPercent}%
+                  Sai {scoreSummary.exactIncorrectPercent}%
                 </span>
               </div>
             )}
@@ -874,16 +880,16 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       >
         <div>
           <p className="font-semibold text-sky-800 dark:text-sky-300 mb-1">
-            % Đúng = (Số ý đúng + 0,5 × Số ý thiếu/1 phần) / Tổng số ý đã chấm · % Sai = 100% − % Đúng
+            Điểm chính xác = (Số ý đúng + 0,5 × Số ý một phần) / Tổng số ý đã chấm · Phân bổ 3 nhóm = 100%
           </p>
           <p>
-            Mỗi ý đã kiểm chứng tính đều 1 đơn vị (Đúng = 1,0 · Thiếu/đúng 1 phần = 0,5 · Sai = 0),
-            không bị bóp méo bởi trọng số ẩn. Các ý chưa đủ căn cứ hoặc OCR mờ không bị phạt vào mẫu số.
+            Mỗi ý đã kiểm chứng tính đều 1 đơn vị (Đúng = 1,0 · Thiếu/đúng 1 phần = 0,5 · Sai = 0).
+            Các ý chưa đủ căn cứ, OCR mờ hoặc ý thiếu (thuộc Độ đầy đủ) không bị tính trùng vào mẫu số Độ chính xác.
           </p>
           <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
             Thực tế: ({scoreSummary.correctCount} + 0,5 × {scoreSummary.partialCount}) / {scoreSummary.evaluatedTotal} ={' '}
             {scoreSummary.correctPercent !== null
-              ? `Đúng ${scoreSummary.correctPercent}% · Sai ${scoreSummary.incorrectPercent}%`
+              ? `${scoreSummary.correctPercent}% (Đúng ${scoreSummary.exactCorrectPercent}% · Một phần ${scoreSummary.partialPercent}% · Sai ${scoreSummary.exactIncorrectPercent}%)`
               : 'Chưa đủ dữ liệu'}
           </p>
         </div>

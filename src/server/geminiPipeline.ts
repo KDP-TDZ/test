@@ -39,6 +39,12 @@ import {
   groupRawTextIntoSemanticBlocks,
   isNonGradableLeadInClaim,
 } from '../core/semanticBlocks.js';
+import {
+  anchorClaimsAndBuildAnnotations,
+  hasMeaningfulReadableContent,
+  validateAndApplyVerifierAdjustments,
+  type VerifierAdjustment,
+} from '../core/verificationPostProcess.js';
 import { inferScopeFromContentHeuristic } from '../core/uploadBatching.js';
 import type {
   AiProviderId,
@@ -208,7 +214,7 @@ function normalizeJsonEscapeAndControlChars(jsonCandidate: string): string {
 }
 
 export const DETERMINISTIC_GRADING_SEED = 20261123;
-export const GRADING_PROMPT_VERSION = 'v4.2_3provider_adaptive';
+export const GRADING_PROMPT_VERSION = 'v4.4_strict_audit_anchored';
 export const MAX_STUDENT_GRADING_CHARS = 48_000;
 export const MAX_TEXTBOOK_GRADING_CHARS = 24_000;
 
@@ -219,6 +225,10 @@ export interface RawKnowledgeEvalResult {
     sourcePage: number;
     sourceText: string;
     errorSpan?: string;
+    contextBefore?: string;
+    contextAfter?: string;
+    startOffset?: number;
+    endOffset?: number;
     shortFix?: string;
     chapter: string;
     concept: string;
@@ -1195,49 +1205,60 @@ export class KnowledgeAnalysisService {
 
     const buildGradingPrompt = (studentBodyText: string, partNote?: string): string =>
       [
-        'Bạn là chuyên gia kiểm định kiến thức giáo dục THPT Việt Nam của StudyCheck AI. Hãy chấm cực kỳ chính xác, chặt chẽ, nhất quán tuyệt đối giữa trạng thái, lời giải thích và đáp án sửa chuẩn.',
+        'Bạn là chuyên gia kiểm định kiến thức giáo dục THPT Việt Nam của StudyCheck AI. Hãy chấm cực kỳ chính xác, chặt chẽ, khách quan theo sự thật khoa học — TUYỆT ĐỐI CHỐNG CHẤM DỄ DÃI.',
         `Môn học: ${subjectName} | Lớp: ${grade} | Sách tham chiếu: ${textbookTitle || 'Chuẩn chương trình GDPT 2018 & kiến thức khoa học phổ thông'} | Phạm vi: ${scope || selectedChapters.join(', ') || 'Theo đúng chủ đề chính trong tài liệu'}`,
         partNote ? `PHẠM VI PHẦN ĐANG CHẤM: ${partNote}` : '',
         '',
+        'NGUYÊN TẮC CHỐNG CHẤM DỄ DÃI (ANTI-LENIENCY) & ĐÁNH GIÁ THEO NGỮ CẢNH:',
+        '- KHÔNG BAO GIỜ mặc định nội dung học sinh là CORRECT. Phải tự kiểm chứng lại từng định nghĩa, tính chất, quan hệ, công thức, phép toán, đơn vị, điều kiện áp dụng và suy luận dựa trên kiến thức khoa học chuẩn xác.',
+        '- Đánh giá từng mệnh đề đặt trong TOÀN BỘ NGỮ CẢNH liên quan của bài làm (không chỉ đọc rời rạc từng dòng):',
+        '  + Nếu học sinh ĐÃ nêu rõ đơn vị/ký hiệu/điều kiện ở đoạn trước cùng ngữ cảnh bài làm → KHÔNG bắt lỗi lặp lại oan.',
+        '  + Nếu học sinh KHÔNG nêu đơn vị bắt buộc, điều kiện áp dụng hoặc giải thích ký hiệu ở BẤT KỲ ĐÂU trong ngữ cảnh liên quan → BẮT BUỘC đánh PARTIALLY_CORRECT.',
+        '- CẤM hạ nhẹ lỗi sai kiến thức/sai công thức (ví dụ "s = v + t", "tốc độ thay đổi", "tỉ lệ nghịch") xuống PARTIALLY_CORRECT hay CORRECT.',
+        '- KHÔNG suy đoán các vùng có ký hiệu "[KHÔNG NHÌN RÕ]" hoặc chữ OCR quá mờ để ép chấm CORRECT/INCORRECT — hãy gắn OCR_UNCERTAIN cho đoạn mờ đó, đồng thời VẪN chấm nghiêm túc các đoạn đọc rõ khác trong cùng bài.',
+        '',
         'NGUỒN CĂN CỨ ĐỐI CHIẾU:',
         hasIndexedTextbookChunks
-          ? '- Ưu tiên đối chiếu trực tiếp các đoạn trích SGK bên dưới và gắn đúng matchedChunkId, matchedPage. Với kiến thức khoa học phổ thông không xuất hiện trực tiếp trong đoạn trích nhưng thuộc chuẩn GDPT 2018, vẫn kiểm định chuẩn xác theo khoa học phổ thông.'
-          : '- Hiện chưa có đoạn trích SGK trong kho cho bài này. BẮT BUỘC dùng chuẩn kiến thức khoa học chính thống và chương trình GDPT 2018 của Bộ GD&ĐT để kiểm định dứt khoát mọi định nghĩa, định luật, công thức, tính chất và đơn vị đo. TUYỆT ĐỐI KHÔNG đánh UNVERIFIED với lỗi sai kiến thức hay sai công thức phổ thông rõ ràng (ví dụ: sai "tốc độ thay đổi" trong chuyển động thẳng đều, sai "tỉ lệ nghịch", sai phép toán "s = v + t").',
+          ? '- Ưu tiên đối chiếu trực tiếp các đoạn trích SGK bên dưới và chỉ gắn matchedChunkId, matchedPage khi trích đúng từ đoạn trích SGK có thật bên dưới. Với kiến thức khoa học phổ thông chuẩn GDPT 2018 ngoài đoạn trích, vẫn kiểm định dứt khoát theo khoa học phổ thông nhưng KHÔNG bịa matchedPage.'
+          : '- Hiện chưa có đoạn trích SGK trong kho cho bài này. BẮT BUỘC dùng chuẩn kiến thức khoa học chính thống và chương trình GDPT 2018 của Bộ GD&ĐT để kiểm định dứt khoát mọi định nghĩa, định luật, công thức, tính chất và đơn vị đo. TUYỆT ĐỐI KHÔNG đánh UNVERIFIED cho lỗi sai kiến thức/công thức phổ thông rõ ràng (ví dụ: "tốc độ thay đổi" trong chuyển động thẳng đều, "tỉ lệ nghịch", "s = v + t"), và KHÔNG bịa matchedPage/matchedChunkId.',
         '',
         'QUY TRÌNH KIỂM ĐỊNH 4 LỚP BẮT BUỘC:',
         'LỚP 1 — TÁCH MỆNH ĐỀ NGỮ NGHĨA & CẤM CHẤM TIÊU ĐỀ DẪN NHẬP:',
-        '- Tách tài liệu học sinh thành từng đơn vị kiến thức độc lập theo đúng từng câu, từng cụm công thức (nhãn dẫn nhập + công thức) và từng cụm giải thích "Trong đó: ..." (không gộp nhiều lỗi khác nhau vào chung 1 claim).',
-        '- TUYỆT ĐỐI KHÔNG tạo claim độc lập cho dòng nhãn dẫn nhập / tiêu đề ngắn kết thúc bằng dấu hai chấm (ví dụ: "Công thức tính quãng đường:", "Phương trình chuyển động thẳng đều:", "Trong đó:", "Định nghĩa:"). Hãy giữ nhãn dẫn nhập gắn liền với công thức hoặc nội dung phía sau thành 1 claim duy nhất để không bơm điểm Chính xác ảo.',
-        '- Kiểm tra kỹ mọi từ khóa mang tính bản chất: "không đổi" vs "thay đổi", "tỉ lệ thuận" vs "tỉ lệ nghịch", "tăng" vs "giảm", "cùng chiều" vs "ngược chiều", "bảo toàn" vs "không bảo toàn", điều kiện áp dụng.',
-        '- Đối chiếu theo nghĩa học thuật (không bắt bẻ cách diễn đạt tương đương nếu đúng bản chất).',
+        '- Tách tài liệu học sinh thành từng đơn vị kiến thức độc lập theo từng câu, từng cụm công thức và từng cụm giải thích "Trong đó: ..." (không gộp nhiều lỗi khác nhau vào chung 1 claim). Gắn đúng blockId từ [BLOCK id=...].',
+        '- TUYỆT ĐỐI KHÔNG tạo claim độc lập cho dòng nhãn dẫn nhập / tiêu đề ngắn kết thúc bằng dấu hai chấm (ví dụ: "Công thức tính quãng đường:", "Phương trình chuyển động thẳng đều:", "Trong đó:", "Định nghĩa:"). Hãy giữ nhãn dẫn nhập gắn liền với công thức hoặc nội dung phía sau thành 1 claim duy nhất để không bơm điểm ảo.',
+        '- Soi kỹ mọi từ khóa bản chất: "không đổi" vs "thay đổi", "tỉ lệ thuận" vs "tỉ lệ nghịch", "tăng" vs "giảm", "cùng chiều" vs "ngược chiều", "bảo toàn" vs "không bảo toàn", miền xác định, điều kiện áp dụng, nguyên nhân – hệ quả.',
+        '- Chấp nhận cách diễn đạt tương đương nếu đúng bản chất khoa học; không bắt bẻ lỗi chính tả vặt nếu không làm sai nghĩa học thuật.',
         '',
-        'LỚP 2 — SOI TỪNG CÔNG THỨC, PHÉP TOÁN & TRÍCH NGUYÊN VĂN CỤM SAI (errorSpan) — CẤM SỬA BẢN GỐC:',
-        '- NGUYÊN TẮC BẤT DI BẤT DỊCH: "sourceText" và "errorSpan" BẮT BUỘC phải là bản SAO CHÉP NGUYÊN VĂN 100% từ tài liệu học sinh — CẤM sửa chữ, sửa công thức hay bỏ sót từ trong sourceText/errorSpan. Hệ thống chỉ gạch chân & tô nổi bật (đỏ = sai, cam = thiếu) ngay trên bản gốc; phần sửa đúng chỉ đặt ở "shortFix" và "suggestedFix".',
-        '- Kiểm tra từng dấu phép toán (+, -, ×, ., /, ^), dấu âm/dương, hệ số, chỉ số dưới và kiểm tra thứ nguyên vật lý/toán học (ví dụ: v [m/s] không thể cộng với t [s] trong s = v + t; công thức đúng phải là s = v.t).',
-        '- Tách riêng claim cho cụm công thức và claim cho cụm chú thích "Trong đó: ..." đi kèm để phân biệt rõ: công thức đúng nhưng thiếu giải thích biến số khác với công thức viết sai.',
-        '- Với MỌI claim có trạng thái INCORRECT hoặc PARTIALLY_CORRECT: BẮT BUỘC điền trường "errorSpan" trích NGUYÊN VĂN cụm từ/vế/công thức bị sai hoặc thiếu bên trong sourceText (ví dụ: "tốc độ thay đổi theo thời gian", "tỉ lệ nghịch", "s = v + t") để hệ thống gạch chân/tô đỏ hoặc cam chính xác vị trí lỗi, và điền trường "shortFix" (1 câu thật ngắn gọn, trực diện cách sửa nhanh, tối đa 15–20 từ).',
+        'LỚP 2 — SOI TỪNG CÔNG THỨC, PHÉP TOÁN & TRÍCH NGUYÊN VĂN errorSpan (CẤM SỬA BẢN GỐC):',
+        '- NGUYÊN TẮC BẤT DI BẤT DỊCH: "sourceText" và "errorSpan" BẮT BUỘC phải là bản SAO CHÉP NGUYÊN VĂN 100% từ bài làm học sinh — CẤM tự sửa chữ, sửa công thức, đổi dấu hay điền đáp án đúng vào errorSpan! Ví dụ: nếu học sinh viết "s = v + t", thì errorSpan PHẢI là "s = v + t" (TUYỆT ĐỐI KHÔNG viết "s = v.t" trong errorSpan). Phần sửa đúng chỉ ghi ở "shortFix" và "suggestedFix".',
+        '- Kiểm tra từng dấu phép toán (+, -, ×, ., /, ^), dấu âm/dương, hệ số, chỉ số dưới/trên, cân bằng phương trình hóa học, thứ nguyên vật lý/toán học (ví dụ: v [m/s] không thể cộng với t [s] trong s = v + t; công thức đúng phải là s = v.t).',
+        '- Tách riêng claim cho công thức và claim cho cụm chú thích "Trong đó: ..." để phân biệt rõ công thức sai (INCORRECT) với thiếu đơn vị/giải thích ký hiệu (PARTIALLY_CORRECT).',
+        '- Với MỌI claim INCORRECT hoặc PARTIALLY_CORRECT:',
+        '  + BẮT BUỘC điền "errorSpan" là chuỗi con NGUYÊN VĂN ngắn gọn, chính xác của phần bị sai/thiếu trong block tương ứng.',
+        '  + Nếu cụm từ lỗi có thể lặp lại nhiều lần trong cùng đoạn, BẮT BUỘC điền thêm "contextBefore" và "contextAfter" (5–20 ký tự nguyên văn ngay trước/sau errorSpan) để định vị chính xác 100%.',
+        '  + BẮT BUỘC điền "shortFix" (1 câu ngắn gọn, trực diện cách sửa chuẩn, tối đa 15–20 từ).',
         '',
-        'LỚP 3 — KIỂM TRA ĐỘ ĐẦY ĐỦ CHÚ THÍCH KÝ HIỆU & ĐƠN VỊ CỦA MỌI CÔNG THỨC:',
-        '- Với MỌI công thức xuất hiện trong tài liệu (ví dụ s = v.t, x = x0 + v.t, F = m.a...), liệt kê TẤT CẢ các ký hiệu/biến số có mặt trong công thức đó và đối chiếu với cụm chú thích ("Trong đó: ...") ngay kế tiếp.',
-        '- Nếu học sinh BỎ SÓT giải thích ý nghĩa HOẶC thiếu đơn vị đo của bất kỳ ký hiệu nào:',
-        '  + Đánh giá cụm chú thích đó là PARTIALLY_CORRECT (Thiếu thông tin / Điều kiện), nêu ĐÍCH DANH ký hiệu và đơn vị còn thiếu trong explanation, ghi rõ cách bổ sung ngắn gọn trong shortFix và trọn bộ chú thích đầy đủ trong suggestedFix.',
-        '  + Ghi nhận thiếu sót tương ứng vào weaknesses để hiển thị rõ trong danh sách "Thiếu thông tin".',
+        'LỚP 3 — KIỂM TRA CHÚ THÍCH KÝ HIỆU, ĐƠN VỊ & ĐIỀU KIỆN ÁP DỤNG:',
+        '- Với MỌI công thức xuất hiện trong bài (s = v.t, x = x0 + v.t, F = m.a, ...), đối chiếu toàn bộ biến số/ký hiệu với phần giải thích và đơn vị trong ngữ cảnh liên quan.',
+        '- Nếu thiếu đơn vị đo bắt buộc (ví dụ chỉ viết "v là tốc độ" mà không có m/s hay đơn vị hợp lệ nào trong ngữ cảnh), thiếu giải thích ký hiệu, hoặc thiếu điều kiện áp dụng quan trọng → đánh PARTIALLY_CORRECT, chỉ đích danh thiếu gì trong explanation và cách bổ sung chuẩn trong shortFix.',
         '',
-        'LỚP 4 — TỰ KIỂM CHÉO NHẤT QUÁN TRƯỚC KHI TRẢ KẾT QUẢ:',
-        '- Phân loại trạng thái chuẩn:',
-        '  + CORRECT: hoàn toàn đúng bản chất, không thiếu ký hiệu hay điều kiện quan trọng.',
-        '  + INCORRECT: sai bản chất kiến thức, sai quan hệ, sai công thức/phép toán.',
-        '  + PARTIALLY_CORRECT: có phần đúng nhưng thiếu thông tin quan trọng (thiếu giải thích ký hiệu/đơn vị, thiếu điều kiện áp dụng, phát biểu chưa trọn vẹn).',
-        '  + UNVERIFIED: CHỈ dùng khi thông tin riêng lẻ/mơ hồ/không đủ ngữ cảnh để xác minh. KHÔNG dùng cho định nghĩa/công thức phổ thông.',
+        'LỚP 4 — RANH GIỚI TRẠNG THÁI CHẶT CHẼ & TỰ KIỂM CHÉO NHẤT QUÁN:',
+        '- CORRECT: Đúng bản chất kiến thức, đúng công thức/phép toán/lập luận, đầy đủ đơn vị & điều kiện bắt buộc trong ngữ cảnh.',
+        '- INCORRECT: Sai bản chất kiến thức, sai quan hệ, sai công thức/phép toán/dấu/định luật, sai phương trình hoặc sai bước suy luận.',
+        '- PARTIALLY_CORRECT: Ý cốt lõi đúng nhưng thiếu đơn vị, thiếu điều kiện áp dụng, thiếu miền xác định, thiếu giải thích biến số hoặc diễn đạt thiếu ý quan trọng.',
+        rubricMode === 'unscoped'
+          ? '- MISSING: KHÔNG tự bịa claim MISSING khi không có đề bài hay phạm vi rubric cố định yêu cầu.'
+          : '- MISSING: CHỈ dùng khi thiếu hẳn một ý/yêu cầu bắt buộc theo phạm vi hoặc rubric đã cho; KHÔNG tạo errorSpan giả cho MISSING.',
+        '- UNVERIFIED / AMBIGUOUS: CHỈ dùng khi mệnh đề thực sự mơ hồ hoặc không đủ ngữ cảnh xác minh. CẤM dùng cho kiến thức/công thức phổ thông cơ bản.',
         ocrConfirmed
-          ? '  + Lưu ý OCR: Văn bản đã được người dùng kiểm tra/xác nhận nên KHÔNG tự ý gắn OCR_UNCERTAIN trừ khi câu chữ bị mất ký tự không thể hiểu nghĩa.'
-          : '  + OCR_UNCERTAIN: độ tin cậy OCR < 0.65.',
-        '  + OUT_OF_SCOPE: nội dung lạc đề hoàn toàn khỏi môn học.',
-        '- KIỂM TRA CHÉO: Nếu explanation chỉ ra học sinh viết sai → evaluationStatus BẮT BUỘC là INCORRECT. Nếu explanation chỉ ra học sinh viết thiếu ký hiệu/đơn vị/điều kiện → evaluationStatus BẮT BUỘC là PARTIALLY_CORRECT. CẤM TUYỆT ĐỐI việc giải thích 1 đằng mà chấm trạng thái 1 nẻo.',
-        '- Gán trọng số importanceWeight cho claims theo quy tắc cố định: 3 (định nghĩa/định luật/công thức cốt lõi), 2 (hỗ trợ/chú thích ký hiệu/điều kiện), 1 (chi tiết/ví dụ mở rộng).',
+          ? '- OCR_UNCERTAIN: Văn bản đã được người học xác nhận nên CHỈ dùng khi còn dấu "[KHÔNG NHÌN RÕ]" hoặc mất ký tự không đọc được nghĩa.'
+          : '- OCR_UNCERTAIN: Dùng khi đoạn chứa "[KHÔNG NHÌN RÕ]" hoặc chữ OCR quá mờ/độ tin cậy < 0.65 — không đoán bừa.',
+        '- OUT_OF_SCOPE: Nội dung hoàn toàn lạc đề ngoài môn học.',
+        '- KIỂM TRA CHÉO NHẤT QUÁN: Nếu explanation nêu lỗi sai → evaluationStatus BẮT BUỘC là INCORRECT. Nếu explanation nêu thiếu đơn vị/ký hiệu/điều kiện → evaluationStatus BẮT BUỘC là PARTIALLY_CORRECT. CẤM giải thích chỉ lỗi mà lại gắn CORRECT.',
+        '- Gán importanceWeight: 3 (định nghĩa/định luật/công thức cốt lõi), 2 (chú thích ký hiệu/đơn vị/điều kiện), 1 (ví dụ/chi tiết phụ).',
         coverageInstruction,
-        '- Tuyệt đối KHÔNG bịa URL hay số trang SGK nếu không có trong ngữ cảnh.',
-        '- Viết rõ ràng, trực diện, súc tích (mỗi shortFix tối đa 1 câu ngắn gọn; explanation/correctKnowledge/suggestedFix tối đa 2-3 câu đi thẳng vào bản chất khái niệm; weaknesses tối đa 10 ý; strengths tối đa 5 ý; suggestions tối đa 5 ý).',
+        '- Tuyệt đối KHÔNG bịa URL, tên sách, hay số trang SGK nếu không có trong đoạn trích SGK thật bên dưới.',
+        '- Viết súc tích, đi thẳng vào bản chất (shortFix 1 dòng ngắn; explanation/correctKnowledge/suggestedFix tối đa 2-3 câu; weaknesses tối đa 10 ý; strengths tối đa 5 ý; suggestions tối đa 5 ý).',
         '',
         rubricSection,
         '=== TÀI LIỆU CỦA HỌC SINH ===',
@@ -1252,7 +1273,7 @@ export class KnowledgeAnalysisService {
     const analysisPrompt = buildGradingPrompt(studentSlice);
 
     const gradeSchemaHint =
-      '{"claims":[{"blockId":"...","blockIds":["..."],"sourcePage":1,"sourceText":"...","errorSpan":"cụm từ/công thức sai trích nguyên văn từ sourceText","shortFix":"câu sửa ngắn gọn 1 dòng","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"...","matchedChunkId":"...","matchedExcerpt":"...","matchedPage":1}],"coverageItems":[{"criterionId":"KT01","concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1,"matchedChunkId":"..."}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}';
+      '{"claims":[{"blockId":"...","blockIds":["..."],"sourcePage":1,"sourceText":"nguyên văn từ bài học sinh","errorSpan":"cụm sai/thiếu trích nguyên văn từ bài","contextBefore":"5-15 ký tự ngay trước errorSpan","contextAfter":"5-15 ký tự ngay sau errorSpan","shortFix":"câu sửa ngắn gọn 1 dòng","chapter":"...","concept":"...","importanceWeight":1|2|3,"knowledgeType":"textbook_core|advanced_extension|insufficient_evidence","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","explanation":"...","correctKnowledge":"...","suggestedFix":"...","matchedChunkId":"...","matchedExcerpt":"...","matchedPage":1}],"coverageItems":[{"criterionId":"KT01","concept":"...","chapter":"...","importanceWeight":1|2|3,"status":"COVERED|PARTIALLY_COVERED|MISSING|OUT_OF_SCOPE","suggestedAddition":"...","referenceExcerpt":"...","referencePage":1,"matchedChunkId":"..."}],"strengths":[{"title":"...","detail":"...","sourceExcerpt":"...","pageNumber":1}],"weaknesses":[{"title":"...","detail":"...","pageNumber":1}],"suggestions":[{"priority":1,"title":"...","description":"..."}]}';
 
     // Full SHA-256 hash covering ENTIRE student text, ENTIRE prompt, fixed rubric, sorted chunks, and grading flags
     const fullStudentTextHash = crypto
@@ -1378,196 +1399,13 @@ export class KnowledgeAnalysisService {
       (c) => !isNonGradableLeadInClaim(c.sourceText || '')
     );
 
-    // Stage 3 — Fixed 1-API Cross-Provider Verification (skips cooling-down providers automatically)
-    type VerifyAdjustment = {
-      claimIndex: number;
-      evaluationStatus?: string;
-      errorSpan?: string;
-      shortFix?: string;
-      explanation?: string;
-      correctKnowledge?: string;
-      suggestedFix?: string;
-    };
-    type VerifyBatchOutput = { adjustments?: VerifyAdjustment[] };
-
-    const rawConfiguredProviders = {
-      mistral: isMistralConfigured(),
-      cloudflare: isCloudflareConfigured(),
-      groq: isGroqConfigured(),
-    };
-    const healthyConfiguredProviders = {
-      mistral: rawConfiguredProviders.mistral && !isProviderCoolingDown('mistral'),
-      cloudflare: rawConfiguredProviders.cloudflare && !isProviderCoolingDown('cloudflare'),
-      groq: rawConfiguredProviders.groq && !isProviderCoolingDown('groq'),
-    };
-    const configuredProviders =
-      healthyConfiguredProviders.mistral ||
-      healthyConfiguredProviders.cloudflare ||
-      healthyConfiguredProviders.groq
-        ? healthyConfiguredProviders
-        : rawConfiguredProviders;
-    const verifySchemaHint =
-      '{"adjustments":[{"claimIndex":0,"evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|UNVERIFIED|OUT_OF_SCOPE","errorSpan":"...","shortFix":"...","explanation":"...","correctKnowledge":"...","suggestedFix":"..."}]}';
-
-    const verifyModelsUsed: string[] = [];
-    let verifyExecutedApiCount = 0;
-    let verifyAdjustmentsCount = 0;
-
-    const runVerifySlice = async (verifyParams: {
-      indexedClaims: Array<{ index: number; claim: NonNullable<RawKnowledgeEvalResult['claims']>[number] }>;
-      gradedByProvider: AiProviderId;
-      slot: AdaptiveSlotNumber;
-      slot1VerifyModel?: string;
-    }): Promise<{ adjustments: VerifyAdjustment[]; modelUsed?: string; executed: boolean }> => {
-      if (verifyParams.indexedClaims.length === 0) {
-        return { adjustments: [], executed: false };
-      }
-      const verifierChoice = selectCrossProviderVerifierModel({
-        gradedByProvider: verifyParams.gradedByProvider,
-        slot: verifyParams.slot,
-        configuredProviders,
-        slot1VerifyModel: verifyParams.slot1VerifyModel,
-      });
-
-      const compactClaimsPayload = verifyParams.indexedClaims.map(({ index, claim }) => ({
-        claimIndex: index,
-        sourcePage: claim.sourcePage,
-        sourceText: (claim.sourceText || '').slice(0, 360),
-        concept: claim.concept,
-        evaluationStatus: claim.evaluationStatus,
-        errorSpan: claim.errorSpan || '',
-        shortFix: claim.shortFix || '',
-        explanation: (claim.explanation || '').slice(0, 320),
-        correctKnowledge: (claim.correctKnowledge || '').slice(0, 320),
-      }));
-
-      const verifyPrompt = [
-        `Bạn là Hội đồng dò chéo độc lập (Cross-Provider Verifier) của StudyCheck AI cho môn ${subjectName} lớp ${grade}.`,
-        'NHIỆM VỤ: Kiểm tra lại danh sách mệnh đề đã chấm bên dưới để phát hiện:',
-        '1. Mâu thuẫn giữa explanation và evaluationStatus (ví dụ explanation nói sai nhưng lại gắn CORRECT, hoặc nói thiếu ký hiệu/đơn vị nhưng gắn CORRECT).',
-        '2. Lỗi báo sai oan (false positive) hoặc bỏ sót lỗi công thức/định nghĩa/đơn vị (false negative).',
-        '3. Đảm bảo mọi claim INCORRECT hoặc PARTIALLY_CORRECT đều có errorSpan trích NGUYÊN VĂN 100% từ sourceText (CẤM tự sửa chữ trong errorSpan) và shortFix súc tích.',
-        'CHỈ trả về các mục thực sự cần điều chỉnh trong mảng "adjustments" (nếu tất cả đã chính xác và nhất quán, trả về {"adjustments":[]}).',
-        '',
-        '=== DANH SÁCH CLAIMS CẦN DÒ CHÉO ===',
-        JSON.stringify(compactClaimsPayload),
-        textbookSlice ? `\n=== TÓM TẮT NGỮ LIỆU SGK ===\n${textbookSlice.slice(0, 4000)}` : '',
-      ]
-        .filter(Boolean)
-        .join('\n');
-
-      try {
-        const res = await runTaskWithRouter<ProviderJsonResult<VerifyBatchOutput>>({
-          taskType: 'claim_validation',
-          config: effectiveConfig,
-          idToken,
-          strictModelLock: false,
-          allowGroqRescue: true,
-          preferredPrimaryModelId: verifierChoice.primaryModel,
-          preferredFallbackModelId: verifierChoice.fallbackModel,
-          extractExecutionMeta: (out) => ({
-            actualModel: out.resolvedModel,
-            systemFingerprint: out.systemFingerprint,
-          }),
-          cacheInput: {
-            verifyRev: 'v4.3_fixed_1api_verify',
-            slot: verifyParams.slot,
-            inputHash,
-            gradedByProvider: verifyParams.gradedByProvider,
-            claimDigest: crypto
-              .createHash('sha256')
-              .update(JSON.stringify(compactClaimsPayload), 'utf8')
-              .digest('hex')
-              .slice(0, 24),
-          },
-          runWithModel: async (modelId) =>
-            generateJsonWithProviderDetailed<VerifyBatchOutput>({
-              modelId,
-              prompt: verifyPrompt,
-              thinkingTier: 'low',
-              maxOutputTokens: 2048,
-              timeoutMs: 18_000,
-              temperature: 0,
-              seed: DETERMINISTIC_GRADING_SEED,
-              strictModelLock: false,
-              stage: 'DO',
-              slot: verifyParams.slot,
-              tokensOut,
-              fallbackJson: '{"adjustments":[]}',
-              groqSchemaHint: verifySchemaHint,
-            }),
-        });
-        return {
-          adjustments: Array.isArray(res.data.data?.adjustments) ? res.data.data.adjustments : [],
-          modelUsed: res.actualModel,
-          executed: true,
-        };
-      } catch (verifyErr) {
-        console.warn(`Cross-provider verification non-fatal fallback (slot ${verifyParams.slot}):`, verifyErr);
-        return { adjustments: [], executed: false };
-      }
-    };
-
-    const indexedAllClaims = filteredRawClaims.map((claim, index) => ({ index, claim }));
-    const collectedAdjustments: VerifyAdjustment[] = [];
-
-    // Fixed 1-API Verify regardless of document length
-    if (indexedAllClaims.length > 0) {
-      const slot1Provider = gradeProvidersUsed[0] || 'mistral';
-      const v1 = await runVerifySlice({
-        indexedClaims: indexedAllClaims,
-        gradedByProvider: slot1Provider,
-        slot: 1,
-      });
-      if (v1.executed) {
-        verifyExecutedApiCount += 1;
-        if (v1.modelUsed) verifyModelsUsed.push(v1.modelUsed);
-        collectedAdjustments.push(...v1.adjustments);
-      }
+    // Guard against silent empty-claims completion when student document clearly has readable content
+    const docHasReadableContent = hasMeaningfulReadableContent(pages);
+    if (docHasReadableContent && filteredRawClaims.length === 0) {
+      throw new Error(
+        'GRADING_JSON_INVALID: Bài làm có nội dung hợp lệ nhưng AI không trích xuất được mệnh đề kiểm định nào. Hệ thống không lưu báo cáo rỗng giả — vui lòng kiểm định lại.'
+      );
     }
-
-    for (const adj of collectedAdjustments) {
-      const idx = Number(adj?.claimIndex);
-      if (!Number.isInteger(idx) || idx < 0 || idx >= filteredRawClaims.length) continue;
-      const target = filteredRawClaims[idx];
-      let mutated = false;
-      if (
-        typeof adj.evaluationStatus === 'string' &&
-        validStatuses.has(adj.evaluationStatus as ClaimStatus) &&
-        adj.evaluationStatus !== target.evaluationStatus
-      ) {
-        target.evaluationStatus = adj.evaluationStatus;
-        mutated = true;
-      }
-      if (typeof adj.errorSpan === 'string' && adj.errorSpan.trim().length >= 2) {
-        target.errorSpan = adj.errorSpan.trim();
-        mutated = true;
-      }
-      if (typeof adj.shortFix === 'string' && adj.shortFix.trim().length > 0) {
-        target.shortFix = adj.shortFix.trim();
-        mutated = true;
-      }
-      if (typeof adj.explanation === 'string' && adj.explanation.trim().length >= 8) {
-        target.explanation = adj.explanation.trim();
-        mutated = true;
-      }
-      if (typeof adj.correctKnowledge === 'string' && adj.correctKnowledge.trim().length >= 4) {
-        target.correctKnowledge = adj.correctKnowledge.trim();
-        mutated = true;
-      }
-      if (typeof adj.suggestedFix === 'string' && adj.suggestedFix.trim().length >= 4) {
-        target.suggestedFix = adj.suggestedFix.trim();
-        mutated = true;
-      }
-      if (mutated) {
-        verifyAdjustmentsCount += 1;
-      }
-    }
-
-    const modelUsed =
-      gradeModelsUsed.length > 1
-        ? Array.from(new Set(gradeModelsUsed)).join(' + ')
-        : primaryRoutedResult.actualModel;
 
     const blockMap = new Map<string, ExtractedTextBlock>();
     for (const p of pages) {
@@ -1581,7 +1419,8 @@ export class KnowledgeAnalysisService {
       chunkMap.set(c.chunkId, c);
     }
 
-    const claims: ExtractedClaim[] = filteredRawClaims.map((c, idx) => {
+    // Build initial typed ExtractedClaim[] before running independent Cross-Provider Verification
+    const initialClaims: ExtractedClaim[] = filteredRawClaims.map((c, idx) => {
       const normalizedBlockIds = Array.isArray(c.blockIds)
         ? c.blockIds.filter((id): id is string => typeof id === 'string' && blockMap.has(id))
         : [];
@@ -1590,19 +1429,15 @@ export class KnowledgeAnalysisService {
       const matchedBlock = primaryBlockId ? blockMap.get(primaryBlockId) : undefined;
       const rawOcrConf = matchedBlock ? matchedBlock.confidence : 0.9;
       const ocrConf = ocrConfirmed ? Math.max(rawOcrConf, 0.95) : rawOcrConf;
-      let status: ClaimStatus = validStatuses.has(c.evaluationStatus as ClaimStatus)
+      const status: ClaimStatus = validStatuses.has(c.evaluationStatus as ClaimStatus)
         ? (c.evaluationStatus as ClaimStatus)
         : 'UNVERIFIED';
-
-      // Only apply raw OCR uncertainty guard when the text has NOT been manually confirmed/edited
-      if (!ocrConfirmed && ocrConf < 0.65 && status === 'INCORRECT') {
-        status = 'OCR_UNCERTAIN';
-      }
 
       const wRaw = Number(c.importanceWeight);
       const importanceWeight: 1 | 2 | 3 = wRaw === 3 ? 3 : wRaw === 1 ? 1 : 2;
       const evidences: ReferenceEvidence[] = [];
 
+      // Only cite textbook page/chunk when genuinely grounded in retrieved textbook chunks
       if (c.matchedChunkId && chunkMap.has(c.matchedChunkId)) {
         const ch = chunkMap.get(c.matchedChunkId)!;
         evidences.push({
@@ -1616,13 +1451,12 @@ export class KnowledgeAnalysisService {
           pageNumber: ch.pageNumber,
           excerpt: c.matchedExcerpt || ch.content.slice(0, 320),
         });
-      } else if (c.matchedExcerpt) {
+      } else if (hasIndexedTextbookChunks && c.matchedExcerpt) {
         evidences.push({
           evidenceId: `ev_${idx + 1}_ref`,
           sourceType: 'textbook',
           ...(textbookReferenceId ? { referenceId: textbookReferenceId } : {}),
           title: textbookTitle || 'Chuẩn chương trình GDPT 2018',
-          ...(typeof c.matchedPage === 'number' && c.matchedPage > 0 ? { pageNumber: c.matchedPage } : {}),
           excerpt: c.matchedExcerpt,
         });
       }
@@ -1643,7 +1477,7 @@ export class KnowledgeAnalysisService {
           ? c.shortFix.trim()
           : undefined;
 
-      // Deterministic claim ID derived from index + page + normalized sourceText + concept (never randomBytes!)
+      // Deterministic claim ID derived from index + page + normalized sourceText + concept
       const claimDigest = crypto
         .createHash('sha256')
         .update(
@@ -1666,6 +1500,14 @@ export class KnowledgeAnalysisService {
         ...(matchedBlock?.blockId ? { blockId: matchedBlock.blockId } : {}),
         ...(normalizedBlockIds.length > 0 ? { blockIds: normalizedBlockIds } : {}),
         ...(resolvedErrorSpan ? { errorSpan: resolvedErrorSpan } : {}),
+        ...(typeof c.startOffset === 'number' ? { startOffset: c.startOffset } : {}),
+        ...(typeof c.endOffset === 'number' ? { endOffset: c.endOffset } : {}),
+        ...(typeof c.contextBefore === 'string' && c.contextBefore.trim()
+          ? { contextBefore: c.contextBefore.trim() }
+          : {}),
+        ...(typeof c.contextAfter === 'string' && c.contextAfter.trim()
+          ? { contextAfter: c.contextAfter.trim() }
+          : {}),
         ...(resolvedShortFix ? { shortFix: resolvedShortFix } : {}),
         boundingBox: matchedBlock?.boundingBox || null,
         ocrConfidence: ocrConf,
@@ -1682,6 +1524,203 @@ export class KnowledgeAnalysisService {
         evidences,
       };
     });
+
+    // Stage 3 — Fixed 1-API Independent Two-Way Cross-Provider Verification
+    type VerifyBatchOutput = { adjustments?: VerifierAdjustment[] };
+
+    const rawConfiguredProviders = {
+      mistral: isMistralConfigured(),
+      cloudflare: isCloudflareConfigured(),
+      groq: isGroqConfigured(),
+    };
+    const healthyConfiguredProviders = {
+      mistral: rawConfiguredProviders.mistral && !isProviderCoolingDown('mistral'),
+      cloudflare: rawConfiguredProviders.cloudflare && !isProviderCoolingDown('cloudflare'),
+      groq: rawConfiguredProviders.groq && !isProviderCoolingDown('groq'),
+    };
+    const configuredProviders =
+      healthyConfiguredProviders.mistral ||
+      healthyConfiguredProviders.cloudflare ||
+      healthyConfiguredProviders.groq
+        ? healthyConfiguredProviders
+        : rawConfiguredProviders;
+    const verifySchemaHint =
+      '{"adjustments":[{"claimIndex":0,"claimId":"...","previousStatus":"CORRECT","evaluationStatus":"CORRECT|PARTIALLY_CORRECT|INCORRECT|MISSING|UNVERIFIED|AMBIGUOUS|OCR_UNCERTAIN|OUT_OF_SCOPE","reason":"lý do cụ thể","evidenceBasis":"căn cứ khoa học/SGK cụ thể","blockId":"...","sourceText":"...","errorSpan":"trích nguyên văn từ bài học sinh","contextBefore":"...","contextAfter":"...","shortFix":"...","explanation":"...","correctKnowledge":"...","suggestedFix":"..."}]}';
+
+    const verifyModelsUsed: string[] = [];
+    let verifyExecutedApiCount = 0;
+    let verifyAdjustmentsCount = 0;
+
+    // Build compact verbatim student blocks payload so Verifier can audit independently against raw student text
+    const verifierStudentBlocksPayload = pages.flatMap((page) =>
+      (page.blocks || []).map((block) => ({
+        blockId: block.blockId,
+        pageNumber: page.pageNumber,
+        confidence: Math.round((block.confidence ?? 1) * 100) / 100,
+        text: block.extractedText,
+      }))
+    );
+    const verifierStudentBlocksJson = JSON.stringify(verifierStudentBlocksPayload).slice(0, 12_000);
+    const verifierRubricSummary =
+      fixedRubric.criteria.length > 0
+        ? fixedRubric.criteria
+            .slice(0, 20)
+            .map((cr) => `${cr.criterionId}: ${cr.concept} (${cr.chapter})`)
+            .join('\n')
+        : '';
+
+    const runVerifySlice = async (verifyParams: {
+      indexedClaims: Array<{ index: number; claim: ExtractedClaim }>;
+      gradedByProvider: AiProviderId;
+      slot: AdaptiveSlotNumber;
+      slot1VerifyModel?: string;
+    }): Promise<{ adjustments: VerifierAdjustment[]; modelUsed?: string; executed: boolean }> => {
+      if (verifyParams.indexedClaims.length === 0) {
+        return { adjustments: [], executed: false };
+      }
+      const verifierChoice = selectCrossProviderVerifierModel({
+        gradedByProvider: verifyParams.gradedByProvider,
+        slot: verifyParams.slot,
+        configuredProviders,
+        slot1VerifyModel: verifyParams.slot1VerifyModel,
+      });
+
+      const fullClaimsPayload = verifyParams.indexedClaims.map(({ index, claim }) => ({
+        claimIndex: index,
+        claimId: claim.claimId,
+        blockId: claim.blockId || '',
+        sourcePage: claim.sourcePage,
+        sourceText: claim.sourceText,
+        concept: claim.concept,
+        evaluationStatus: claim.evaluationStatus,
+        errorSpan: claim.errorSpan || '',
+        shortFix: claim.shortFix || '',
+        explanation: claim.explanation,
+        correctKnowledge: claim.correctKnowledge,
+      }));
+
+      const verifyPrompt = [
+        `Bạn là Hội đồng Dò Chéo Độc Lập (Cross-Provider Verifier) của StudyCheck AI cho môn ${subjectName} lớp ${grade}.`,
+        'BẮT BUỘC kiểm tra ĐỘC LẬP dựa trên BÀI LÀM NGUYÊN BẢN CỦA HỌC SINH bên dưới theo ĐỦ 2 CHIỀU:',
+        '',
+        'CHIỀU 1 — SĂN LỖI BỊ BỎ SÓT (CHỐNG CHẤM DỄ DÃI):',
+        '- Rà soát ĐỘC LẬP TẤT CẢ các mệnh đề đang bị chấm "CORRECT" so với bài làm nguyên bản.',
+        '- Nếu học sinh viết sai kiến thức, sai công thức/phép toán (vd: s = v + t), sai quan hệ ("tỉ lệ nghịch", "tốc độ thay đổi"), sai dấu/hệ số → BẮT BUỘC trả adjustment chuyển thành INCORRECT (kèm previousStatus="CORRECT", reason, evidenceBasis, errorSpan NGUYÊN VĂN từ bài học sinh, shortFix chuẩn).',
+        '- Nếu học sinh thiếu đơn vị đo bắt buộc, thiếu điều kiện áp dụng hoặc thiếu giải thích ký hiệu mà KHÔNG xuất hiện ở đâu trong ngữ cảnh bài làm → BẮT BUỘC trả adjustment chuyển thành PARTIALLY_CORRECT.',
+        '- Nếu phát hiện mâu thuẫn giữa explanation (đang chỉ lỗi) và evaluationStatus="CORRECT" → sửa ngay trạng thái cho nhất quán.',
+        '- Nếu trong bài làm nguyên bản có lỗi rõ ràng mà danh sách claims hoàn toàn bỏ sót chưa tạo claim → có thể thêm phần tử với claimIndex: -1, blockId, sourceText, errorSpan nguyên văn, shortFix, reason, evidenceBasis.',
+        '',
+        'CHIỀU 2 — RÀ SOÁT LỖI BẮT OAN, TRÙNG LẶP & ĐỘ CHÍNH XÁC CỦA errorSpan:',
+        '- Kiểm tra mọi claim INCORRECT / PARTIALLY_CORRECT / MISSING:',
+        '  + Có bắt oan học sinh khi đơn vị/điều kiện đã nêu rõ ở câu trước cùng ngữ cảnh không?',
+        '  + Có bịa MISSING khi không có yêu cầu/rubric không?',
+        '  + "errorSpan" có phải là chuỗi con NGUYÊN VĂN 100% có thật trong block bài làm không? Nếu AI chấm lỡ điền đáp án sửa vào errorSpan, hãy sửa errorSpan về đúng cụm sai nguyên văn trên bài làm (kèm contextBefore/contextAfter nếu cụm đó lặp lại).',
+        '  + "shortFix" và "correctKnowledge" có đúng khoa học không?',
+        '- QUY TẮC CHẶT: KHÔNG hạ một lỗi từ INCORRECT xuống CORRECT nếu không có evidenceBasis khoa học cụ thể chứng minh học sinh viết đúng.',
+        '- CHỈ trả về các mục thực sự cần điều chỉnh trong mảng "adjustments" (nếu tất cả đã chuẩn, trả {"adjustments":[]}).',
+        '',
+        '=== BÀI LÀM NGUYÊN BẢN THEO BLOCK ===',
+        verifierStudentBlocksJson,
+        '',
+        '=== DANH SÁCH CLAIMS ĐÃ CHẤM CẦN DÒ CHÉO ===',
+        JSON.stringify(fullClaimsPayload),
+        verifierRubricSummary ? `\n=== RUBRIC YÊU CẦU ===\n${verifierRubricSummary}` : '',
+        textbookSlice ? `\n=== ĐOẠN TRÍCH SGK THAM CHIẾU ===\n${textbookSlice.slice(0, 4500)}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      try {
+        const res = await runTaskWithRouter<ProviderJsonResult<VerifyBatchOutput>>({
+          taskType: 'claim_validation',
+          config: effectiveConfig,
+          idToken,
+          strictModelLock: false,
+          allowGroqRescue: true,
+          preferredPrimaryModelId: verifierChoice.primaryModel,
+          preferredFallbackModelId: verifierChoice.fallbackModel,
+          extractExecutionMeta: (out) => ({
+            actualModel: out.resolvedModel,
+            systemFingerprint: out.systemFingerprint,
+          }),
+          cacheInput: {
+            verifyRev: 'v4.4_two_way_independent_verify',
+            slot: verifyParams.slot,
+            inputHash,
+            gradedByProvider: verifyParams.gradedByProvider,
+            claimDigest: crypto
+              .createHash('sha256')
+              .update(JSON.stringify(fullClaimsPayload), 'utf8')
+              .digest('hex')
+              .slice(0, 24),
+          },
+          runWithModel: async (modelId) =>
+            generateJsonWithProviderDetailed<VerifyBatchOutput>({
+              modelId,
+              prompt: verifyPrompt,
+              thinkingTier: 'low',
+              maxOutputTokens: 2560,
+              timeoutMs: 18_000,
+              temperature: 0,
+              seed: DETERMINISTIC_GRADING_SEED,
+              strictModelLock: false,
+              stage: 'DO',
+              slot: verifyParams.slot,
+              tokensOut,
+              fallbackJson: '{"adjustments":[]}',
+              groqSchemaHint: verifySchemaHint,
+            }),
+        });
+        return {
+          adjustments: Array.isArray(res.data.data?.adjustments) ? res.data.data.adjustments : [],
+          modelUsed: res.actualModel,
+          executed: true,
+        };
+      } catch (verifyErr) {
+        console.warn(`Cross-provider verification non-fatal fallback (slot ${verifyParams.slot}):`, verifyErr);
+        return { adjustments: [], executed: false };
+      }
+    };
+
+    const indexedAllClaims = initialClaims.map((claim, index) => ({ index, claim }));
+    const collectedAdjustments: VerifierAdjustment[] = [];
+
+    // Fixed 1-API Verify regardless of document length
+    if (indexedAllClaims.length > 0) {
+      const slot1Provider = gradeProvidersUsed[0] || 'mistral';
+      const v1 = await runVerifySlice({
+        indexedClaims: indexedAllClaims,
+        gradedByProvider: slot1Provider,
+        slot: 1,
+      });
+      if (v1.executed) {
+        verifyExecutedApiCount += 1;
+        if (v1.modelUsed) verifyModelsUsed.push(v1.modelUsed);
+        collectedAdjustments.push(...v1.adjustments);
+      }
+    }
+
+    // Strictly validate & reconcile verifier adjustments before anchoring
+    const reconciliation = validateAndApplyVerifierAdjustments(
+      initialClaims,
+      collectedAdjustments,
+      pages
+    );
+    verifyAdjustmentsCount = reconciliation.appliedCount;
+
+    // Enforce block-level OCR safeguard, verify exact errorSpan offsets, sort by document order, and build deduplicated annotations
+    const anchoredResult = anchorClaimsAndBuildAnnotations({
+      claims: reconciliation.claims,
+      pages,
+      ocrConfirmed,
+    });
+    const claims = anchoredResult.claims;
+    const annotations = anchoredResult.annotations;
+
+    const modelUsed =
+      gradeModelsUsed.length > 1
+        ? Array.from(new Set(gradeModelsUsed)).join(' + ')
+        : primaryRoutedResult.actualModel;
 
     // Reconcile coverageItems strictly against the pre-built FixedRubric when textbook rubric exists
     let coverageItems: KnowledgeCoverageItem[] = [];
@@ -1713,10 +1752,14 @@ export class KnowledgeAnalysisService {
           status: validCov,
           suggestedAddition: item.suggestedAddition || '',
           referenceExcerpt: item.referenceExcerpt || '',
-          ...(typeof item.referencePage === 'number' && item.referencePage > 0
+          ...(hasIndexedTextbookChunks &&
+          typeof item.referencePage === 'number' &&
+          item.referencePage > 0
             ? { referencePage: item.referencePage }
             : {}),
-          ...(item.matchedChunkId ? { matchedChunkId: item.matchedChunkId } : {}),
+          ...(item.matchedChunkId && chunkMap.has(item.matchedChunkId)
+            ? { matchedChunkId: item.matchedChunkId }
+            : {}),
         };
       });
     }
@@ -1771,36 +1814,6 @@ export class KnowledgeAnalysisService {
       ...baseAccuracyBreakdown,
       gradingAudit,
     };
-
-    const annotations: AnnotationItem[] = [];
-    for (const claim of claims) {
-      if (claim.evaluationStatus === 'MISSING' || claim.evaluationStatus === 'OUT_OF_SCOPE') continue;
-      const color: AnnotationItem['annotationColor'] =
-        claim.evaluationStatus === 'INCORRECT'
-          ? 'red'
-          : claim.evaluationStatus === 'PARTIALLY_CORRECT'
-          ? 'orange'
-          : claim.evaluationStatus === 'UNVERIFIED' ||
-            claim.evaluationStatus === 'OCR_UNCERTAIN' ||
-            claim.evaluationStatus === 'AMBIGUOUS'
-          ? 'yellow'
-          : 'green';
-
-      annotations.push({
-        annotationId: `ann_${claim.claimId}`,
-        pageNumber: claim.sourcePage,
-        ...(claim.blockId ? { blockId: claim.blockId } : {}),
-        ...(claim.blockIds && claim.blockIds.length > 0 ? { blockIds: claim.blockIds } : {}),
-        textExcerpt: claim.sourceText,
-        ...(claim.errorSpan ? { errorSpan: claim.errorSpan } : {}),
-        claimId: claim.claimId,
-        ...(claim.evidences[0]?.referenceId ? { referenceId: claim.evidences[0].referenceId } : {}),
-        boundingBox: claim.boundingBox || null,
-        annotationColor: color,
-        reason: claim.explanation,
-        ...(claim.evidences[0]?.evidenceId ? { evidenceId: claim.evidences[0].evidenceId } : {}),
-      });
-    }
 
     const mappedWeaknesses: AnalysisWeakness[] = (rawEval.weaknesses || []).map((w) => ({
       title: w.title,

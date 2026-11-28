@@ -1,4 +1,10 @@
-import type { AnnotationItem, ExtractedClaim, ExtractedTextBlock } from './types.js';
+import type {
+  AnnotationItem,
+  AnnotationLocationStatus,
+  ExtractedClaim,
+  ExtractedPage,
+  ExtractedTextBlock,
+} from './types.js';
 
 const BULLET_LINE_RE = /^([-*+•▪▫◦–—]|\d+[.)]|[a-zA-Z][.)])\s+/;
 const ANNOTATION_INTRO_RE =
@@ -300,48 +306,371 @@ function normalizeCompact(text: string): string {
     .replace(/\s+/g, '');
 }
 
+interface NormalizedUnit {
+  char: string;
+  origStart: number;
+  origEnd: number;
+}
+
 /**
- * Finds the exact [start, end) character span of `needle` inside `haystack`,
- * tolerant to differences in spaces, capitalization, and Unicode NFC normalization
- * (so "s=v+t" accurately highlights "s = v + t" and "x0" matches "x_0" or "x₀").
+ * Projects `text` into NFC-normalized lowercase comparison units while keeping exact
+ * UTF-16 [origStart, origEnd) code-unit indices in the ORIGINAL string.
+ * Guarantees String.slice(start, end) integrity for Vietnamese NFD combining diacritics,
+ * Greek symbols, math operators, subscripts/superscripts (x₀, v², H₂SO₄), and surrogate pairs.
+ */
+function buildNormalizedIndexMap(text: string, stripWhitespace: boolean): {
+  normalized: string;
+  units: NormalizedUnit[];
+} {
+  const units: NormalizedUnit[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const cp = text.codePointAt(i)!;
+    const baseLen = cp > 0xffff ? 2 : 1;
+    let clusterEnd = i + baseLen;
+    // Group trailing Unicode combining diacritical marks (Mn/Mc/Me) with their base code point
+    while (clusterEnd < text.length) {
+      const nextCp = text.codePointAt(clusterEnd)!;
+      const nextLen = nextCp > 0xffff ? 2 : 1;
+      const nextChar = text.slice(clusterEnd, clusterEnd + nextLen);
+      if (/^\p{M}$/u.test(nextChar)) {
+        clusterEnd += nextLen;
+      } else {
+        break;
+      }
+    }
+
+    const rawCluster = text.slice(i, clusterEnd);
+    if (stripWhitespace && /^\s+$/u.test(rawCluster)) {
+      i = clusterEnd;
+      continue;
+    }
+
+    const nfcLower = rawCluster.normalize('NFC').toLowerCase();
+    for (let k = 0; k < nfcLower.length; k += 1) {
+      units.push({
+        char: nfcLower[k],
+        origStart: i,
+        origEnd: clusterEnd,
+      });
+    }
+
+    i = clusterEnd;
+  }
+
+  return {
+    normalized: units.map((u) => u.char).join(''),
+    units,
+  };
+}
+
+/**
+ * Finds ALL exact [start, end) UTF-16 character spans of `needle` inside `haystack`,
+ * tolerant to case, Unicode NFC/NFD composition, and optionally whitespace differences
+ * (e.g. "s=v+t" matching "s = v + t"). Never fabricates matches or alters `haystack`.
+ */
+export function findAllFlexibleSubstringRanges(
+  haystack: string,
+  needle: string
+): Array<{ start: number; end: number }> {
+  if (!haystack || !needle) return [];
+  const trimmedNeedle = needle.trim();
+  if (trimmedNeedle.length < 2) return [];
+
+  // Path 1: NFC-normalized, case-insensitive direct match preserving whitespace
+  const normNeedle = trimmedNeedle.normalize('NFC').toLowerCase();
+  const hayDirect = buildNormalizedIndexMap(haystack, false);
+  const directMatches: Array<{ start: number; end: number }> = [];
+  if (normNeedle.length >= 2) {
+    let from = 0;
+    while (from <= hayDirect.normalized.length - normNeedle.length) {
+      const idx = hayDirect.normalized.indexOf(normNeedle, from);
+      if (idx < 0) break;
+      const start = hayDirect.units[idx].origStart;
+      const end = hayDirect.units[idx + normNeedle.length - 1].origEnd;
+      directMatches.push({ start, end });
+      from = idx + Math.max(1, normNeedle.length);
+    }
+  }
+  if (directMatches.length > 0) {
+    return directMatches;
+  }
+
+  // Path 2: Whitespace-insensitive NFC match (handles "s=v+t" vs "s = v + t" or multiline wraps)
+  const compactNeedle = normNeedle.replace(/\s+/gu, '');
+  if (compactNeedle.length < 2) return [];
+  const hayCompact = buildNormalizedIndexMap(haystack, true);
+  const compactMatches: Array<{ start: number; end: number }> = [];
+  let from = 0;
+  while (from <= hayCompact.normalized.length - compactNeedle.length) {
+    const idx = hayCompact.normalized.indexOf(compactNeedle, from);
+    if (idx < 0) break;
+    const start = hayCompact.units[idx].origStart;
+    const end = hayCompact.units[idx + compactNeedle.length - 1].origEnd;
+    compactMatches.push({ start, end });
+    from = idx + Math.max(1, compactNeedle.length);
+  }
+
+  return compactMatches;
+}
+
+/**
+ * Finds the first exact [start, end) character span of `needle` inside `haystack`,
+ * tolerant to differences in spaces, capitalization, and Unicode NFC/NFD normalization.
  */
 export function findFlexibleSubstringRange(
   haystack: string,
   needle: string
 ): { start: number; end: number } | null {
-  if (!haystack || !needle) return null;
-  const trimmedNeedle = needle.trim();
-  if (trimmedNeedle.length < 2) return null;
+  const ranges = findAllFlexibleSubstringRanges(haystack, needle);
+  return ranges[0] ?? null;
+}
 
-  // Fast path 1: case-insensitive direct substring match
-  const lowerHay = haystack.toLowerCase();
-  const lowerNeedle = trimmedNeedle.toLowerCase();
-  const directIdx = lowerHay.indexOf(lowerNeedle);
-  if (directIdx >= 0) {
-    return { start: directIdx, end: directIdx + trimmedNeedle.length };
+export interface VerifiedSpanResult {
+  locationStatus: AnnotationLocationStatus;
+  startOffset?: number;
+  endOffset?: number;
+  verifiedSpan?: string;
+  reason?: string;
+}
+
+function scoreContextMatch(
+  haystack: string,
+  range: { start: number; end: number },
+  contextBefore?: string,
+  contextAfter?: string
+): number {
+  let score = 0;
+  const normBefore = normalizeCompact(contextBefore || '');
+  const normAfter = normalizeCompact(contextAfter || '');
+
+  if (normBefore.length >= 2) {
+    const windowBefore = normalizeCompact(haystack.slice(Math.max(0, range.start - 64), range.start));
+    if (windowBefore.endsWith(normBefore)) {
+      score += normBefore.length * 3;
+    } else if (windowBefore.includes(normBefore)) {
+      score += normBefore.length;
+    }
   }
 
-  // Fast path 2: whitespace-insensitive character-mapped match (crucial for formulas like "s=v+t" vs "s = v + t")
-  const hayCompactChars: string[] = [];
-  const hayIndexMap: number[] = [];
-  for (let i = 0; i < haystack.length; i += 1) {
-    const ch = haystack[i];
-    if (/\s/.test(ch)) continue;
-    hayCompactChars.push(ch.toLowerCase());
-    hayIndexMap.push(i);
-  }
-  const compactHay = hayCompactChars.join('');
-  const compactNeedle = trimmedNeedle.replace(/\s+/g, '').toLowerCase();
-  if (compactNeedle.length < 2) return null;
-
-  const compactIdx = compactHay.indexOf(compactNeedle);
-  if (compactIdx >= 0) {
-    const start = hayIndexMap[compactIdx];
-    const end = hayIndexMap[compactIdx + compactNeedle.length - 1] + 1;
-    return { start, end };
+  if (normAfter.length >= 2) {
+    const windowAfter = normalizeCompact(haystack.slice(range.end, Math.min(haystack.length, range.end + 64)));
+    if (windowAfter.startsWith(normAfter)) {
+      score += normAfter.length * 3;
+    } else if (windowAfter.includes(normAfter)) {
+      score += normAfter.length;
+    }
   }
 
-  return null;
+  return score;
+}
+
+/**
+ * Strictly verifies whether an AI-provided `errorSpan` (or fallback `sourceText`) maps uniquely
+ * to a real UTF-16 range in `blockText`.
+ * - Disambiguates duplicate occurrences via `contextBefore` / `contextAfter` / unique `sourceText` / `startOffset`.
+ * - NEVER fabricates a replacement string or blindly highlights the first match when ambiguous.
+ * - Returns `locationStatus: 'unverified'` when invalid or ambiguous so the right-column card
+ *   is preserved while the left column refuses to draw a false underline.
+ */
+export function verifyAndAnchorErrorSpan(params: {
+  blockText: string;
+  errorSpan?: string;
+  sourceText?: string;
+  startOffset?: number;
+  endOffset?: number;
+  contextBefore?: string;
+  contextAfter?: string;
+  isMissing?: boolean;
+  allowLegacyBlockFallback?: boolean;
+}): VerifiedSpanResult {
+  const {
+    blockText,
+    errorSpan,
+    sourceText,
+    startOffset,
+    endOffset,
+    contextBefore,
+    contextAfter,
+    isMissing,
+    allowLegacyBlockFallback = false,
+  } = params;
+
+  if (isMissing) {
+    return {
+      locationStatus: 'anchor_missing',
+      reason: 'missing_content_anchor',
+    };
+  }
+
+  if (!blockText) {
+    return {
+      locationStatus: 'unverified',
+      reason: 'empty_block_text',
+    };
+  }
+
+  const trimmedErrorSpan = (errorSpan || '').trim();
+  const trimmedSourceText = (sourceText || '').trim();
+
+  // Step 1: Validate explicit numeric offsets first when present
+  if (
+    typeof startOffset === 'number' &&
+    typeof endOffset === 'number' &&
+    Number.isInteger(startOffset) &&
+    Number.isInteger(endOffset) &&
+    startOffset >= 0 &&
+    endOffset > startOffset &&
+    endOffset <= blockText.length
+  ) {
+    const slice = blockText.slice(startOffset, endOffset);
+    const expected = trimmedErrorSpan || trimmedSourceText;
+    if (!expected || normalizeCompact(slice) === normalizeCompact(expected)) {
+      return {
+        locationStatus: 'verified',
+        startOffset,
+        endOffset,
+        verifiedSpan: slice,
+      };
+    }
+  }
+
+  // Helper to resolve candidate occurrences with strict ambiguity guard
+  const pickUniqueOccurrence = (
+    ranges: Array<{ start: number; end: number }>,
+    enclosingRanges?: Array<{ start: number; end: number }>
+  ): VerifiedSpanResult => {
+    if (ranges.length === 0) {
+      return { locationStatus: 'unverified', reason: 'span_not_found' };
+    }
+    if (ranges.length === 1) {
+      const r = ranges[0];
+      return {
+        locationStatus: 'verified',
+        startOffset: r.start,
+        endOffset: r.end,
+        verifiedSpan: blockText.slice(r.start, r.end),
+      };
+    }
+
+    // Disambiguation 1: unique enclosing sourceText range inside this block
+    if (enclosingRanges && enclosingRanges.length === 1) {
+      const enc = enclosingRanges[0];
+      const inside = ranges.filter((r) => r.start >= enc.start && r.end <= enc.end);
+      if (inside.length === 1) {
+        return {
+          locationStatus: 'verified',
+          startOffset: inside[0].start,
+          endOffset: inside[0].end,
+          verifiedSpan: blockText.slice(inside[0].start, inside[0].end),
+        };
+      }
+      if (inside.length > 1) {
+        ranges = inside;
+      }
+    }
+
+    // Disambiguation 2: contextBefore / contextAfter scoring
+    if ((contextBefore && contextBefore.trim()) || (contextAfter && contextAfter.trim())) {
+      const scored = ranges
+        .map((r) => ({ r, score: scoreContextMatch(blockText, r, contextBefore, contextAfter) }))
+        .sort((a, b) => b.score - a.score);
+      if (scored[0].score > 0 && (scored.length === 1 || scored[0].score > scored[1].score)) {
+        return {
+          locationStatus: 'verified',
+          startOffset: scored[0].r.start,
+          endOffset: scored[0].r.end,
+          verifiedSpan: blockText.slice(scored[0].r.start, scored[0].r.end),
+        };
+      }
+    }
+
+    // Disambiguation 3: numeric startOffset proximity hint
+    if (typeof startOffset === 'number' && Number.isFinite(startOffset)) {
+      const byDist = ranges
+        .map((r) => ({ r, dist: Math.abs(r.start - startOffset) }))
+        .sort((a, b) => a.dist - b.dist);
+      if (byDist[0].dist <= 5 && (byDist.length === 1 || byDist[0].dist < byDist[1].dist)) {
+        return {
+          locationStatus: 'verified',
+          startOffset: byDist[0].r.start,
+          endOffset: byDist[0].r.end,
+          verifiedSpan: blockText.slice(byDist[0].r.start, byDist[0].r.end),
+        };
+      }
+    }
+
+    // Still ambiguous: NEVER blindly pick index 0
+    return {
+      locationStatus: 'unverified',
+      reason: 'ambiguous_duplicate_span',
+    };
+  };
+
+  // Step 2: Explicit errorSpan must exist in blockText (never silently highlight whole block when errorSpan is invalid)
+  if (trimmedErrorSpan.length >= 2) {
+    const errorRanges = findAllFlexibleSubstringRanges(blockText, trimmedErrorSpan);
+    const sourceRanges =
+      trimmedSourceText.length >= 2
+        ? findAllFlexibleSubstringRanges(blockText, trimmedSourceText)
+        : undefined;
+    const resolved = pickUniqueOccurrence(errorRanges, sourceRanges);
+    if (resolved.locationStatus === 'verified') {
+      return resolved;
+    }
+    return {
+      locationStatus: 'unverified',
+      reason: errorRanges.length > 1 ? 'ambiguous_duplicate_span' : 'error_span_not_found',
+    };
+  }
+
+  // Step 3: No errorSpan supplied — anchor via sourceText
+  if (trimmedSourceText.length >= 2) {
+    const sourceRanges = findAllFlexibleSubstringRanges(blockText, trimmedSourceText);
+    const resolved = pickUniqueOccurrence(sourceRanges);
+    if (resolved.locationStatus === 'verified') {
+      return resolved;
+    }
+
+    // Formula block ("Lead-in:\nformula") fallback when sourceText is the formula line or block
+    const lines = blockText.split('\n');
+    if (lines.length === 2 && isLeadInLabel(lines[0]) && isFormulaLine(lines[1])) {
+      const formulaStart = blockText.indexOf(lines[1]);
+      if (
+        formulaStart >= 0 &&
+        (normalizeCompact(trimmedSourceText).includes(normalizeCompact(lines[1])) ||
+          allowLegacyBlockFallback)
+      ) {
+        return {
+          locationStatus: 'verified',
+          startOffset: formulaStart,
+          endOffset: formulaStart + lines[1].length,
+          verifiedSpan: lines[1],
+        };
+      }
+    }
+
+    // Legacy multi-block excerpt fallback (when blockText is a clean line inside a larger legacy sourceText)
+    if (allowLegacyBlockFallback) {
+      const trimmedBlock = blockText.trim();
+      if (
+        trimmedBlock.length >= 6 &&
+        findAllFlexibleSubstringRanges(trimmedSourceText, trimmedBlock).length > 0
+      ) {
+        return {
+          locationStatus: 'verified',
+          startOffset: 0,
+          endOffset: blockText.length,
+          verifiedSpan: blockText,
+        };
+      }
+    }
+  }
+
+  return {
+    locationStatus: 'unverified',
+    reason: 'span_not_found',
+  };
 }
 
 export interface InlineHighlightTarget {
@@ -350,6 +679,17 @@ export interface InlineHighlightTarget {
   blockIds?: string[];
   errorSpan?: string;
   textExcerpt: string;
+  startOffset?: number;
+  endOffset?: number;
+  contextBefore?: string;
+  contextAfter?: string;
+  locationStatus?: AnnotationLocationStatus;
+  annotationColor: AnnotationItem['annotationColor'];
+  orderNumber?: number;
+}
+
+export interface InlineCoLocatedBadge {
+  claimId: string;
   annotationColor: AnnotationItem['annotationColor'];
   orderNumber?: number;
 }
@@ -357,8 +697,10 @@ export interface InlineHighlightTarget {
 export interface InlineTextSegment {
   text: string;
   claimId?: string;
+  claimIds?: string[];
   annotationColor?: AnnotationItem['annotationColor'];
   orderNumber?: number;
+  coLocatedBadges?: InlineCoLocatedBadge[];
 }
 
 const COLOR_PRIORITY: Record<AnnotationItem['annotationColor'], number> = {
@@ -369,9 +711,12 @@ const COLOR_PRIORITY: Record<AnnotationItem['annotationColor'], number> = {
 };
 
 /**
- * Computes ordered, non-overlapping inline highlight segments for a block of text.
- * Supports multiple distinct errors in one multi-sentence paragraph, exact phrase underlining via `errorSpan`,
- * and short formula matching (e.g. `s = v + t` / `s=v+t`) without an artificial 8-character minimum.
+ * Computes ordered, non-overlapping DOM highlight segments for a block of text while
+ * faithfully preserving 100% verbatim student text AND handling overlapping or co-located
+ * annotations via atomic interval splitting (zero dropped badges, zero broken nested DOM).
+ *
+ * Strictly refuses to underline `locationStatus === 'unverified'` or `'anchor_missing'` targets,
+ * and refuses to guess ambiguous duplicate occurrences.
  */
 export function computeInlineHighlightSegments(
   text: string,
@@ -387,65 +732,59 @@ export function computeInlineHighlightSegments(
     annotationColor: AnnotationItem['annotationColor'];
     orderNumber?: number;
     priority: number;
-    specificity: number; // smaller span = more surgical underline (prefer errorSpan over whole block)
+    specificity: number;
   };
 
   const candidates: CandidateSpan[] = [];
   const matchedClaimSet = new Set<string>();
 
   for (const target of targets) {
+    // Never draw fake underlines for unverified locations or MISSING anchors
+    if (
+      target.locationStatus === 'unverified' ||
+      target.locationStatus === 'anchor_missing'
+    ) {
+      continue;
+    }
+
     const isExplicitBlockMatch =
       (target.blockId && target.blockId === blockId) ||
       (Array.isArray(target.blockIds) && target.blockIds.includes(blockId));
 
-    // Try surgical errorSpan first
-    const spanFromError = target.errorSpan
-      ? findFlexibleSubstringRange(text, target.errorSpan)
-      : null;
-
-    // Fallback to textExcerpt / sourceText
-    const spanFromExcerpt = !spanFromError
-      ? findFlexibleSubstringRange(text, target.textExcerpt)
-      : null;
-
-    let resolvedRange = spanFromError || spanFromExcerpt;
-
-    // If explicitly bound to this blockId but excerpt spans slightly different punctuation/bullets,
-    // check whether textExcerpt is a superstring of a line inside this block or highlight the whole block.
-    if (!resolvedRange && isExplicitBlockMatch) {
-      // If block is a lead-in + formula ("Công thức tính quãng đường:\ns = v + t") and the target is the error,
-      // try highlighting the formula line specifically when errorSpan wasn't given.
-      const lines = text.split('\n');
-      if (lines.length === 2 && isLeadInLabel(lines[0]) && isFormulaLine(lines[1])) {
-        const formulaStart = text.indexOf(lines[1]);
-        if (formulaStart >= 0) {
-          resolvedRange = { start: formulaStart, end: formulaStart + lines[1].length };
-        }
-      }
-      if (!resolvedRange) {
-        resolvedRange = { start: 0, end: text.length };
-      }
+    // If the target explicitly belongs to another blockId, do NOT accidentally match duplicate text here
+    if (
+      (target.blockId || (Array.isArray(target.blockIds) && target.blockIds.length > 0)) &&
+      !isExplicitBlockMatch
+    ) {
+      continue;
     }
 
-    // Also allow matching when the block text itself is a meaningful line inside a multi-block textExcerpt
-    // (for legacy records saved before semantic grouping where "Trong đó:" and "• s..." were separate blocks)
-    if (!resolvedRange && !isExplicitBlockMatch) {
-      const trimmedBlock = text.trim();
-      if (trimmedBlock.length >= 6 && findFlexibleSubstringRange(target.textExcerpt, trimmedBlock)) {
-        resolvedRange = { start: 0, end: text.length };
-      }
-    }
+    const anchored = verifyAndAnchorErrorSpan({
+      blockText: text,
+      errorSpan: target.errorSpan,
+      sourceText: target.textExcerpt,
+      startOffset: isExplicitBlockMatch ? target.startOffset : undefined,
+      endOffset: isExplicitBlockMatch ? target.endOffset : undefined,
+      contextBefore: target.contextBefore,
+      contextAfter: target.contextAfter,
+      allowLegacyBlockFallback: !target.errorSpan,
+    });
 
-    if (resolvedRange && resolvedRange.end > resolvedRange.start) {
+    if (
+      anchored.locationStatus === 'verified' &&
+      typeof anchored.startOffset === 'number' &&
+      typeof anchored.endOffset === 'number' &&
+      anchored.endOffset > anchored.startOffset
+    ) {
       matchedClaimSet.add(target.claimId);
       candidates.push({
-        start: resolvedRange.start,
-        end: resolvedRange.end,
+        start: anchored.startOffset,
+        end: anchored.endOffset,
         claimId: target.claimId,
         annotationColor: target.annotationColor,
         orderNumber: target.orderNumber,
         priority: COLOR_PRIORITY[target.annotationColor] || 1,
-        specificity: resolvedRange.end - resolvedRange.start,
+        specificity: anchored.endOffset - anchored.startOffset,
       });
     }
   }
@@ -454,47 +793,112 @@ export function computeInlineHighlightSegments(
     return { segments: [{ text }], matchedClaimIds: [] };
   }
 
-  // Pick non-overlapping spans: prefer higher severity (red > orange > yellow > green), then tighter/more surgical span
-  const sortedForSelection = [...candidates].sort((a, b) => {
-    if (b.priority !== a.priority) return b.priority - a.priority;
-    if (a.specificity !== b.specificity) return a.specificity - b.specificity;
-    return a.start - b.start;
-  });
-
-  const accepted: CandidateSpan[] = [];
-  for (const cand of sortedForSelection) {
-    const overlaps = accepted.some((acc) => cand.start < acc.end && cand.end > acc.start);
-    if (!overlaps) {
-      accepted.push(cand);
-    }
+  // Atomic boundary split: handles adjacent, nested, identical, and partially overlapping spans
+  // without ever dropping an annotation or mutating/duplicating a single character of `text`.
+  const boundarySet = new Set<number>([0, text.length]);
+  for (const c of candidates) {
+    boundarySet.add(Math.max(0, Math.min(text.length, c.start)));
+    boundarySet.add(Math.max(0, Math.min(text.length, c.end)));
   }
-
-  accepted.sort((a, b) => a.start - b.start);
+  const boundaries = Array.from(boundarySet).sort((a, b) => a - b);
 
   const segments: InlineTextSegment[] = [];
-  let cursor = 0;
 
-  for (const span of accepted) {
-    if (span.start > cursor) {
-      segments.push({ text: text.slice(cursor, span.start) });
+  for (let i = 0; i < boundaries.length - 1; i += 1) {
+    const segStart = boundaries[i];
+    const segEnd = boundaries[i + 1];
+    if (segEnd <= segStart) continue;
+
+    const segText = text.slice(segStart, segEnd);
+    const active = candidates.filter((c) => c.start <= segStart && c.end >= segEnd);
+
+    if (active.length === 0) {
+      segments.push({ text: segText });
+      continue;
     }
-    segments.push({
-      text: text.slice(span.start, span.end),
-      claimId: span.claimId,
-      annotationColor: span.annotationColor,
-      orderNumber: span.orderNumber,
-    });
-    cursor = span.end;
-  }
 
-  if (cursor < text.length) {
-    segments.push({ text: text.slice(cursor) });
+    // Choose visual styling by highest severity, then tightest span, then lowest orderNumber
+    const sortedActive = [...active].sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      if (a.specificity !== b.specificity) return a.specificity - b.specificity;
+      return (a.orderNumber ?? Number.MAX_SAFE_INTEGER) - (b.orderNumber ?? Number.MAX_SAFE_INTEGER);
+    });
+    const primary = sortedActive[0];
+
+    // Emit badges for every candidate whose span ENDS at `segEnd` (each annotation gets its badge exactly once)
+    const endingBadges: InlineCoLocatedBadge[] = active
+      .filter((c) => c.end === segEnd)
+      .sort((a, b) => {
+        const orderDiff =
+          (a.orderNumber ?? Number.MAX_SAFE_INTEGER) - (b.orderNumber ?? Number.MAX_SAFE_INTEGER);
+        if (orderDiff !== 0) return orderDiff;
+        return b.priority - a.priority;
+      })
+      .map((c) => ({
+        claimId: c.claimId,
+        annotationColor: c.annotationColor,
+        orderNumber: c.orderNumber,
+      }));
+
+    const uniqueClaimIds = Array.from(new Set(sortedActive.map((c) => c.claimId)));
+
+    segments.push({
+      text: segText,
+      claimId: primary.claimId,
+      claimIds: uniqueClaimIds,
+      annotationColor: primary.annotationColor,
+      orderNumber: endingBadges.length > 0 ? endingBadges[0].orderNumber : undefined,
+      coLocatedBadges: endingBadges.length > 0 ? endingBadges : undefined,
+    });
   }
 
   return {
     segments,
     matchedClaimIds: Array.from(matchedClaimSet),
   };
+}
+
+/**
+ * Deterministically sorts claims by their real appearance order in the student document:
+ * pageNumber -> block reading order -> verified startOffset -> original index.
+ */
+export function sortClaimsByDocumentPosition<
+  T extends Pick<ExtractedClaim, 'sourcePage' | 'blockId' | 'blockIds' | 'startOffset' | 'evaluationStatus'>
+>(claims: T[], pages: ExtractedPage[]): T[] {
+  const blockOrderByPage = new Map<number, Map<string, number>>();
+  for (const page of pages) {
+    const map = new Map<string, number>();
+    (page.blocks || []).forEach((block, idx) => {
+      map.set(block.blockId, idx);
+    });
+    blockOrderByPage.set(page.pageNumber, map);
+  }
+
+  return claims
+    .map((claim, originalIndex) => {
+      const pageNum = claim.sourcePage || 1;
+      const pageBlockMap = blockOrderByPage.get(pageNum);
+      const primaryBlockId = claim.blockId || claim.blockIds?.[0];
+      const blockIdx =
+        primaryBlockId && pageBlockMap?.has(primaryBlockId)
+          ? pageBlockMap.get(primaryBlockId)!
+          : Number.MAX_SAFE_INTEGER;
+      const isMissing = claim.evaluationStatus === 'MISSING' ? 1 : 0;
+      const offset =
+        typeof claim.startOffset === 'number' && Number.isFinite(claim.startOffset)
+          ? claim.startOffset
+          : Number.MAX_SAFE_INTEGER;
+      return { claim, originalIndex, pageNum, blockIdx, isMissing, offset };
+    })
+    .sort((a, b) => {
+      if (a.pageNum !== b.pageNum) return a.pageNum - b.pageNum;
+      if (a.blockIdx !== b.blockIdx) return a.blockIdx - b.blockIdx;
+      // Within the same block, place inline claims before block-end MISSING anchors
+      if (a.isMissing !== b.isMissing) return a.isMissing - b.isMissing;
+      if (a.offset !== b.offset) return a.offset - b.offset;
+      return a.originalIndex - b.originalIndex;
+    })
+    .map((entry) => entry.claim);
 }
 
 /**

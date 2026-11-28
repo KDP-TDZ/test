@@ -124,6 +124,8 @@ export interface ReferenceEvidence {
   relevance?: number;
 }
 
+export type AnnotationLocationStatus = 'verified' | 'unverified' | 'anchor_missing';
+
 export interface ExtractedClaim {
   claimId: string;
   sourceText: string;
@@ -137,6 +139,12 @@ export interface ExtractedClaim {
   blockId?: string;
   blockIds?: string[];
   errorSpan?: string;
+  startOffset?: number;
+  endOffset?: number;
+  contextBefore?: string;
+  contextAfter?: string;
+  locationStatus?: AnnotationLocationStatus;
+  verificationNote?: string;
   shortFix?: string;
   boundingBox?: NormalizedBoundingBox | null;
   ocrConfidence: number;
@@ -238,6 +246,10 @@ export interface AnnotationItem {
   blockIds?: string[];
   textExcerpt: string;
   errorSpan?: string;
+  startOffset?: number;
+  endOffset?: number;
+  locationStatus?: AnnotationLocationStatus;
+  annotationKind?: 'error' | 'partial' | 'missing' | 'ocr_warning' | 'correct';
   claimId: string;
   referenceId?: string;
   boundingBox?: NormalizedBoundingBox | null;
@@ -277,6 +289,7 @@ export interface AccuracyBreakdown {
   exactCorrectPercent?: number | null;
   partialPercent?: number | null;
   exactIncorrectPercent?: number | null;
+  notFullyCorrectPercent?: number | null;
   verifiedWeight: number;
   earnedWeight: number;
   totalClaimWeight: number;

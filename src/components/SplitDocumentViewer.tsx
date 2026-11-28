@@ -30,10 +30,15 @@ import {
 import {
   computeInlineHighlightSegments,
   getConciseFixText,
+  sortClaimsByDocumentPosition,
   splitFormulaBlockDisplay,
   type InlineHighlightTarget,
   type InlineTextSegment,
 } from '../core/semanticBlocks';
+import {
+  isBlockOcrUncertain,
+  OCR_PAGE_LOW_CONFIDENCE_THRESHOLD,
+} from '../core/verificationPostProcess';
 import { sanitizeExternalHttpUrl } from '../core/urlSecurity';
 import { PdfPageCanvas } from './PdfPageCanvas';
 
@@ -96,6 +101,27 @@ function getClaimColor(status: ExtractedClaim['evaluationStatus']): AnnotationIt
   if (status === 'PARTIALLY_CORRECT' || status === 'MISSING') return 'orange';
   if (status === 'UNVERIFIED' || status === 'OCR_UNCERTAIN' || status === 'AMBIGUOUS') return 'yellow';
   return 'green';
+}
+
+function getClaimStatusLabel(status: ExtractedClaim['evaluationStatus']): string {
+  switch (status) {
+    case 'INCORRECT':
+      return 'Sai kiến thức / Công thức';
+    case 'PARTIALLY_CORRECT':
+      return 'Thiếu thông tin / Đơn vị / Điều kiện';
+    case 'MISSING':
+      return 'Thiếu ý kiến thức';
+    case 'OCR_UNCERTAIN':
+      return 'Chữ OCR chưa rõ';
+    case 'UNVERIFIED':
+      return 'Chưa đủ căn cứ xác minh';
+    case 'AMBIGUOUS':
+      return 'Diễn đạt chưa rõ';
+    case 'OUT_OF_SCOPE':
+      return 'Ngoài phạm vi';
+    default:
+      return 'Đúng có dẫn chứng';
+  }
 }
 
 function isIssueClaim(claim: ExtractedClaim): boolean {
@@ -167,43 +193,88 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
   const pages = analysis.extractedPages || [];
   const currentPage = pages[pageIndex] || pages[0];
   const currentPageNumber = currentPage?.pageNumber || 1;
+  const ocrConfirmed = Boolean(analysis.accuracyBreakdown?.gradingAudit?.ocrConfirmed);
 
-  // Claims indexed in document reading order; number all issue claims #1, #2, #3...
+  // Deterministically sort claims by real appearance order (page -> block -> offset)
+  const orderedClaims = useMemo(
+    () => sortClaimsByDocumentPosition(analysis.claims || [], pages),
+    [analysis.claims, pages]
+  );
+
+  // Number all issue claims #1, #2, #3... strictly in document appearance order
   const issueClaims = useMemo(
-    () => (analysis.claims || []).filter((c) => isIssueClaim(c)),
-    [analysis.claims]
+    () => orderedClaims.filter((c) => isIssueClaim(c)),
+    [orderedClaims]
   );
 
   const claimOrderNumberMap = useMemo(() => {
     const map = new Map<string, number>();
     let n = 1;
-    for (const c of analysis.claims || []) {
+    for (const c of orderedClaims) {
       if (isIssueClaim(c)) {
         map.set(c.claimId, n);
         n += 1;
       }
     }
     return map;
-  }, [analysis.claims]);
+  }, [orderedClaims]);
 
   const [selectedClaimId, setSelectedClaimId] = useState<string | null>(
-    issueClaims[0]?.claimId || analysis.claims[0]?.claimId || null
+    issueClaims[0]?.claimId || orderedClaims[0]?.claimId || null
   );
 
   useEffect(() => {
-    setSelectedClaimId(issueClaims[0]?.claimId || analysis.claims[0]?.claimId || null);
+    setSelectedClaimId(issueClaims[0]?.claimId || orderedClaims[0]?.claimId || null);
     setExpandedClaimIds(new Set());
     setExpandedCoverageIds(new Set());
-  }, [analysis.analysisId, issueClaims, analysis.claims]);
+  }, [analysis.analysisId, issueClaims, orderedClaims]);
 
   const noteCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const leftMarkRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const pendingScrollClaimIdRef = useRef<string | null>(null);
+  const isProgrammaticScrollRef = useRef(false);
+  const scrollGuardTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (scrollGuardTimerRef.current !== null) {
+        window.clearTimeout(scrollGuardTimerRef.current);
+      }
+    };
+  }, []);
+
+  const runGuardedScroll = (scrollFn: () => void) => {
+    if (isProgrammaticScrollRef.current) return;
+    isProgrammaticScrollRef.current = true;
+    scrollFn();
+    if (scrollGuardTimerRef.current !== null) {
+      window.clearTimeout(scrollGuardTimerRef.current);
+    }
+    scrollGuardTimerRef.current = window.setTimeout(() => {
+      isProgrammaticScrollRef.current = false;
+      scrollGuardTimerRef.current = null;
+    }, 320);
+  };
+
+  // Scroll to target mark after page switch completes
+  useEffect(() => {
+    const pendingId = pendingScrollClaimIdRef.current;
+    if (!pendingId) return;
+    pendingScrollClaimIdRef.current = null;
+    window.requestAnimationFrame(() => {
+      const markEl = leftMarkRefs.current[pendingId];
+      if (markEl) {
+        runGuardedScroll(() => {
+          markEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+      }
+    });
+  }, [pageIndex]);
 
   const visibleClaims = useMemo(() => {
-    const all = analysis.claims || [];
-    if (filterMode === 'all') return all;
+    if (filterMode === 'all') return orderedClaims;
     return issueClaims;
-  }, [analysis.claims, filterMode, issueClaims]);
+  }, [orderedClaims, filterMode, issueClaims]);
 
   const pageHighlightTargets: InlineHighlightTarget[] = useMemo(() => {
     const annByClaim = new Map<string, AnnotationItem>();
@@ -213,7 +284,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
       }
     }
 
-    const claimsOnPage = (analysis.claims || []).filter(
+    const claimsOnPage = orderedClaims.filter(
       (c) =>
         (c.sourcePage || 1) === currentPageNumber &&
         c.evaluationStatus !== 'MISSING' &&
@@ -222,7 +293,6 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
 
     const targets: InlineHighlightTarget[] = [];
     for (const claim of claimsOnPage) {
-      // By default only underline/highlight errors, missing info, or uncertain spans so correct text stays clean & readable
       if (filterMode === 'errors' && claim.evaluationStatus === 'CORRECT') {
         continue;
       }
@@ -233,12 +303,37 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
         blockIds: claim.blockIds || ann?.blockIds,
         errorSpan: claim.errorSpan || ann?.errorSpan,
         textExcerpt: ann?.textExcerpt || claim.sourceText,
+        startOffset: claim.startOffset ?? ann?.startOffset,
+        endOffset: claim.endOffset ?? ann?.endOffset,
+        contextBefore: claim.contextBefore,
+        contextAfter: claim.contextAfter,
+        locationStatus: claim.locationStatus || ann?.locationStatus,
         annotationColor: ann?.annotationColor || getClaimColor(claim.evaluationStatus),
         orderNumber: claimOrderNumberMap.get(claim.claimId),
       });
     }
     return targets;
-  }, [analysis.annotations, analysis.claims, currentPageNumber, filterMode, claimOrderNumberMap]);
+  }, [analysis.annotations, orderedClaims, currentPageNumber, filterMode, claimOrderNumberMap]);
+
+  // Dedicated MISSING claim anchors grouped by blockId (or page-end) so missing content never draws fake underlines
+  const missingAnchorsByBlock = useMemo(() => {
+    const byBlock = new Map<string, ExtractedClaim[]>();
+    const pageEnd: ExtractedClaim[] = [];
+    const currentBlockIds = new Set((currentPage?.blocks || []).map((b) => b.blockId));
+
+    for (const claim of orderedClaims) {
+      if (claim.evaluationStatus !== 'MISSING') continue;
+      if ((claim.sourcePage || 1) !== currentPageNumber) continue;
+      if (claim.blockId && currentBlockIds.has(claim.blockId)) {
+        const list = byBlock.get(claim.blockId) || [];
+        list.push(claim);
+        byBlock.set(claim.blockId, list);
+      } else {
+        pageEnd.push(claim);
+      }
+    }
+    return { byBlock, pageEnd };
+  }, [orderedClaims, currentPage, currentPageNumber]);
 
   const pageBoundingBoxAnnotations = useMemo(
     () => (analysis.annotations || []).filter((a) => a.pageNumber === currentPageNumber && a.boundingBox),
@@ -256,7 +351,9 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
     setMobileTab('notes');
     const targetCard = noteCardRefs.current[claimId];
     if (targetCard) {
-      targetCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      runGuardedScroll(() => {
+        targetCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      });
     }
   };
 
@@ -265,13 +362,17 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
     if (sourcePage && pages.length > 1) {
       const targetIdx = pages.findIndex((p) => p.pageNumber === sourcePage);
       if (targetIdx >= 0 && targetIdx !== pageIndex) {
+        pendingScrollClaimIdRef.current = claimId;
         setPageIndex(targetIdx);
+        return;
       }
     }
     window.requestAnimationFrame(() => {
       const markEl = leftMarkRefs.current[claimId];
       if (markEl) {
-        markEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        runGuardedScroll(() => {
+          markEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
       }
     });
   };
@@ -300,39 +401,105 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
     });
   };
 
+  const renderMissingAnchors = (missingClaims: ExtractedClaim[], keyPrefix: string) => {
+    if (!showAnnotations || missingClaims.length === 0) return null;
+    return (
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        {missingClaims.map((claim) => {
+          const orderNum = claimOrderNumberMap.get(claim.claimId);
+          const isSelected = selectedClaimId === claim.claimId;
+          return (
+            <button
+              key={`${keyPrefix}_miss_${claim.claimId}`}
+              ref={(el) => {
+                if (el) {
+                  leftMarkRefs.current[claim.claimId] = el;
+                }
+              }}
+              type="button"
+              onClick={() => selectClaimFromLeft(claim.claimId)}
+              title="Ý kiến thức còn thiếu — Nhấp để xem chi tiết bên phải"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-dashed text-xs font-medium transition-all cursor-pointer ${
+                isSelected
+                  ? 'border-amber-600 bg-amber-100 dark:bg-amber-900/60 text-amber-950 dark:text-amber-100 ring-2 ring-amber-400/80'
+                  : 'border-amber-400 dark:border-amber-700 bg-amber-50/85 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 hover:bg-amber-100/80 dark:hover:bg-amber-900/50'
+              }`}
+            >
+              {typeof orderNum === 'number' && (
+                <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded bg-amber-600 text-white font-mono text-[10px] font-bold tabular-nums">
+                  {orderNum}
+                </span>
+              )}
+              <span>Thiếu ý: {claim.concept || 'Nội dung cần bổ sung'}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
   const renderInlineSegments = (segments: InlineTextSegment[], keyPrefix: string) => {
     return segments.map((seg, idx) => {
       if (!seg.claimId || !seg.annotationColor || !showAnnotations) {
         return <React.Fragment key={`${keyPrefix}_t_${idx}`}>{seg.text}</React.Fragment>;
       }
       const style = INLINE_MARK_STYLES[seg.annotationColor];
-      const isSelected = selectedClaimId === seg.claimId;
-      const isFirstOccurrence = !leftMarkRefs.current[seg.claimId];
+      const activeIds = seg.claimIds && seg.claimIds.length > 0 ? seg.claimIds : [seg.claimId];
+      const isSelected = Boolean(selectedClaimId && activeIds.includes(selectedClaimId));
+      const badges =
+        seg.coLocatedBadges && seg.coLocatedBadges.length > 0
+          ? seg.coLocatedBadges
+          : typeof seg.orderNumber === 'number'
+          ? [{ claimId: seg.claimId, annotationColor: seg.annotationColor, orderNumber: seg.orderNumber }]
+          : [];
 
       return (
-        <button
-          key={`${keyPrefix}_m_${idx}`}
-          ref={(el) => {
-            if (el && (isFirstOccurrence || leftMarkRefs.current[seg.claimId!] === el)) {
-              leftMarkRefs.current[seg.claimId!] = el;
-            }
-          }}
-          type="button"
-          onClick={() => selectClaimFromLeft(seg.claimId!)}
-          title={`${style.label} — Nhấp để xem chú thích`}
-          className={`inline text-left rounded px-0.5 transition-all duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${
-            style.mark
-          } ${isSelected ? style.activeRing : ''}`}
-        >
-          <span>{seg.text}</span>
-          {typeof seg.orderNumber === 'number' && (
-            <sup
-              className={`ml-0.5 inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded text-[10px] font-mono font-bold tabular-nums leading-none align-super select-none ${style.badgeBg}`}
-            >
-              {seg.orderNumber}
-            </sup>
-          )}
-        </button>
+        <span key={`${keyPrefix}_m_${idx}`} className="inline">
+          <button
+            ref={(el) => {
+              if (!el) return;
+              for (const cid of activeIds) {
+                if (!leftMarkRefs.current[cid]) {
+                  leftMarkRefs.current[cid] = el;
+                }
+              }
+            }}
+            type="button"
+            onClick={() => selectClaimFromLeft(seg.claimId!)}
+            title={`${style.label} — Nhấp để xem chú thích`}
+            className={`inline text-left rounded px-0.5 transition-all duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${
+              style.mark
+            } ${isSelected ? style.activeRing : ''}`}
+          >
+            {seg.text}
+          </button>
+          {badges.map((badge) => {
+            if (typeof badge.orderNumber !== 'number') return null;
+            const badgeStyle = INLINE_MARK_STYLES[badge.annotationColor];
+            const isBadgeSelected = selectedClaimId === badge.claimId;
+            return (
+              <button
+                key={`${keyPrefix}_b_${idx}_${badge.claimId}`}
+                ref={(el) => {
+                  if (el && !leftMarkRefs.current[badge.claimId]) {
+                    leftMarkRefs.current[badge.claimId] = el;
+                  }
+                }}
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  selectClaimFromLeft(badge.claimId);
+                }}
+                title={`Chú thích #${badge.orderNumber} (${badgeStyle.label})`}
+                className={`ml-0.5 inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded text-[10px] font-mono font-bold tabular-nums leading-none align-super select-none cursor-pointer transition-transform hover:scale-110 ${
+                  badgeStyle.badgeBg
+                } ${isBadgeSelected ? 'ring-2 ring-sky-400' : ''}`}
+              >
+                {badge.orderNumber}
+              </button>
+            );
+          })}
+        </span>
       );
     });
   };
@@ -544,7 +711,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
             </div>
 
             {currentPage &&
-              (currentPage.ocrAverageConfidence < 0.55 ||
+              (currentPage.ocrAverageConfidence < OCR_PAGE_LOW_CONFIDENCE_THRESHOLD ||
                 !currentPage.rawText?.trim() ||
                 /\[KHÔNG NHÌN RÕ\]/i.test(currentPage.rawText || '')) && (
                 <div className="mb-4 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/90 dark:bg-amber-950/40 px-3.5 py-2.5 flex items-start gap-2.5 text-xs text-amber-950 dark:text-amber-200">
@@ -554,7 +721,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                       Không thể nhìn rõ toàn bộ nội dung trang {currentPageNumber}
                     </p>
                     <p className="mt-0.5 text-amber-900/90 dark:text-amber-200/90">
-                      Hệ thống giữ nguyên bản sao chép và không tự đoán hay sửa thay. Vui lòng chụp lại trang rõ nét hơn nếu có phần chữ bị mờ hoặc mất nét.
+                      Hệ thống giữ nguyên bản sao chép và không tự đoán hay sửa thay. Các đoạn đọc rõ vẫn được kiểm định bình thường; vui lòng chụp lại trang rõ nét hơn nếu có phần chữ bị mờ hoặc mất nét.
                     </p>
                   </div>
                 </div>
@@ -621,16 +788,48 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
             >
               {currentPage?.blocks.map((block) => {
                 const { leadInLabel, formulaBody } = splitFormulaBlockDisplay(block);
+                const blockLowOcr = isBlockOcrUncertain(block, ocrConfirmed);
+                const blockMissingClaims = missingAnchorsByBlock.byBlock.get(block.blockId) || [];
+
+                const blockOcrWarningBanner = blockLowOcr ? (
+                  <div className="mb-1 inline-flex items-center gap-1.5 text-[11px] font-medium text-amber-800 dark:text-amber-300 bg-amber-50/90 dark:bg-amber-950/50 border border-amber-300/80 dark:border-amber-700/70 rounded-md px-2 py-0.5">
+                    <AlertCircle className="w-3 h-3 shrink-0" />
+                    <span>
+                      Đoạn OCR chưa rõ ({Math.round((block.confidence ?? 0) * 100)}%) — Không suy đoán
+                    </span>
+                  </div>
+                ) : null;
 
                 // Formula cluster (lead-in + formula OR standalone formula) — rendered ONCE, never duplicated!
                 if (formulaBody) {
                   const formulaTargets = showAnnotations
                     ? pageHighlightTargets
                     : [];
+                  // Adjust verified offsets when block has leadInLabel\nformulaBody
+                  const formulaOffsetDelta =
+                    leadInLabel && block.extractedText.includes(formulaBody)
+                      ? block.extractedText.indexOf(formulaBody)
+                      : 0;
+                  const adjustedFormulaTargets: InlineHighlightTarget[] = formulaTargets.map((t) => {
+                    if (
+                      t.blockId === block.blockId &&
+                      typeof t.startOffset === 'number' &&
+                      typeof t.endOffset === 'number' &&
+                      formulaOffsetDelta > 0 &&
+                      t.startOffset >= formulaOffsetDelta
+                    ) {
+                      return {
+                        ...t,
+                        startOffset: t.startOffset - formulaOffsetDelta,
+                        endOffset: t.endOffset - formulaOffsetDelta,
+                      };
+                    }
+                    return t;
+                  });
                   const formulaMatch = computeInlineHighlightSegments(
                     formulaBody,
                     block.blockId,
-                    formulaTargets
+                    adjustedFormulaTargets
                   );
                   const labelMatch = leadInLabel
                     ? computeInlineHighlightSegments(
@@ -642,6 +841,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
 
                   return (
                     <div key={block.blockId} className="space-y-2 py-1">
+                      {blockOcrWarningBanner}
                       {leadInLabel && (
                         <p className="text-[15px] font-medium text-slate-800 dark:text-slate-100">
                           {labelMatch
@@ -654,6 +854,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                           {renderInlineSegments(formulaMatch.segments, `${block.blockId}_fm`)}
                         </span>
                       </div>
+                      {renderMissingAnchors(blockMissingClaims, block.blockId)}
                     </div>
                   );
                 }
@@ -667,32 +868,41 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
 
                 if (block.textType === 'heading') {
                   return (
-                    <h4
-                      key={block.blockId}
-                      className="font-display text-base font-semibold text-slate-900 dark:text-slate-50 pt-1"
-                    >
-                      {renderInlineSegments(segments, block.blockId)}
-                    </h4>
+                    <div key={block.blockId} className="pt-1">
+                      {blockOcrWarningBanner}
+                      <h4 className="font-display text-base font-semibold text-slate-900 dark:text-slate-50">
+                        {renderInlineSegments(segments, block.blockId)}
+                      </h4>
+                      {renderMissingAnchors(blockMissingClaims, block.blockId)}
+                    </div>
                   );
                 }
 
                 if (block.textType === 'list') {
                   return (
-                    <div
-                      key={block.blockId}
-                      className="whitespace-pre-wrap pl-1 text-[14.5px] leading-7 text-slate-700 dark:text-slate-200"
-                    >
-                      {renderInlineSegments(segments, block.blockId)}
+                    <div key={block.blockId}>
+                      {blockOcrWarningBanner}
+                      <div className="whitespace-pre-wrap pl-1 text-[14.5px] leading-7 text-slate-700 dark:text-slate-200">
+                        {renderInlineSegments(segments, block.blockId)}
+                      </div>
+                      {renderMissingAnchors(blockMissingClaims, block.blockId)}
                     </div>
                   );
                 }
 
                 return (
-                  <p key={block.blockId} className="whitespace-pre-wrap">
-                    {renderInlineSegments(segments, block.blockId)}
-                  </p>
+                  <div key={block.blockId}>
+                    {blockOcrWarningBanner}
+                    <p className="whitespace-pre-wrap">
+                      {renderInlineSegments(segments, block.blockId)}
+                    </p>
+                    {renderMissingAnchors(blockMissingClaims, block.blockId)}
+                  </div>
                 );
               })}
+
+              {/* Page-level MISSING anchors not bound to a specific block */}
+              {renderMissingAnchors(missingAnchorsByBlock.pageEnd, `p${currentPageNumber}_end`)}
 
               {/* Fallback when page has no extracted blocks */}
               {(!currentPage || currentPage.blocks.length === 0) && (
@@ -772,12 +982,18 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                 visibleClaims.map((claim) => {
                   const color = getClaimColor(claim.evaluationStatus);
                   const style = INLINE_MARK_STYLES[color];
+                  const statusLabel = getClaimStatusLabel(claim.evaluationStatus);
                   const orderNum = claimOrderNumberMap.get(claim.claimId);
                   const isSelected = selectedClaimId === claim.claimId;
                   const isExpanded = expandedClaimIds.has(claim.claimId);
                   const conciseFix = getConciseFixText(claim);
-                  const displaySnippet = (claim.errorSpan || claim.sourceText || '').trim();
+                  const isMissingClaim = claim.evaluationStatus === 'MISSING';
+                  const isUnverifiedLocation = claim.locationStatus === 'unverified';
+                  const displaySnippet = isMissingClaim
+                    ? (claim.concept || claim.sourceText || 'Nội dung kiến thức còn thiếu').trim()
+                    : (claim.errorSpan || claim.sourceText || '').trim();
                   const showFullSourceInDrawer =
+                    !isMissingClaim &&
                     Boolean(claim.errorSpan) &&
                     claim.sourceText.trim().length > (claim.errorSpan || '').trim().length + 4;
 
@@ -819,7 +1035,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                               <span className="text-slate-300 dark:text-slate-600" aria-hidden="true">·</span>
                             )}
                             <span className={`font-semibold truncate ${style.text}`}>
-                              {style.label}
+                              {statusLabel}
                             </span>
                           </div>
                           <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 tabular-nums shrink-0">
@@ -827,12 +1043,24 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                           </span>
                         </div>
 
-                        {/* Exact flawed phrase / formula */}
+                        {/* Exact flawed phrase / formula OR missing concept description */}
                         <p className="text-xs font-medium text-slate-700 dark:text-slate-200 leading-relaxed line-clamp-2">
-                          <span className="text-slate-400 dark:text-slate-500">“</span>
-                          {displaySnippet}
-                          <span className="text-slate-400 dark:text-slate-500">”</span>
+                          {isMissingClaim ? (
+                            displaySnippet
+                          ) : (
+                            <>
+                              <span className="text-slate-400 dark:text-slate-500">“</span>
+                              {displaySnippet}
+                              <span className="text-slate-400 dark:text-slate-500">”</span>
+                            </>
+                          )}
                         </p>
+
+                        {isUnverifiedLocation && (
+                          <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400 font-medium">
+                            Chưa xác minh được vị trí gạch chân duy nhất trên bản gốc — đối chiếu theo trích đoạn
+                          </p>
+                        )}
 
                         {/* Concise 1-line direct fix */}
                         {claim.evaluationStatus !== 'CORRECT' && conciseFix && (
@@ -885,6 +1113,12 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                               {claim.explanation}
                             </p>
                           </div>
+
+                          {claim.verificationNote && (
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 italic">
+                              Ghi chú kiểm định: {claim.verificationNote}
+                            </p>
+                          )}
 
                           {claim.correctKnowledge && (
                             <div className="rounded-lg bg-emerald-50/75 dark:bg-emerald-950/35 border border-emerald-200/80 dark:border-emerald-800/60 p-2.5">
