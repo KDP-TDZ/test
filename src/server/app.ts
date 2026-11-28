@@ -108,6 +108,13 @@ import {
 } from '../core/uploadBatching.js';
 import { repairUtf8Mojibake } from '../core/textEncoding.js';
 import { isAllowedCorsOrigin, isValidFirestoreDocId } from '../core/urlSecurity.js';
+import {
+  attachExperienceRatingsSseClient,
+  getStoredExperienceRating,
+  listStoredExperienceRatings,
+  saveStoredExperienceRating,
+} from './experienceRatingStore.js';
+import type { ExperienceRatingInput } from '../core/experienceRatings.js';
 
 const filenameScopeServerCache = new Map<
   string,
@@ -2508,6 +2515,55 @@ export function createApiApp(): express.Express {
       const mapped = mapGeminiErrorResponse(err);
       res.status(mapped.status).json(mapped);
     }
+  });
+
+  // ===========================================================================
+  // PUBLIC REAL-TIME USER EXPERIENCE RATINGS (SSE + JSON fallback when rules not yet deployed)
+  // ===========================================================================
+  app.get('/api/experience-ratings', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ratings: listStoredExperienceRatings() });
+  });
+
+  app.get('/api/experience-ratings/stream', (req, res) => {
+    const cleanup = attachExperienceRatingsSseClient(res);
+    req.on('close', cleanup);
+  });
+
+  app.get('/api/experience-ratings/:ratingId', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const ratingId = String(req.params.ratingId || '').trim();
+    const record = getStoredExperienceRating(ratingId);
+    res.json({ rating: record });
+  });
+
+  app.post('/api/experience-ratings', async (req, res) => {
+    const body = (req.body || {}) as Partial<ExperienceRatingInput> & { ratingId?: string };
+    let authenticatedUid: string | undefined;
+
+    if (req.headers.authorization?.startsWith('Bearer ')) {
+      try {
+        const verified = await verifyFirebaseRequest(req);
+        if (verified.emailVerified) {
+          authenticatedUid = verified.uid;
+        }
+      } catch {
+        // Proceed as unauthenticated guest if token invalid/expired
+      }
+    }
+
+    const result = saveStoredExperienceRating({
+      input: body,
+      ratingId: typeof body.ratingId === 'string' ? body.ratingId.trim() : '',
+      authenticatedUid,
+    });
+
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+
+    res.status(201).json({ rating: result.record });
   });
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {

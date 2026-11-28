@@ -41,6 +41,7 @@ service cloud.firestore {
         request.auth.token.role == 'super_admin' ||
         request.auth.token.email == 'tuankhang2011pm@gmail.com' ||
         request.auth.token.email == 'tuankhangnek@gmail.com' ||
+        request.auth.token.email == 'honghainhi2k14@gmail.com' ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
@@ -347,6 +348,45 @@ service cloud.firestore {
         && !('apiKey' in data);
     }
 
+    function isValidUsageDaily(data, uid) {
+      return data.keys().hasAll(['uid', 'date', 'requests', 'analyses', 'blocked', 'tokens'])
+        && data.keys().hasOnly(['uid', 'email', 'date', 'requests', 'analyses', 'blocked', 'tokens'])
+        && data.uid is string && data.uid == uid && data.uid.size() <= 128
+        && (!('email' in data) || (data.email is string && data.email.size() <= 254))
+        && data.date is string && data.date.size() >= 8 && data.date.size() <= 32
+        && data.requests is number && data.requests >= 0 && data.requests <= 100000
+        && data.analyses is number && data.analyses >= 0 && data.analyses <= 10000
+        && data.blocked is number && data.blocked >= 0 && data.blocked <= 100000
+        && data.tokens is number && data.tokens >= 0;
+    }
+
+    function isValidExperienceRating(data, ratingId) {
+      return data.keys().hasAll([
+          'ratingId', 'ownerUid', 'authorName', 'roleLabel', 'stars',
+          'easeOfUse', 'usefulness', 'speedAndUi', 'comment',
+          'isVerifiedAccount', 'visibility', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ratingId', 'ownerUid', 'authorName', 'roleLabel', 'stars',
+          'easeOfUse', 'usefulness', 'speedAndUi', 'comment',
+          'isVerifiedAccount', 'visibility', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ratingId)
+        && data.ratingId == ratingId
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60
+        && data.roleLabel in ['Học sinh lớp 10', 'Học sinh lớp 11', 'Học sinh lớp 12', 'Giáo viên / Phụ huynh', 'Khách trải nghiệm']
+        && data.stars is int && data.stars >= 1 && data.stars <= 5
+        && data.easeOfUse is int && data.easeOfUse >= 1 && data.easeOfUse <= 5
+        && data.usefulness is int && data.usefulness >= 1 && data.usefulness <= 5
+        && data.speedAndUi is int && data.speedAndUi >= 1 && data.speedAndUi <= 5
+        && data.comment is string && data.comment.trim().size() >= 5 && data.comment.size() <= 400
+        && data.isVerifiedAccount is bool
+        && data.visibility == 'public'
+        && data.createdAt is string && data.createdAt.size() >= 10 && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() >= 10 && data.updatedAt.size() <= 64;
+    }
+
     // --- Collection Rules ---
 
     // Connection test helper document (read-only ping)
@@ -358,7 +398,9 @@ service cloud.firestore {
     match /users/{uid} {
       allow get: if isValidId(uid) && (isOwner(uid) || isSuperAdmin());
       allow list: if isSuperAdmin();
-      allow create: if isValidId(uid) && isOwner(uid) && isValidUserProfile(incoming(), uid) && incoming().accountStatus == 'active';
+      allow create: if isValidId(uid) && isOwner(uid) && isValidUserProfile(incoming(), uid)
+        && incoming().accountStatus == 'active'
+        && (!('isSuperAdmin' in incoming()) || incoming().isSuperAdmin == false);
       allow update: if isValidId(uid) && isValidUserProfile(incoming(), uid) && (
         isSuperAdmin() ||
         (
@@ -394,9 +436,9 @@ service cloud.firestore {
       }
 
       match /usageDaily/{date} {
-        allow get: if isValidId(uid) && (isOwner(uid) || isSuperAdmin());
+        allow get: if isValidId(uid) && isValidId(date) && (isOwner(uid) || isSuperAdmin());
         allow list: if isValidId(uid) && (isOwner(uid) || isSuperAdmin());
-        allow create, update: if isValidId(uid) && isSuperAdmin();
+        allow create, update: if isValidId(uid) && isValidId(date) && (isOwner(uid) || isSuperAdmin()) && isValidUsageDaily(incoming(), uid);
         allow delete: if false;
       }
     }
@@ -518,13 +560,23 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Đua Top Leaderboard (verified users can read rankings; each user updates only their own validated record)
+    // Đua Top Leaderboard (verified users can read rankings; each user updates only their own validated record within per-exam bounds)
     match /leaderboard/{uid} {
       allow get: if isValidId(uid) && isVerifiedUser();
       allow list: if isVerifiedUser();
-      allow create: if isValidId(uid) && isOwner(uid) && isValidLeaderboardEntry(incoming(), uid);
+      allow create: if isValidId(uid) && isOwner(uid) && isValidLeaderboardEntry(incoming(), uid)
+        && incoming().totalScore <= 100
+        && incoming().examCount <= 1;
       allow update: if isValidId(uid) && (isOwner(uid) || isSuperAdmin()) && isValidLeaderboardEntry(incoming(), uid)
-        && incoming().uid == existing().uid;
+        && incoming().uid == existing().uid
+        && (
+          isSuperAdmin() || (
+            incoming().totalScore >= existing().totalScore
+            && incoming().totalScore <= existing().totalScore + 100
+            && incoming().examCount >= existing().examCount
+            && incoming().examCount <= existing().examCount + 1
+          )
+        );
       allow delete: if isValidId(uid) && isSuperAdmin();
     }
 
@@ -536,6 +588,9 @@ service cloud.firestore {
       allow update: if isValidId(feedbackId) && isSuperAdmin()
         && incoming().ownerUid == existing().ownerUid
         && incoming().createdAt == existing().createdAt
+        && incoming().status in ['pending', 'reviewed', 'resolved']
+        && (!('aiClassification' in incoming()) || (incoming().aiClassification is string && incoming().aiClassification.size() <= 1000))
+        && incoming().updatedAt is string && incoming().updatedAt.size() <= 64
         && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'aiClassification', 'updatedAt']);
       allow delete: if isValidId(feedbackId) && isSuperAdmin();
     }
@@ -563,17 +618,19 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Encrypted Single Gemini API Key (Super Admin ONLY — AES-256-GCM encrypted server-side)
+    // Encrypted Provider API Keys (strictly Super Admin read/write; never exposed to regular student users)
     match /adminSecrets/{secretId} {
-      allow get, list: if isSuperAdmin();
+      allow get: if isValidId(secretId) && isSuperAdmin();
+      allow list: if isSuperAdmin();
       allow create, update: if isValidId(secretId) && isSuperAdmin() && isValidAdminSecret(incoming());
       allow delete: if isValidId(secretId) && isSuperAdmin();
     }
 
     // Global Daily API Usage (Super Admin read/write)
     match /apiUsageDaily/{date} {
-      allow get, list: if isSuperAdmin();
-      allow create, update: if isSuperAdmin();
+      allow get: if isValidId(date) && isSuperAdmin();
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidId(date) && isSuperAdmin();
       allow delete: if false;
     }
 
@@ -589,6 +646,38 @@ service cloud.firestore {
       allow get: if isValidId(uid) && isVerifiedUser() && (request.auth.uid == uid || isSuperAdmin());
       allow list: if isSuperAdmin();
       allow create, update, delete: if isSuperAdmin();
+    }
+
+    // Public User Experience Ratings (real-time landing page stats; strictly non-PII)
+    match /experienceRatings/{ratingId} {
+      allow get: if isValidId(ratingId) && (resource == null || existing().visibility == 'public');
+      allow list: if resource.data.visibility == 'public';
+      allow create: if isValidId(ratingId) && isValidExperienceRating(incoming(), ratingId) && (
+        (
+          isVerifiedUser()
+          && ratingId == request.auth.uid
+          && incoming().ownerUid == request.auth.uid
+          && incoming().isVerifiedAccount == true
+        ) || (
+          request.auth == null
+          && ratingId.matches('^guest_[a-zA-Z0-9_\\-]{8,64}$')
+          && incoming().ownerUid == 'guest'
+          && incoming().isVerifiedAccount == false
+        )
+      );
+      allow update: if isValidId(ratingId) && isVerifiedUser() && isValidExperienceRating(incoming(), ratingId)
+        && existing().ownerUid == request.auth.uid
+        && ratingId == request.auth.uid
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().ratingId == existing().ratingId
+        && incoming().isVerifiedAccount == true
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'authorName', 'roleLabel', 'stars', 'easeOfUse', 'usefulness', 'speedAndUi', 'comment', 'updatedAt'
+        ]);
+      allow delete: if isValidId(ratingId) && (
+        isSuperAdmin() || (isVerifiedUser() && existing().ownerUid == request.auth.uid)
+      );
     }
   }
 }

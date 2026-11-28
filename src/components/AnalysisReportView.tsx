@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BookCheck,
-  Calculator,
   CheckCircle2,
   ChevronDown,
   ExternalLink,
@@ -16,14 +15,9 @@ import {
   Lightbulb,
   Printer,
   ScrollText,
-  ShieldCheck,
-  Sparkles,
-  TrendingUp,
   XCircle,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { compareAnalysesBeforeAfter } from '../core/examScoring';
-import { computeClaimScoreSummary } from '../core/scoring';
 import {
   buildVerificationSummaryReport,
   type VerificationSummaryReport,
@@ -40,8 +34,6 @@ import {
 } from '../services/summaryExportService';
 import { CalmDots } from './CalmLoadingIndicator';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
-import { ScoreRing } from './LiquidGlass/ScoreRing';
-import { SmoothAccordion } from './LiquidGlass/SmoothAccordion';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
 import { SplitDocumentViewer } from './SplitDocumentViewer';
 import { SummaryExportModal } from './SummaryExportModal';
@@ -77,7 +69,6 @@ const FEEDBACK_CATEGORIES: FeedbackEntry['category'][] = [
 
 export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
   analysis,
-  allAnalyses = [],
   localFile,
   onStartQuiz,
   onOpenFlashcards,
@@ -86,8 +77,6 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
 }) => {
   const reportRef = useRef<HTMLDivElement>(null);
   const { user, profile, systemStatus } = useAuth();
-  const [showFormula, setShowFormula] = useState(false);
-  const [showAuditTrail, setShowAuditTrail] = useState(false);
 
   // Confirmed Summary Report Export State (strictly null until user explicitly confirms)
   const [summaryModalOpen, setSummaryModalOpen] = useState(false);
@@ -296,31 +285,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       ? 100
       : Math.min(96, 80 + Math.round((resolvedItemsCount / actionableQueue.length) * 16));
 
-  const acc = analysis.accuracyBreakdown;
-  const comp = analysis.completenessBreakdown;
-  const scoreSummary = useMemo(
-    () => computeClaimScoreSummary(analysis.claims || [], acc),
-    [analysis.claims, acc]
-  );
   const aiEnabled = systemStatus ? systemStatus.enabled : true;
-
-  // Before/After Comparison against an older analysis in the same subject
-  const previousComparable = useMemo(() => {
-    const candidates = allAnalyses
-      .filter(
-        (a) =>
-          a.analysisId !== analysis.analysisId &&
-          a.subject === analysis.subject &&
-          a.createdAt < analysis.createdAt
-      )
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return candidates[0] || null;
-  }, [allAnalyses, analysis.analysisId, analysis.subject, analysis.createdAt]);
-
-  const beforeAfter = useMemo(() => {
-    if (!previousComparable) return null;
-    return compareAnalysesBeforeAfter(previousComparable, analysis);
-  }, [previousComparable, analysis]);
 
   const incorrectClaims = useMemo(
     () =>
@@ -746,298 +711,6 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
           </div>
         </div>
       )}
-
-      {/* Four Independent Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-5 no-print">
-        <GlassSurface className="report-metric-card rounded-3xl p-4 sm:p-5 space-y-2.5">
-          <ScoreRing
-            label="Độ chính xác (Accuracy)"
-            value={scoreSummary.correctPercent ?? analysis.accuracyScore}
-            subtitle={
-              scoreSummary.evaluatedTotal > 0
-                ? `Tổng ${scoreSummary.evaluatedTotal} ý: ${scoreSummary.correctCount} đúng · ${scoreSummary.partialCount} thiếu/1 phần · ${scoreSummary.incorrectCount} sai${
-                    scoreSummary.missingCount > 0 ? ` · ${scoreSummary.missingCount} thiếu ý` : ''
-                  }`
-                : 'Chưa đủ mệnh đề xác minh để tính điểm'
-            }
-            color="sky"
-          />
-          {scoreSummary.evaluatedTotal > 0 &&
-            scoreSummary.exactCorrectPercent !== null &&
-            scoreSummary.partialPercent !== null &&
-            scoreSummary.exactIncorrectPercent !== null && (
-              <div className="pt-2 border-t border-slate-200/70 dark:border-slate-700/70 flex flex-wrap items-center justify-between gap-1 text-[11px] font-mono tabular-nums">
-                <span className="font-semibold text-emerald-700 dark:text-emerald-400">
-                  Đúng {scoreSummary.exactCorrectPercent}%
-                </span>
-                <span className="font-semibold text-amber-700 dark:text-amber-400">
-                  Một phần {scoreSummary.partialPercent}%
-                </span>
-                <span className="font-semibold text-rose-700 dark:text-rose-400">
-                  Sai {scoreSummary.exactIncorrectPercent}%
-                </span>
-              </div>
-            )}
-        </GlassSurface>
-
-        <GlassSurface className="report-metric-card rounded-3xl p-4 sm:p-5">
-          <ScoreRing
-            label="Độ đầy đủ (Completeness)"
-            value={analysis.completenessScore}
-            subtitle={
-              comp && comp.totalRequiredWeight > 0
-                ? comp.rubricMode === 'fixed_textbook_rubric'
-                  ? `Rubric SGK cố định (${comp.rubricItemCount ?? analysis.coverageItems.length} tiêu chí) · Đủ ${comp.coveredCount} · Thiếu một phần ${comp.partialCount} · Thiếu ${comp.missingCount}`
-                  : `Theo phạm vi chương · Đủ ${comp.coveredCount} · Thiếu một phần ${comp.partialCount} · Thiếu ${comp.missingCount}`
-                : 'Chưa có rubric chuẩn SGK cho phạm vi này (chỉ chấm Độ chính xác)'
-            }
-            color="sky"
-          />
-        </GlassSurface>
-
-        <GlassSurface className="report-metric-card rounded-3xl p-4 sm:p-5">
-          <ScoreRing
-            label="Tỷ lệ có dẫn chứng"
-            value={analysis.evidenceCoverage}
-            subtitle="Tỷ lệ nội dung có nguồn đối chiếu xác thực"
-            color="emerald"
-          />
-        </GlassSurface>
-
-        <GlassSurface className="report-metric-card rounded-3xl p-4 sm:p-5 flex flex-col justify-between">
-          <div>
-            <p className="text-xs font-medium text-[#475B78] dark:text-[#B4C7E2]">
-              Mức độ tin cậy đánh giá
-            </p>
-            <p className="font-display text-xl font-bold text-[#16243E] dark:text-[#E6EFFC] mt-1">
-              {analysis.confidenceLevel}
-            </p>
-          </div>
-          <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] mt-2 leading-[1.6]">
-            {analysis.confidenceReason}
-          </p>
-        </GlassSurface>
-      </div>
-
-      {/* Before/After Comparison Card (when older analysis in same subject exists) */}
-      {previousComparable && beforeAfter && (
-        <GlassSurface className="report-scroll-section rounded-3xl p-4 sm:p-5 border border-sky-200/70 dark:border-sky-800/50 no-print">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <TrendingUp className="w-5 h-5 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
-              <div className="text-xs">
-                <p className="font-bold text-[#16243E] dark:text-[#E6EFFC] text-sm">
-                  So sánh tiến bộ trước & sau (so với “{previousComparable.documentTitle}”)
-                </p>
-                <p className="text-slate-600 dark:text-slate-300 mt-0.5">{beforeAfter.summary}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-4 text-xs font-mono shrink-0 tabular-nums">
-              {beforeAfter.accuracyDelta !== null && (
-                <span
-                  className={
-                    beforeAfter.accuracyDelta >= 0
-                      ? 'text-emerald-700 dark:text-emerald-400 font-bold'
-                      : 'text-amber-700 dark:text-amber-400 font-bold'
-                  }
-                >
-                  Độ chính xác: {beforeAfter.accuracyDelta >= 0 ? '+' : ''}
-                  {beforeAfter.accuracyDelta}%
-                </span>
-              )}
-              {beforeAfter.completenessDelta !== null && (
-                <span
-                  className={
-                    beforeAfter.completenessDelta >= 0
-                      ? 'text-sky-700 dark:text-sky-400 font-bold'
-                      : 'text-amber-700 dark:text-amber-400 font-bold'
-                  }
-                >
-                  Độ đầy đủ: {beforeAfter.completenessDelta >= 0 ? '+' : ''}
-                  {beforeAfter.completenessDelta}%
-                </span>
-              )}
-            </div>
-          </div>
-        </GlassSurface>
-      )}
-
-      {/* Formula Transparency Drawer */}
-      <SmoothAccordion
-        open={showFormula}
-        onToggle={(next) => {
-          setShowFormula(next);
-        }}
-        icon={<Calculator className="w-4 h-4 text-sky-600 dark:text-sky-400" />}
-        title={
-          <span className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
-            Xem công thức tính Tổng đúng/sai & % Đúng / % Sai minh bạch
-          </span>
-        }
-        className="report-scroll-section glass-panel-subtle !rounded-3xl no-print"
-        triggerClassName="px-4 sm:px-5 py-3.5 hover:bg-white/45 dark:hover:bg-slate-800/45"
-        contentClassName="px-4 sm:px-5 pb-4 pt-3 border-t border-sky-200/60 dark:border-slate-700/70 grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-slate-700 dark:text-slate-300 leading-[1.6]"
-      >
-        <div>
-          <p className="font-semibold text-sky-800 dark:text-sky-300 mb-1">
-            Điểm chính xác = (Số ý đúng + 0,5 × Số ý một phần) / Tổng số ý đã chấm · Phân bổ 3 nhóm = 100%
-          </p>
-          <p>
-            Mỗi ý đã kiểm chứng tính đều 1 đơn vị (Đúng = 1,0 · Thiếu/đúng 1 phần = 0,5 · Sai = 0).
-            Các ý chưa đủ căn cứ, OCR mờ hoặc ý thiếu (thuộc Độ đầy đủ) không bị tính trùng vào mẫu số Độ chính xác.
-          </p>
-          <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
-            Thực tế: ({scoreSummary.correctCount} + 0,5 × {scoreSummary.partialCount}) / {scoreSummary.evaluatedTotal} ={' '}
-            {scoreSummary.correctPercent !== null
-              ? `${scoreSummary.correctPercent}% (Đúng ${scoreSummary.exactCorrectPercent}% · Một phần ${scoreSummary.partialPercent}% · Sai ${scoreSummary.exactIncorrectPercent}%)`
-              : 'Chưa đủ dữ liệu'}
-          </p>
-        </div>
-        <div>
-          <p className="font-semibold text-sky-800 dark:text-sky-300 mb-1">
-            Độ đầy đủ = (Số ý đã phủ + 0,5 × Số ý phủ 1 phần) / Tổng số ý khung kiến thức
-          </p>
-          <p>
-            Chỉ chấm khi có sách giáo khoa hoặc khung mục tiêu chương rõ ràng. Thiếu ý chỉ ảnh
-            hưởng Độ đầy đủ, tuyệt đối không làm giảm Độ chính xác.
-          </p>
-          {comp && (
-            <p className="font-mono mt-1.5 text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
-              Thực tế: {comp.coveredWeight} / {comp.totalRequiredWeight} ={' '}
-              {comp.completenessScore !== null ? `${comp.completenessScore}%` : 'Không áp dụng'}
-            </p>
-          )}
-        </div>
-      </SmoothAccordion>
-
-      {/* Deterministic Grading Audit Trail */}
-      {acc?.gradingAudit && (
-        <SmoothAccordion
-          open={showAuditTrail}
-          onToggle={(next) => {
-            setShowAuditTrail(next);
-          }}
-          icon={<ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
-          title={
-            <span className="text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC]">
-              Dấu vết kiểm định & Độ ổn định điểm số ·{' '}
-              <span className="font-mono font-normal text-[#475B78] dark:text-[#B4C7E2]">
-                {acc.gradingAudit.actualModel}
-                {acc.gradingAudit.cached ? ' · Bộ nhớ đệm' : ''}
-                {acc.gradingAudit.strictModelLock ? ' · Khóa model chuẩn' : ''}
-              </span>
-            </span>
-          }
-          className="report-scroll-section glass-panel-subtle !rounded-3xl no-print"
-          triggerClassName="px-4 sm:px-5 py-3.5 hover:bg-white/45 dark:hover:bg-slate-800/45"
-          contentClassName="px-4 sm:px-5 pb-4 pt-3 border-t border-sky-200/60 dark:border-slate-700/70 space-y-3 text-xs text-slate-700 dark:text-slate-300"
-        >
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2.5 leading-[1.6]">
-            <div>
-              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">Model yêu cầu / thực chạy</p>
-              <p className="font-mono text-[#16243E] dark:text-[#E6EFFC] break-all">
-                {acc.gradingAudit.requestedModel === acc.gradingAudit.actualModel
-                  ? acc.gradingAudit.actualModel
-                  : `${acc.gradingAudit.requestedModel} → ${acc.gradingAudit.actualModel}`}
-              </p>
-            </div>
-            <div>
-              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">Cơ chế ổn định & nguồn chạy</p>
-              <p className="text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
-                {acc.gradingAudit.strictModelLock ? 'Khóa model chuẩn' : 'Cho phép dự phòng'} ·{' '}
-                {acc.gradingAudit.usedFallback ? 'Đã dùng dự phòng' : 'Đúng model chính'} ·{' '}
-                {acc.gradingAudit.cached ? 'Trùng bộ nhớ đệm' : 'Chấm trực tiếp'}
-              </p>
-            </div>
-            <div>
-              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">Thang chấm Độ đầy đủ (Rubric)</p>
-              <p className="text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
-                {acc.gradingAudit.rubricMode === 'fixed_textbook_rubric'
-                  ? `Rubric cố định SGK (${acc.gradingAudit.rubricItemCount} tiêu chí)`
-                  : acc.gradingAudit.rubricMode === 'scope_guided'
-                  ? 'Theo phạm vi chương'
-                  : 'Chưa có rubric SGK'}
-                {acc.gradingAudit.chunkIds.length > 0
-                  ? ` · ${acc.gradingAudit.chunkIds.length} đoạn SGK`
-                  : ''}
-              </p>
-            </div>
-            <div>
-              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">Mã băm văn bản OCR / đầu vào</p>
-              <p className="font-mono text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
-                OCR: {acc.gradingAudit.ocrTextHash.slice(0, 12)} · Input: {acc.gradingAudit.inputHash.slice(0, 12)}
-              </p>
-            </div>
-            <div>
-              <p className="text-[11px] text-[#475B78] dark:text-[#B4C7E2]">Trạng thái OCR & Độ dài tài liệu</p>
-              <p className="text-[#16243E] dark:text-[#E6EFFC] tabular-nums">
-                {acc.gradingAudit.ocrConfirmed ? 'Đã xác nhận OCR' : 'OCR tự động'} ·{' '}
-                {acc.gradingAudit.studentCharCount.toLocaleString('vi-VN')} ký tự
-                {acc.gradingAudit.truncationApplied ? ' · Có rút gọn ngữ cảnh dài' : ' · Đủ toàn văn'}
-              </p>
-            </div>
-            <div>
-              <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8]">Phiên bản kiểm định & Seed</p>
-              <p className="font-mono text-[#172033] dark:text-[#E6EFFC] tabular-nums">
-                {acc.gradingAudit.promptVersion} · Seed {acc.gradingAudit.deterministicSeed}
-                {acc.gradingAudit.systemFingerprint ? ` · ${acc.gradingAudit.systemFingerprint}` : ''}
-              </p>
-            </div>
-            {acc.gradingAudit.adaptiveApiPlan && (
-              <div className="sm:col-span-2 lg:col-span-3 pt-2 border-t border-[#E6ECF5] dark:border-[#1E293B] grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-2">
-                <div>
-                  <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8]">Chế độ luồng API kiểm định</p>
-                  <p className="font-mono text-[#1746A2] dark:text-[#93C5FD] font-semibold tabular-nums">
-                    Cố định 1 Quét · 1 Chấm · 1 Dò
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8]">Kiểm chứng chéo nhà cung cấp</p>
-                  <p className="font-mono text-[#172033] dark:text-[#E6EFFC] break-all">
-                    {acc.gradingAudit.adaptiveApiPlan.verifyModels?.length
-                      ? acc.gradingAudit.adaptiveApiPlan.verifyModels.join(' · ')
-                      : 'Đối chiếu đồng bộ 3-provider'}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[11px] text-[#525E75] dark:text-[#94A3B8]">Số luồng thực thi (Chấm / Dò)</p>
-                  <p className="font-mono text-[#172033] dark:text-[#E6EFFC] tabular-nums">
-                    {acc.gradingAudit.adaptiveApiPlan.gradeApiCount} chấm ·{' '}
-                    {acc.gradingAudit.adaptiveApiPlan.verifyExecutedApiCount} dò ·{' '}
-                    {acc.gradingAudit.adaptiveApiPlan.textLength.toLocaleString('vi-VN')} ký tự
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
-          {acc.gradingAudit.truncationApplied && (
-            <p className="text-[11px] text-amber-800 dark:text-amber-300 border-t border-amber-200/70 dark:border-amber-800/50 pt-2">
-              Lưu ý: Tài liệu hoặc ngữ cảnh SGK vượt ngưỡng tối đa trong một lượt chấm và đã được rút gọn ở phần cuối. Nên tách tài liệu rất dài theo từng chương để kiểm định chi tiết nhất.
-            </p>
-          )}
-        </SmoothAccordion>
-      )}
-
-      {/* Explicit Quiz Offer Banner */}
-      <GlassSurface enableRipple className="report-scroll-section rounded-3xl p-4 sm:p-6 border border-sky-200/80 dark:border-sky-800/60 no-print">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-start gap-3">
-            <Sparkles className="w-6 h-6 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
-            <div>
-              <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
-                Luyện tập trắc nghiệm thích ứng & Nâng cao từ bài vừa phân tích
-              </h2>
-              <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
-                Nếu nội dung tải lên tạo dưới 5 câu riêng biệt, hệ thống tự bổ sung từ sách giáo khoa đã hoàn
-                thiện; bạn cũng có thể bật nút Nâng cao (1–6 câu mở rộng).
-              </p>
-            </div>
-          </div>
-          <WaterRippleButton onClick={() => onStartQuiz(analysis)}>
-            Tạo bài trắc nghiệm ngay
-          </WaterRippleButton>
-        </div>
-      </GlassSurface>
 
       {/* Split Document & Evidence Workspace */}
       <section className="report-scroll-section space-y-3 no-print">

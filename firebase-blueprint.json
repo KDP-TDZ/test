@@ -371,6 +371,30 @@
         "grantedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "role", "grantedAt"]
+    },
+    "ExperienceRating": {
+      "title": "ExperienceRating",
+      "description": "Public, non-PII user experience rating with required written feedback displayed in real time on the landing page.",
+      "type": "object",
+      "properties": {
+        "ratingId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "authorName": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "roleLabel": {
+          "type": "string",
+          "enum": ["Học sinh lớp 10", "Học sinh lớp 11", "Học sinh lớp 12", "Giáo viên / Phụ huynh", "Khách trải nghiệm"]
+        },
+        "stars": { "type": "number" },
+        "easeOfUse": { "type": "number" },
+        "usefulness": { "type": "number" },
+        "speedAndUi": { "type": "number" },
+        "comment": { "type": "string", "minLength": 5, "maxLength": 400 },
+        "isVerifiedAccount": { "type": "boolean" },
+        "visibility": { "type": "string", "enum": ["public"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ratingId", "ownerUid", "authorName", "roleLabel", "stars", "easeOfUse", "usefulness", "speedAndUi", "comment", "isVerifiedAccount", "visibility", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -461,6 +485,10 @@
     "/admins/{uid}": {
       "schema": { "$ref": "#/entities/AdminRecord" },
       "description": "Trusted Super Admin allowlist directory."
+    },
+    "/experienceRatings/{ratingId}": {
+      "schema": { "$ref": "#/entities/ExperienceRating" },
+      "description": "Real-time user experience ratings & non-PII feedback aggregated live on the landing page."
     }
   }
 }

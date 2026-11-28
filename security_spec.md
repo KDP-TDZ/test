@@ -8,6 +8,7 @@
 5. **Verified Email Gate**: All authenticated writes require `request.auth.token.email_verified == true`.
 6. **Query Enforcement**: Every `allow list` rule evaluates `resource.data.ownerUid == request.auth.uid` (or `isSuperAdmin()`), never delegating filtering to client queries.
 7. **Practice Item Preservation**: Only the owner student can delete a `practiceItems/{itemId}` document.
+8. **Public Experience Ratings Hygiene**: `experienceRatings/{ratingId}` stores strictly non-PII public rating data (`visibility == 'public'`, integer scores 1..5, `authorName <= 60`, required trimmed written `comment` between 5 and 400 characters). Signed-in verified users write only to `ratingId == request.auth.uid` with `ownerUid == request.auth.uid`; guests may only create once under `guest_<id>` (`ownerUid == 'guest'`, `isVerifiedAccount == false`) and can never update or delete any document.
 
 ## 2. The "Dirty Dozen" Adversarial Payloads
 1. **Shadow Admin Injection on User Signup**: `POST users/uid1` with `{ uid: "uid1", isSuperAdmin: true, role: "super_admin" }` -> MUST fail (`hasOnly` key whitelist rejects `role` / `isSuperAdmin`).
@@ -22,3 +23,8 @@
 10. **Practice Bank Unauthorized Deletion**: User A tries `delete practiceItems/p_belonging_to_B` -> MUST fail (`existing().ownerUid == request.auth.uid`).
 11. **Fake Textbook Injection**: Student tries `create referenceBooks/ref1` -> MUST fail (`isSuperAdmin()` required).
 12. **Audit Log Forgery / Deletion**: Anyone tries `delete auditLogs/log1` -> MUST fail (audit logs are append-only by Super Admin, never deletable from client).
+13. **Experience Rating Score Poisoning**: Guest or user tries `create experienceRatings/guest_12345678` with `{ stars: 999, comment: "<5000 chars>" }` -> MUST fail (`stars is int && stars >= 1 && stars <= 5`, `comment.size() <= 400`).
+14. **Experience Rating Account Spoofing**: Guest tries `create experienceRatings/uid_victim` with `{ isVerifiedAccount: true, ownerUid: "uid_victim" }` -> MUST fail (guest branch requires `guest_` prefix, `ownerUid == 'guest'`, `isVerifiedAccount == false`).
+15. **Experience Rating Shadow Field / PII Injection**: Payload adds `{ email: "a@b.com", featured: true }` -> MUST fail (`hasOnly` whitelist rejects extra keys).
+16. **Guest Overwrite / Delete Tampering**: Guest tries `update` or `delete` on `experienceRatings/guest_12345678` -> MUST fail (updates/deletes require verified owner or Super Admin).
+17. **Empty or Star-Only Experience Rating**: Guest or user tries `create experienceRatings/guest_12345678` with `{ stars: 5, comment: "   " }` -> MUST fail (`comment.trim().size() >= 5 && comment.size() <= 400`).

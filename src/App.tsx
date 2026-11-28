@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { BRAND_CONFIG } from './config/brand';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { PrivacyBlurProvider } from './context/PrivacyBlurContext';
@@ -6,6 +6,8 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { AmbientCanvas } from './components/LiquidGlass/AmbientCanvas';
 import { CalmDots } from './components/CalmLoadingIndicator';
 import { LandingPage } from './components/LandingPage';
+import { ExperienceRatingPrompt } from './components/ExperienceRatingPrompt';
+import type { ExperienceRatingRecord } from './core/experienceRatings';
 
 function lazyWithRetry<T extends React.ComponentType<any>>(
   factory: () => Promise<{ default: T }>
@@ -42,15 +44,36 @@ const BootLoader: React.FC = () => (
 );
 
 const StudyCheckShell: React.FC = () => {
-  const { user, loading } = useAuth();
+  const { user, profile, loading } = useAuth();
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
+  const [hasUserRated, setHasUserRated] = useState(false);
+  const [latestSubmittedRating, setLatestSubmittedRating] =
+    useState<ExperienceRatingRecord | null>(null);
+  const [ratingOpenRequest, setRatingOpenRequest] = useState<{
+    id: number;
+    initialStars?: 1 | 2 | 3 | 4 | 5;
+  } | null>(null);
+
+  const handleOpenRatingModal = useCallback((initialStars?: 1 | 2 | 3 | 4 | 5) => {
+    setRatingOpenRequest({ id: Date.now() + Math.random(), initialStars });
+  }, []);
+
+  const handleRatingStatusChange = useCallback(
+    (status: { hasRated: boolean; lastRecord?: ExperienceRatingRecord | null }) => {
+      setHasUserRated(status.hasRated);
+      if (status.lastRecord) {
+        setLatestSubmittedRating(status.lastRecord);
+      }
+    },
+    []
+  );
 
   if (loading) {
     return <BootLoader />;
   }
 
-  // Unauthenticated Landing Experience (Zero workspace JS/Firebase Firestore/GSAP overhead)
+  // Unauthenticated Landing Experience
   if (!user) {
     return (
       <>
@@ -59,6 +82,9 @@ const StudyCheckShell: React.FC = () => {
             setAuthModalMode(mode);
             setAuthModalOpen(true);
           }}
+          hasUserRated={hasUserRated}
+          onOpenRatingModal={handleOpenRatingModal}
+          latestSubmittedRating={latestSubmittedRating}
         />
         {authModalOpen && (
           <React.Suspense fallback={null}>
@@ -69,15 +95,29 @@ const StudyCheckShell: React.FC = () => {
             />
           </React.Suspense>
         )}
+        <ExperienceRatingPrompt
+          externalOpenRequest={ratingOpenRequest}
+          onStatusChange={handleRatingStatusChange}
+        />
       </>
     );
   }
 
   // Authenticated Workspace Shell (code-split cleanly on demand)
   return (
-    <React.Suspense fallback={<BootLoader />}>
-      <AuthenticatedShell />
-    </React.Suspense>
+    <>
+      <React.Suspense fallback={<BootLoader />}>
+        <AuthenticatedShell />
+      </React.Suspense>
+      <ExperienceRatingPrompt
+        userUid={user.uid}
+        userEmailVerified={user.emailVerified}
+        defaultDisplayName={profile?.displayName || user.displayName}
+        defaultGrade={profile?.grade}
+        externalOpenRequest={ratingOpenRequest}
+        onStatusChange={handleRatingStatusChange}
+      />
+    </>
   );
 };
 

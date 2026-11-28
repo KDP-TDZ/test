@@ -8872,6 +8872,245 @@ function repairUtf8Mojibake(value) {
 
 // src/server/app.ts
 init_urlSecurity();
+
+// src/server/experienceRatingStore.ts
+import fs3 from "node:fs";
+import os2 from "node:os";
+import path3 from "node:path";
+
+// src/core/experienceRatings.ts
+var EXPERIENCE_REMIND_HOURS = 6;
+var EXPERIENCE_REMIND_MS = EXPERIENCE_REMIND_HOURS * 60 * 60 * 1e3;
+var EXPERIENCE_MAX_AUTHOR_LENGTH = 60;
+var EXPERIENCE_MIN_COMMENT_LENGTH = 5;
+var EXPERIENCE_MAX_COMMENT_LENGTH = 400;
+var EXPERIENCE_ROLE_OPTIONS = [
+  "H\u1ECDc sinh l\u1EDBp 10",
+  "H\u1ECDc sinh l\u1EDBp 11",
+  "H\u1ECDc sinh l\u1EDBp 12",
+  "Gi\xE1o vi\xEAn / Ph\u1EE5 huynh",
+  "Kh\xE1ch tr\u1EA3i nghi\u1EC7m"
+];
+var VALID_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
+var GUEST_ID_REGEX = /^guest_[a-zA-Z0-9_-]{8,64}$/;
+function isValidExperienceRatingId(id) {
+  return typeof id === "string" && VALID_ID_REGEX.test(id);
+}
+function isValidGuestRatingId(id) {
+  return typeof id === "string" && GUEST_ID_REGEX.test(id);
+}
+function isValidScore(val) {
+  return typeof val === "number" && Number.isInteger(val) && val >= 1 && val <= 5;
+}
+function isExperienceRoleLabel(value) {
+  return typeof value === "string" && EXPERIENCE_ROLE_OPTIONS.includes(value);
+}
+function validateExperienceRatingInput(input) {
+  if (!isValidScore(input.stars)) {
+    return { ok: false, error: "Vui l\xF2ng ch\u1ECDn m\u1EE9c \u0111\xE1nh gi\xE1 t\u1EEB 1 \u0111\u1EBFn 5 sao." };
+  }
+  const easeOfUse = isValidScore(input.easeOfUse) ? input.easeOfUse : input.stars;
+  const usefulness = isValidScore(input.usefulness) ? input.usefulness : input.stars;
+  const speedAndUi = isValidScore(input.speedAndUi) ? input.speedAndUi : input.stars;
+  const roleLabel = isExperienceRoleLabel(input.roleLabel) ? input.roleLabel : "Kh\xE1ch tr\u1EA3i nghi\u1EC7m";
+  const rawAuthor = typeof input.authorName === "string" ? input.authorName.trim() : "";
+  const authorName = (rawAuthor || roleLabel).slice(0, EXPERIENCE_MAX_AUTHOR_LENGTH);
+  const rawComment = typeof input.comment === "string" ? input.comment.trim() : "";
+  if (rawComment.length === 0) {
+    return {
+      ok: false,
+      error: "Vui l\xF2ng vi\u1EBFt nh\u1EADn x\xE9t v\u1EC1 tr\u1EA3i nghi\u1EC7m c\u1EE7a b\u1EA1n tr\u01B0\u1EDBc khi g\u1EEDi \u0111\xE1nh gi\xE1."
+    };
+  }
+  if (rawComment.length < EXPERIENCE_MIN_COMMENT_LENGTH) {
+    return {
+      ok: false,
+      error: `Nh\u1EADn x\xE9t c\u1EA7n t\u1ED1i thi\u1EC3u ${EXPERIENCE_MIN_COMMENT_LENGTH} k\xFD t\u1EF1 \u0111\u1EC3 chia s\u1EBB r\xF5 tr\u1EA3i nghi\u1EC7m c\u1EE7a b\u1EA1n.`
+    };
+  }
+  if (rawComment.length > EXPERIENCE_MAX_COMMENT_LENGTH) {
+    return {
+      ok: false,
+      error: `Nh\u1EADn x\xE9t t\u1ED1i \u0111a ${EXPERIENCE_MAX_COMMENT_LENGTH} k\xFD t\u1EF1.`
+    };
+  }
+  return {
+    ok: true,
+    sanitized: {
+      authorName,
+      roleLabel,
+      stars: input.stars,
+      easeOfUse,
+      usefulness,
+      speedAndUi,
+      comment: rawComment
+    }
+  };
+}
+function buildExperienceRatingRecord(params) {
+  const nowIso = params.nowIso || (/* @__PURE__ */ new Date()).toISOString();
+  const createdAt = params.createdAt || nowIso;
+  return {
+    ratingId: params.ratingId,
+    ownerUid: params.ownerUid,
+    authorName: params.sanitized.authorName.slice(0, EXPERIENCE_MAX_AUTHOR_LENGTH),
+    roleLabel: params.sanitized.roleLabel,
+    stars: params.sanitized.stars,
+    easeOfUse: params.sanitized.easeOfUse,
+    usefulness: params.sanitized.usefulness,
+    speedAndUi: params.sanitized.speedAndUi,
+    comment: params.sanitized.comment.slice(0, EXPERIENCE_MAX_COMMENT_LENGTH),
+    isVerifiedAccount: params.isVerifiedAccount,
+    visibility: "public",
+    createdAt,
+    updatedAt: nowIso
+  };
+}
+
+// src/server/experienceRatingStore.ts
+var MAX_STORED_RATINGS = 500;
+function resolveStoreFilePath() {
+  if (process.env.VERCEL === "1") {
+    return path3.join(os2.tmpdir(), "studycheck-experience-ratings.json");
+  }
+  return path3.resolve(process.cwd(), "data", "experience-ratings.json");
+}
+var storePath = resolveStoreFilePath();
+var ratingsMap = /* @__PURE__ */ new Map();
+var sseClients = /* @__PURE__ */ new Set();
+var loadedFromDisk = false;
+function ensureLoaded() {
+  if (loadedFromDisk) return;
+  loadedFromDisk = true;
+  try {
+    if (!fs3.existsSync(storePath)) return;
+    const raw = fs3.readFileSync(storePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    for (const item of parsed) {
+      if (item && typeof item === "object" && typeof item.ratingId === "string" && isValidExperienceRatingId(item.ratingId) && typeof item.stars === "number") {
+        const rec = item;
+        ratingsMap.set(rec.ratingId, rec);
+      }
+    }
+  } catch (err) {
+    console.warn("Experience rating store load skipped:", err);
+  }
+}
+function persistToDisk() {
+  try {
+    const dir = path3.dirname(storePath);
+    if (!fs3.existsSync(dir)) {
+      fs3.mkdirSync(dir, { recursive: true });
+    }
+    const list = listStoredExperienceRatings();
+    const tmpPath = `${storePath}.tmp`;
+    fs3.writeFileSync(tmpPath, JSON.stringify(list, null, 2), "utf8");
+    fs3.renameSync(tmpPath, storePath);
+  } catch (err) {
+    console.warn("Experience rating store disk write skipped:", err);
+  }
+}
+function listStoredExperienceRatings() {
+  ensureLoaded();
+  return Array.from(ratingsMap.values()).sort(
+    (a, b) => Date.parse(b.updatedAt || b.createdAt) - Date.parse(a.updatedAt || a.createdAt)
+  );
+}
+function getStoredExperienceRating(ratingId) {
+  ensureLoaded();
+  if (!isValidExperienceRatingId(ratingId)) return null;
+  return ratingsMap.get(ratingId) ?? null;
+}
+function broadcastExperienceRatingsSnapshot() {
+  if (sseClients.size === 0) return;
+  const payload = JSON.stringify({ ratings: listStoredExperienceRatings() });
+  const frame = `event: ratings
+data: ${payload}
+
+`;
+  for (const client of Array.from(sseClients)) {
+    try {
+      client.write(frame);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+}
+function attachExperienceRatingsSseClient(res) {
+  ensureLoaded();
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+  sseClients.add(res);
+  const initialPayload = JSON.stringify({ ratings: listStoredExperienceRatings() });
+  res.write(`event: ratings
+data: ${initialPayload}
+
+`);
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(": ping\n\n");
+    } catch {
+      clearInterval(heartbeat);
+      sseClients.delete(res);
+    }
+  }, 25e3);
+  return () => {
+    clearInterval(heartbeat);
+    sseClients.delete(res);
+  };
+}
+function saveStoredExperienceRating(params) {
+  ensureLoaded();
+  const validation = validateExperienceRatingInput(params.input);
+  if (!validation.ok) {
+    return { ok: false, status: 400, error: validation.error };
+  }
+  const isAuth = Boolean(params.authenticatedUid);
+  const resolvedId = isAuth ? params.authenticatedUid : params.ratingId;
+  if (isAuth) {
+    if (!isValidExperienceRatingId(resolvedId)) {
+      return { ok: false, status: 400, error: "M\xE3 t\xE0i kho\u1EA3n kh\xF4ng h\u1EE3p l\u1EC7." };
+    }
+  } else {
+    if (!isValidGuestRatingId(resolvedId)) {
+      return { ok: false, status: 400, error: "M\xE3 phi\xEAn \u0111\xE1nh gi\xE1 kh\xE1ch kh\xF4ng h\u1EE3p l\u1EC7." };
+    }
+    if (ratingsMap.has(resolvedId)) {
+      return {
+        ok: false,
+        status: 409,
+        error: "Tr\xECnh duy\u1EC7t n\xE0y \u0111\xE3 g\u1EEDi \u0111\xE1nh gi\xE1 tr\u01B0\u1EDBc \u0111\xF3."
+      };
+    }
+  }
+  const existing = ratingsMap.get(resolvedId);
+  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+  const record = buildExperienceRatingRecord({
+    ratingId: resolvedId,
+    ownerUid: isAuth ? params.authenticatedUid : "guest",
+    isVerifiedAccount: isAuth,
+    sanitized: validation.sanitized,
+    createdAt: existing?.createdAt || nowIso,
+    nowIso
+  });
+  if (ratingsMap.size >= MAX_STORED_RATINGS && !ratingsMap.has(resolvedId)) {
+    const sorted = listStoredExperienceRatings();
+    const oldest = sorted[sorted.length - 1];
+    if (oldest) {
+      ratingsMap.delete(oldest.ratingId);
+    }
+  }
+  ratingsMap.set(resolvedId, record);
+  persistToDisk();
+  broadcastExperienceRatingsSnapshot();
+  return { ok: true, record };
+}
+
+// src/server/app.ts
 var filenameScopeServerCache = /* @__PURE__ */ new Map();
 var ALLOWED_UPLOAD_MIMES = /* @__PURE__ */ new Set([
   "application/pdf",
@@ -10898,6 +11137,43 @@ function createApiApp() {
       const mapped = mapGeminiErrorResponse(err);
       res.status(mapped.status).json(mapped);
     }
+  });
+  app.get("/api/experience-ratings", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ratings: listStoredExperienceRatings() });
+  });
+  app.get("/api/experience-ratings/stream", (req, res) => {
+    const cleanup = attachExperienceRatingsSseClient(res);
+    req.on("close", cleanup);
+  });
+  app.get("/api/experience-ratings/:ratingId", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const ratingId = String(req.params.ratingId || "").trim();
+    const record = getStoredExperienceRating(ratingId);
+    res.json({ rating: record });
+  });
+  app.post("/api/experience-ratings", async (req, res) => {
+    const body = req.body || {};
+    let authenticatedUid;
+    if (req.headers.authorization?.startsWith("Bearer ")) {
+      try {
+        const verified = await verifyFirebaseRequest(req);
+        if (verified.emailVerified) {
+          authenticatedUid = verified.uid;
+        }
+      } catch {
+      }
+    }
+    const result = saveStoredExperienceRating({
+      input: body,
+      ratingId: typeof body.ratingId === "string" ? body.ratingId.trim() : "",
+      authenticatedUid
+    });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    res.status(201).json({ rating: result.record });
   });
   app.use((err, _req, res, _next) => {
     if (res.headersSent) return;

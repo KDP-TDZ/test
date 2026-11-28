@@ -9,11 +9,16 @@ import {
 import { BRAND_CONFIG } from '../config/brand';
 import { LandingHeroCarousel } from './LandingHeroCarousel';
 import { LandingWorkspacePreview } from './LandingWorkspacePreview';
+import { LandingExperienceStats } from './LandingExperienceStats';
 import { SmoothAccordion } from './LiquidGlass/SmoothAccordion';
 import { ThemeToggle } from './LiquidGlass/ThemeToggle';
+import type { ExperienceRatingRecord } from '../core/experienceRatings';
 
 interface LandingPageProps {
   onOpenAuth: (mode: 'login' | 'register') => void;
+  hasUserRated?: boolean;
+  onOpenRatingModal?: (initialStars?: 1 | 2 | 3 | 4 | 5) => void;
+  latestSubmittedRating?: ExperienceRatingRecord | null;
 }
 
 interface SpecimenAnnotation {
@@ -150,7 +155,12 @@ const STATUS_META = {
   },
 } as const;
 
-export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
+export const LandingPage: React.FC<LandingPageProps> = ({
+  onOpenAuth,
+  hasUserRated = false,
+  onOpenRatingModal,
+  latestSubmittedRating = null,
+}) => {
   const prefersReduced =
     typeof window !== 'undefined' &&
     typeof window.matchMedia === 'function' &&
@@ -163,7 +173,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
 
   useEffect(() => {
     if (typeof IntersectionObserver === 'undefined') return;
-    const sectionIds = ['top', 'specimen', 'workspace-preview', 'faq'];
+    const sectionIds = ['top', 'specimen', 'workspace-preview', 'experience-stats', 'faq'];
     const elements = sectionIds
       .map((id) => document.getElementById(id))
       .filter((el): el is HTMLElement => Boolean(el));
@@ -408,6 +418,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
         <LandingWorkspacePreview onOpenAuth={onOpenAuth} />
 
         {/* =====================================================================
+            C2. REAL-TIME USER EXPERIENCE STATISTICS (Live Firestore / SSE)
+           ===================================================================== */}
+        <LandingExperienceStats
+          hasUserRated={hasUserRated}
+          onOpenRatingModal={(initialStars) => onOpenRatingModal?.(initialStars)}
+          latestSubmittedRating={latestSubmittedRating}
+        />
+
+        {/* =====================================================================
             D. FAQ ACCORDION & CLEAN CONVERSION BAND
            ===================================================================== */}
         <section
@@ -513,6 +532,17 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth }) => {
                 className="hover:text-amber-700 dark:hover:text-white transition-colors"
               >
                 Đề thi 2025
+              </a>
+              <span aria-hidden="true">·</span>
+              <a
+                href="#experience-stats"
+                onClick={(e) => {
+                  e.preventDefault();
+                  scrollToSection('experience-stats');
+                }}
+                className="hover:text-amber-700 dark:hover:text-white transition-colors"
+              >
+                Trải nghiệm
               </a>
               <span aria-hidden="true">·</span>
               <a
