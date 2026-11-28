@@ -37,6 +37,7 @@ import { AnimatedModal } from './LiquidGlass/AnimatedModal';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { SlidingTabs, TabContentFade } from './LiquidGlass/SlidingTabs';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
+import { MathText } from './MathText';
 
 interface PracticeBankViewProps {
   items: PracticeItem[];
@@ -560,7 +561,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                     {practicingItem.chapter}
                   </p>
                   <h2 className="text-base font-bold text-[#16243E] dark:text-[#E6EFFC] mt-1">
-                    {practicingItem.questionText}
+                    <MathText text={practicingItem.questionText} />
                   </h2>
                 </div>
                 <button
@@ -600,7 +601,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                     >
                       <span className="flex items-start gap-2">
                         <span className="font-mono font-bold">{key}.</span>
-                        <span>{text}</span>
+                        <span><MathText text={text} /></span>
                       </span>
                       {selectedChoice && isRight && (
                         <CheckCircle2 aria-label="Đáp án đúng" className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
@@ -640,7 +641,9 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                       </>
                     )}
                   </div>
-                  <p className="text-slate-800 dark:text-slate-200">{practicingItem.explanation}</p>
+                  <p className="text-slate-800 dark:text-slate-200">
+                    <MathText text={practicingItem.explanation} />
+                  </p>
                 </div>
               )}
             </GlassSurface>
@@ -694,7 +697,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                       )}
                     </div>
                     <p className="text-sm font-semibold text-[#16243E] dark:text-[#E6EFFC] line-clamp-2">
-                      {item.questionText}
+                      <MathText text={item.questionText} />
                     </p>
                     <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
                       Số lần làm: {item.attemptCount} · Đúng: {item.correctCount} · Sai:{' '}
@@ -769,7 +772,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                   {item.concept}
                 </p>
                 <p className="text-sm font-semibold text-[#16243E] dark:text-[#E6EFFC]">
-                  {item.questionText}
+                  <MathText text={item.questionText} />
                 </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {(['A', 'B', 'C', 'D'] as const).map((k) => {
@@ -793,7 +796,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                       >
                         <span className="flex items-start gap-2">
                           <span className="font-mono font-bold">{k}.</span>
-                          <span>{item[`option${k}`]}</span>
+                          <span><MathText text={item[`option${k}`]} /></span>
                         </span>
                         {isAnswered && k === item.correctAnswer && (
                           <CheckCircle2 aria-label="Đáp án đúng" className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
@@ -808,7 +811,7 @@ export const PracticeBankView: React.FC<PracticeBankViewProps> = ({
                 {isAnswered && (
                   <p className="glass-panel-subtle text-xs text-slate-700 dark:text-slate-300 rounded-xl p-3 leading-[1.6]">
                     <strong>{isRight ? 'Chính xác!' : `Đáp án đúng: ${item.correctAnswer}.`}</strong>{' '}
-                    {item.explanation}
+                    <MathText text={item.explanation} />
                   </p>
                 )}
               </GlassSurface>

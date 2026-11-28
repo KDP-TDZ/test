@@ -13,6 +13,12 @@ import {
 
 const MAX_STORED_RATINGS = 500;
 
+export interface ExperienceRatingFeatureConfig {
+  enabled: boolean;
+  updatedAt: string;
+  updatedBy: string;
+}
+
 function resolveStoreFilePath(): string {
   if (process.env.VERCEL === '1') {
     return path.join(os.tmpdir(), 'studycheck-experience-ratings.json');
@@ -20,12 +26,60 @@ function resolveStoreFilePath(): string {
   return path.resolve(process.cwd(), 'data', 'experience-ratings.json');
 }
 
+function resolveConfigFilePath(): string {
+  if (process.env.VERCEL === '1') {
+    return path.join(os.tmpdir(), 'studycheck-experience-rating-config.json');
+  }
+  return path.resolve(process.cwd(), 'data', 'experience-rating-config.json');
+}
+
 const storePath = resolveStoreFilePath();
+const configPath = resolveConfigFilePath();
 const ratingsMap = new Map<string, ExperienceRatingRecord>();
 const sseClients = new Set<Response>();
 let loadedFromDisk = false;
+let configLoadedFromDisk = false;
+let featureConfig: ExperienceRatingFeatureConfig = {
+  enabled: true,
+  updatedAt: new Date().toISOString(),
+  updatedBy: '',
+};
+
+function ensureConfigLoaded(): void {
+  if (configLoadedFromDisk) return;
+  configLoadedFromDisk = true;
+  try {
+    if (!fs.existsSync(configPath)) return;
+    const raw = fs.readFileSync(configPath, 'utf8');
+    const parsed = JSON.parse(raw) as Partial<ExperienceRatingFeatureConfig> | null;
+    if (parsed && typeof parsed.enabled === 'boolean') {
+      featureConfig = {
+        enabled: parsed.enabled,
+        updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+        updatedBy: typeof parsed.updatedBy === 'string' ? parsed.updatedBy : '',
+      };
+    }
+  } catch (err) {
+    console.warn('Experience rating config load skipped:', err);
+  }
+}
+
+function persistConfigToDisk(): void {
+  try {
+    const dir = path.dirname(configPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const tmpPath = `${configPath}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(featureConfig, null, 2), 'utf8');
+    fs.renameSync(tmpPath, configPath);
+  } catch (err) {
+    console.warn('Experience rating config disk write skipped:', err);
+  }
+}
 
 function ensureLoaded(): void {
+  ensureConfigLoaded();
   if (loadedFromDisk) return;
   loadedFromDisk = true;
   try {
@@ -65,6 +119,45 @@ function persistToDisk(): void {
   }
 }
 
+export function getExperienceRatingConfig(): ExperienceRatingFeatureConfig {
+  ensureConfigLoaded();
+  return { ...featureConfig };
+}
+
+export function isExperienceRatingEnabled(): boolean {
+  ensureConfigLoaded();
+  return featureConfig.enabled;
+}
+
+export function broadcastExperienceRatingConfig(): void {
+  if (sseClients.size === 0) return;
+  const payload = JSON.stringify(getExperienceRatingConfig());
+  const frame = `event: config\ndata: ${payload}\n\n`;
+  for (const client of Array.from(sseClients)) {
+    try {
+      client.write(frame);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+}
+
+export function setExperienceRatingEnabled(
+  enabled: boolean,
+  updatedBy = ''
+): ExperienceRatingFeatureConfig {
+  ensureConfigLoaded();
+  featureConfig = {
+    enabled: Boolean(enabled),
+    updatedAt: new Date().toISOString(),
+    updatedBy: String(updatedBy || '').slice(0, 128),
+  };
+  persistConfigToDisk();
+  broadcastExperienceRatingConfig();
+  broadcastExperienceRatingsSnapshot();
+  return { ...featureConfig };
+}
+
 export function listStoredExperienceRatings(): ExperienceRatingRecord[] {
   ensureLoaded();
   return Array.from(ratingsMap.values()).sort(
@@ -80,7 +173,10 @@ export function getStoredExperienceRating(ratingId: string): ExperienceRatingRec
 
 export function broadcastExperienceRatingsSnapshot(): void {
   if (sseClients.size === 0) return;
-  const payload = JSON.stringify({ ratings: listStoredExperienceRatings() });
+  const payload = JSON.stringify({
+    ratings: listStoredExperienceRatings(),
+    enabled: isExperienceRatingEnabled(),
+  });
   const frame = `event: ratings\ndata: ${payload}\n\n`;
   for (const client of Array.from(sseClients)) {
     try {
@@ -100,7 +196,12 @@ export function attachExperienceRatingsSseClient(res: Response): () => void {
   res.flushHeaders?.();
 
   sseClients.add(res);
-  const initialPayload = JSON.stringify({ ratings: listStoredExperienceRatings() });
+  const cfg = getExperienceRatingConfig();
+  res.write(`event: config\ndata: ${JSON.stringify(cfg)}\n\n`);
+  const initialPayload = JSON.stringify({
+    ratings: listStoredExperienceRatings(),
+    enabled: cfg.enabled,
+  });
   res.write(`event: ratings\ndata: ${initialPayload}\n\n`);
 
   const heartbeat = setInterval(() => {
@@ -124,6 +225,14 @@ export function saveStoredExperienceRating(params: {
   authenticatedUid?: string;
 }): { ok: true; record: ExperienceRatingRecord } | { ok: false; status: number; error: string } {
   ensureLoaded();
+  if (!isExperienceRatingEnabled()) {
+    return {
+      ok: false,
+      status: 403,
+      error: 'Tính năng đánh giá trải nghiệm hiện đang được quản trị viên tạm tắt.',
+    };
+  }
+
   const validation = validateExperienceRatingInput(params.input);
   if (!validation.ok) {
     return { ok: false, status: 400, error: validation.error };

@@ -323,12 +323,13 @@ service cloud.firestore {
 
     function isValidSystemConfig(data) {
       return data.keys().hasAll(['enabled', 'maintenanceMessage', 'updatedAt', 'updatedBy'])
-        && data.keys().hasOnly(['enabled', 'disabledReason', 'maintenanceMessage', 'updatedAt', 'updatedBy', 'rateLimitConfig', 'activeModel', 'configVersion', 'allowedOrigins', 'taskModels'])
+        && data.keys().hasOnly(['enabled', 'disabledReason', 'maintenanceMessage', 'updatedAt', 'updatedBy', 'rateLimitConfig', 'activeModel', 'configVersion', 'allowedOrigins', 'taskModels', 'experienceRatingEnabled'])
         && data.enabled is bool
         && data.maintenanceMessage is string && data.maintenanceMessage.size() <= 400
         && (!('disabledReason' in data) || (data.disabledReason is string && data.disabledReason.size() <= 300))
         && (!('configVersion' in data) || (data.configVersion is number && data.configVersion >= 1))
         && (!('allowedOrigins' in data) || (data.allowedOrigins is list && data.allowedOrigins.size() <= 50))
+        && (!('experienceRatingEnabled' in data) || data.experienceRatingEnabled is bool)
         && data.updatedAt is string && data.updatedAt.size() <= 64
         && data.updatedBy is string && data.updatedBy.size() <= 128;
     }

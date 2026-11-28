@@ -17,6 +17,7 @@ import {
 } from '../core/experienceRatings';
 
 interface ExperienceRatingPromptProps {
+  enabled?: boolean;
   userUid?: string | null;
   userEmailVerified?: boolean;
   defaultDisplayName?: string | null;
@@ -44,6 +45,7 @@ function resolveDefaultRole(
 }
 
 export const ExperienceRatingPrompt: React.FC<ExperienceRatingPromptProps> = ({
+  enabled = true,
   userUid,
   userEmailVerified,
   defaultDisplayName,
@@ -172,6 +174,11 @@ export const ExperienceRatingPrompt: React.FC<ExperienceRatingPromptProps> = ({
 
   // Decide whether to show arrival invitation banner
   useEffect(() => {
+    if (!enabled) {
+      setBannerVisible(false);
+      setModalOpen(false);
+      return;
+    }
     if (!remoteChecked) return;
     if (modalOpen) {
       setBannerVisible(false);
@@ -195,7 +202,7 @@ export const ExperienceRatingPrompt: React.FC<ExperienceRatingPromptProps> = ({
     }, 900);
 
     return () => window.clearTimeout(timer);
-  }, [remoteChecked, storageState, remoteRecord, modalOpen]);
+  }, [enabled, remoteChecked, storageState, remoteRecord, modalOpen]);
 
   const openModalWithPreset = useCallback(
     (initialStars?: 1 | 2 | 3 | 4 | 5) => {
@@ -245,11 +252,12 @@ export const ExperienceRatingPrompt: React.FC<ExperienceRatingPromptProps> = ({
 
   // Handle external open requests (e.g., from LandingExperienceStats CTA or quick star click)
   useEffect(() => {
+    if (!enabled) return;
     if (!externalOpenRequest) return;
     if (externalOpenRequest.id === lastHandledRequestId.current) return;
     lastHandledRequestId.current = externalOpenRequest.id;
     openModalWithPreset(externalOpenRequest.initialStars);
-  }, [externalOpenRequest, openModalWithPreset]);
+  }, [enabled, externalOpenRequest, openModalWithPreset]);
 
   // Escape key closes modal
   useEffect(() => {
@@ -362,6 +370,10 @@ export const ExperienceRatingPrompt: React.FC<ExperienceRatingPromptProps> = ({
 
   const activeStarValue = (hoverStars || stars) as 0 | 1 | 2 | 3 | 4 | 5;
   const isGuestAlreadyRated = hasRated && !(userUid && userEmailVerified);
+
+  if (!enabled) {
+    return null;
+  }
 
   return (
     <>

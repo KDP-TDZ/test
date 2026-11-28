@@ -31,6 +31,7 @@ import {
   ShieldCheck,
   Sliders,
   Sparkles,
+  Star,
   Trash2,
   UserCheck,
   Wand2,
@@ -276,6 +277,9 @@ export const AdminControlCenter: React.FC = () => {
   const [unifiedEnableFallback, setUnifiedEnableFallback] = useState(true);
   const [adaptiveThresholdInput, setAdaptiveThresholdInput] = useState<number>(1500);
   const [savingConfig, setSavingConfig] = useState(false);
+  const [experienceRatingEnabled, setExperienceRatingEnabled] = useState<boolean>(true);
+  const [experienceRatingCount, setExperienceRatingCount] = useState<number>(0);
+  const [savingRatingToggle, setSavingRatingToggle] = useState<boolean>(false);
 
   // Model Router state
   const [taskModelsDraft, setTaskModelsDraft] = useState<Record<AiTaskType, TaskModelConfig> | null>(null);
@@ -454,6 +458,14 @@ export const AdminControlCenter: React.FC = () => {
 
       const data = await parseApiResponse<any>(overviewRes, 'Không thể tải dữ liệu Super Admin từ máy chủ.');
       setConfig(data.config);
+      if (typeof data.experienceRatingConfig?.enabled === 'boolean') {
+        setExperienceRatingEnabled(data.experienceRatingConfig.enabled);
+      } else if (typeof data.config?.experienceRatingEnabled === 'boolean') {
+        setExperienceRatingEnabled(data.config.experienceRatingEnabled);
+      }
+      if (typeof data.experienceRatingCount === 'number') {
+        setExperienceRatingCount(data.experienceRatingCount);
+      }
       setMaintenanceMessage(data.config?.maintenanceMessage || '');
       setDisabledReason(data.config?.disabledReason || '');
       const loadedPrimary = data.config?.activeModel || 'mistral:mistral-small-latest';
@@ -555,6 +567,47 @@ export const AdminControlCenter: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Lỗi cập nhật cấu hình.');
     } finally {
       setSavingConfig(false);
+    }
+  };
+
+  const handleToggleExperienceRating = async () => {
+    const nextEnabled = !experienceRatingEnabled;
+    setSavingRatingToggle(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await authorizedFetch('/api/admin/experience-ratings/config', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextEnabled }),
+      });
+      const data = await parseApiResponse<{
+        config?: { enabled: boolean; updatedAt?: string };
+        totalRatings?: number;
+      }>(res, 'Không thể cập nhật trạng thái tính năng đánh giá trải nghiệm.');
+      const resolvedEnabled =
+        typeof data.config?.enabled === 'boolean' ? data.config.enabled : nextEnabled;
+      setExperienceRatingEnabled(resolvedEnabled);
+      if (typeof data.totalRatings === 'number') {
+        setExperienceRatingCount(data.totalRatings);
+      }
+      setConfig((prev) =>
+        prev ? { ...prev, experienceRatingEnabled: resolvedEnabled } : prev
+      );
+      await refreshSystemStatus();
+      setNotice(
+        resolvedEnabled
+          ? 'Đã bật tính năng đánh giá trải nghiệm trang web. Mục thống kê và thông báo mời đánh giá sẽ hiển thị lại ngay lập tức.'
+          : 'Đã tắt tính năng đánh giá trải nghiệm trang web. Mục thống kê trang chủ và thông báo mời đánh giá đã được ẩn.'
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Lỗi cập nhật trạng thái tính năng đánh giá trải nghiệm.'
+      );
+    } finally {
+      setSavingRatingToggle(false);
     }
   };
 
@@ -2234,6 +2287,45 @@ export const AdminControlCenter: React.FC = () => {
                   </div>
                 </GlassSurface>
               )}
+
+              <GlassSurface className="rounded-3xl p-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <Star className="w-5 h-5 text-amber-500 shrink-0" />
+                      <h2 className="font-display text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
+                        Tính năng đánh giá trải nghiệm trang web
+                      </h2>
+                      <span
+                        data-testid="admin-experience-rating-status"
+                        className={`text-xs font-mono font-bold px-2.5 py-0.5 rounded-md border ${
+                          experienceRatingEnabled
+                            ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/70'
+                            : 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800/70'
+                        }`}
+                      >
+                        {experienceRatingEnabled ? 'ĐANG BẬT' : 'ĐÃ TẮT'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed max-w-2xl">
+                      Bật hoặc tắt trực tiếp mục thống kê trải nghiệm thời gian thực trên trang chủ, thông báo mời đánh giá khi vào web và quyền gửi đánh giá mới. Dữ liệu đánh giá hiện có ({experienceRatingCount.toLocaleString('vi-VN')} lượt) vẫn được giữ nguyên khi tắt.
+                    </p>
+                  </div>
+                  <WaterRippleButton
+                    variant={experienceRatingEnabled ? 'danger' : 'primary'}
+                    disabled={savingRatingToggle}
+                    data-testid="admin-experience-rating-toggle"
+                    onClick={handleToggleExperienceRating}
+                  >
+                    <Power className="w-4 h-4" />
+                    {savingRatingToggle
+                      ? 'Đang cập nhật...'
+                      : experienceRatingEnabled
+                      ? 'Tắt tính năng đánh giá'
+                      : 'Bật tính năng đánh giá'}
+                  </WaterRippleButton>
+                </div>
+              </GlassSurface>
 
               {usageStats && (
                 <GlassSurface className="rounded-3xl p-6 space-y-4">

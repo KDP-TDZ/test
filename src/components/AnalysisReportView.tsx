@@ -35,6 +35,7 @@ import {
 import { CalmDots } from './CalmLoadingIndicator';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
+import { MathText } from './MathText';
 import { SplitDocumentViewer } from './SplitDocumentViewer';
 import { SummaryExportModal } from './SummaryExportModal';
 import { VerificationFiveStepBar } from './VerificationFiveStepBar';
@@ -593,16 +594,16 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 {confirmedSummary.claims.map((c) => (
                   <li key={c.claimId} className="border-b border-slate-200 pb-2">
                     <p className="font-semibold">
-                      #{c.index} [{c.statusLabel}] {c.concept} (Tr. {c.sourcePage}): “{c.sourceText}”
+                      #{c.index} [{c.statusLabel}] <MathText text={c.concept} /> (Tr. {c.sourcePage}): “<MathText text={c.sourceText} />”
                     </p>
-                    <p>Giải thích: {c.explanation}</p>
+                    <p>Giải thích: <MathText text={c.explanation} /></p>
                     {(c.suggestedFix || c.correctKnowledge) && (
-                      <p>Kiến thức chuẩn / Gợi ý sửa: {c.suggestedFix || c.correctKnowledge}</p>
+                      <p>Kiến thức chuẩn / Gợi ý sửa: <MathText text={c.suggestedFix || c.correctKnowledge} /></p>
                     )}
                     {confirmedSummary.includeStudentCorrections && c.status !== 'CORRECT' && (
                       <p>
                         Tự sửa của học sinh ({c.studentResolved ? 'Đã sửa' : 'Chưa đánh dấu sửa'}):{' '}
-                        {c.studentFixText || '(Chưa nhập)'}
+                        {c.studentFixText ? <MathText text={c.studentFixText} /> : '(Chưa nhập)'}
                       </p>
                     )}
                   </li>
@@ -619,10 +620,10 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
               <ul className="space-y-1 text-xs">
                 {confirmedSummary.coverageItems.map((cov) => (
                   <li key={cov.itemId}>
-                    • [{cov.statusLabel}] <strong>{cov.concept}</strong> ({cov.chapter}):{' '}
+                    • [{cov.statusLabel}] <strong><MathText text={cov.concept} /></strong> ({cov.chapter}):{' '}
                     {cov.status === 'COVERED'
                       ? 'Đã bao phủ đầy đủ'
-                      : cov.suggestedAddition || cov.referenceExcerpt}
+                      : <MathText text={cov.suggestedAddition || cov.referenceExcerpt} />}
                   </li>
                 ))}
               </ul>
@@ -669,9 +670,9 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                 {incorrectClaims.map((c, idx) => (
                   <li key={c.claimId} className="border-b border-slate-200 pb-2">
                     <p className="font-semibold">
-                      {idx + 1}. [{c.evaluationStatus}] {c.concept} (Tr. {c.sourcePage}): “{c.sourceText}”
+                      {idx + 1}. [{c.evaluationStatus}] <MathText text={c.concept} /> (Tr. {c.sourcePage}): “<MathText text={c.sourceText} />”
                     </p>
-                    <p>Cách sửa chuẩn: {c.suggestedFix || c.correctKnowledge}</p>
+                    <p>Cách sửa chuẩn: <MathText text={c.suggestedFix || c.correctKnowledge} /></p>
                   </li>
                 ))}
               </ul>
@@ -688,7 +689,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                   .filter((i) => i.status !== 'COVERED')
                   .map((cov) => (
                     <li key={cov.itemId}>
-                      • <strong>{cov.concept}</strong>: {cov.suggestedAddition}
+                      • <strong><MathText text={cov.concept} /></strong>: <MathText text={cov.suggestedAddition} />
                     </li>
                   ))}
               </ul>
@@ -936,7 +937,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                               (a) Trích đoạn trong bài làm {item.sourcePage ? `· Trang ${item.sourcePage}` : ''}
                             </p>
                             <p className="text-slate-800 dark:text-slate-200 italic leading-relaxed">
-                              “{item.sourceText}”
+                              “<MathText text={item.sourceText} />”
                             </p>
                           </div>
 
@@ -945,11 +946,11 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                               (b) Nguyên nhân & giải thích học thuật
                             </p>
                             <p className="text-slate-800 dark:text-slate-200 leading-relaxed">
-                              {item.explanation}
+                              <MathText text={item.explanation} />
                             </p>
                             {item.reason && item.reason !== item.explanation && (
                               <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
-                                Lưu ý thêm: {item.reason}
+                                Lưu ý thêm: <MathText text={item.reason} />
                               </p>
                             )}
                           </div>
@@ -962,12 +963,12 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                               (c) Kiến thức chuẩn & Gợi ý sửa
                             </p>
                             <p className="text-sky-950 dark:text-sky-100 font-medium leading-relaxed">
-                              {item.suggestedFix}
+                              <MathText text={item.suggestedFix} />
                             </p>
                             {item.correctKnowledge &&
                               item.correctKnowledge !== item.suggestedFix && (
                                 <p className="text-slate-700 dark:text-slate-300 leading-relaxed">
-                                  Chuẩn SGK: {item.correctKnowledge}
+                                  Chuẩn SGK: <MathText text={item.correctKnowledge} />
                                 </p>
                               )}
                           </div>
@@ -991,7 +992,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                                       {ev.pageNumber ? ` · Tr. ${ev.pageNumber}` : ''}
                                     </p>
                                     <p className="text-slate-600 dark:text-slate-300 italic leading-relaxed">
-                                      “{ev.excerpt}”
+                                      “<MathText text={ev.excerpt} />”
                                     </p>
                                   </div>
                                 ))}

@@ -311,6 +311,7 @@
         "disabledReason": { "type": "string", "maxLength": 300 },
         "maintenanceMessage": { "type": "string", "maxLength": 400 },
         "configVersion": { "type": "number" },
+        "experienceRatingEnabled": { "type": "boolean" },
         "updatedAt": { "type": "string", "format": "date-time" },
         "updatedBy": { "type": "string", "maxLength": 128 }
       },

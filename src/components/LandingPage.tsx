@@ -16,6 +16,7 @@ import type { ExperienceRatingRecord } from '../core/experienceRatings';
 
 interface LandingPageProps {
   onOpenAuth: (mode: 'login' | 'register') => void;
+  experienceRatingEnabled?: boolean;
   hasUserRated?: boolean;
   onOpenRatingModal?: (initialStars?: 1 | 2 | 3 | 4 | 5) => void;
   latestSubmittedRating?: ExperienceRatingRecord | null;
@@ -157,6 +158,7 @@ const STATUS_META = {
 
 export const LandingPage: React.FC<LandingPageProps> = ({
   onOpenAuth,
+  experienceRatingEnabled = true,
   hasUserRated = false,
   onOpenRatingModal,
   latestSubmittedRating = null,
@@ -420,11 +422,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         {/* =====================================================================
             C2. REAL-TIME USER EXPERIENCE STATISTICS (Live Firestore / SSE)
            ===================================================================== */}
-        <LandingExperienceStats
-          hasUserRated={hasUserRated}
-          onOpenRatingModal={(initialStars) => onOpenRatingModal?.(initialStars)}
-          latestSubmittedRating={latestSubmittedRating}
-        />
+        {experienceRatingEnabled && (
+          <LandingExperienceStats
+            hasUserRated={hasUserRated}
+            onOpenRatingModal={(initialStars) => onOpenRatingModal?.(initialStars)}
+            latestSubmittedRating={latestSubmittedRating}
+          />
+        )}
 
         {/* =====================================================================
             D. FAQ ACCORDION & CLEAN CONVERSION BAND
@@ -533,17 +537,21 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               >
                 Đề thi 2025
               </a>
-              <span aria-hidden="true">·</span>
-              <a
-                href="#experience-stats"
-                onClick={(e) => {
-                  e.preventDefault();
-                  scrollToSection('experience-stats');
-                }}
-                className="hover:text-amber-700 dark:hover:text-white transition-colors"
-              >
-                Trải nghiệm
-              </a>
+              {experienceRatingEnabled && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <a
+                    href="#experience-stats"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      scrollToSection('experience-stats');
+                    }}
+                    className="hover:text-amber-700 dark:hover:text-white transition-colors"
+                  >
+                    Trải nghiệm
+                  </a>
+                </>
+              )}
               <span aria-hidden="true">·</span>
               <a
                 href="#faq"

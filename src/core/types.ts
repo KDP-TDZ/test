@@ -838,6 +838,7 @@ export interface SystemAiConfig {
   allowedOrigins: string[];
   taskModels: Record<AiTaskType, TaskModelConfig>;
   adaptiveLongTextThresholdChars?: number;
+  experienceRatingEnabled?: boolean;
 }
 
 export type KeyTestStatus =

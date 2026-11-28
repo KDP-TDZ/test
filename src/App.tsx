@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { BRAND_CONFIG } from './config/brand';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { PrivacyBlurProvider } from './context/PrivacyBlurContext';
@@ -8,6 +8,7 @@ import { CalmDots } from './components/CalmLoadingIndicator';
 import { LandingPage } from './components/LandingPage';
 import { ExperienceRatingPrompt } from './components/ExperienceRatingPrompt';
 import type { ExperienceRatingRecord } from './core/experienceRatings';
+import { subscribeExperienceRatingConfig } from './services/experienceRatingService';
 
 function lazyWithRetry<T extends React.ComponentType<any>>(
   factory: () => Promise<{ default: T }>
@@ -47,6 +48,7 @@ const StudyCheckShell: React.FC = () => {
   const { user, profile, loading } = useAuth();
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
+  const [experienceRatingEnabled, setExperienceRatingEnabled] = useState<boolean>(true);
   const [hasUserRated, setHasUserRated] = useState(false);
   const [latestSubmittedRating, setLatestSubmittedRating] =
     useState<ExperienceRatingRecord | null>(null);
@@ -55,9 +57,20 @@ const StudyCheckShell: React.FC = () => {
     initialStars?: 1 | 2 | 3 | 4 | 5;
   } | null>(null);
 
-  const handleOpenRatingModal = useCallback((initialStars?: 1 | 2 | 3 | 4 | 5) => {
-    setRatingOpenRequest({ id: Date.now() + Math.random(), initialStars });
+  useEffect(() => {
+    const unsubscribe = subscribeExperienceRatingConfig((enabled) => {
+      setExperienceRatingEnabled(enabled);
+    });
+    return () => unsubscribe();
   }, []);
+
+  const handleOpenRatingModal = useCallback(
+    (initialStars?: 1 | 2 | 3 | 4 | 5) => {
+      if (!experienceRatingEnabled) return;
+      setRatingOpenRequest({ id: Date.now() + Math.random(), initialStars });
+    },
+    [experienceRatingEnabled]
+  );
 
   const handleRatingStatusChange = useCallback(
     (status: { hasRated: boolean; lastRecord?: ExperienceRatingRecord | null }) => {
@@ -82,6 +95,7 @@ const StudyCheckShell: React.FC = () => {
             setAuthModalMode(mode);
             setAuthModalOpen(true);
           }}
+          experienceRatingEnabled={experienceRatingEnabled}
           hasUserRated={hasUserRated}
           onOpenRatingModal={handleOpenRatingModal}
           latestSubmittedRating={latestSubmittedRating}
@@ -96,6 +110,7 @@ const StudyCheckShell: React.FC = () => {
           </React.Suspense>
         )}
         <ExperienceRatingPrompt
+          enabled={experienceRatingEnabled}
           externalOpenRequest={ratingOpenRequest}
           onStatusChange={handleRatingStatusChange}
         />
@@ -110,6 +125,7 @@ const StudyCheckShell: React.FC = () => {
         <AuthenticatedShell />
       </React.Suspense>
       <ExperienceRatingPrompt
+        enabled={experienceRatingEnabled}
         userUid={user.uid}
         userEmailVerified={user.emailVerified}
         defaultDisplayName={profile?.displayName || user.displayName}

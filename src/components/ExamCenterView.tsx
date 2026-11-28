@@ -40,6 +40,7 @@ import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { LiquidCard } from './LiquidGlass/LiquidCard';
 import { SlidingTabs } from './LiquidGlass/SlidingTabs';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
+import { MathText } from './MathText';
 
 interface ExamCenterViewProps {
   onOpenLeaderboard?: () => void;
@@ -634,7 +635,7 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                 </div>
 
                 <p className="text-sm sm:text-base font-semibold leading-relaxed text-pretty">
-                  {q.questionText}
+                  <MathText text={q.questionText} />
                 </p>
 
                 {q.questionType === 'abcd' && (
@@ -698,7 +699,9 @@ export const ExamCenterView: React.FC<ExamCenterViewProps> = ({ onOpenLeaderboar
                     <p className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">
                       Đáp án chuẩn: {bk?.correctDisplay} · Bài làm của bạn: {bk?.studentDisplay}
                     </p>
-                    <p className="text-slate-700 dark:text-slate-300">{q.explanation}</p>
+                    <p className="text-slate-700 dark:text-slate-300">
+                      <MathText text={q.explanation} />
+                    </p>
                   </div>
                 )}
               </div>

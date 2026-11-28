@@ -35,4 +35,6 @@ test('firestore.rules enforces Eight Pillars and Dirty Dozen defenses', () => {
   assert.match(rules, /resource\.data\.visibility\s*==\s*'public'/);
   assert.match(rules, /data\.stars\s+is\s+int\s*&&\s*data\.stars\s*>=\s*1\s*&&\s*data\.stars\s*<=\s*5/);
   assert.match(rules, /data\.comment\s+is\s+string\s*&&\s*data\.comment\.trim\(\)\.size\(\)\s*>=\s*5\s*&&\s*data\.comment\.size\(\)\s*<=\s*400/);
+  assert.match(rules, /'experienceRatingEnabled'/);
+  assert.match(rules, /data\.experienceRatingEnabled\s+is\s+bool/);
 });

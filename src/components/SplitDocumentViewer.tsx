@@ -40,6 +40,7 @@ import {
   OCR_PAGE_LOW_CONFIDENCE_THRESHOLD,
 } from '../core/verificationPostProcess';
 import { sanitizeExternalHttpUrl } from '../core/urlSecurity';
+import { MathText } from './MathText';
 import { PdfPageCanvas } from './PdfPageCanvas';
 
 interface SplitDocumentViewerProps {
@@ -441,7 +442,11 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
   const renderInlineSegments = (segments: InlineTextSegment[], keyPrefix: string) => {
     return segments.map((seg, idx) => {
       if (!seg.claimId || !seg.annotationColor || !showAnnotations) {
-        return <React.Fragment key={`${keyPrefix}_t_${idx}`}>{seg.text}</React.Fragment>;
+        return (
+          <React.Fragment key={`${keyPrefix}_t_${idx}`}>
+            <MathText text={seg.text} />
+          </React.Fragment>
+        );
       }
       const style = INLINE_MARK_STYLES[seg.annotationColor];
       const activeIds = seg.claimIds && seg.claimIds.length > 0 ? seg.claimIds : [seg.claimId];
@@ -471,7 +476,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
               style.mark
             } ${isSelected ? style.activeRing : ''}`}
           >
-            {seg.text}
+            <MathText text={seg.text} />
           </button>
           {badges.map((badge) => {
             if (typeof badge.orderNumber !== 'number') return null;
@@ -846,7 +851,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                         <p className="text-[15px] font-medium text-slate-800 dark:text-slate-100">
                           {labelMatch
                             ? renderInlineSegments(labelMatch.segments, `${block.blockId}_lbl`)
-                            : leadInLabel}
+                            : <MathText text={leadInLabel} />}
                         </p>
                       )}
                       <div className="flex justify-center py-2.5 px-4 rounded-xl bg-slate-50/90 dark:bg-slate-800/50 border border-slate-200/70 dark:border-slate-700/70">
@@ -1046,11 +1051,11 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                         {/* Exact flawed phrase / formula OR missing concept description */}
                         <p className="text-xs font-medium text-slate-700 dark:text-slate-200 leading-relaxed line-clamp-2">
                           {isMissingClaim ? (
-                            displaySnippet
+                            <MathText text={displaySnippet} />
                           ) : (
                             <>
                               <span className="text-slate-400 dark:text-slate-500">“</span>
-                              {displaySnippet}
+                              <MathText text={displaySnippet} />
                               <span className="text-slate-400 dark:text-slate-500">”</span>
                             </>
                           )}
@@ -1068,7 +1073,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                             <span className="font-semibold text-emerald-700 dark:text-emerald-400">
                               Sửa chuẩn:{' '}
                             </span>
-                            {conciseFix}
+                            <MathText text={conciseFix} />
                           </p>
                         )}
                       </div>
@@ -1076,7 +1081,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                       {/* Progressive Disclosure Trigger: "Xem thêm" to expand concept clarification */}
                       <div className="mt-2.5 pt-2 border-t border-slate-200/70 dark:border-slate-800/80 flex items-center justify-between gap-2">
                         <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                          {claim.concept}
+                          <MathText text={claim.concept} />
                         </span>
                         <button
                           type="button"
@@ -1110,13 +1115,13 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                               Làm rõ khái niệm & lý do
                             </p>
                             <p className="text-slate-700 dark:text-slate-200 leading-relaxed">
-                              {claim.explanation}
+                              <MathText text={claim.explanation} />
                             </p>
                           </div>
 
                           {claim.verificationNote && (
                             <p className="text-[11px] text-slate-500 dark:text-slate-400 italic">
-                              Ghi chú kiểm định: {claim.verificationNote}
+                              Ghi chú kiểm định: <MathText text={claim.verificationNote} />
                             </p>
                           )}
 
@@ -1126,7 +1131,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                                 Kiến thức chuẩn xác cần nắm
                               </p>
                               <p className="text-emerald-950 dark:text-emerald-100 leading-relaxed">
-                                {claim.correctKnowledge}
+                                <MathText text={claim.correctKnowledge} />
                               </p>
                             </div>
                           )}
@@ -1137,7 +1142,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                                 Gợi ý viết lại đầy đủ
                               </p>
                               <p className="text-sky-950 dark:text-sky-100 leading-relaxed">
-                                {claim.suggestedFix}
+                                <MathText text={claim.suggestedFix} />
                               </p>
                             </div>
                           )}
@@ -1148,7 +1153,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                                 Nguyên văn câu trong bài làm
                               </p>
                               <p className="text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
-                                {claim.sourceText}
+                                <MathText text={claim.sourceText} />
                               </p>
                             </div>
                           )}
@@ -1186,7 +1191,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                                     </div>
                                     {ev.excerpt && (
                                       <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
-                                        {ev.excerpt}
+                                        <MathText text={ev.excerpt} />
                                       </p>
                                     )}
                                     {safeUrl && (
@@ -1236,7 +1241,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                               </span>
                             </p>
                             <p className="font-medium text-slate-900 dark:text-slate-100 mt-0.5">
-                              {cov.concept}
+                              <MathText text={cov.concept} />
                             </p>
                           </div>
                           <button
@@ -1258,7 +1263,7 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                           <div className="mt-2.5 pt-2.5 border-t border-amber-200/70 dark:border-amber-800/50 space-y-2">
                             {cov.suggestedAddition && (
                               <p className="text-slate-700 dark:text-slate-200 leading-relaxed">
-                                {cov.suggestedAddition}
+                                <MathText text={cov.suggestedAddition} />
                               </p>
                             )}
                             {cov.referenceExcerpt && (
@@ -1267,7 +1272,9 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
                                   Trích đoạn SGK
                                   {cov.referencePage ? ` · Tr. ${cov.referencePage}` : ''}
                                 </p>
-                                <p className="leading-relaxed">{cov.referenceExcerpt}</p>
+                                <p className="leading-relaxed">
+                                  <MathText text={cov.referenceExcerpt} />
+                                </p>
                               </div>
                             )}
                           </div>

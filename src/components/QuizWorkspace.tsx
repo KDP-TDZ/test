@@ -43,6 +43,7 @@ import {
 import { AbcdOptionGrid } from './AnswerOptionCards';
 import { GlassSurface } from './LiquidGlass/GlassSurface';
 import { WaterRippleButton } from './LiquidGlass/WaterRippleButton';
+import { MathText } from './MathText';
 
 interface QuizWorkspaceProps {
   sourceAnalysis?: AnalysisRecord | null;
@@ -626,7 +627,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                         ) : null}
                       </p>
                       <h3 className="text-sm sm:text-base font-semibold text-[#16243E] dark:text-[#E6EFFC] leading-[1.6] text-pretty">
-                        {q.questionText}
+                        <MathText text={q.questionText} />
                       </h3>
                     </div>
 
@@ -725,7 +726,9 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                           </>
                         )}
                       </div>
-                      <p className="text-slate-800 dark:text-slate-200">{q.explanation}</p>
+                      <p className="text-slate-800 dark:text-slate-200">
+                        <MathText text={q.explanation} />
+                      </p>
 
                       {q.distractorExplanations && (
                         <div className="pt-2 border-t border-slate-200/70 dark:border-slate-700/70 grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-[11px] text-slate-700 dark:text-slate-300">
@@ -733,7 +736,7 @@ export const QuizWorkspace: React.FC<QuizWorkspaceProps> = ({
                             q.distractorExplanations?.[k] ? (
                               <p key={k}>
                                 <strong className="font-mono">{k}:</strong>{' '}
-                                {q.distractorExplanations[k]}
+                                <MathText text={q.distractorExplanations[k]} />
                               </p>
                             ) : null
                           )}

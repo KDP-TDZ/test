@@ -23,6 +23,7 @@ export type ExperienceDataSource = 'firestore' | 'live_stream';
 export interface ExperienceSubscriptionCallbacks {
   onData: (ratings: ExperienceRatingRecord[], source: ExperienceDataSource) => void;
   onError: (message: string) => void;
+  onConfigChange?: (enabled: boolean) => void;
 }
 
 const EXPERIENCE_RATINGS_COLLECTION = 'experienceRatings';
@@ -90,8 +91,14 @@ function subscribeServerExperienceStream(callbacks: ExperienceSubscriptionCallba
         cache: 'no-store',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { ratings?: ExperienceRatingRecord[] };
+      const data = (await res.json()) as {
+        ratings?: ExperienceRatingRecord[];
+        enabled?: boolean;
+      };
       if (!closed) {
+        if (typeof data.enabled === 'boolean') {
+          callbacks.onConfigChange?.(data.enabled);
+        }
         callbacks.onData(Array.isArray(data.ratings) ? data.ratings : [], 'live_stream');
       }
     } catch {
@@ -107,12 +114,27 @@ function subscribeServerExperienceStream(callbacks: ExperienceSubscriptionCallba
     try {
       const streamUrl = resolveApiUrl('/api/experience-ratings/stream');
       eventSource = new EventSource(typeof streamUrl === 'string' ? streamUrl : String(streamUrl));
+      eventSource.addEventListener('config', (event: MessageEvent) => {
+        if (closed) return;
+        try {
+          const parsed = JSON.parse(String(event.data || '{}')) as { enabled?: boolean };
+          if (typeof parsed.enabled === 'boolean') {
+            callbacks.onConfigChange?.(parsed.enabled);
+          }
+        } catch {
+          // Ignore malformed SSE config frame
+        }
+      });
       eventSource.addEventListener('ratings', (event: MessageEvent) => {
         if (closed) return;
         try {
           const parsed = JSON.parse(String(event.data || '{}')) as {
             ratings?: ExperienceRatingRecord[];
+            enabled?: boolean;
           };
+          if (typeof parsed.enabled === 'boolean') {
+            callbacks.onConfigChange?.(parsed.enabled);
+          }
           if (Array.isArray(parsed.ratings)) {
             callbacks.onData(parsed.ratings, 'live_stream');
           }
@@ -192,6 +214,72 @@ export function subscribeExperienceRatings(
   };
 }
 
+/**
+ * Subscribes in real time to the Admin ON/OFF toggle for the Experience Rating feature.
+ * Works for both unauthenticated landing visitors and signed-in users via SSE + initial fetch.
+ */
+export function subscribeExperienceRatingConfig(
+  onChange: (enabled: boolean) => void
+): () => void {
+  let closed = false;
+  let eventSource: EventSource | null = null;
+  let pollTimer: number | null = null;
+
+  const fetchConfig = async () => {
+    try {
+      const res = await fetch(resolveApiUrl('/api/experience-ratings/config'), {
+        cache: 'no-store',
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { enabled?: boolean };
+      if (!closed && typeof data.enabled === 'boolean') {
+        onChange(data.enabled);
+      }
+    } catch {
+      // Keep last known state on transient network errors
+    }
+  };
+
+  void fetchConfig();
+
+  if (typeof window !== 'undefined' && typeof window.EventSource === 'function') {
+    try {
+      const streamUrl = resolveApiUrl('/api/experience-ratings/stream');
+      eventSource = new EventSource(typeof streamUrl === 'string' ? streamUrl : String(streamUrl));
+      eventSource.addEventListener('config', (event: MessageEvent) => {
+        if (closed) return;
+        try {
+          const parsed = JSON.parse(String(event.data || '{}')) as { enabled?: boolean };
+          if (typeof parsed.enabled === 'boolean') {
+            onChange(parsed.enabled);
+          }
+        } catch {
+          // Ignore malformed frame
+        }
+      });
+      eventSource.onerror = () => {
+        if (!closed && pollTimer === null) {
+          pollTimer = window.setInterval(() => {
+            void fetchConfig();
+          }, 20_000);
+        }
+      };
+    } catch {
+      pollTimer = window.setInterval(() => {
+        void fetchConfig();
+      }, 20_000);
+    }
+  }
+
+  return () => {
+    closed = true;
+    eventSource?.close();
+    if (pollTimer !== null) {
+      window.clearInterval(pollTimer);
+    }
+  };
+}
+
 export async function getUserExperienceRating(
   ratingId: string
 ): Promise<ExperienceRatingRecord | null> {
@@ -227,6 +315,23 @@ export async function submitExperienceRating(params: {
   const validation = validateExperienceRatingInput(params.input);
   if (!validation.ok) {
     throw new Error(validation.error);
+  }
+
+  // Respect server-authoritative Admin ON/OFF toggle before writing to Firestore or API
+  try {
+    const cfgRes = await fetch(resolveApiUrl('/api/experience-ratings/config'), {
+      cache: 'no-store',
+    });
+    if (cfgRes.ok) {
+      const cfg = (await cfgRes.json()) as { enabled?: boolean };
+      if (cfg.enabled === false) {
+        throw new Error('Tính năng đánh giá trải nghiệm hiện đang được quản trị viên tạm tắt.');
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('quản trị viên tạm tắt')) {
+      throw err;
+    }
   }
 
   const currentUser = auth.currentUser;

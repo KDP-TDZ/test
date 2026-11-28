@@ -19,6 +19,10 @@ import {
   ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD,
   clampAdaptiveThresholdChars,
 } from '../core/adaptiveApiPlan.js';
+import {
+  getExperienceRatingConfig,
+  setExperienceRatingEnabled,
+} from './experienceRatingStore.js';
 
 export const DEFAULT_RATE_LIMITS: RateLimitConfig = {
   requestsPerMinute: 15,
@@ -54,6 +58,7 @@ let authoritativeAiConfig: SystemAiConfig = {
   allowedOrigins: [],
   taskModels: cloneDefaultTaskModels(),
   adaptiveLongTextThresholdChars: ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD,
+  experienceRatingEnabled: getExperienceRatingConfig().enabled,
 };
 
 /**
@@ -80,6 +85,10 @@ function serializeSystemConfigForFirestore(cfg: SystemAiConfig): Record<string, 
     configVersion: typeof cfg.configVersion === 'number' && cfg.configVersion >= 1 ? cfg.configVersion : 1,
     allowedOrigins: Array.isArray(cfg.allowedOrigins) ? cfg.allowedOrigins.slice(0, 50) : [],
     taskModels: cfg.taskModels,
+    experienceRatingEnabled:
+      typeof cfg.experienceRatingEnabled === 'boolean'
+        ? cfg.experienceRatingEnabled
+        : getExperienceRatingConfig().enabled,
   };
 }
 
@@ -214,6 +223,10 @@ export async function loadAuthoritativeAiConfig(
           ...remote,
           activeModel: resolvedActiveModel,
           adaptiveLongTextThresholdChars: resolvedThreshold,
+          experienceRatingEnabled:
+            typeof remote.experienceRatingEnabled === 'boolean'
+              ? remote.experienceRatingEnabled
+              : getExperienceRatingConfig().enabled,
           configVersion:
             typeof remote.configVersion === 'number'
               ? remote.configVersion
@@ -228,6 +241,11 @@ export async function loadAuthoritativeAiConfig(
             adaptiveLongTextThresholdChars: resolvedThreshold,
           },
         };
+        if (typeof remote.experienceRatingEnabled === 'boolean') {
+          if (remote.experienceRatingEnabled !== getExperienceRatingConfig().enabled) {
+            setExperienceRatingEnabled(remote.experienceRatingEnabled, remote.updatedBy || '');
+          }
+        }
 
         if (needsRemoteFlush) {
           try {
@@ -397,10 +415,17 @@ export async function updateAuthoritativeAiConfig(
       ...(patch.rateLimitConfig || {}),
       adaptiveLongTextThresholdChars: nextThreshold,
     },
+    experienceRatingEnabled:
+      typeof patch.experienceRatingEnabled === 'boolean'
+        ? patch.experienceRatingEnabled
+        : authoritativeAiConfig.experienceRatingEnabled ?? getExperienceRatingConfig().enabled,
     updatedAt: new Date().toISOString(),
     updatedBy: actorUid,
   };
   authoritativeAiConfig = next;
+  if (typeof patch.experienceRatingEnabled === 'boolean') {
+    setExperienceRatingEnabled(patch.experienceRatingEnabled, actorEmail);
+  }
   lastRemoteConfigSyncAt = Date.now();
   pendingConsumedOverrides.clear();
 
@@ -414,12 +439,22 @@ export async function updateAuthoritativeAiConfig(
     {
       actorUid,
       actorEmail,
-      action: patch.enabled === false ? 'AI_SERVICE_DISABLED' : patch.enabled === true ? 'AI_SERVICE_ACTIVATED' : 'SYSTEM_CONFIG_UPDATED',
+      action:
+        patch.experienceRatingEnabled !== undefined && patch.enabled === undefined
+          ? patch.experienceRatingEnabled
+            ? 'EXPERIENCE_RATING_ENABLED'
+            : 'EXPERIENCE_RATING_DISABLED'
+          : patch.enabled === false
+          ? 'AI_SERVICE_DISABLED'
+          : patch.enabled === true
+          ? 'AI_SERVICE_ACTIVATED'
+          : 'SYSTEM_CONFIG_UPDATED',
       resourceType: 'systemConfig',
       resourceId: 'aiService',
       status: 'success',
       metadata: {
         enabled: next.enabled,
+        experienceRatingEnabled: Boolean(next.experienceRatingEnabled ?? true),
         disabledReason: next.disabledReason,
         activeModel: next.activeModel,
         configVersion: next.configVersion,

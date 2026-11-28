@@ -110,9 +110,11 @@ import { repairUtf8Mojibake } from '../core/textEncoding.js';
 import { isAllowedCorsOrigin, isValidFirestoreDocId } from '../core/urlSecurity.js';
 import {
   attachExperienceRatingsSseClient,
+  getExperienceRatingConfig,
   getStoredExperienceRating,
   listStoredExperienceRatings,
   saveStoredExperienceRating,
+  setExperienceRatingEnabled,
 } from './experienceRatingStore.js';
 import type { ExperienceRatingInput } from '../core/experienceRatings.js';
 
@@ -1218,7 +1220,12 @@ export function createApiApp(): express.Express {
         })),
       ]);
       res.json({
-        config,
+        config: {
+          ...config,
+          experienceRatingEnabled: getExperienceRatingConfig().enabled,
+        },
+        experienceRatingConfig: getExperienceRatingConfig(),
+        experienceRatingCount: listStoredExperienceRatings().length,
         usageStats,
         auditLogs,
         singleKeyStatus: mistralStatus,
@@ -1247,6 +1254,7 @@ export function createApiApp(): express.Express {
         allowedOrigins,
         taskModels,
         adaptiveLongTextThresholdChars,
+        experienceRatingEnabled,
       } = req.body || {};
       const parsedThreshold =
         adaptiveLongTextThresholdChars !== undefined && adaptiveLongTextThresholdChars !== null
@@ -1264,6 +1272,7 @@ export function createApiApp(): express.Express {
           ...(Array.isArray(allowedOrigins) ? { allowedOrigins } : {}),
           ...(taskModels && typeof taskModels === 'object' ? { taskModels } : {}),
           ...(parsedThreshold !== undefined ? { adaptiveLongTextThresholdChars: parsedThreshold } : {}),
+          ...(typeof experienceRatingEnabled === 'boolean' ? { experienceRatingEnabled } : {}),
         },
         user.uid,
         user.email,
@@ -1271,10 +1280,40 @@ export function createApiApp(): express.Express {
       );
       res.json({
         config: updated,
+        experienceRatingConfig: getExperienceRatingConfig(),
         coldStartReadiness: evaluateColdStartReadiness(updated.activeModel),
       });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Không thể cập nhật cấu hình dịch vụ AI.' });
+    }
+  });
+
+  app.patch('/api/admin/experience-ratings/config', requireSuperAdmin, async (req, res) => {
+    const user = req.authUser!;
+    try {
+      const { enabled } = (req.body || {}) as { enabled?: unknown };
+      if (typeof enabled !== 'boolean') {
+        res.status(400).json({ error: 'Giá trị enabled phải là boolean (true/false).' });
+        return;
+      }
+      const ratingConfig = setExperienceRatingEnabled(enabled, user.email);
+      await updateAuthoritativeAiConfig(
+        { experienceRatingEnabled: enabled },
+        user.uid,
+        user.email,
+        user.idToken
+      );
+      res.json({
+        config: ratingConfig,
+        totalRatings: listStoredExperienceRatings().length,
+      });
+    } catch (err) {
+      res.status(500).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Không thể cập nhật trạng thái tính năng đánh giá trải nghiệm.',
+      });
     }
   });
 
@@ -2520,9 +2559,18 @@ export function createApiApp(): express.Express {
   // ===========================================================================
   // PUBLIC REAL-TIME USER EXPERIENCE RATINGS (SSE + JSON fallback when rules not yet deployed)
   // ===========================================================================
+  app.get('/api/experience-ratings/config', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const cfg = getExperienceRatingConfig();
+    res.json({ enabled: cfg.enabled, updatedAt: cfg.updatedAt });
+  });
+
   app.get('/api/experience-ratings', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ ratings: listStoredExperienceRatings() });
+    res.json({
+      ratings: listStoredExperienceRatings(),
+      enabled: getExperienceRatingConfig().enabled,
+    });
   });
 
   app.get('/api/experience-ratings/stream', (req, res) => {
@@ -2534,7 +2582,7 @@ export function createApiApp(): express.Express {
     res.setHeader('Cache-Control', 'no-store');
     const ratingId = String(req.params.ratingId || '').trim();
     const record = getStoredExperienceRating(ratingId);
-    res.json({ rating: record });
+    res.json({ rating: record, enabled: getExperienceRatingConfig().enabled });
   });
 
   app.post('/api/experience-ratings', async (req, res) => {

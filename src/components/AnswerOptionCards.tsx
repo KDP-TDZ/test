@@ -2,6 +2,7 @@ import React from 'react';
 import { CheckCircle2, XCircle } from 'lucide-react';
 import type { AbcdChoice } from '../core/answerKeyboard';
 import type { TrueFalseStatement } from '../core/types';
+import { MathText } from './MathText';
 
 export interface AbcdOptionItem {
   key: AbcdChoice;
@@ -92,7 +93,7 @@ export const AbcdOptionGrid: React.FC<AbcdOptionGridProps> = ({
               >
                 {opt.key}
               </span>
-              <span className="leading-[1.55] pt-0.5 text-pretty">{opt.text}</span>
+              <span className="leading-[1.55] pt-0.5 text-pretty"><MathText text={opt.text} /></span>
             </span>
 
             <span className="shrink-0 inline-flex items-center gap-1.5">
@@ -158,7 +159,7 @@ export const TrueFalseOptionList: React.FC<TrueFalseOptionListProps> = ({
                 {stmt.label}
               </span>
               <p className="text-[#172033] dark:text-[#E6EFFC] leading-[1.55] pt-0.5 text-pretty">
-                {stmt.text}
+                <MathText text={stmt.text} />
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">

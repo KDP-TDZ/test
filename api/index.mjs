@@ -4025,6 +4025,341 @@ async function testModelConnectivity(modelId) {
   }
 }
 
+// src/server/experienceRatingStore.ts
+import fs3 from "node:fs";
+import os2 from "node:os";
+import path3 from "node:path";
+
+// src/core/experienceRatings.ts
+var EXPERIENCE_REMIND_HOURS = 6;
+var EXPERIENCE_REMIND_MS = EXPERIENCE_REMIND_HOURS * 60 * 60 * 1e3;
+var EXPERIENCE_MAX_AUTHOR_LENGTH = 60;
+var EXPERIENCE_MIN_COMMENT_LENGTH = 5;
+var EXPERIENCE_MAX_COMMENT_LENGTH = 400;
+var EXPERIENCE_ROLE_OPTIONS = [
+  "H\u1ECDc sinh l\u1EDBp 10",
+  "H\u1ECDc sinh l\u1EDBp 11",
+  "H\u1ECDc sinh l\u1EDBp 12",
+  "Gi\xE1o vi\xEAn / Ph\u1EE5 huynh",
+  "Kh\xE1ch tr\u1EA3i nghi\u1EC7m"
+];
+var VALID_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
+var GUEST_ID_REGEX = /^guest_[a-zA-Z0-9_-]{8,64}$/;
+function isValidExperienceRatingId(id) {
+  return typeof id === "string" && VALID_ID_REGEX.test(id);
+}
+function isValidGuestRatingId(id) {
+  return typeof id === "string" && GUEST_ID_REGEX.test(id);
+}
+function isValidScore(val) {
+  return typeof val === "number" && Number.isInteger(val) && val >= 1 && val <= 5;
+}
+function isExperienceRoleLabel(value) {
+  return typeof value === "string" && EXPERIENCE_ROLE_OPTIONS.includes(value);
+}
+function validateExperienceRatingInput(input) {
+  if (!isValidScore(input.stars)) {
+    return { ok: false, error: "Vui l\xF2ng ch\u1ECDn m\u1EE9c \u0111\xE1nh gi\xE1 t\u1EEB 1 \u0111\u1EBFn 5 sao." };
+  }
+  const easeOfUse = isValidScore(input.easeOfUse) ? input.easeOfUse : input.stars;
+  const usefulness = isValidScore(input.usefulness) ? input.usefulness : input.stars;
+  const speedAndUi = isValidScore(input.speedAndUi) ? input.speedAndUi : input.stars;
+  const roleLabel = isExperienceRoleLabel(input.roleLabel) ? input.roleLabel : "Kh\xE1ch tr\u1EA3i nghi\u1EC7m";
+  const rawAuthor = typeof input.authorName === "string" ? input.authorName.trim() : "";
+  const authorName = (rawAuthor || roleLabel).slice(0, EXPERIENCE_MAX_AUTHOR_LENGTH);
+  const rawComment = typeof input.comment === "string" ? input.comment.trim() : "";
+  if (rawComment.length === 0) {
+    return {
+      ok: false,
+      error: "Vui l\xF2ng vi\u1EBFt nh\u1EADn x\xE9t v\u1EC1 tr\u1EA3i nghi\u1EC7m c\u1EE7a b\u1EA1n tr\u01B0\u1EDBc khi g\u1EEDi \u0111\xE1nh gi\xE1."
+    };
+  }
+  if (rawComment.length < EXPERIENCE_MIN_COMMENT_LENGTH) {
+    return {
+      ok: false,
+      error: `Nh\u1EADn x\xE9t c\u1EA7n t\u1ED1i thi\u1EC3u ${EXPERIENCE_MIN_COMMENT_LENGTH} k\xFD t\u1EF1 \u0111\u1EC3 chia s\u1EBB r\xF5 tr\u1EA3i nghi\u1EC7m c\u1EE7a b\u1EA1n.`
+    };
+  }
+  if (rawComment.length > EXPERIENCE_MAX_COMMENT_LENGTH) {
+    return {
+      ok: false,
+      error: `Nh\u1EADn x\xE9t t\u1ED1i \u0111a ${EXPERIENCE_MAX_COMMENT_LENGTH} k\xFD t\u1EF1.`
+    };
+  }
+  return {
+    ok: true,
+    sanitized: {
+      authorName,
+      roleLabel,
+      stars: input.stars,
+      easeOfUse,
+      usefulness,
+      speedAndUi,
+      comment: rawComment
+    }
+  };
+}
+function buildExperienceRatingRecord(params) {
+  const nowIso = params.nowIso || (/* @__PURE__ */ new Date()).toISOString();
+  const createdAt = params.createdAt || nowIso;
+  return {
+    ratingId: params.ratingId,
+    ownerUid: params.ownerUid,
+    authorName: params.sanitized.authorName.slice(0, EXPERIENCE_MAX_AUTHOR_LENGTH),
+    roleLabel: params.sanitized.roleLabel,
+    stars: params.sanitized.stars,
+    easeOfUse: params.sanitized.easeOfUse,
+    usefulness: params.sanitized.usefulness,
+    speedAndUi: params.sanitized.speedAndUi,
+    comment: params.sanitized.comment.slice(0, EXPERIENCE_MAX_COMMENT_LENGTH),
+    isVerifiedAccount: params.isVerifiedAccount,
+    visibility: "public",
+    createdAt,
+    updatedAt: nowIso
+  };
+}
+
+// src/server/experienceRatingStore.ts
+var MAX_STORED_RATINGS = 500;
+function resolveStoreFilePath() {
+  if (process.env.VERCEL === "1") {
+    return path3.join(os2.tmpdir(), "studycheck-experience-ratings.json");
+  }
+  return path3.resolve(process.cwd(), "data", "experience-ratings.json");
+}
+function resolveConfigFilePath() {
+  if (process.env.VERCEL === "1") {
+    return path3.join(os2.tmpdir(), "studycheck-experience-rating-config.json");
+  }
+  return path3.resolve(process.cwd(), "data", "experience-rating-config.json");
+}
+var storePath = resolveStoreFilePath();
+var configPath = resolveConfigFilePath();
+var ratingsMap = /* @__PURE__ */ new Map();
+var sseClients = /* @__PURE__ */ new Set();
+var loadedFromDisk = false;
+var configLoadedFromDisk = false;
+var featureConfig = {
+  enabled: true,
+  updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+  updatedBy: ""
+};
+function ensureConfigLoaded() {
+  if (configLoadedFromDisk) return;
+  configLoadedFromDisk = true;
+  try {
+    if (!fs3.existsSync(configPath)) return;
+    const raw = fs3.readFileSync(configPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.enabled === "boolean") {
+      featureConfig = {
+        enabled: parsed.enabled,
+        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : (/* @__PURE__ */ new Date()).toISOString(),
+        updatedBy: typeof parsed.updatedBy === "string" ? parsed.updatedBy : ""
+      };
+    }
+  } catch (err) {
+    console.warn("Experience rating config load skipped:", err);
+  }
+}
+function persistConfigToDisk() {
+  try {
+    const dir = path3.dirname(configPath);
+    if (!fs3.existsSync(dir)) {
+      fs3.mkdirSync(dir, { recursive: true });
+    }
+    const tmpPath = `${configPath}.tmp`;
+    fs3.writeFileSync(tmpPath, JSON.stringify(featureConfig, null, 2), "utf8");
+    fs3.renameSync(tmpPath, configPath);
+  } catch (err) {
+    console.warn("Experience rating config disk write skipped:", err);
+  }
+}
+function ensureLoaded() {
+  ensureConfigLoaded();
+  if (loadedFromDisk) return;
+  loadedFromDisk = true;
+  try {
+    if (!fs3.existsSync(storePath)) return;
+    const raw = fs3.readFileSync(storePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    for (const item of parsed) {
+      if (item && typeof item === "object" && typeof item.ratingId === "string" && isValidExperienceRatingId(item.ratingId) && typeof item.stars === "number") {
+        const rec = item;
+        ratingsMap.set(rec.ratingId, rec);
+      }
+    }
+  } catch (err) {
+    console.warn("Experience rating store load skipped:", err);
+  }
+}
+function persistToDisk() {
+  try {
+    const dir = path3.dirname(storePath);
+    if (!fs3.existsSync(dir)) {
+      fs3.mkdirSync(dir, { recursive: true });
+    }
+    const list = listStoredExperienceRatings();
+    const tmpPath = `${storePath}.tmp`;
+    fs3.writeFileSync(tmpPath, JSON.stringify(list, null, 2), "utf8");
+    fs3.renameSync(tmpPath, storePath);
+  } catch (err) {
+    console.warn("Experience rating store disk write skipped:", err);
+  }
+}
+function getExperienceRatingConfig() {
+  ensureConfigLoaded();
+  return { ...featureConfig };
+}
+function isExperienceRatingEnabled() {
+  ensureConfigLoaded();
+  return featureConfig.enabled;
+}
+function broadcastExperienceRatingConfig() {
+  if (sseClients.size === 0) return;
+  const payload = JSON.stringify(getExperienceRatingConfig());
+  const frame = `event: config
+data: ${payload}
+
+`;
+  for (const client of Array.from(sseClients)) {
+    try {
+      client.write(frame);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+}
+function setExperienceRatingEnabled(enabled, updatedBy = "") {
+  ensureConfigLoaded();
+  featureConfig = {
+    enabled: Boolean(enabled),
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    updatedBy: String(updatedBy || "").slice(0, 128)
+  };
+  persistConfigToDisk();
+  broadcastExperienceRatingConfig();
+  broadcastExperienceRatingsSnapshot();
+  return { ...featureConfig };
+}
+function listStoredExperienceRatings() {
+  ensureLoaded();
+  return Array.from(ratingsMap.values()).sort(
+    (a, b) => Date.parse(b.updatedAt || b.createdAt) - Date.parse(a.updatedAt || a.createdAt)
+  );
+}
+function getStoredExperienceRating(ratingId) {
+  ensureLoaded();
+  if (!isValidExperienceRatingId(ratingId)) return null;
+  return ratingsMap.get(ratingId) ?? null;
+}
+function broadcastExperienceRatingsSnapshot() {
+  if (sseClients.size === 0) return;
+  const payload = JSON.stringify({
+    ratings: listStoredExperienceRatings(),
+    enabled: isExperienceRatingEnabled()
+  });
+  const frame = `event: ratings
+data: ${payload}
+
+`;
+  for (const client of Array.from(sseClients)) {
+    try {
+      client.write(frame);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+}
+function attachExperienceRatingsSseClient(res) {
+  ensureLoaded();
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+  sseClients.add(res);
+  const cfg = getExperienceRatingConfig();
+  res.write(`event: config
+data: ${JSON.stringify(cfg)}
+
+`);
+  const initialPayload = JSON.stringify({
+    ratings: listStoredExperienceRatings(),
+    enabled: cfg.enabled
+  });
+  res.write(`event: ratings
+data: ${initialPayload}
+
+`);
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(": ping\n\n");
+    } catch {
+      clearInterval(heartbeat);
+      sseClients.delete(res);
+    }
+  }, 25e3);
+  return () => {
+    clearInterval(heartbeat);
+    sseClients.delete(res);
+  };
+}
+function saveStoredExperienceRating(params) {
+  ensureLoaded();
+  if (!isExperienceRatingEnabled()) {
+    return {
+      ok: false,
+      status: 403,
+      error: "T\xEDnh n\u0103ng \u0111\xE1nh gi\xE1 tr\u1EA3i nghi\u1EC7m hi\u1EC7n \u0111ang \u0111\u01B0\u1EE3c qu\u1EA3n tr\u1ECB vi\xEAn t\u1EA1m t\u1EAFt."
+    };
+  }
+  const validation = validateExperienceRatingInput(params.input);
+  if (!validation.ok) {
+    return { ok: false, status: 400, error: validation.error };
+  }
+  const isAuth = Boolean(params.authenticatedUid);
+  const resolvedId = isAuth ? params.authenticatedUid : params.ratingId;
+  if (isAuth) {
+    if (!isValidExperienceRatingId(resolvedId)) {
+      return { ok: false, status: 400, error: "M\xE3 t\xE0i kho\u1EA3n kh\xF4ng h\u1EE3p l\u1EC7." };
+    }
+  } else {
+    if (!isValidGuestRatingId(resolvedId)) {
+      return { ok: false, status: 400, error: "M\xE3 phi\xEAn \u0111\xE1nh gi\xE1 kh\xE1ch kh\xF4ng h\u1EE3p l\u1EC7." };
+    }
+    if (ratingsMap.has(resolvedId)) {
+      return {
+        ok: false,
+        status: 409,
+        error: "Tr\xECnh duy\u1EC7t n\xE0y \u0111\xE3 g\u1EEDi \u0111\xE1nh gi\xE1 tr\u01B0\u1EDBc \u0111\xF3."
+      };
+    }
+  }
+  const existing = ratingsMap.get(resolvedId);
+  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+  const record = buildExperienceRatingRecord({
+    ratingId: resolvedId,
+    ownerUid: isAuth ? params.authenticatedUid : "guest",
+    isVerifiedAccount: isAuth,
+    sanitized: validation.sanitized,
+    createdAt: existing?.createdAt || nowIso,
+    nowIso
+  });
+  if (ratingsMap.size >= MAX_STORED_RATINGS && !ratingsMap.has(resolvedId)) {
+    const sorted = listStoredExperienceRatings();
+    const oldest = sorted[sorted.length - 1];
+    if (oldest) {
+      ratingsMap.delete(oldest.ratingId);
+    }
+  }
+  ratingsMap.set(resolvedId, record);
+  persistToDisk();
+  broadcastExperienceRatingsSnapshot();
+  return { ok: true, record };
+}
+
 // src/server/aiGuardService.ts
 var DEFAULT_RATE_LIMITS = {
   requestsPerMinute: 15,
@@ -4055,7 +4390,8 @@ var authoritativeAiConfig = {
   configVersion: 1,
   allowedOrigins: [],
   taskModels: cloneDefaultTaskModels(),
-  adaptiveLongTextThresholdChars: ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD
+  adaptiveLongTextThresholdChars: ADAPTIVE_LONG_TEXT_CHAR_THRESHOLD,
+  experienceRatingEnabled: getExperienceRatingConfig().enabled
 };
 function serializeSystemConfigForFirestore(cfg) {
   const threshold = clampAdaptiveThresholdChars(
@@ -4075,7 +4411,8 @@ function serializeSystemConfigForFirestore(cfg) {
     activeModel: normalizeSupportedModelId(cfg.activeModel),
     configVersion: typeof cfg.configVersion === "number" && cfg.configVersion >= 1 ? cfg.configVersion : 1,
     allowedOrigins: Array.isArray(cfg.allowedOrigins) ? cfg.allowedOrigins.slice(0, 50) : [],
-    taskModels: cfg.taskModels
+    taskModels: cfg.taskModels,
+    experienceRatingEnabled: typeof cfg.experienceRatingEnabled === "boolean" ? cfg.experienceRatingEnabled : getExperienceRatingConfig().enabled
   };
 }
 var minuteWindows = /* @__PURE__ */ new Map();
@@ -4182,6 +4519,7 @@ async function loadAuthoritativeAiConfig(idToken, forceRefresh = false) {
           ...remote,
           activeModel: resolvedActiveModel,
           adaptiveLongTextThresholdChars: resolvedThreshold,
+          experienceRatingEnabled: typeof remote.experienceRatingEnabled === "boolean" ? remote.experienceRatingEnabled : getExperienceRatingConfig().enabled,
           configVersion: typeof remote.configVersion === "number" ? remote.configVersion : authoritativeAiConfig.configVersion,
           allowedOrigins: Array.isArray(remote.allowedOrigins) ? remote.allowedOrigins : authoritativeAiConfig.allowedOrigins,
           taskModels: migratedTaskModels,
@@ -4191,6 +4529,11 @@ async function loadAuthoritativeAiConfig(idToken, forceRefresh = false) {
             adaptiveLongTextThresholdChars: resolvedThreshold
           }
         };
+        if (typeof remote.experienceRatingEnabled === "boolean") {
+          if (remote.experienceRatingEnabled !== getExperienceRatingConfig().enabled) {
+            setExperienceRatingEnabled(remote.experienceRatingEnabled, remote.updatedBy || "");
+          }
+        }
         if (needsRemoteFlush) {
           try {
             await firestoreRestSet(
@@ -4318,10 +4661,14 @@ async function updateAuthoritativeAiConfig(patch, actorUid, actorEmail, idToken)
       ...patch.rateLimitConfig || {},
       adaptiveLongTextThresholdChars: nextThreshold
     },
+    experienceRatingEnabled: typeof patch.experienceRatingEnabled === "boolean" ? patch.experienceRatingEnabled : authoritativeAiConfig.experienceRatingEnabled ?? getExperienceRatingConfig().enabled,
     updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
     updatedBy: actorUid
   };
   authoritativeAiConfig = next;
+  if (typeof patch.experienceRatingEnabled === "boolean") {
+    setExperienceRatingEnabled(patch.experienceRatingEnabled, actorEmail);
+  }
   lastRemoteConfigSyncAt = Date.now();
   pendingConsumedOverrides.clear();
   try {
@@ -4333,12 +4680,13 @@ async function updateAuthoritativeAiConfig(patch, actorUid, actorEmail, idToken)
     {
       actorUid,
       actorEmail,
-      action: patch.enabled === false ? "AI_SERVICE_DISABLED" : patch.enabled === true ? "AI_SERVICE_ACTIVATED" : "SYSTEM_CONFIG_UPDATED",
+      action: patch.experienceRatingEnabled !== void 0 && patch.enabled === void 0 ? patch.experienceRatingEnabled ? "EXPERIENCE_RATING_ENABLED" : "EXPERIENCE_RATING_DISABLED" : patch.enabled === false ? "AI_SERVICE_DISABLED" : patch.enabled === true ? "AI_SERVICE_ACTIVATED" : "SYSTEM_CONFIG_UPDATED",
       resourceType: "systemConfig",
       resourceId: "aiService",
       status: "success",
       metadata: {
         enabled: next.enabled,
+        experienceRatingEnabled: Boolean(next.experienceRatingEnabled ?? true),
         disabledReason: next.disabledReason,
         activeModel: next.activeModel,
         configVersion: next.configVersion
@@ -8872,245 +9220,6 @@ function repairUtf8Mojibake(value) {
 
 // src/server/app.ts
 init_urlSecurity();
-
-// src/server/experienceRatingStore.ts
-import fs3 from "node:fs";
-import os2 from "node:os";
-import path3 from "node:path";
-
-// src/core/experienceRatings.ts
-var EXPERIENCE_REMIND_HOURS = 6;
-var EXPERIENCE_REMIND_MS = EXPERIENCE_REMIND_HOURS * 60 * 60 * 1e3;
-var EXPERIENCE_MAX_AUTHOR_LENGTH = 60;
-var EXPERIENCE_MIN_COMMENT_LENGTH = 5;
-var EXPERIENCE_MAX_COMMENT_LENGTH = 400;
-var EXPERIENCE_ROLE_OPTIONS = [
-  "H\u1ECDc sinh l\u1EDBp 10",
-  "H\u1ECDc sinh l\u1EDBp 11",
-  "H\u1ECDc sinh l\u1EDBp 12",
-  "Gi\xE1o vi\xEAn / Ph\u1EE5 huynh",
-  "Kh\xE1ch tr\u1EA3i nghi\u1EC7m"
-];
-var VALID_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
-var GUEST_ID_REGEX = /^guest_[a-zA-Z0-9_-]{8,64}$/;
-function isValidExperienceRatingId(id) {
-  return typeof id === "string" && VALID_ID_REGEX.test(id);
-}
-function isValidGuestRatingId(id) {
-  return typeof id === "string" && GUEST_ID_REGEX.test(id);
-}
-function isValidScore(val) {
-  return typeof val === "number" && Number.isInteger(val) && val >= 1 && val <= 5;
-}
-function isExperienceRoleLabel(value) {
-  return typeof value === "string" && EXPERIENCE_ROLE_OPTIONS.includes(value);
-}
-function validateExperienceRatingInput(input) {
-  if (!isValidScore(input.stars)) {
-    return { ok: false, error: "Vui l\xF2ng ch\u1ECDn m\u1EE9c \u0111\xE1nh gi\xE1 t\u1EEB 1 \u0111\u1EBFn 5 sao." };
-  }
-  const easeOfUse = isValidScore(input.easeOfUse) ? input.easeOfUse : input.stars;
-  const usefulness = isValidScore(input.usefulness) ? input.usefulness : input.stars;
-  const speedAndUi = isValidScore(input.speedAndUi) ? input.speedAndUi : input.stars;
-  const roleLabel = isExperienceRoleLabel(input.roleLabel) ? input.roleLabel : "Kh\xE1ch tr\u1EA3i nghi\u1EC7m";
-  const rawAuthor = typeof input.authorName === "string" ? input.authorName.trim() : "";
-  const authorName = (rawAuthor || roleLabel).slice(0, EXPERIENCE_MAX_AUTHOR_LENGTH);
-  const rawComment = typeof input.comment === "string" ? input.comment.trim() : "";
-  if (rawComment.length === 0) {
-    return {
-      ok: false,
-      error: "Vui l\xF2ng vi\u1EBFt nh\u1EADn x\xE9t v\u1EC1 tr\u1EA3i nghi\u1EC7m c\u1EE7a b\u1EA1n tr\u01B0\u1EDBc khi g\u1EEDi \u0111\xE1nh gi\xE1."
-    };
-  }
-  if (rawComment.length < EXPERIENCE_MIN_COMMENT_LENGTH) {
-    return {
-      ok: false,
-      error: `Nh\u1EADn x\xE9t c\u1EA7n t\u1ED1i thi\u1EC3u ${EXPERIENCE_MIN_COMMENT_LENGTH} k\xFD t\u1EF1 \u0111\u1EC3 chia s\u1EBB r\xF5 tr\u1EA3i nghi\u1EC7m c\u1EE7a b\u1EA1n.`
-    };
-  }
-  if (rawComment.length > EXPERIENCE_MAX_COMMENT_LENGTH) {
-    return {
-      ok: false,
-      error: `Nh\u1EADn x\xE9t t\u1ED1i \u0111a ${EXPERIENCE_MAX_COMMENT_LENGTH} k\xFD t\u1EF1.`
-    };
-  }
-  return {
-    ok: true,
-    sanitized: {
-      authorName,
-      roleLabel,
-      stars: input.stars,
-      easeOfUse,
-      usefulness,
-      speedAndUi,
-      comment: rawComment
-    }
-  };
-}
-function buildExperienceRatingRecord(params) {
-  const nowIso = params.nowIso || (/* @__PURE__ */ new Date()).toISOString();
-  const createdAt = params.createdAt || nowIso;
-  return {
-    ratingId: params.ratingId,
-    ownerUid: params.ownerUid,
-    authorName: params.sanitized.authorName.slice(0, EXPERIENCE_MAX_AUTHOR_LENGTH),
-    roleLabel: params.sanitized.roleLabel,
-    stars: params.sanitized.stars,
-    easeOfUse: params.sanitized.easeOfUse,
-    usefulness: params.sanitized.usefulness,
-    speedAndUi: params.sanitized.speedAndUi,
-    comment: params.sanitized.comment.slice(0, EXPERIENCE_MAX_COMMENT_LENGTH),
-    isVerifiedAccount: params.isVerifiedAccount,
-    visibility: "public",
-    createdAt,
-    updatedAt: nowIso
-  };
-}
-
-// src/server/experienceRatingStore.ts
-var MAX_STORED_RATINGS = 500;
-function resolveStoreFilePath() {
-  if (process.env.VERCEL === "1") {
-    return path3.join(os2.tmpdir(), "studycheck-experience-ratings.json");
-  }
-  return path3.resolve(process.cwd(), "data", "experience-ratings.json");
-}
-var storePath = resolveStoreFilePath();
-var ratingsMap = /* @__PURE__ */ new Map();
-var sseClients = /* @__PURE__ */ new Set();
-var loadedFromDisk = false;
-function ensureLoaded() {
-  if (loadedFromDisk) return;
-  loadedFromDisk = true;
-  try {
-    if (!fs3.existsSync(storePath)) return;
-    const raw = fs3.readFileSync(storePath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return;
-    for (const item of parsed) {
-      if (item && typeof item === "object" && typeof item.ratingId === "string" && isValidExperienceRatingId(item.ratingId) && typeof item.stars === "number") {
-        const rec = item;
-        ratingsMap.set(rec.ratingId, rec);
-      }
-    }
-  } catch (err) {
-    console.warn("Experience rating store load skipped:", err);
-  }
-}
-function persistToDisk() {
-  try {
-    const dir = path3.dirname(storePath);
-    if (!fs3.existsSync(dir)) {
-      fs3.mkdirSync(dir, { recursive: true });
-    }
-    const list = listStoredExperienceRatings();
-    const tmpPath = `${storePath}.tmp`;
-    fs3.writeFileSync(tmpPath, JSON.stringify(list, null, 2), "utf8");
-    fs3.renameSync(tmpPath, storePath);
-  } catch (err) {
-    console.warn("Experience rating store disk write skipped:", err);
-  }
-}
-function listStoredExperienceRatings() {
-  ensureLoaded();
-  return Array.from(ratingsMap.values()).sort(
-    (a, b) => Date.parse(b.updatedAt || b.createdAt) - Date.parse(a.updatedAt || a.createdAt)
-  );
-}
-function getStoredExperienceRating(ratingId) {
-  ensureLoaded();
-  if (!isValidExperienceRatingId(ratingId)) return null;
-  return ratingsMap.get(ratingId) ?? null;
-}
-function broadcastExperienceRatingsSnapshot() {
-  if (sseClients.size === 0) return;
-  const payload = JSON.stringify({ ratings: listStoredExperienceRatings() });
-  const frame = `event: ratings
-data: ${payload}
-
-`;
-  for (const client of Array.from(sseClients)) {
-    try {
-      client.write(frame);
-    } catch {
-      sseClients.delete(client);
-    }
-  }
-}
-function attachExperienceRatingsSseClient(res) {
-  ensureLoaded();
-  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders?.();
-  sseClients.add(res);
-  const initialPayload = JSON.stringify({ ratings: listStoredExperienceRatings() });
-  res.write(`event: ratings
-data: ${initialPayload}
-
-`);
-  const heartbeat = setInterval(() => {
-    try {
-      res.write(": ping\n\n");
-    } catch {
-      clearInterval(heartbeat);
-      sseClients.delete(res);
-    }
-  }, 25e3);
-  return () => {
-    clearInterval(heartbeat);
-    sseClients.delete(res);
-  };
-}
-function saveStoredExperienceRating(params) {
-  ensureLoaded();
-  const validation = validateExperienceRatingInput(params.input);
-  if (!validation.ok) {
-    return { ok: false, status: 400, error: validation.error };
-  }
-  const isAuth = Boolean(params.authenticatedUid);
-  const resolvedId = isAuth ? params.authenticatedUid : params.ratingId;
-  if (isAuth) {
-    if (!isValidExperienceRatingId(resolvedId)) {
-      return { ok: false, status: 400, error: "M\xE3 t\xE0i kho\u1EA3n kh\xF4ng h\u1EE3p l\u1EC7." };
-    }
-  } else {
-    if (!isValidGuestRatingId(resolvedId)) {
-      return { ok: false, status: 400, error: "M\xE3 phi\xEAn \u0111\xE1nh gi\xE1 kh\xE1ch kh\xF4ng h\u1EE3p l\u1EC7." };
-    }
-    if (ratingsMap.has(resolvedId)) {
-      return {
-        ok: false,
-        status: 409,
-        error: "Tr\xECnh duy\u1EC7t n\xE0y \u0111\xE3 g\u1EEDi \u0111\xE1nh gi\xE1 tr\u01B0\u1EDBc \u0111\xF3."
-      };
-    }
-  }
-  const existing = ratingsMap.get(resolvedId);
-  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-  const record = buildExperienceRatingRecord({
-    ratingId: resolvedId,
-    ownerUid: isAuth ? params.authenticatedUid : "guest",
-    isVerifiedAccount: isAuth,
-    sanitized: validation.sanitized,
-    createdAt: existing?.createdAt || nowIso,
-    nowIso
-  });
-  if (ratingsMap.size >= MAX_STORED_RATINGS && !ratingsMap.has(resolvedId)) {
-    const sorted = listStoredExperienceRatings();
-    const oldest = sorted[sorted.length - 1];
-    if (oldest) {
-      ratingsMap.delete(oldest.ratingId);
-    }
-  }
-  ratingsMap.set(resolvedId, record);
-  persistToDisk();
-  broadcastExperienceRatingsSnapshot();
-  return { ok: true, record };
-}
-
-// src/server/app.ts
 var filenameScopeServerCache = /* @__PURE__ */ new Map();
 var ALLOWED_UPLOAD_MIMES = /* @__PURE__ */ new Set([
   "application/pdf",
@@ -9995,7 +10104,12 @@ function createApiApp() {
         }))
       ]);
       res.json({
-        config,
+        config: {
+          ...config,
+          experienceRatingEnabled: getExperienceRatingConfig().enabled
+        },
+        experienceRatingConfig: getExperienceRatingConfig(),
+        experienceRatingCount: listStoredExperienceRatings().length,
         usageStats,
         auditLogs,
         singleKeyStatus: mistralStatus,
@@ -10022,7 +10136,8 @@ function createApiApp() {
         activeModel,
         allowedOrigins,
         taskModels,
-        adaptiveLongTextThresholdChars
+        adaptiveLongTextThresholdChars,
+        experienceRatingEnabled
       } = req.body || {};
       const parsedThreshold = adaptiveLongTextThresholdChars !== void 0 && adaptiveLongTextThresholdChars !== null ? clampAdaptiveThresholdChars(adaptiveLongTextThresholdChars) : void 0;
       const updated = await updateAuthoritativeAiConfig(
@@ -10034,7 +10149,8 @@ function createApiApp() {
           ...typeof activeModel === "string" ? { activeModel } : {},
           ...Array.isArray(allowedOrigins) ? { allowedOrigins } : {},
           ...taskModels && typeof taskModels === "object" ? { taskModels } : {},
-          ...parsedThreshold !== void 0 ? { adaptiveLongTextThresholdChars: parsedThreshold } : {}
+          ...parsedThreshold !== void 0 ? { adaptiveLongTextThresholdChars: parsedThreshold } : {},
+          ...typeof experienceRatingEnabled === "boolean" ? { experienceRatingEnabled } : {}
         },
         user.uid,
         user.email,
@@ -10042,10 +10158,36 @@ function createApiApp() {
       );
       res.json({
         config: updated,
+        experienceRatingConfig: getExperienceRatingConfig(),
         coldStartReadiness: evaluateColdStartReadiness(updated.activeModel)
       });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 c\u1EADp nh\u1EADt c\u1EA5u h\xECnh d\u1ECBch v\u1EE5 AI." });
+    }
+  });
+  app.patch("/api/admin/experience-ratings/config", requireSuperAdmin, async (req, res) => {
+    const user = req.authUser;
+    try {
+      const { enabled } = req.body || {};
+      if (typeof enabled !== "boolean") {
+        res.status(400).json({ error: "Gi\xE1 tr\u1ECB enabled ph\u1EA3i l\xE0 boolean (true/false)." });
+        return;
+      }
+      const ratingConfig = setExperienceRatingEnabled(enabled, user.email);
+      await updateAuthoritativeAiConfig(
+        { experienceRatingEnabled: enabled },
+        user.uid,
+        user.email,
+        user.idToken
+      );
+      res.json({
+        config: ratingConfig,
+        totalRatings: listStoredExperienceRatings().length
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : "Kh\xF4ng th\u1EC3 c\u1EADp nh\u1EADt tr\u1EA1ng th\xE1i t\xEDnh n\u0103ng \u0111\xE1nh gi\xE1 tr\u1EA3i nghi\u1EC7m."
+      });
     }
   });
   app.post("/api/admin/models/override", requireSuperAdmin, async (req, res) => {
@@ -11138,9 +11280,17 @@ function createApiApp() {
       res.status(mapped.status).json(mapped);
     }
   });
+  app.get("/api/experience-ratings/config", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const cfg = getExperienceRatingConfig();
+    res.json({ enabled: cfg.enabled, updatedAt: cfg.updatedAt });
+  });
   app.get("/api/experience-ratings", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json({ ratings: listStoredExperienceRatings() });
+    res.json({
+      ratings: listStoredExperienceRatings(),
+      enabled: getExperienceRatingConfig().enabled
+    });
   });
   app.get("/api/experience-ratings/stream", (req, res) => {
     const cleanup = attachExperienceRatingsSseClient(res);
@@ -11150,7 +11300,7 @@ function createApiApp() {
     res.setHeader("Cache-Control", "no-store");
     const ratingId = String(req.params.ratingId || "").trim();
     const record = getStoredExperienceRating(ratingId);
-    res.json({ rating: record });
+    res.json({ rating: record, enabled: getExperienceRatingConfig().enabled });
   });
   app.post("/api/experience-ratings", async (req, res) => {
     const body = req.body || {};
