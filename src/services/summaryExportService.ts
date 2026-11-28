@@ -204,7 +204,7 @@ export async function exportSummaryAsDocx(report: VerificationSummaryReport): Pr
       rows: [
         new TableRow({
           children: [
-            makeCell('Độ chính xác (Accuracy)', { bold: true, shaded: true, widthPct: 25 }),
+            makeCell('Mệnh đề đúng chuẩn', { bold: true, shaded: true, widthPct: 25 }),
             makeCell('Độ đầy đủ (Completeness)', { bold: true, shaded: true, widthPct: 25 }),
             makeCell('Tỷ lệ có dẫn chứng', { bold: true, shaded: true, widthPct: 25 }),
             makeCell('Mức độ tin cậy', { bold: true, shaded: true, widthPct: 25 }),
@@ -212,7 +212,11 @@ export async function exportSummaryAsDocx(report: VerificationSummaryReport): Pr
         }),
         new TableRow({
           children: [
-            makeCell(report.metrics.accuracyScoreDisplay, { bold: true, color: '0369A1', widthPct: 25 }),
+            makeCell(`${report.metrics.correctCount}/${report.metrics.totalClaims} mệnh đề`, {
+              bold: true,
+              color: '047857',
+              widthPct: 25,
+            }),
             makeCell(report.metrics.completenessScoreDisplay, { bold: true, color: '0369A1', widthPct: 25 }),
             makeCell(report.metrics.evidenceCoverageDisplay, { bold: true, color: '047857', widthPct: 25 }),
             makeCell(report.metrics.confidenceLevel, { bold: true, widthPct: 25 }),
@@ -519,7 +523,7 @@ export async function exportSummaryAsXlsx(report: VerificationSummaryReport): Pr
       : []),
     [null, null],
     [{ value: 'CHỈ SỐ ĐÁNH GIÁ', ...headerStyle }, { value: 'KẾT QUẢ', ...headerStyle }],
-    [{ value: 'Độ chính xác (Accuracy)', ...labelStyle }, { value: report.metrics.accuracyScoreDisplay, ...bodyStyle }],
+    [{ value: 'Mệnh đề đúng chuẩn SGK', ...labelStyle }, { value: `${report.metrics.correctCount}/${report.metrics.totalClaims} mệnh đề`, ...bodyStyle }],
     [{ value: 'Độ đầy đủ (Completeness)', ...labelStyle }, { value: report.metrics.completenessScoreDisplay, ...bodyStyle }],
     [{ value: 'Tỷ lệ có dẫn chứng', ...labelStyle }, { value: report.metrics.evidenceCoverageDisplay, ...bodyStyle }],
     [{ value: 'Mức độ tin cậy', ...labelStyle }, { value: report.metrics.confidenceLevel, ...bodyStyle }],

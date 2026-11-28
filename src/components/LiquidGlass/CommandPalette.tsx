@@ -79,9 +79,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       key: `an-${a.analysisId}`,
       group: 'Phân tích gần đây',
       label: a.documentTitle,
-      subtitle: `${SUBJECT_LABELS[a.subject]} · Lớp ${a.grade}${
-        a.accuracyScore !== null ? ` · Chính xác ${a.accuracyScore}%` : ''
-      }`,
+      subtitle: `${SUBJECT_LABELS[a.subject]} · Lớp ${a.grade} · ${a.claims.length} mệnh đề`,
       icon: FileText,
       run: () => {
         onSelectAnalysis(a.analysisId);

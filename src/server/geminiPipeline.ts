@@ -906,6 +906,7 @@ export class DocumentExtractionService {
     _tokensOut: TokenTelemetry,
     _opts?: { config?: SystemAiConfig; idToken?: string }
   ): Promise<ExtractedPage[]> {
+    let parseErrorDetail = '';
     try {
       const { extractPdfPagesFromBuffer } = await import('./referenceIngestService.js');
       const textPages = await extractPdfPagesFromBuffer(buffer);
@@ -921,8 +922,15 @@ export class DocumentExtractionService {
           };
         });
       }
-    } catch {
-      // Fall through to scanned-PDF guidance error
+    } catch (pdfErr) {
+      parseErrorDetail = pdfErr instanceof Error ? pdfErr.message : String(pdfErr);
+      console.warn('Server-side PDF text extraction error:', parseErrorDetail);
+    }
+
+    if (parseErrorDetail) {
+      throw new Error(
+        `Không thể đọc cấu trúc tệp PDF trên máy chủ (${parseErrorDetail.slice(0, 120)}). Vui lòng thử lại hoặc tải tệp lên trên trình duyệt để hệ thống tự động trích xuất.`
+      );
     }
 
     throw new Error(

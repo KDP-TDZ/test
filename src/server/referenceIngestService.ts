@@ -36,10 +36,54 @@ export interface IngestResult {
   extractedSummary: string;
 }
 
+function ensureNodePdfJsPolyfills(): void {
+  const g = globalThis as Record<string, unknown>;
+  if (typeof g.DOMMatrix === 'undefined') {
+    class MinimalDOMMatrix {
+      a = 1;
+      b = 0;
+      c = 0;
+      d = 1;
+      e = 0;
+      f = 0;
+      constructor(init?: number[]) {
+        if (Array.isArray(init) && init.length >= 6) {
+          [this.a, this.b, this.c, this.d, this.e, this.f] = init;
+        }
+      }
+    }
+    g.DOMMatrix = MinimalDOMMatrix;
+  }
+}
+
+let nodePdfWorkerLoaded = false;
+
 /**
  * Extracts text pages from a PDF buffer using pdfjs-dist legacy build in Node.js.
+ * Pre-registers WorkerMessageHandler on globalThis.pdfjsWorker so bundled/serverless
+ * builds (e.g. Vercel api/index.mjs) never fail on relative "./pdf.worker.mjs" imports.
  */
-export async function extractPdfPagesFromBuffer(buffer: Buffer): Promise<{ pageNumber: number; text: string }[]> {
+export async function extractPdfPagesFromBuffer(
+  buffer: Buffer
+): Promise<{ pageNumber: number; text: string }[]> {
+  ensureNodePdfJsPolyfills();
+
+  const g = globalThis as Record<string, unknown>;
+  if (!nodePdfWorkerLoaded && !g.pdfjsWorker) {
+    try {
+      const workerSpecifier: string = 'pdfjs-dist/legacy/build/pdf.worker.mjs';
+      const workerMod = (await import(workerSpecifier)) as {
+        WorkerMessageHandler?: unknown;
+      };
+      if (workerMod?.WorkerMessageHandler) {
+        g.pdfjsWorker = { WorkerMessageHandler: workerMod.WorkerMessageHandler };
+      }
+      nodePdfWorkerLoaded = true;
+    } catch {
+      // Fall back to default worker resolution if direct worker import is unavailable
+    }
+  }
+
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const uint8 = new Uint8Array(buffer);
   const loadingTask = pdfjs.getDocument({
@@ -50,27 +94,32 @@ export async function extractPdfPagesFromBuffer(buffer: Buffer): Promise<{ pageN
   const doc = await loadingTask.promise;
   const pages: { pageNumber: number; text: string }[] = [];
 
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page = await doc.getPage(i);
-    const content = await page.getTextContent();
-    const lines: string[] = [];
-    let currentLine = '';
-    let lastY: number | null = null;
+  try {
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      const lines: string[] = [];
+      let currentLine = '';
+      let lastY: number | null = null;
 
-    for (const item of content.items) {
-      if ('str' in item) {
-        const y = Array.isArray(item.transform) ? item.transform[5] : null;
-        if (lastY !== null && y !== null && Math.abs(y - lastY) > 4) {
-          if (currentLine.trim()) lines.push(currentLine.trim());
-          currentLine = item.str;
-        } else {
-          currentLine += (currentLine && item.str ? ' ' : '') + item.str;
+      for (const item of content.items) {
+        if ('str' in item && typeof item.str === 'string') {
+          const y = Array.isArray(item.transform) ? Number(item.transform[5]) : null;
+          if (lastY !== null && y !== null && Math.abs(y - lastY) > 4) {
+            if (currentLine.trim()) lines.push(currentLine.trim());
+            currentLine = item.str;
+          } else {
+            currentLine += (currentLine && item.str ? ' ' : '') + item.str;
+          }
+          lastY = y;
         }
-        lastY = y;
       }
+      if (currentLine.trim()) lines.push(currentLine.trim());
+      pages.push({ pageNumber: i, text: lines.join('\n') });
     }
-    if (currentLine.trim()) lines.push(currentLine.trim());
-    pages.push({ pageNumber: i, text: lines.join('\n') });
+  } finally {
+    await doc.cleanup().catch(() => {});
+    await loadingTask.destroy().catch(() => {});
   }
 
   return pages;

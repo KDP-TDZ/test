@@ -51,11 +51,13 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const [savingProfile, setSavingProfile] = useState(false);
 
   const completed = analyses.filter((a) => a.analysisStatus === 'completed');
-  const accValues = completed.map((a) => a.accuracyScore).filter((v): v is number => typeof v === 'number');
   const compValues = completed.map((a) => a.completenessScore).filter((v): v is number => typeof v === 'number');
 
-  const avgAccuracy =
-    accValues.length > 0 ? Math.round((accValues.reduce((s, v) => s + v, 0) / accValues.length) * 10) / 10 : null;
+  const totalVerifiedClaims = completed.reduce((sum, a) => sum + (a.claims?.length || 0), 0);
+  const totalCorrectClaims = completed.reduce(
+    (sum, a) => sum + (a.claims?.filter((c) => c.evaluationStatus === 'CORRECT').length || 0),
+    0
+  );
   const avgCompleteness =
     compValues.length > 0 ? Math.round((compValues.reduce((s, v) => s + v, 0) / compValues.length) * 10) / 10 : null;
 
@@ -340,15 +342,20 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
             <LiquidCard
               enableTilt={false}
-              className="dashboard-card snap-start shrink-0 w-[78vw] max-w-[270px] md:w-auto md:max-w-none rounded-2xl sm:rounded-3xl p-4 sm:p-5"
+              className="dashboard-card snap-start shrink-0 w-[78vw] max-w-[270px] md:w-auto md:max-w-none rounded-2xl sm:rounded-3xl p-4 sm:p-5 flex items-center justify-between"
             >
-              <ScoreRing
-                label="Độ chính xác trung bình"
-                value={avgAccuracy}
-                subtitle={accValues.length > 0 ? `Tính trên ${accValues.length} bài đã xác minh` : 'Chưa đủ dữ liệu'}
-                color="sky"
-                size={isMobile ? 64 : 76}
-              />
+              <div>
+                <p className="text-xs font-medium text-[#475B78] dark:text-[#B4C7E2]">
+                  Mệnh đề đã đối chiếu SGK
+                </p>
+                <p className="font-mono text-2xl font-bold text-[#16243E] dark:text-[#E6EFFC] tabular-nums mt-1">
+                  {totalVerifiedClaims}
+                </p>
+                <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-1">
+                  {totalCorrectClaims} mệnh đề đúng chuẩn
+                </p>
+              </div>
+              <BookOpen className="w-7 h-7 text-emerald-600 dark:text-emerald-400 shrink-0" />
             </LiquidCard>
 
             <LiquidCard
@@ -406,32 +413,41 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               </div>
 
               <div className="divide-y divide-sky-200/50 dark:divide-slate-700/70">
-                {analyses.slice(0, 5).map((item) => (
-                  <button
-                    key={item.analysisId}
-                    type="button"
-                    onClick={() => onNavigate('history', item.analysisId)}
-                    className="w-full py-3.5 text-left flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-white/60 dark:hover:bg-slate-800/50 px-3 rounded-2xl transition-colors cursor-pointer"
-                  >
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
-                        {item.documentTitle}
-                      </p>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                        {SUBJECT_LABELS[item.subject]} · Lớp {item.grade} ·{' '}
-                        {new Date(item.createdAt).toLocaleDateString('vi-VN')}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-5 shrink-0 font-mono text-xs tabular-nums">
-                      <span className="text-sky-700 dark:text-sky-400">
-                        Chính xác: {item.accuracyScore !== null ? `${item.accuracyScore}%` : '—'}
-                      </span>
-                      <span className="text-sky-800 dark:text-sky-300">
-                        Đầy đủ: {item.completenessScore !== null ? `${item.completenessScore}%` : '—'}
-                      </span>
-                    </div>
-                  </button>
-                ))}
+                {analyses.slice(0, 5).map((item) => {
+                  const correctCount = item.claims.filter((c) => c.evaluationStatus === 'CORRECT').length;
+                  const issueCount = item.claims.filter(
+                    (c) =>
+                      c.evaluationStatus === 'INCORRECT' ||
+                      c.evaluationStatus === 'PARTIALLY_CORRECT' ||
+                      c.evaluationStatus === 'MISSING'
+                  ).length;
+                  return (
+                    <button
+                      key={item.analysisId}
+                      type="button"
+                      onClick={() => onNavigate('history', item.analysisId)}
+                      className="w-full py-3.5 text-left flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-white/60 dark:hover:bg-slate-800/50 px-3 rounded-2xl transition-colors cursor-pointer"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-[#16243E] dark:text-[#E6EFFC] truncate">
+                          {item.documentTitle}
+                        </p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                          {SUBJECT_LABELS[item.subject]} · Lớp {item.grade} ·{' '}
+                          {new Date(item.createdAt).toLocaleDateString('vi-VN')}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-4 shrink-0 font-mono text-xs tabular-nums">
+                        <span className="text-emerald-700 dark:text-emerald-400">
+                          Đúng chuẩn: {correctCount}/{item.claims.length}
+                        </span>
+                        <span className={issueCount > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-sky-700 dark:text-sky-400'}>
+                          {issueCount > 0 ? `${issueCount} cần rà soát` : 'Đạt chuẩn'}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </LiquidCard>
 

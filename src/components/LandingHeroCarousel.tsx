@@ -80,11 +80,11 @@ export const HERO_SLIDES: readonly HeroSlideItem[] = [
       summary:
         'StudyCheck AI không chấm chung chung theo cảm tính. Hệ thống tách tài liệu của bạn thành từng mệnh đề học thuật độc lập và đối chiếu trực tiếp theo 4 lớp: Khái niệm cốt lõi, Công thức & Đơn vị SI, Điều kiện áp dụng và Trích dẫn số trang SGK GDPT 2018.',
       proofLabel: 'Cơ chế đánh giá minh bạch',
-      proofValue: 'Tách biệt 2 chỉ số độc lập: Độ chính xác (Accuracy) & Độ đầy đủ (Completeness)',
+      proofValue: 'Phân loại rõ ràng: Đúng chuẩn SGK · Thiếu điều kiện · Sai kiến thức & Độ bao phủ chương',
       highlights: [
         {
           title: 'Không đánh đồng viết thiếu với viết sai',
-          desc: 'Độ chính xác chỉ chấm trên phần kiến thức bạn đã viết; Độ đầy đủ đo mức độ bao phủ mục tiêu của chương học.',
+          desc: 'Tách biệt rõ các mệnh đề đúng chuẩn, các mục thiếu điều kiện áp dụng và mức độ bao phủ mục tiêu của chương học.',
         },
         {
           title: 'Trích dẫn chính xác số trang SGK',

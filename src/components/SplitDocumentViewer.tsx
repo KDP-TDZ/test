@@ -150,7 +150,9 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
   const [pageIndex, setPageIndex] = useState(0);
   const [zoom, setZoom] = useState(1.0);
   const [showAnnotations, setShowAnnotations] = useState(true);
-  const [filterMode, setFilterMode] = useState<'errors' | 'all'>('errors');
+  const [filterMode, setFilterMode] = useState<
+    'errors' | 'incorrect' | 'partial' | 'correct' | 'all'
+  >('errors');
   const [viewMode, setViewMode] = useState<'split' | 'original' | 'annotations'>('split');
   const [mobileTab, setMobileTab] = useState<'student' | 'notes'>('student');
   const [expanded, setExpanded] = useState(false);
@@ -205,6 +207,26 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
   // Number all issue claims #1, #2, #3... strictly in document appearance order
   const issueClaims = useMemo(
     () => orderedClaims.filter((c) => isIssueClaim(c)),
+    [orderedClaims]
+  );
+
+  const incorrectOnlyClaims = useMemo(
+    () => orderedClaims.filter((c) => c.evaluationStatus === 'INCORRECT'),
+    [orderedClaims]
+  );
+
+  const partialOnlyClaims = useMemo(
+    () =>
+      orderedClaims.filter(
+        (c) =>
+          c.evaluationStatus === 'PARTIALLY_CORRECT' ||
+          c.evaluationStatus === 'MISSING'
+      ),
+    [orderedClaims]
+  );
+
+  const correctOnlyClaims = useMemo(
+    () => orderedClaims.filter((c) => c.evaluationStatus === 'CORRECT'),
     [orderedClaims]
   );
 
@@ -274,8 +296,18 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
 
   const visibleClaims = useMemo(() => {
     if (filterMode === 'all') return orderedClaims;
+    if (filterMode === 'incorrect') return incorrectOnlyClaims;
+    if (filterMode === 'partial') return partialOnlyClaims;
+    if (filterMode === 'correct') return correctOnlyClaims;
     return issueClaims;
-  }, [orderedClaims, filterMode, issueClaims]);
+  }, [
+    orderedClaims,
+    filterMode,
+    issueClaims,
+    incorrectOnlyClaims,
+    partialOnlyClaims,
+    correctOnlyClaims,
+  ]);
 
   const pageHighlightTargets: InlineHighlightTarget[] = useMemo(() => {
     const annByClaim = new Map<string, AnnotationItem>();
@@ -295,6 +327,18 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
     const targets: InlineHighlightTarget[] = [];
     for (const claim of claimsOnPage) {
       if (filterMode === 'errors' && claim.evaluationStatus === 'CORRECT') {
+        continue;
+      }
+      if (filterMode === 'incorrect' && claim.evaluationStatus !== 'INCORRECT') {
+        continue;
+      }
+      if (
+        filterMode === 'partial' &&
+        claim.evaluationStatus !== 'PARTIALLY_CORRECT'
+      ) {
+        continue;
+      }
+      if (filterMode === 'correct' && claim.evaluationStatus !== 'CORRECT') {
         continue;
       }
       const ann = annByClaim.get(claim.claimId);
@@ -928,42 +972,87 @@ export const SplitDocumentViewer: React.FC<SplitDocumentViewerProps> = ({
               mobileTab === 'notes' ? 'block' : 'hidden lg:block'
             } bg-white/90 dark:bg-slate-900/90 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm flex flex-col`}
           >
-            {/* Header & Filter Segmented Control */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-3.5 mb-3.5 border-b border-slate-200/80 dark:border-slate-800">
-              <div>
-                <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  Chú thích kiểm định
-                </h3>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
-                  {issueClaims.length > 0
-                    ? `${issueClaims.length} điểm sai/thiếu · Bấm Xem thêm để làm rõ khái niệm`
-                    : 'Không phát hiện lỗi sai kiến thức trong tài liệu'}
-                </p>
+            {/* Header, Quick Prev/Next Stepper & Granular Filter Tabs */}
+            <div className="space-y-2.5 pb-3.5 mb-3.5 border-b border-slate-200/80 dark:border-slate-800">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    Chú thích kiểm định ({visibleClaims.length})
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 tabular-nums">
+                    {issueClaims.length > 0
+                      ? `${incorrectOnlyClaims.length} sai · ${partialOnlyClaims.length} thiếu · ${correctOnlyClaims.length} đúng chuẩn`
+                      : 'Tất cả mệnh đề đã đối chiếu đều đúng chuẩn SGK'}
+                  </p>
+                </div>
+
+                {visibleClaims.length > 1 && (
+                  <div className="inline-flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const idx = visibleClaims.findIndex((c) => c.claimId === selectedClaimId);
+                        const prevIdx = idx <= 0 ? visibleClaims.length - 1 : idx - 1;
+                        const target = visibleClaims[prevIdx];
+                        if (target) {
+                          selectClaimFromRight(target.claimId, target.sourcePage);
+                          noteCardRefs.current[target.claimId]?.scrollIntoView({
+                            behavior: 'smooth',
+                            block: 'nearest',
+                          });
+                        }
+                      }}
+                      className="glass-control px-2 py-1 rounded-lg text-[11px] font-medium text-slate-700 dark:text-slate-200 cursor-pointer whitespace-nowrap"
+                      title="Mục trước"
+                    >
+                      ↑ Trước
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const idx = visibleClaims.findIndex((c) => c.claimId === selectedClaimId);
+                        const nextIdx = idx < 0 || idx >= visibleClaims.length - 1 ? 0 : idx + 1;
+                        const target = visibleClaims[nextIdx];
+                        if (target) {
+                          selectClaimFromRight(target.claimId, target.sourcePage);
+                          noteCardRefs.current[target.claimId]?.scrollIntoView({
+                            behavior: 'smooth',
+                            block: 'nearest',
+                          });
+                        }
+                      }}
+                      className="glass-control px-2 py-1 rounded-lg text-[11px] font-medium text-slate-700 dark:text-slate-200 cursor-pointer whitespace-nowrap"
+                      title="Mục tiếp theo"
+                    >
+                      Tiếp ↓
+                    </button>
+                  </div>
+                )}
               </div>
 
-              <div className="inline-flex items-center gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-lg text-xs">
-                <button
-                  type="button"
-                  onClick={() => setFilterMode('errors')}
-                  className={`px-2.5 py-1 rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 tabular-nums ${
-                    filterMode === 'errors'
-                      ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                  }`}
-                >
-                  Lỗi & thiếu ({issueClaims.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFilterMode('all')}
-                  className={`px-2.5 py-1 rounded-md font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 tabular-nums ${
-                    filterMode === 'all'
-                      ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
-                  }`}
-                >
-                  Tất cả ({analysis.claims.length})
-                </button>
+              <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800/90 rounded-xl text-[11px]">
+                {(
+                  [
+                    ['errors', `Cần sửa (${issueClaims.length})`],
+                    ['incorrect', `Sai (${incorrectOnlyClaims.length})`],
+                    ['partial', `Thiếu (${partialOnlyClaims.length})`],
+                    ['correct', `Đúng (${correctOnlyClaims.length})`],
+                    ['all', `Tất cả (${analysis.claims.length})`],
+                  ] as const
+                ).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setFilterMode(mode)}
+                    className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 tabular-nums ${
+                      filterMode === mode
+                        ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 font-semibold shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
             </div>
 

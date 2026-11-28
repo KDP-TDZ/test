@@ -31,12 +31,14 @@ import {
   buildFileNameSuggestionCacheKey,
   getEffectiveUploadLimits,
   inferGradeAndSubjectFromFileNames,
+  inferScopeFromContentHeuristic,
   isGenericCameraFileNames,
   splitFilesIntoByteBudgetBatches,
   validateUploadFileSize,
 } from '../core/uploadBatching';
 import { repairUtf8Mojibake } from '../core/textEncoding';
 import { authorizedFetch, parseApiResponse } from '../services/apiClient';
+import { extractClientStudentPdfForGrading } from '../services/clientPdfIngest';
 import { compressImageFilesForUpload } from '../services/imageCompression';
 import {
   listReferenceBooks,
@@ -82,7 +84,7 @@ const PIPELINE_STAGES: Array<{ id: AnalysisStage; label: string }> = [
   { id: 'extracting', label: 'Trích xuất văn bản, công thức & tự nhận diện chủ đề' },
   { id: 'retrieving_references', label: 'Tự động tìm sách giáo khoa & chuẩn chương trình' },
   { id: 'verifying', label: 'Kiểm định từng câu, công thức & độ đầy đủ ký hiệu' },
-  { id: 'calculating', label: 'Chấm điểm độc lập Độ chính xác & Độ đầy đủ' },
+  { id: 'calculating', label: 'Tổng hợp kết quả đối chiếu & kiểm tra độ bao phủ chương' },
   { id: 'generating_report', label: 'Hoàn tất & lưu báo cáo phân tích' },
 ];
 
@@ -670,7 +672,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         status: 'completed',
         currentStage: 'completed',
         stagesCompleted: PIPELINE_STAGES.map((s) => s.id),
-        resultSummary: `Accuracy ${record.accuracyScore ?? 'N/A'}% · Completeness ${record.completenessScore ?? 'N/A'}%`,
+        resultSummary: `Đã đối chiếu ${record.claims.length} mệnh đề · ${record.weaknesses.length} điểm cần lưu ý`,
         updatedAt: new Date().toISOString(),
       }).catch(() => {});
 
@@ -762,33 +764,195 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
       let suggestion: Record<string, any> = {};
 
       if (!isImageUpload) {
-        const isPdf = files[0].type === 'application/pdf' || files[0].name.toLowerCase().endsWith('.pdf');
-        setProgressDetail({ current: 1, total: 2 });
-        setStatusLabel(
-          manualSubject
-            ? isPdf
-              ? `Đang trích xuất PDF (${SUBJECT_LABELS[manualSubject]} · Lớp ${manualGrade})...`
-              : `Đang đọc tệp Word (${SUBJECT_LABELS[manualSubject]} · Lớp ${manualGrade})...`
-            : isPdf
-            ? 'Đang trích xuất từng trang tệp PDF & nhận diện môn học...'
-            : 'Đang đọc nội dung tệp Word (DOCX) & nhận diện môn học...'
+        const hasPdf = preparedFiles.some(
+          (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
         );
-        const formData = new FormData();
-        preparedFiles.forEach((f) => formData.append('files', f));
-        if (manualSubject) {
-          formData.append('skipScope', 'true');
-          formData.append('presetGrade', manualGrade);
-          formData.append('presetSubject', manualSubject);
+        const nonPdfFiles = preparedFiles.filter(
+          (f) => !(f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'))
+        );
+        const pdfFiles = preparedFiles.filter(
+          (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+        );
+
+        let pageOffsetCursor = 0;
+
+        for (const pdfFile of pdfFiles) {
+          let clientPdfSucceeded = false;
+          try {
+            setStatusLabel(`Đang đọc từng trang PDF (${pdfFile.name}) ngay trên trình duyệt...`);
+            const clientPdfResult = await extractClientStudentPdfForGrading(pdfFile, {
+              maxPages,
+              pageOffset: pageOffsetCursor,
+              onProgress: (curr, total) => {
+                setProgressDetail({ current: curr, total });
+                setStatusLabel(
+                  manualSubject
+                    ? `Đang trích xuất trang ${curr}/${total} PDF (${SUBJECT_LABELS[manualSubject]} · Lớp ${manualGrade})...`
+                    : `Đang trích xuất trang ${curr}/${total} tệp PDF (${pdfFile.name})...`
+                );
+              },
+            });
+
+            const fileDirectPages = clientPdfResult.directPages;
+            const scannedItems = clientPdfResult.scannedPageImages;
+            let fileOcrPages: ExtractedPage[] = [];
+
+            if (scannedItems.length > 0) {
+              const scannedFiles = scannedItems.map((it) => it.file);
+              const batches = splitFilesIntoByteBudgetBatches(scannedFiles);
+              let batchItemCursor = 0;
+
+              for (let bIdx = 0; bIdx < batches.length; bIdx += 1) {
+                const batch = batches[bIdx];
+                const batchScannedMeta = scannedItems.slice(
+                  batchItemCursor,
+                  batchItemCursor + batch.length
+                );
+                const isLastBatch = bIdx === batches.length - 1;
+
+                setProgressDetail({
+                  current: batchItemCursor + 1,
+                  total: scannedItems.length,
+                });
+                setStatusLabel(
+                  `Trang ${batchScannedMeta.map((m) => m.pageNumber).join(', ')} là bản scan ảnh — đang đọc OCR đa mô hình...`
+                );
+
+                const formData = new FormData();
+                batch.forEach((f) => formData.append('files', f));
+                formData.append('pageOffset', String(pageOffsetCursor));
+                formData.append('skipScope', Boolean(manualSubject) || !isLastBatch ? 'true' : 'false');
+                if (manualSubject) {
+                  formData.append('presetGrade', manualGrade);
+                  formData.append('presetSubject', manualSubject);
+                }
+
+                const res = await authorizedFetch('/api/ai/extract', {
+                  method: 'POST',
+                  timeoutMs: 55_000,
+                  body: formData,
+                });
+                const data = await parseApiResponse<any>(
+                  res,
+                  'Không thể đọc OCR các trang PDF scan.'
+                );
+                const rawBatchPages: ExtractedPage[] = data.pages || [];
+                const remapped = rawBatchPages.map((p, idx) => {
+                  const targetPageNum =
+                    batchScannedMeta[idx]?.pageNumber ?? p.pageNumber;
+                  return {
+                    ...p,
+                    pageNumber: targetPageNum,
+                    blocks: (p.blocks || []).map((b, bIdx) => ({
+                      ...b,
+                      blockId: `p${targetPageNum}_b${bIdx + 1}`,
+                      pageNumber: targetPageNum,
+                    })),
+                  };
+                });
+                fileOcrPages = [...fileOcrPages, ...remapped];
+                if (isLastBatch && data.scopeSuggestion) {
+                  suggestion = data.scopeSuggestion;
+                }
+                batchItemCursor += batch.length;
+              }
+            }
+
+            const combinedPdfPages = [...fileDirectPages, ...fileOcrPages].sort(
+              (a, b) => a.pageNumber - b.pageNumber
+            );
+            pages = [...pages, ...combinedPdfPages];
+            pageOffsetCursor += clientPdfResult.totalPages;
+            clientPdfSucceeded = combinedPdfPages.length > 0;
+          } catch (clientPdfErr) {
+            if (
+              clientPdfErr instanceof Error &&
+              clientPdfErr.message.includes('vượt quá giới hạn tối đa')
+            ) {
+              throw clientPdfErr;
+            }
+            console.warn('Client PDF extraction fallback to server /api/ai/extract:', clientPdfErr);
+          }
+
+          if (!clientPdfSucceeded) {
+            const formData = new FormData();
+            formData.append('files', pdfFile);
+            formData.append('pageOffset', String(pageOffsetCursor));
+            if (manualSubject) {
+              formData.append('skipScope', 'true');
+              formData.append('presetGrade', manualGrade);
+              formData.append('presetSubject', manualSubject);
+            }
+            const res = await authorizedFetch('/api/ai/extract', {
+              method: 'POST',
+              timeoutMs: 45_000,
+              body: formData,
+            });
+            const data = await parseApiResponse<any>(
+              res,
+              'Không thể trích xuất nội dung tài liệu PDF.'
+            );
+            const serverPages: ExtractedPage[] = data.pages || [];
+            pages = [...pages, ...serverPages];
+            pageOffsetCursor += serverPages.length;
+            if (data.scopeSuggestion) {
+              suggestion = data.scopeSuggestion;
+            }
+          }
         }
-        const res = await authorizedFetch('/api/ai/extract', {
-          method: 'POST',
-          timeoutMs: 45_000,
-          body: formData,
-        });
-        const data = await parseApiResponse<any>(res, 'Không thể trích xuất nội dung tài liệu.');
-        pages = data.pages || [];
-        suggestion = data.scopeSuggestion || {};
-        setProgressDetail({ current: 2, total: 2 });
+
+        if (nonPdfFiles.length > 0) {
+          setProgressDetail({ current: 1, total: 2 });
+          setStatusLabel(
+            manualSubject
+              ? `Đang đọc tệp Word (${SUBJECT_LABELS[manualSubject]} · Lớp ${manualGrade})...`
+              : hasPdf
+              ? 'Đang đọc các tệp tài liệu đính kèm...'
+              : 'Đang đọc nội dung tệp Word (DOCX) & nhận diện môn học...'
+          );
+          const formData = new FormData();
+          nonPdfFiles.forEach((f) => formData.append('files', f));
+          formData.append('pageOffset', String(pageOffsetCursor));
+          if (manualSubject) {
+            formData.append('skipScope', 'true');
+            formData.append('presetGrade', manualGrade);
+            formData.append('presetSubject', manualSubject);
+          }
+          const res = await authorizedFetch('/api/ai/extract', {
+            method: 'POST',
+            timeoutMs: 45_000,
+            body: formData,
+          });
+          const data = await parseApiResponse<any>(res, 'Không thể trích xuất nội dung tài liệu.');
+          const docPages: ExtractedPage[] = data.pages || [];
+          pages = [...pages, ...docPages];
+          if (data.scopeSuggestion) {
+            suggestion = data.scopeSuggestion;
+          }
+          setProgressDetail({ current: 2, total: 2 });
+        }
+
+        if (!suggestion.suggestedSubject && pages.length > 0) {
+          const combinedText = pages.map((p) => p.rawText).join('\n');
+          const fileGuess = inferGradeAndSubjectFromFileNames([files[0]?.name || '']);
+          const contentGuess = inferScopeFromContentHeuristic(
+            combinedText,
+            files[0]?.name || ''
+          );
+          suggestion = {
+            suggestedGrade:
+              manualGrade || fileGuess.grade || contentGuess.suggestedGrade || '10',
+            suggestedSubject:
+              manualSubject ||
+              fileGuess.subject ||
+              contentGuess.suggestedSubject ||
+              'khac',
+            suggestedChapters: contentGuess.suggestedChapters,
+            suggestedTitle:
+              (files[0]?.name || '').replace(/\.[^.]+$/, '') ||
+              contentGuess.suggestedTitle,
+          };
+        }
       } else {
         const totalPages = preparedFiles.length;
         const batches = splitFilesIntoByteBudgetBatches(preparedFiles);
@@ -1416,7 +1580,7 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
         </div>
       )}
 
-      {/* STEP 2: Automatic End-to-End OCR & Grading Progress (5-Step Bar + Live Stage Details) */}
+      {/* STEP 2: Automatic End-to-End OCR & Grading Progress (Compact Live Verification Console) */}
       {step === 'processing' && (
         <div className="upload-step-panel">
           <VerificationFiveStepBar
@@ -1427,52 +1591,71 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
               statusLabel || PIPELINE_STAGES[Math.max(0, activeStageIdx)]?.label
             }
           >
-            <div className="space-y-5">
-              <div className="text-center space-y-2.5">
-                <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-[#1746A2] dark:text-[#93C5FD] bg-[#EAF2FF] dark:bg-[#2563EB]/20 border border-[#BFDBFE] dark:border-[#3B82F6]/35">
-                  <CalmDots className="text-[#2563EB] dark:text-[#60A5FA]" />
-                  <span>
-                    Chặng xử lý {Math.max(1, activeStageIdx + 1)}/{PIPELINE_STAGES.length}
-                    {progressDetail && progressDetail.total > 0
-                      ? ` · Trang/Mục ${progressDetail.current}/${progressDetail.total}`
-                      : ''}
+            <div className="space-y-4">
+              {/* Compact Live Status Header: Active Stage, Page Progress & Elapsed Timer */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl bg-[#F8FAFC] dark:bg-[#0D1628] border border-[#E6ECF5] dark:border-[#1E293B] px-4 py-3.5">
+                <div className="space-y-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="inline-flex items-center gap-1.5 font-semibold text-[#1746A2] dark:text-[#93C5FD]">
+                      <CalmDots className="text-[#2563EB] dark:text-[#60A5FA]" />
+                      <span>
+                        Chặng {Math.max(1, activeStageIdx + 1)}/{PIPELINE_STAGES.length}
+                      </span>
+                    </span>
+                    {progressDetail && progressDetail.total > 0 && (
+                      <>
+                        <span className="text-slate-300 dark:text-slate-600" aria-hidden="true">·</span>
+                        <span className="font-mono font-semibold text-[#2563EB] dark:text-[#60A5FA] tabular-nums">
+                          Mục {progressDetail.current}/{progressDetail.total}
+                        </span>
+                      </>
+                    )}
+                    {files[0] && (
+                      <>
+                        <span className="text-slate-300 dark:text-slate-600" aria-hidden="true">·</span>
+                        <span className="text-slate-500 dark:text-slate-400 truncate max-w-[220px]">
+                          {files[0].name}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  <h2 className="upload-status-label font-display text-sm sm:text-base font-bold text-[#172033] dark:text-[#E6EFFC] leading-snug">
+                    {statusLabel || PIPELINE_STAGES[Math.max(0, activeStageIdx)]?.label}
+                  </h2>
+                </div>
+
+                <div className="flex items-center gap-3 shrink-0 self-start sm:self-center">
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-[#111B30] border border-[#E6ECF5] dark:border-[#1E293B] font-mono text-xs font-semibold text-[#172033] dark:text-[#E6EFFC] tabular-nums">
+                    <Clock className="w-3.5 h-3.5 text-[#2563EB] dark:text-[#60A5FA]" />
+                    <span>{elapsedSeconds}s</span>
                   </span>
                 </div>
-                <h2 className="upload-status-label min-h-[1.85rem] font-display text-[clamp(1.05rem,3.2vw,1.3rem)] font-bold text-[#172033] dark:text-[#E6EFFC]">
-                  {statusLabel || PIPELINE_STAGES[Math.max(0, activeStageIdx)]?.label}
-                </h2>
-                <div className="max-w-xs mx-auto pt-0.5">
-                  <CalmProgressBar className="h-1 w-full" label="Đang xử lý tài liệu" />
-                </div>
-                <p className="inline-flex items-center gap-1.5 font-mono text-xs text-[#525E75] dark:text-[#94A3B8] tabular-nums">
-                  <Clock className="w-3.5 h-3.5 text-[#2563EB] dark:text-[#60A5FA]" />
-                  Thời gian đã trôi qua: {elapsedSeconds}s
-                </p>
               </div>
 
-              <div className="max-w-lg mx-auto space-y-2">
+              {/* Compact Horizontal 5-Stage Pipeline Strip */}
+              <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
                 {PIPELINE_STAGES.map((st, idx) => {
                   const isDone = idx < activeStageIdx;
                   const isCurrent = idx === activeStageIdx;
                   return (
                     <div
                       key={st.id}
-                      className={`flex items-center justify-between gap-3 rounded-xl px-3.5 sm:px-4 py-2.5 text-xs border transition-colors ${
+                      className={`flex items-center justify-between sm:justify-start gap-2 rounded-xl px-3 py-2 text-xs border transition-colors ${
                         isCurrent
-                          ? 'bg-[#EAF2FF] dark:bg-[#2563EB]/20 border-[#BFDBFE] dark:border-[#3B82F6]/45 text-[#1746A2] dark:text-[#93C5FD] font-semibold shadow-xs'
+                          ? 'bg-[#EAF2FF] dark:bg-[#2563EB]/20 border-[#BFDBFE] dark:border-[#3B82F6]/45 text-[#1746A2] dark:text-[#93C5FD] font-semibold'
                           : isDone
                           ? 'bg-emerald-50/75 dark:bg-emerald-950/35 border-emerald-200/80 dark:border-emerald-800/60 text-[#059669] dark:text-emerald-300'
-                          : 'bg-[#F8FAFC] dark:bg-[#0D1628] border-[#E6ECF5] dark:border-[#1E293B] text-[#525E75] dark:text-[#94A3B8]'
+                          : 'bg-white dark:bg-[#111B30] border-[#E6ECF5] dark:border-[#1E293B] text-[#525E75] dark:text-[#94A3B8]'
                       }`}
                     >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <span className="font-mono w-5 text-center shrink-0 tabular-nums">
-                          {isDone ? '✓' : isCurrent ? '→' : `${idx + 1}`}
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-mono text-[11px] font-bold shrink-0 tabular-nums">
+                          {isDone ? '✓' : isCurrent ? '●' : `${idx + 1}.`}
                         </span>
                         <span className="truncate">{st.label}</span>
                       </div>
                       {isCurrent && progressDetail && progressDetail.total > 1 && (
-                        <span className="font-mono text-[11px] shrink-0 text-[#2563EB] dark:text-[#60A5FA] tabular-nums">
+                        <span className="font-mono text-[11px] shrink-0 text-[#2563EB] dark:text-[#60A5FA] tabular-nums sm:hidden">
                           {progressDetail.current}/{progressDetail.total}
                         </span>
                       )}
@@ -1481,8 +1664,8 @@ export const UploadWorkspace: React.FC<UploadWorkspaceProps> = ({ onAnalysisComp
                 })}
               </div>
 
-              <p className="text-xs text-center text-[#475B78] dark:text-[#B4C7E2] max-w-md mx-auto leading-[1.6]">
-                Vui lòng giữ tab trình duyệt mở để hoàn tất quá trình kiểm định và chuyển sang bước sửa lỗi chi tiết.
+              <p className="text-[11px] text-center text-[#525E75] dark:text-[#94A3B8]">
+                Giữ tab trình duyệt mở — hệ thống sẽ tự chuyển sang màn hình đối chiếu & sửa lỗi ngay khi hoàn tất.
               </p>
             </div>
           </VerificationFiveStepBar>

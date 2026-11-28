@@ -62,110 +62,110 @@ export const VerificationFiveStepBar: React.FC<VerificationFiveStepBarProps> = (
         </span>
       </div>
 
-      {/* Unified Editorial Cobalt & Slate Stepper Card */}
-      <div className="rounded-2xl sm:rounded-3xl p-2 sm:p-3 bg-[#F1F5FA] dark:bg-[#0D1628] border border-[#E6ECF5] dark:border-[#1E293B]">
-        <div className="w-full rounded-xl sm:rounded-2xl bg-white dark:bg-[#111B30] border border-[#E6ECF5] dark:border-[#1E293B] shadow-[0_2px_10px_-4px_rgba(15,23,42,0.06)] px-4 py-5 sm:px-8 sm:py-6">
-          <ol className="mx-auto max-w-4xl grid grid-cols-5 gap-1 sm:gap-4 items-start">
-            {VERIFICATION_STEPS.map((step) => {
-              const isCurrent = step.id === activeStep;
-              const isCompleted = step.id < activeStep;
-              const canClick =
-                Boolean(onSelectStep) &&
-                (interactiveSteps.includes(step.id) || isCurrent);
+      {/* Single-Elevation Compact Cobalt & Slate Stepper Card */}
+      <div className="w-full rounded-2xl bg-white dark:bg-[#111B30] border border-[#E6ECF5] dark:border-[#1E293B] shadow-[0_2px_10px_-4px_rgba(15,23,42,0.06)] px-3.5 py-3.5 sm:px-6 sm:py-4">
+        <ol className="mx-auto max-w-4xl grid grid-cols-5 gap-1 sm:gap-3 items-center">
+          {VERIFICATION_STEPS.map((step) => {
+            const isCurrent = step.id === activeStep;
+            const isCompleted = step.id < activeStep;
+            const canClick =
+              Boolean(onSelectStep) &&
+              (interactiveSteps.includes(step.id) || isCurrent);
 
-              return (
-                <li key={step.id} className="flex flex-col items-center text-center min-w-0">
-                  <button
-                    type="button"
-                    disabled={!canClick}
-                    onClick={() => {
-                      if (canClick && onSelectStep) {
-                        onSelectStep(step.id);
-                      }
-                    }}
-                    aria-current={isCurrent ? 'step' : undefined}
-                    aria-label={`Bước ${step.id}: ${step.label}${
+            return (
+              <li key={step.id} className="flex flex-col items-center text-center min-w-0">
+                <button
+                  type="button"
+                  disabled={!canClick}
+                  onClick={() => {
+                    if (canClick && onSelectStep) {
+                      onSelectStep(step.id);
+                    }
+                  }}
+                  aria-current={isCurrent ? 'step' : undefined}
+                  aria-label={`Bước ${step.id}: ${step.label}${
+                    isCurrent
+                      ? ' (Đang thực hiện)'
+                      : isCompleted
+                      ? ' (Đã hoàn thành)'
+                      : ' (Chưa mở)'
+                  }`}
+                  className={`group flex flex-col sm:flex-row items-center justify-center gap-1.5 sm:gap-2 w-full min-h-[38px] rounded-xl py-1 px-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB] transition-colors duration-150 ${
+                    canClick
+                      ? 'cursor-pointer hover:bg-[#F8FAFC] dark:hover:bg-[#0D1628]'
+                      : 'cursor-default'
+                  }`}
+                >
+                  <span
+                    className={`size-7 sm:size-7 rounded-full inline-flex items-center justify-center font-mono text-[11px] sm:text-xs font-semibold tabular-nums shrink-0 transition-colors duration-150 ${
                       isCurrent
-                        ? ' (Đang thực hiện)'
+                        ? 'bg-[#2563EB] text-white shadow-[0_4px_12px_-3px_rgba(37,99,235,0.5)]'
                         : isCompleted
-                        ? ' (Đã hoàn thành)'
-                        : ' (Chưa mở)'
-                    }`}
-                    className={`group flex flex-col items-center justify-start w-full min-h-[44px] rounded-xl py-1 px-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB] transition-transform duration-150 ${
-                      canClick ? 'cursor-pointer hover:-translate-y-0.5' : 'cursor-default'
+                        ? 'bg-emerald-50 dark:bg-emerald-950/60 text-[#059669] dark:text-emerald-400 border border-[#059669] dark:border-emerald-400/80'
+                        : 'bg-[#F8FAFC] dark:bg-[#0D1628] text-[#525E75] dark:text-[#94A3B8] border border-[#CBD5E1] dark:border-[#334155]'
                     }`}
                   >
-                    <span
-                      className={`size-9 sm:size-10 rounded-full inline-flex items-center justify-center font-mono text-xs sm:text-sm font-semibold tabular-nums transition-colors duration-150 ${
-                        isCurrent
-                          ? 'bg-[#2563EB] text-white shadow-[0_6px_16px_-4px_rgba(37,99,235,0.5)]'
-                          : isCompleted
-                          ? 'bg-emerald-50 dark:bg-emerald-950/60 text-[#059669] dark:text-emerald-400 border-[1.5px] border-[#059669] dark:border-emerald-400/80'
-                          : 'bg-[#F8FAFC] dark:bg-[#0D1628] text-[#525E75] dark:text-[#94A3B8] border border-[#CBD5E1] dark:border-[#334155]'
-                      }`}
-                    >
-                      {isCompleted ? (
-                        <svg
-                          viewBox="0 0 16 16"
-                          className="size-4"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2.2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          aria-hidden="true"
-                        >
-                          <path d="M3.5 8.5 6.5 11.5 12.5 4.5" />
-                        </svg>
-                      ) : (
-                        step.id
-                      )}
-                    </span>
+                    {isCompleted ? (
+                      <svg
+                        viewBox="0 0 16 16"
+                        className="size-3.5"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M3.5 8.5 6.5 11.5 12.5 4.5" />
+                      </svg>
+                    ) : (
+                      step.id
+                    )}
+                  </span>
 
-                    <span
-                      className={`mt-2 sm:mt-3 font-display text-[11px] sm:text-xs leading-tight tracking-tight truncate max-w-full sm:whitespace-nowrap ${
-                        isCurrent
-                          ? 'font-bold text-[#172033] dark:text-[#E6EFFC]'
-                          : isCompleted
-                          ? 'font-semibold text-[#059669] dark:text-emerald-400 group-hover:text-[#172033] dark:group-hover:text-white'
-                          : 'font-medium text-[#525E75] dark:text-[#94A3B8]'
-                      }`}
-                    >
-                      <span className="hidden sm:inline">{step.label}</span>
-                      <span className="sm:hidden">{step.shortLabel}</span>
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ol>
+                  <span
+                    className={`font-display text-[11px] sm:text-xs leading-tight tracking-tight truncate max-w-full whitespace-nowrap ${
+                      isCurrent
+                        ? 'font-bold text-[#172033] dark:text-[#E6EFFC]'
+                        : isCompleted
+                        ? 'font-semibold text-[#059669] dark:text-emerald-400 group-hover:text-[#172033] dark:group-hover:text-white'
+                        : 'font-medium text-[#525E75] dark:text-[#94A3B8]'
+                    }`}
+                  >
+                    <span className="hidden md:inline">{step.label}</span>
+                    <span className="md:hidden">{step.shortLabel}</span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ol>
 
-          {/* Continuous Bottom Progress Rail (Cobalt #2563EB GPU scaleX fill) */}
-          <div className="mx-auto max-w-4xl mt-5 sm:mt-6 px-2 sm:px-4">
+        {/* Continuous Bottom Progress Rail (Cobalt #2563EB GPU scaleX fill) */}
+        <div className="mx-auto max-w-4xl mt-3 px-1 sm:px-2">
+          <div
+            role="progressbar"
+            aria-label="Tiến độ quy trình kiểm định và sửa lỗi"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progressValuePct}
+            aria-valuetext={`Bước ${activeSpec.id}/5: ${activeSpec.label} (${progressValuePct}%)`}
+            className="h-1.5 w-full rounded-full bg-[#E6ECF5] dark:bg-[#1E293B] overflow-hidden"
+          >
             <div
-              role="progressbar"
-              aria-label="Tiến độ quy trình kiểm định và sửa lỗi"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={progressValuePct}
-              aria-valuetext={`Bước ${activeSpec.id}/5: ${activeSpec.label} (${progressValuePct}%)`}
-              className="h-1.5 w-full rounded-full bg-[#E6ECF5] dark:bg-[#1E293B] overflow-hidden"
-            >
-              <div
-                className={`h-full w-full origin-left rounded-full bg-[#2563EB] dark:bg-[#3B82F6] transition-transform duration-300 ease-out ${
-                  indeterminate ? 'sc-rail-sheen' : ''
-                }`}
-                style={{ transform: `scaleX(${scaleFraction})` }}
-              />
-            </div>
+              className={`h-full w-full origin-left rounded-full bg-[#2563EB] dark:bg-[#3B82F6] transition-transform duration-300 ease-out ${
+                indeterminate ? 'sc-rail-sheen' : ''
+              }`}
+              style={{ transform: `scaleX(${scaleFraction})` }}
+            />
           </div>
-
-          {children && (
-            <div className="mt-6 pt-5 border-t border-[#E6ECF5] dark:border-[#1E293B]">
-              {children}
-            </div>
-          )}
         </div>
+
+        {children && (
+          <div className="mt-4 pt-4 border-t border-[#E6ECF5] dark:border-[#1E293B]">
+            {children}
+          </div>
+        )}
       </div>
     </section>
   );

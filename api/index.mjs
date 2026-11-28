@@ -330,7 +330,39 @@ async function assertResolvedHostSafe(urlStr) {
     throw new Error("T\u1EEB ch\u1ED1i k\u1EBFt n\u1ED1i: Kh\xF4ng th\u1EC3 ph\xE2n gi\u1EA3i DNS an to\xE0n cho t\xEAn mi\u1EC1n \u0111\xEDch.");
   }
 }
+function ensureNodePdfJsPolyfills() {
+  const g = globalThis;
+  if (typeof g.DOMMatrix === "undefined") {
+    class MinimalDOMMatrix {
+      constructor(init) {
+        this.a = 1;
+        this.b = 0;
+        this.c = 0;
+        this.d = 1;
+        this.e = 0;
+        this.f = 0;
+        if (Array.isArray(init) && init.length >= 6) {
+          [this.a, this.b, this.c, this.d, this.e, this.f] = init;
+        }
+      }
+    }
+    g.DOMMatrix = MinimalDOMMatrix;
+  }
+}
 async function extractPdfPagesFromBuffer(buffer) {
+  ensureNodePdfJsPolyfills();
+  const g = globalThis;
+  if (!nodePdfWorkerLoaded && !g.pdfjsWorker) {
+    try {
+      const workerSpecifier = "pdfjs-dist/legacy/build/pdf.worker.mjs";
+      const workerMod = await import(workerSpecifier);
+      if (workerMod?.WorkerMessageHandler) {
+        g.pdfjsWorker = { WorkerMessageHandler: workerMod.WorkerMessageHandler };
+      }
+      nodePdfWorkerLoaded = true;
+    } catch {
+    }
+  }
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const uint8 = new Uint8Array(buffer);
   const loadingTask = pdfjs.getDocument({
@@ -340,26 +372,33 @@ async function extractPdfPagesFromBuffer(buffer) {
   });
   const doc = await loadingTask.promise;
   const pages = [];
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page = await doc.getPage(i);
-    const content = await page.getTextContent();
-    const lines = [];
-    let currentLine = "";
-    let lastY = null;
-    for (const item of content.items) {
-      if ("str" in item) {
-        const y = Array.isArray(item.transform) ? item.transform[5] : null;
-        if (lastY !== null && y !== null && Math.abs(y - lastY) > 4) {
-          if (currentLine.trim()) lines.push(currentLine.trim());
-          currentLine = item.str;
-        } else {
-          currentLine += (currentLine && item.str ? " " : "") + item.str;
+  try {
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      const lines = [];
+      let currentLine = "";
+      let lastY = null;
+      for (const item of content.items) {
+        if ("str" in item && typeof item.str === "string") {
+          const y = Array.isArray(item.transform) ? Number(item.transform[5]) : null;
+          if (lastY !== null && y !== null && Math.abs(y - lastY) > 4) {
+            if (currentLine.trim()) lines.push(currentLine.trim());
+            currentLine = item.str;
+          } else {
+            currentLine += (currentLine && item.str ? " " : "") + item.str;
+          }
+          lastY = y;
         }
-        lastY = y;
       }
+      if (currentLine.trim()) lines.push(currentLine.trim());
+      pages.push({ pageNumber: i, text: lines.join("\n") });
     }
-    if (currentLine.trim()) lines.push(currentLine.trim());
-    pages.push({ pageNumber: i, text: lines.join("\n") });
+  } finally {
+    await doc.cleanup().catch(() => {
+    });
+    await loadingTask.destroy().catch(() => {
+    });
   }
   return pages;
 }
@@ -557,12 +596,13 @@ function ingestReferenceFromTextOrJson(params) {
     extractedSummary: `\u0110\xE3 l\u1EADp ch\u1EC9 m\u1EE5c ${pages.length} ph\u1EA7n v\u0103n b\u1EA3n th\xE0nh ${chunks.length} \u0111o\u1EA1n tri th\u1EE9c.`
   };
 }
-var MAX_REMOTE_PDF_BYTES;
+var MAX_REMOTE_PDF_BYTES, nodePdfWorkerLoaded;
 var init_referenceIngestService = __esm({
   "src/server/referenceIngestService.ts"() {
     init_urlSecurity();
     init_retrieval();
     MAX_REMOTE_PDF_BYTES = 35 * 1024 * 1024;
+    nodePdfWorkerLoaded = false;
   }
 });
 
@@ -7437,6 +7477,7 @@ var DocumentExtractionService = class {
     return pages.sort((a, b) => a.pageNumber - b.pageNumber);
   }
   static async extractFromPdfBuffer(buffer, _tokensOut, _opts) {
+    let parseErrorDetail = "";
     try {
       const { extractPdfPagesFromBuffer: extractPdfPagesFromBuffer2 } = await Promise.resolve().then(() => (init_referenceIngestService(), referenceIngestService_exports));
       const textPages = await extractPdfPagesFromBuffer2(buffer);
@@ -7452,7 +7493,14 @@ var DocumentExtractionService = class {
           };
         });
       }
-    } catch {
+    } catch (pdfErr) {
+      parseErrorDetail = pdfErr instanceof Error ? pdfErr.message : String(pdfErr);
+      console.warn("Server-side PDF text extraction error:", parseErrorDetail);
+    }
+    if (parseErrorDetail) {
+      throw new Error(
+        `Kh\xF4ng th\u1EC3 \u0111\u1ECDc c\u1EA5u tr\xFAc t\u1EC7p PDF tr\xEAn m\xE1y ch\u1EE7 (${parseErrorDetail.slice(0, 120)}). Vui l\xF2ng th\u1EED l\u1EA1i ho\u1EB7c t\u1EA3i t\u1EC7p l\xEAn tr\xEAn tr\xECnh duy\u1EC7t \u0111\u1EC3 h\u1EC7 th\u1ED1ng t\u1EF1 \u0111\u1ED9ng tr\xEDch xu\u1EA5t.`
+      );
     }
     throw new Error(
       "T\u1EC7p PDF n\xE0y l\xE0 b\u1EA3n scan \u1EA3nh (kh\xF4ng c\xF3 l\u1EDBp v\u0103n b\u1EA3n nh\xFAng). Vui l\xF2ng ch\u1EE5p ho\u1EB7c xu\u1EA5t t\u1EEBng trang sang \u1EA3nh JPG/PNG/WEBP (ho\u1EB7c d\xF9ng t\u1EC7p PDF/DOCX c\xF3 ch\u1EEF ch\u1ECDn \u0111\u01B0\u1EE3c) \u0111\u1EC3 h\u1EC7 th\u1ED1ng OCR \u0111a m\xF4 h\xECnh (Groq / Cloudflare / Mistral Vision) qu\xE9t ch\xEDnh x\xE1c h\u01A1n."

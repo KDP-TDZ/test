@@ -154,7 +154,7 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
         : 0;
 
     return analyses
-      .filter((a) => new Date(a.createdAt).getTime() >= cutoffMs && a.accuracyScore !== null)
+      .filter((a) => new Date(a.createdAt).getTime() >= cutoffMs)
       .slice()
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .slice(-12);
@@ -389,71 +389,41 @@ export const LearningAnalyticsView: React.FC<LearningAnalyticsViewProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <GlassSurface className="rounded-3xl p-6 space-y-4">
           <h2 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC]">
-            Xu hướng độ chính xác tài liệu kiểm định
+            Thống kê mệnh đề đã đối chiếu theo tài liệu
           </h2>
           {docScoreSeries.length === 0 ? (
             <p className="text-xs text-slate-500 dark:text-slate-400">
               Chưa có bài phân tích nào trong khoảng thời gian này.
             </p>
           ) : (
-            <div className="space-y-2">
-              <svg viewBox="0 0 420 150" className="w-full h-40 overflow-visible">
-                {[0, 25, 50, 75, 100].map((tick) => {
-                  const y = 130 - (tick / 100) * 110;
-                  return (
-                    <g key={tick}>
-                      <line
-                        x1={32}
-                        y1={y}
-                        x2={410}
-                        y2={y}
-                        stroke="currentColor"
-                        className="text-sky-200/80 dark:text-slate-700"
-                        strokeDasharray="3 3"
+            <div className="space-y-2.5 max-h-44 overflow-y-auto pr-1">
+              {docScoreSeries.map((d) => {
+                const total = d.claims.length;
+                const correctCount = d.claims.filter((c) => c.evaluationStatus === 'CORRECT').length;
+                const issueCount = d.claims.filter(
+                  (c) =>
+                    c.evaluationStatus === 'INCORRECT' ||
+                    c.evaluationStatus === 'PARTIALLY_CORRECT' ||
+                    c.evaluationStatus === 'MISSING'
+                ).length;
+                const fillPct = total > 0 ? Math.round((correctCount / total) * 100) : 100;
+                return (
+                  <div key={d.analysisId} className="text-xs space-y-1">
+                    <div className="flex items-center justify-between gap-2 text-slate-700 dark:text-slate-200">
+                      <span className="font-medium truncate">{d.documentTitle}</span>
+                      <span className="font-mono tabular-nums shrink-0 text-[11px]">
+                        {correctCount}/{total} chuẩn · {issueCount} cần sửa
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-sky-100 dark:bg-slate-800 overflow-hidden">
+                      <div
+                        className="h-full bg-[#2563EB] dark:bg-[#3B82F6]"
+                        style={{ width: `${Math.max(6, fillPct)}%` }}
                       />
-                      <text
-                        x={0}
-                        y={y + 4}
-                        fontSize="10"
-                        fill="currentColor"
-                        className="text-slate-500 dark:text-slate-400"
-                        fontFamily="monospace"
-                      >
-                        {tick}%
-                      </text>
-                    </g>
-                  );
-                })}
-                {docScoreSeries.length > 1 && (
-                  <polyline
-                    fill="none"
-                    stroke="#2563EB"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    points={docScoreSeries
-                      .map((d, i) => {
-                        const x = 42 + (i / (docScoreSeries.length - 1)) * 355;
-                        const y = 130 - ((d.accuracyScore ?? 0) / 100) * 110;
-                        return `${x},${y}`;
-                      })
-                      .join(' ')}
-                  />
-                )}
-                {docScoreSeries.map((d, i) => {
-                  const x =
-                    docScoreSeries.length === 1
-                      ? 210
-                      : 42 + (i / (docScoreSeries.length - 1)) * 355;
-                  const y = 130 - ((d.accuracyScore ?? 0) / 100) * 110;
-                  return (
-                    <g key={d.analysisId}>
-                      <circle cx={x} cy={y} r="4.5" fill="#2563EB" stroke="#ffffff" strokeWidth="1.5" />
-                      <title>{`${d.documentTitle}: ${d.accuracyScore}%`}</title>
-                    </g>
-                  );
-                })}
-              </svg>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </GlassSurface>

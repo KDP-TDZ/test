@@ -148,26 +148,26 @@ export const SummaryExportModal: React.FC<SummaryExportModalProps> = ({
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-0.5">
                 <div className="rounded-xl bg-slate-50 dark:bg-slate-900/70 px-3 py-2 border border-slate-200/70 dark:border-slate-800">
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Độ chính xác</p>
-                  <p className="font-mono font-bold text-sm text-[#16243E] dark:text-[#E6EFFC]">
-                    {analysis.accuracyScore !== null ? `${analysis.accuracyScore}%` : '—'}
-                  </p>
-                </div>
-                <div className="rounded-xl bg-slate-50 dark:bg-slate-900/70 px-3 py-2 border border-slate-200/70 dark:border-slate-800">
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Độ đầy đủ</p>
-                  <p className="font-mono font-bold text-sm text-[#16243E] dark:text-[#E6EFFC]">
-                    {analysis.completenessScore !== null ? `${analysis.completenessScore}%` : '—'}
-                  </p>
-                </div>
-                <div className="rounded-xl bg-slate-50 dark:bg-slate-900/70 px-3 py-2 border border-slate-200/70 dark:border-slate-800">
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Mệnh đề</p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Tổng mệnh đề</p>
                   <p className="font-mono font-bold text-sm text-[#16243E] dark:text-[#E6EFFC]">
                     {analysis.claims.length}
                   </p>
                 </div>
                 <div className="rounded-xl bg-slate-50 dark:bg-slate-900/70 px-3 py-2 border border-slate-200/70 dark:border-slate-800">
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Đã tự sửa</p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Đúng chuẩn SGK</p>
                   <p className="font-mono font-bold text-sm text-emerald-700 dark:text-emerald-400">
+                    {analysis.claims.filter((c) => c.evaluationStatus === 'CORRECT').length}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-slate-50 dark:bg-slate-900/70 px-3 py-2 border border-slate-200/70 dark:border-slate-800">
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Cần sửa / bổ sung</p>
+                  <p className="font-mono font-bold text-sm text-amber-700 dark:text-amber-400">
+                    {actionableCount}
+                  </p>
+                </div>
+                <div className="rounded-xl bg-slate-50 dark:bg-slate-900/70 px-3 py-2 border border-slate-200/70 dark:border-slate-800">
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Đã tự sửa</p>
+                  <p className="font-mono font-bold text-sm text-sky-700 dark:text-sky-400">
                     {resolvedCount}/{actionableCount}
                   </p>
                 </div>

@@ -63,17 +63,15 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
   const [savingProfile, setSavingProfile] = useState(false);
 
   const completed = analyses.filter((a) => a.analysisStatus === 'completed');
-  const accValues = completed
-    .map((a) => a.accuracyScore)
-    .filter((v): v is number => typeof v === 'number');
   const compValues = completed
     .map((a) => a.completenessScore)
     .filter((v): v is number => typeof v === 'number');
 
-  const avgAccuracy =
-    accValues.length > 0
-      ? Math.round((accValues.reduce((s, v) => s + v, 0) / accValues.length) * 10) / 10
-      : null;
+  const totalVerifiedClaims = completed.reduce((sum, a) => sum + (a.claims?.length || 0), 0);
+  const totalCorrectClaims = completed.reduce(
+    (sum, a) => sum + (a.claims?.filter((c) => c.evaluationStatus === 'CORRECT').length || 0),
+    0
+  );
   const avgCompleteness =
     compValues.length > 0
       ? Math.round((compValues.reduce((s, v) => s + v, 0) / compValues.length) * 10) / 10
@@ -84,25 +82,23 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
     (p) => !p.nextReviewAt || p.nextReviewAt <= nowIso
   ).length;
 
-  // Build inline SVG sparkline points from the latest up to 7 scored analyses (chronological)
+  // Build inline SVG sparkline points from the latest up to 7 completed analyses (claim volume)
   const sparklinePoints = useMemo(() => {
-    const scored = completed
-      .filter((a) => typeof a.accuracyScore === 'number')
-      .slice(0, 7)
-      .reverse();
-    if (scored.length === 0) return [];
+    const recent = completed.slice(0, 7).reverse();
+    if (recent.length === 0) return [];
     const width = 180;
     const height = 44;
     const padX = 6;
     const padY = 6;
-    return scored.map((item, idx) => {
-      const score = Math.max(0, Math.min(100, item.accuracyScore ?? 0));
+    const maxClaims = Math.max(5, ...recent.map((item) => item.claims.length));
+    return recent.map((item, idx) => {
+      const count = item.claims.length;
       const x =
-        scored.length === 1
+        recent.length === 1
           ? width / 2
-          : padX + (idx / (scored.length - 1)) * (width - padX * 2);
-      const y = height - padY - (score / 100) * (height - padY * 2);
-      return { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, score };
+          : padX + (idx / (recent.length - 1)) * (width - padX * 2);
+      const y = height - padY - (count / maxClaims) * (height - padY * 2);
+      return { x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, count };
     });
   }, [completed]);
 
@@ -372,7 +368,7 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
-            {/* Card 1: Document Analyses + Inline SVG Accuracy Sparkline */}
+            {/* Card 1: Document Analyses + Inline SVG Claim Volume Sparkline */}
             <button
               type="button"
               onClick={() => onNavigate('history')}
@@ -385,7 +381,9 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
                       {analyses.length}
                     </span>
                     <p className="text-[11px] font-semibold text-[#2563EB] dark:text-[#60A5FA] mt-1 font-mono tabular-nums">
-                      {avgAccuracy !== null ? `TB Chính xác ${avgAccuracy}%` : `${completed.length} hoàn tất`}
+                      {totalVerifiedClaims > 0
+                        ? `${totalCorrectClaims}/${totalVerifiedClaims} mệnh đề đúng chuẩn`
+                        : `${completed.length} hoàn tất`}
                     </p>
                   </div>
                   <span className="size-9 rounded-xl bg-[#EAF2FF] dark:bg-[#2563EB]/20 border border-[#BFDBFE] dark:border-[#3B82F6]/30 flex items-center justify-center shrink-0">
@@ -393,7 +391,7 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
                   </span>
                 </div>
 
-                {/* Crisp Inline SVG Accuracy Trend Sparkline */}
+                {/* Crisp Inline SVG Claim Volume Sparkline */}
                 <svg
                   viewBox="0 0 180 44"
                   className="w-full h-10 overflow-visible"
@@ -610,7 +608,7 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
                   Chưa có tài liệu nào được kiểm định
                 </p>
                 <p className="text-xs text-[#525E75] dark:text-[#94A3B8] max-w-sm mx-auto leading-relaxed">
-                  Tải lên trang vở chụp, đề cương hoặc PDF đầu tiên để nhận điểm Chính xác & Đầy đủ theo SGK.
+                  Tải lên trang vở chụp, đề cương hoặc PDF đầu tiên để đối chiếu từng mệnh đề & dẫn chứng theo SGK.
                 </p>
                 <WaterRippleButton size="sm" onClick={() => onNavigate('upload')}>
                   <Upload className="w-3.5 h-3.5" />
@@ -623,20 +621,20 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
                   <div className="grid grid-cols-12 gap-2 px-3 pb-2.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-[#525E75] dark:text-[#94A3B8]">
                     <span className="col-span-5">Tài liệu</span>
                     <span className="col-span-3">Môn & Ngày</span>
-                    <span className="col-span-2 text-center">Chính xác</span>
-                    <span className="col-span-2 text-right">Đầy đủ</span>
+                    <span className="col-span-2 text-center">Đúng chuẩn</span>
+                    <span className="col-span-2 text-right">Cần sửa</span>
                   </div>
                   <div className="divide-y divide-[#E6ECF5] dark:divide-[#1E293B]">
                     {analyses.slice(0, 5).map((item) => {
-                      const acc = item.accuracyScore;
-                      const accColor =
-                        acc === null
-                          ? 'text-slate-400 dark:text-slate-500'
-                          : acc >= 80
-                          ? 'text-[#059669] dark:text-emerald-400'
-                          : acc >= 60
-                          ? 'text-amber-700 dark:text-[#F5A623]'
-                          : 'text-[#E11D48] dark:text-rose-400';
+                      const correctCount = item.claims.filter(
+                        (c) => c.evaluationStatus === 'CORRECT'
+                      ).length;
+                      const issueCount = item.claims.filter(
+                        (c) =>
+                          c.evaluationStatus === 'INCORRECT' ||
+                          c.evaluationStatus === 'PARTIALLY_CORRECT' ||
+                          c.evaluationStatus === 'MISSING'
+                      ).length;
                       return (
                         <button
                           key={item.analysisId}
@@ -651,13 +649,17 @@ export const EtherealStudentDashboard: React.FC<EtherealStudentDashboardProps> =
                             {SUBJECT_LABELS[item.subject]} ·{' '}
                             {new Date(item.createdAt).toLocaleDateString('vi-VN')}
                           </span>
-                          <span
-                            className={`col-span-2 text-center font-mono text-xs font-semibold tabular-nums ${accColor}`}
-                          >
-                            {acc !== null ? `${acc}%` : '—'}
+                          <span className="col-span-2 text-center font-mono text-xs font-semibold tabular-nums text-[#059669] dark:text-emerald-400">
+                            {correctCount}/{item.claims.length}
                           </span>
-                          <span className="col-span-2 text-right font-mono text-xs font-semibold text-[#172033] dark:text-[#E6EFFC] tabular-nums">
-                            {item.completenessScore !== null ? `${item.completenessScore}%` : '—'}
+                          <span
+                            className={`col-span-2 text-right font-mono text-xs font-semibold tabular-nums ${
+                              issueCount === 0
+                                ? 'text-[#059669] dark:text-emerald-400'
+                                : 'text-amber-700 dark:text-[#F5A623]'
+                            }`}
+                          >
+                            {issueCount === 0 ? 'Đạt chuẩn' : `${issueCount} mục`}
                           </span>
                         </button>
                       );

@@ -38,7 +38,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   const [search, setSearch] = useState('');
   const [subjectFilter, setSubjectFilter] = useState<string>('all');
   const [gradeFilter, setGradeFilter] = useState<string>('all');
-  const [sortBy, setSortBy] = useState<'newest' | 'accuracy_asc' | 'accuracy_desc'>('newest');
+  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'claims_desc'>('newest');
   const [confirmDelete, setConfirmDelete] = useState<AnalysisRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
@@ -64,8 +64,8 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         return true;
       })
       .sort((a, b) => {
-        if (sortBy === 'accuracy_asc') return (a.accuracyScore ?? 0) - (b.accuracyScore ?? 0);
-        if (sortBy === 'accuracy_desc') return (b.accuracyScore ?? 0) - (a.accuracyScore ?? 0);
+        if (sortBy === 'oldest') return a.createdAt.localeCompare(b.createdAt);
+        if (sortBy === 'claims_desc') return b.claims.length - a.claims.length;
         return b.createdAt.localeCompare(a.createdAt);
       });
   }, [analyses, subjectFilter, gradeFilter, search, sortBy]);
@@ -155,12 +155,12 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
 
         <select
           value={sortBy}
-          onChange={(e) => setSortBy(e.target.value as 'newest' | 'accuracy_asc' | 'accuracy_desc')}
+          onChange={(e) => setSortBy(e.target.value as 'newest' | 'oldest' | 'claims_desc')}
           className="glass-control px-3 py-2 rounded-xl text-xs text-[#16243E] dark:text-[#E6EFFC]"
         >
           <option value="newest">Mới nhất trước</option>
-          <option value="accuracy_desc">Chính xác cao nhất</option>
-          <option value="accuracy_asc">Chính xác thấp nhất</option>
+          <option value="oldest">Cũ nhất trước</option>
+          <option value="claims_desc">Nhiều mệnh đề nhất</option>
         </select>
       </GlassSurface>
 
@@ -182,54 +182,61 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         </GlassSurface>
       ) : (
         <div className="space-y-3">
-          {filtered.map((item) => (
-            <GlassSurface
-              key={item.analysisId}
-              className="rounded-3xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
-            >
-              <div className="min-w-0 space-y-1">
-                <div className="flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0" />
-                  <h2 className="text-base font-bold text-[#16243E] dark:text-[#E6EFFC] truncate">
-                    {repairUtf8Mojibake(item.documentTitle)}
-                  </h2>
+          {filtered.map((item) => {
+            const correctCount = item.claims.filter((c) => c.evaluationStatus === 'CORRECT').length;
+            const errorCount = item.claims.filter((c) => c.evaluationStatus === 'INCORRECT').length;
+            const partialOrMissingCount = item.claims.filter(
+              (c) => c.evaluationStatus === 'PARTIALLY_CORRECT' || c.evaluationStatus === 'MISSING'
+            ).length;
+            return (
+              <GlassSurface
+                key={item.analysisId}
+                className="rounded-3xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+              >
+                <div className="min-w-0 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0" />
+                    <h2 className="text-base font-bold text-[#16243E] dark:text-[#E6EFFC] truncate">
+                      {repairUtf8Mojibake(item.documentTitle)}
+                    </h2>
+                  </div>
+                  <p className="text-xs text-slate-600 dark:text-slate-300">
+                    {SUBJECT_LABELS[item.subject]} · Lớp {item.grade} ·{' '}
+                    {item.textbookTitle || 'Chương trình chuẩn'} ·{' '}
+                    {new Date(item.createdAt).toLocaleString('vi-VN')}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-4 text-xs pt-1 font-mono tabular-nums">
+                    <span className="text-sky-700 dark:text-sky-400">
+                      Đã đối chiếu: {item.claims.length} mệnh đề
+                    </span>
+                    <span className="text-emerald-700 dark:text-emerald-400">
+                      Đúng chuẩn: {correctCount}
+                    </span>
+                    <span className="text-amber-700 dark:text-amber-400">
+                      Cần bổ sung: {partialOrMissingCount}
+                    </span>
+                    <span className="text-rose-700 dark:text-rose-400">
+                      Sai kiến thức: {errorCount}
+                    </span>
+                  </div>
                 </div>
-                <p className="text-xs text-slate-600 dark:text-slate-300">
-                  {SUBJECT_LABELS[item.subject]} · Lớp {item.grade} ·{' '}
-                  {item.textbookTitle || 'Chương trình chuẩn'} ·{' '}
-                  {new Date(item.createdAt).toLocaleString('vi-VN')}
-                </p>
-                <div className="flex flex-wrap items-center gap-4 text-xs pt-1">
-                  <span className="font-mono text-sky-700 dark:text-sky-400">
-                    Chính xác: {item.accuracyScore !== null ? `${item.accuracyScore}%` : '—'}
-                  </span>
-                  <span className="font-mono text-sky-800 dark:text-sky-300">
-                    Đầy đủ: {item.completenessScore !== null ? `${item.completenessScore}%` : '—'}
-                  </span>
-                  <span className="text-emerald-700 dark:text-emerald-400">
-                    Điểm mạnh: {item.strengths.length}
-                  </span>
-                  <span className="text-rose-700 dark:text-rose-400">
-                    Điểm yếu: {item.weaknesses.length}
-                  </span>
-                </div>
-              </div>
 
-              <div className="flex items-center gap-2 shrink-0">
-                <WaterRippleButton size="sm" onClick={() => onSelectAnalysis(item.analysisId)}>
-                  Mở báo cáo & đối chiếu
-                </WaterRippleButton>
-                <button
-                  type="button"
-                  onClick={() => setConfirmDelete(item)}
-                  aria-label="Xóa bản phân tích"
-                  className="p-2 rounded-xl border border-rose-200/80 dark:border-rose-800/70 bg-rose-50/70 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100/80 dark:hover:bg-rose-950/70 cursor-pointer"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            </GlassSurface>
-          ))}
+                <div className="flex items-center gap-2 shrink-0">
+                  <WaterRippleButton size="sm" onClick={() => onSelectAnalysis(item.analysisId)}>
+                    Mở báo cáo & đối chiếu
+                  </WaterRippleButton>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(item)}
+                    aria-label="Xóa bản phân tích"
+                    className="p-2 rounded-xl border border-rose-200/80 dark:border-rose-800/70 bg-rose-50/70 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100/80 dark:hover:bg-rose-950/70 cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </GlassSurface>
+            );
+          })}
 
           {hasMore && (
             <div className="text-center pt-2">

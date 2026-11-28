@@ -148,10 +148,14 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
   const [correctionFilter, setCorrectionFilter] = useState<
     'all' | 'claim_error' | 'gaps' | 'resolved'
   >('all');
+  const [workspaceView, setWorkspaceView] = useState<
+    'all' | 'inspect' | 'fix' | 'overview'
+  >('all');
 
   useEffect(() => {
     setActiveWorkflowStep(actionableQueue.length === 0 ? 5 : 4);
     setCorrectionFilter('all');
+    setWorkspaceView('all');
     setConfirmedSummary(null);
     setSummaryModalOpen(false);
     setSummaryCustomNote('');
@@ -299,6 +303,11 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
     [analysis.claims]
   );
 
+  const correctClaimsCount = useMemo(
+    () => analysis.claims.filter((c) => c.evaluationStatus === 'CORRECT').length,
+    [analysis.claims]
+  );
+
   const errorClaimsCount = useMemo(
     () => analysis.claims.filter((c) => c.evaluationStatus === 'INCORRECT').length,
     [analysis.claims]
@@ -405,8 +414,8 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
   ];
 
   return (
-    <div ref={reportRef} className="space-y-6 sm:space-y-8">
-      {/* 5-Step Progress Stepper Card (Matched to Reference Design — Steps 4 & 5 Active) */}
+    <div ref={reportRef} className="space-y-5 sm:space-y-6">
+      {/* 5-Step Progress Stepper Card */}
       <VerificationFiveStepBar
         activeStep={activeWorkflowStep}
         customProgressPct={dynamicProgressPct}
@@ -414,11 +423,9 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
         statusSummaryText={
           activeWorkflowStep === 4
             ? actionableQueue.length === 0
-              ? 'Bài làm đạt chuẩn 100% — Không có lỗi kiến thức cần chỉnh sửa'
+              ? 'Bài làm đạt chuẩn — Không có lỗi kiến thức cần chỉnh sửa'
               : `Đã rà soát & sửa ${resolvedItemsCount}/${actionableQueue.length} mục cần khắc phục`
-            : `Đã hoàn tất kiểm định · Chính xác ${analysis.accuracyScore ?? '—'}% · Đầy đủ ${
-                analysis.completenessScore ?? '—'
-              }%`
+            : `Đã hoàn tất kiểm định · ${analysis.claims.length} mệnh đề đã đối chiếu · Đã sửa ${resolvedItemsCount}/${actionableQueue.length} mục`
         }
         onSelectStep={(stepId) => {
           if (stepId === 1 && onStartNewUpload) {
@@ -429,76 +436,161 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
         }}
       />
 
-      {/* Header & Actions */}
-      <GlassSurface className="report-hero-block rounded-3xl p-4 sm:p-7 no-print">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 sm:gap-5">
+      {/* Header, Concrete Verification Breakdown & Workspace Switcher */}
+      <GlassSurface className="report-hero-block rounded-3xl p-4 sm:p-6 space-y-4 no-print">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
             {onBack && (
               <button
                 type="button"
                 onClick={onBack}
-                className="text-xs font-medium text-sky-700 dark:text-sky-400 hover:underline mb-2 cursor-pointer min-h-[32px] inline-flex items-center"
+                className="text-xs font-medium text-sky-700 dark:text-sky-400 hover:underline mb-1.5 cursor-pointer min-h-[28px] inline-flex items-center"
               >
                 ← Quay lại danh sách
               </button>
             )}
-            <h1 className="font-display text-[clamp(1.3rem,4vw,1.875rem)] font-bold text-[#16243E] dark:text-[#E6EFFC] leading-[1.25]">
+            <h1 className="font-display text-[clamp(1.25rem,3.6vw,1.75rem)] font-bold text-[#16243E] dark:text-[#E6EFFC] leading-[1.25]">
               {analysis.documentTitle}
             </h1>
-            <p className="text-xs sm:text-sm text-[#475B78] dark:text-[#B4C7E2] mt-1.5 leading-[1.6]">
+            <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] mt-1 leading-[1.5]">
               {SUBJECT_LABELS[analysis.subject]} · Lớp {analysis.grade} ·{' '}
               {analysis.textbookTitle || 'Đối chiếu chương trình phổ thông'} ·{' '}
               {new Date(analysis.createdAt).toLocaleString('vi-VN')}
+              {analysis.scope ? ` · Phạm vi: ${analysis.scope}` : ''}
             </p>
-            {analysis.scope && (
-              <p className="text-xs text-[#475B78] dark:text-[#B4C7E2] mt-1">
-                Phạm vi kiểm định: {analysis.scope}
-              </p>
-            )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={() => triggerPrintWithMode('fix_sheet')}
-              className="glass-control min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
+              className="glass-control min-h-[40px] inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] cursor-pointer"
             >
-              <Printer className="w-4 h-4 text-sky-600 dark:text-sky-400" />
-              Xuất Phiếu sửa lỗi (In / PDF)
+              <Printer className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+              Phiếu sửa lỗi (In / PDF)
             </button>
 
             <button
               type="button"
               onClick={() => setSummaryModalOpen(true)}
-              className="glass-control min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-[#1746A2] dark:text-[#93C5FD] cursor-pointer"
+              className="glass-control min-h-[40px] inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-[#1746A2] dark:text-[#93C5FD] cursor-pointer"
             >
-              <FileCheck2 className="w-4 h-4 text-[#2563EB] dark:text-[#60A5FA]" />
-              {confirmedSummary ? 'Tải bản tổng kết (Đã tạo)' : 'Tạo & Tải bản tổng kết'}
+              <FileCheck2 className="w-3.5 h-3.5 text-[#2563EB] dark:text-[#60A5FA]" />
+              {confirmedSummary ? 'Tải bản tổng kết' : 'Xuất bản tổng kết'}
             </button>
 
             <button
               type="button"
               disabled={generatingCards || !aiEnabled}
               onClick={handleCreateFlashcards}
-              className="glass-control min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] disabled:opacity-50 cursor-pointer"
+              className="glass-control min-h-[40px] inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-[#16243E] dark:text-[#E6EFFC] disabled:opacity-50 cursor-pointer"
             >
               {generatingCards ? (
                 <CalmDots className="text-[#2563EB] dark:text-[#60A5FA]" />
               ) : (
-                <Layers className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+                <Layers className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
               )}
-              Tạo Flashcard từ điểm yếu
+              Tạo Flashcard
             </button>
 
-            <WaterRippleButton size="lg" onClick={() => onStartQuiz(analysis)}>
-              <HelpCircle className="w-4 h-4" />
-              Tạo bài tập trắc nghiệm
+            <WaterRippleButton size="md" onClick={() => onStartQuiz(analysis)}>
+              <HelpCircle className="w-3.5 h-3.5" />
+              Luyện trắc nghiệm
             </WaterRippleButton>
           </div>
         </div>
 
+        {/* Concrete Verification Summary Strip (No Percentage Score) */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-3 border-t border-slate-200/80 dark:border-slate-700/80">
+          <div className="rounded-xl bg-slate-50/90 dark:bg-slate-900/70 border border-slate-200/80 dark:border-slate-800 px-3 py-2.5 flex items-center justify-between gap-2">
+            <div>
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                Tổng mệnh đề đối chiếu
+              </p>
+              <p className="text-base font-bold font-mono tabular-nums text-[#16243E] dark:text-[#E6EFFC]">
+                {analysis.claims.length}
+              </p>
+            </div>
+            <BookCheck className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0" />
+          </div>
+
+          <div className="rounded-xl bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200/80 dark:border-emerald-800/60 px-3 py-2.5 flex items-center justify-between gap-2">
+            <div>
+              <p className="text-[11px] font-medium text-emerald-800 dark:text-emerald-300">
+                Đúng chuẩn SGK
+              </p>
+              <p className="text-base font-bold font-mono tabular-nums text-emerald-700 dark:text-emerald-300">
+                {correctClaimsCount}
+              </p>
+            </div>
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+          </div>
+
+          <div className="rounded-xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/60 px-3 py-2.5 flex items-center justify-between gap-2">
+            <div>
+              <p className="text-[11px] font-medium text-amber-800 dark:text-amber-300">
+                Cần bổ sung ĐK / Ý
+              </p>
+              <p className="text-base font-bold font-mono tabular-nums text-amber-700 dark:text-amber-300">
+                {missingInfoCount}
+              </p>
+            </div>
+            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+          </div>
+
+          <div className="rounded-xl bg-rose-50/80 dark:bg-rose-950/30 border border-rose-200/80 dark:border-rose-800/60 px-3 py-2.5 flex items-center justify-between gap-2">
+            <div>
+              <p className="text-[11px] font-medium text-rose-800 dark:text-rose-300">
+                Sai kiến thức / CT
+              </p>
+              <p className="text-base font-bold font-mono tabular-nums text-rose-700 dark:text-rose-300">
+                {errorClaimsCount}
+              </p>
+            </div>
+            <XCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+          </div>
+        </div>
+
+        {/* Workspace Section Switcher for Focused Verification */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+          <div className="inline-flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100/90 dark:bg-slate-900/80 border border-slate-200/80 dark:border-slate-800">
+            {[
+              { id: 'all' as const, label: 'Xem tất cả' },
+              {
+                id: 'inspect' as const,
+                label: `1. Đối chiếu trên bài làm (${analysis.claims.length})`,
+              },
+              {
+                id: 'fix' as const,
+                label: `2. Sửa lỗi từng mục (${resolvedItemsCount}/${actionableQueue.length})`,
+              },
+              {
+                id: 'overview' as const,
+                label: `3. Nhận xét & Bao phủ SGK (${analysis.coverageItems.length})`,
+              },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setWorkspaceView(tab.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  workspaceView === tab.id
+                    ? 'bg-[#2563EB] text-white shadow-xs'
+                    : 'text-[#475B78] dark:text-[#B4C7E2] hover:text-[#16243E] dark:hover:text-white'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+            Chọn chế độ hiển thị để tập trung đối chiếu hoặc sửa lỗi nhanh hơn
+          </span>
+        </div>
+
         {flashcardNotice && (
-          <div className="mt-4 rounded-xl border border-blue-200 dark:border-blue-800/70 bg-blue-50/80 dark:bg-blue-950/40 px-4 py-2.5 text-xs text-blue-900 dark:text-blue-200 flex flex-wrap items-center justify-between gap-2">
+          <div className="rounded-xl border border-blue-200 dark:border-blue-800/70 bg-blue-50/80 dark:bg-blue-950/40 px-4 py-2.5 text-xs text-blue-900 dark:text-blue-200 flex flex-wrap items-center justify-between gap-2">
             <span>{flashcardNotice}</span>
             {onOpenFlashcards && (
               <button
@@ -513,7 +605,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
         )}
 
         {feedbackResult && (
-          <div className="mt-3 rounded-xl border border-emerald-200 dark:border-emerald-800/70 bg-emerald-50 dark:bg-emerald-950/40 px-4 py-2.5 text-xs text-emerald-900 dark:text-emerald-200">
+          <div className="rounded-xl border border-emerald-200 dark:border-emerald-800/70 bg-emerald-50 dark:bg-emerald-950/40 px-4 py-2.5 text-xs text-emerald-900 dark:text-emerald-200">
             {feedbackResult}
           </div>
         )}
@@ -537,10 +629,11 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
               <p className="text-xs mt-1 italic">Ghi chú: {confirmedSummary.customNote}</p>
             )}
             <p className="text-xs font-semibold mt-2">
-              Độ chính xác: {confirmedSummary.metrics.accuracyScoreDisplay} · Độ đầy đủ:{' '}
+              Tổng mệnh đề: {confirmedSummary.metrics.totalClaims} (Đúng chuẩn:{' '}
+              {confirmedSummary.metrics.correctCount} · Cần sửa/bổ sung:{' '}
+              {confirmedSummary.metrics.actionableTotal}) · Độ đầy đủ:{' '}
               {confirmedSummary.metrics.completenessScoreDisplay} · Tỷ lệ dẫn chứng:{' '}
-              {confirmedSummary.metrics.evidenceCoverageDisplay} · Tin cậy:{' '}
-              {confirmedSummary.metrics.confidenceLevel}
+              {confirmedSummary.metrics.evidenceCoverageDisplay}
             </p>
           </div>
 
@@ -656,8 +749,8 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
               {new Date(analysis.createdAt).toLocaleDateString('vi-VN')}
             </p>
             <p className="text-xs font-semibold mt-1">
-              Độ chính xác: {analysis.accuracyScore ?? 'Chưa đủ dữ liệu'}% · Độ đầy đủ:{' '}
-              {analysis.completenessScore ?? 'Không áp dụng'}%
+              Tổng mệnh đề đã đối chiếu: {analysis.claims.length} · Đúng chuẩn SGK:{' '}
+              {correctClaimsCount} · Mục cần chỉnh sửa/bổ sung: {actionableQueue.length}
             </p>
           </div>
 
@@ -714,15 +807,29 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       )}
 
       {/* Split Document & Evidence Workspace */}
-      <section className="report-scroll-section space-y-3 no-print">
-        <h2 className="font-display text-lg sm:text-xl font-bold text-[#16243E] dark:text-[#E6EFFC] mt-2 mb-2.5">
-          Đối chiếu tài liệu & dẫn chứng nguồn chuẩn
-        </h2>
-        <SplitDocumentViewer analysis={analysis} localFile={localFile} />
-      </section>
+      {(workspaceView === 'all' || workspaceView === 'inspect') && (
+        <section className="report-scroll-section space-y-2.5 no-print">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-display text-base sm:text-lg font-bold text-[#16243E] dark:text-[#E6EFFC]">
+              Đối chiếu trực tiếp trên bài làm & dẫn chứng SGK
+            </h2>
+            {workspaceView === 'inspect' && (
+              <button
+                type="button"
+                onClick={() => setWorkspaceView('fix')}
+                className="text-xs font-semibold text-[#2563EB] dark:text-[#60A5FA] hover:underline cursor-pointer"
+              >
+                Chuyển sang Sửa lỗi từng mục ({resolvedItemsCount}/{actionableQueue.length}) →
+              </button>
+            )}
+          </div>
+          <SplitDocumentViewer analysis={analysis} localFile={localFile} />
+        </section>
+      )}
 
       {/* STEP 4 & STEP 5: Guided 5-Part Error-Correction Workflow & Completion Workspace */}
-      <GlassSurface className="report-scroll-section rounded-3xl p-4 sm:p-7 space-y-5 no-print">
+      {(workspaceView === 'all' || workspaceView === 'fix') && (
+        <GlassSurface className="report-scroll-section rounded-3xl p-4 sm:p-6 space-y-5 no-print">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-sky-200/70 dark:border-slate-700/80 pb-4">
           <div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-[#525E75] dark:text-[#94A3B8] mb-1">
@@ -1096,7 +1203,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
             </div>
           )
         ) : (
-          /* STEP 5: Completion Summary Panel (keeps Accuracy & Completeness strictly independent) */
+          /* STEP 5: Completion Summary Panel */
           <div className="rounded-2xl border border-[#BFDBFE] dark:border-[#3B82F6]/35 bg-[#EAF2FF]/65 dark:bg-[#0D1628] p-5 sm:p-6 space-y-4">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
               <div className="space-y-1">
@@ -1108,7 +1215,7 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
                   Đã khắc phục {resolvedItemsCount}/{actionableQueue.length} mục cần chỉnh sửa · Sẵn sàng xuất phiếu hoặc luyện tập
                 </h3>
                 <p className="text-xs text-[#525E75] dark:text-[#94A3B8] leading-relaxed prose-measure">
-                  Hai chỉ số được giữ độc lập tuyệt đối: Độ chính xác phản ánh tỷ lệ kiến thức bạn đã viết đúng ({analysis.accuracyScore ?? '—'}%), còn Độ đầy đủ phản ánh mức bao phủ khung kiến thức chương SGK ({analysis.completenessScore ?? '—'}%).
+                  Kết quả đối chiếu SGK: {correctClaimsCount}/{analysis.claims.length} mệnh đề đúng chuẩn · {errorClaimsCount} mệnh đề sai kiến thức/công thức · {missingInfoCount} mục cần bổ sung điều kiện hoặc ý SGK.
                 </p>
               </div>
 
@@ -1144,7 +1251,8 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
             </div>
           </div>
         )}
-      </GlassSurface>
+        </GlassSurface>
+      )}
 
       {/* Dedicated Confirmed Summary Report Download Card */}
       <GlassSurface className="report-scroll-section rounded-3xl p-4 sm:p-6 border border-sky-200/80 dark:border-sky-800/60 space-y-4 no-print">
@@ -1271,193 +1379,197 @@ export const AnalysisReportView: React.FC<AnalysisReportViewProps> = ({
       </GlassSurface>
 
       {/* Strengths, Weaknesses, Suggestions */}
-      <div className="report-scroll-section grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 no-print">
-        <GlassSurface className="rounded-3xl p-4 sm:p-6 space-y-4">
-          <h3 className="font-display text-base font-bold text-emerald-900 dark:text-emerald-300 flex items-center gap-2">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-            Điểm mạnh đã thể hiện ({analysis.strengths.length})
-          </h3>
-          {analysis.strengths.length === 0 ? (
-            <p className="text-xs text-slate-500 dark:text-slate-400">Chưa ghi nhận điểm mạnh nổi bật đủ căn cứ.</p>
-          ) : (
-            <div className="space-y-3">
-              {analysis.strengths.map((s, idx) => (
-                <div
-                  key={idx}
-                  className="rounded-2xl bg-emerald-50/75 dark:bg-emerald-950/35 border border-emerald-200/80 dark:border-emerald-800/60 p-3.5 text-xs space-y-1"
-                >
-                  <p className="font-semibold text-emerald-950 dark:text-emerald-200">{s.title}</p>
-                  <p className="text-slate-700 dark:text-slate-300 leading-relaxed">{s.detail}</p>
-                  {s.sourceExcerpt && (
-                    <p className="text-emerald-800 dark:text-emerald-300 italic">
-                      “{s.sourceExcerpt}” (Tr. {s.pageNumber})
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </GlassSurface>
-
-        <GlassSurface className="rounded-3xl p-6 space-y-4">
-          <h3 className="font-display text-base font-bold text-rose-900 dark:text-rose-300 flex items-center gap-2">
-            <XCircle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
-            Điểm cần khắc phục ({analysis.weaknesses.length})
-          </h3>
-          {analysis.weaknesses.length === 0 ? (
-            <p className="text-xs text-slate-500 dark:text-slate-400">Không phát hiện lỗ hổng hay lỗi sai nghiêm trọng.</p>
-          ) : (
-            <div className="space-y-3">
-              {analysis.weaknesses.map((w, idx) => (
-                <div
-                  key={idx}
-                  className="rounded-2xl bg-rose-50/75 dark:bg-rose-950/35 border border-rose-200/80 dark:border-rose-800/60 p-3.5 text-xs space-y-1"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="font-semibold text-rose-950 dark:text-rose-200">{w.title}</p>
-                    {w.pageNumber && <span className="font-mono text-rose-700 dark:text-rose-400">Tr. {w.pageNumber}</span>}
+      {(workspaceView === 'all' || workspaceView === 'overview') && (
+        <div className="report-scroll-section grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 no-print">
+          <GlassSurface className="rounded-3xl p-4 sm:p-6 space-y-4">
+            <h3 className="font-display text-base font-bold text-emerald-900 dark:text-emerald-300 flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+              Điểm mạnh đã thể hiện ({analysis.strengths.length})
+            </h3>
+            {analysis.strengths.length === 0 ? (
+              <p className="text-xs text-slate-500 dark:text-slate-400">Chưa ghi nhận điểm mạnh nổi bật đủ căn cứ.</p>
+            ) : (
+              <div className="space-y-3">
+                {analysis.strengths.map((s, idx) => (
+                  <div
+                    key={idx}
+                    className="rounded-2xl bg-emerald-50/75 dark:bg-emerald-950/35 border border-emerald-200/80 dark:border-emerald-800/60 p-3.5 text-xs space-y-1"
+                  >
+                    <p className="font-semibold text-emerald-950 dark:text-emerald-200">{s.title}</p>
+                    <p className="text-slate-700 dark:text-slate-300 leading-relaxed">{s.detail}</p>
+                    {s.sourceExcerpt && (
+                      <p className="text-emerald-800 dark:text-emerald-300 italic">
+                        “{s.sourceExcerpt}” (Tr. {s.pageNumber})
+                      </p>
+                    )}
                   </div>
-                  <p className="text-slate-700 dark:text-slate-300 leading-relaxed">{w.detail}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </GlassSurface>
+                ))}
+              </div>
+            )}
+          </GlassSurface>
 
-        <GlassSurface className="rounded-3xl p-6 space-y-4">
-          <h3 className="font-display text-base font-bold text-sky-900 dark:text-sky-300 flex items-center gap-2">
-            <Lightbulb className="w-5 h-5 text-sky-600 dark:text-sky-400" />
-            Gợi ý cải thiện theo thứ tự ưu tiên
-          </h3>
-          {analysis.suggestions.length === 0 ? (
-            <p className="text-xs text-slate-500 dark:text-slate-400">Tiếp tục ôn tập đều qua bộ câu hỏi trắc nghiệm.</p>
-          ) : (
-            <div className="space-y-3">
-              {analysis.suggestions.map((sg, idx) => (
-                <div
-                  key={idx}
-                  className="rounded-2xl bg-sky-50/75 dark:bg-sky-950/35 border border-sky-200/80 dark:border-sky-800/60 p-3.5 text-xs space-y-1"
-                >
-                  <p className="font-semibold text-sky-950 dark:text-sky-200">
-                    #{sg.priority || idx + 1} · {sg.title}
-                  </p>
-                  <p className="text-slate-700 dark:text-slate-300 leading-relaxed">{sg.description}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </GlassSurface>
-      </div>
+          <GlassSurface className="rounded-3xl p-6 space-y-4">
+            <h3 className="font-display text-base font-bold text-rose-900 dark:text-rose-300 flex items-center gap-2">
+              <XCircle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+              Điểm cần khắc phục ({analysis.weaknesses.length})
+            </h3>
+            {analysis.weaknesses.length === 0 ? (
+              <p className="text-xs text-slate-500 dark:text-slate-400">Không phát hiện lỗ hổng hay lỗi sai nghiêm trọng.</p>
+            ) : (
+              <div className="space-y-3">
+                {analysis.weaknesses.map((w, idx) => (
+                  <div
+                    key={idx}
+                    className="rounded-2xl bg-rose-50/75 dark:bg-rose-950/35 border border-rose-200/80 dark:border-rose-800/60 p-3.5 text-xs space-y-1"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-semibold text-rose-950 dark:text-rose-200">{w.title}</p>
+                      {w.pageNumber && <span className="font-mono text-rose-700 dark:text-rose-400">Tr. {w.pageNumber}</span>}
+                    </div>
+                    <p className="text-slate-700 dark:text-slate-300 leading-relaxed">{w.detail}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </GlassSurface>
+
+          <GlassSurface className="rounded-3xl p-6 space-y-4">
+            <h3 className="font-display text-base font-bold text-sky-900 dark:text-sky-300 flex items-center gap-2">
+              <Lightbulb className="w-5 h-5 text-sky-600 dark:text-sky-400" />
+              Gợi ý cải thiện theo thứ tự ưu tiên
+            </h3>
+            {analysis.suggestions.length === 0 ? (
+              <p className="text-xs text-slate-500 dark:text-slate-400">Tiếp tục ôn tập đều qua bộ câu hỏi trắc nghiệm.</p>
+            ) : (
+              <div className="space-y-3">
+                {analysis.suggestions.map((sg, idx) => (
+                  <div
+                    key={idx}
+                    className="rounded-2xl bg-sky-50/75 dark:bg-sky-950/35 border border-sky-200/80 dark:border-sky-800/60 p-3.5 text-xs space-y-1"
+                  >
+                    <p className="font-semibold text-sky-950 dark:text-sky-200">
+                      #{sg.priority || idx + 1} · {sg.title}
+                    </p>
+                    <p className="text-slate-700 dark:text-slate-300 leading-relaxed">{sg.description}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </GlassSurface>
+        </div>
+      )}
 
       {/* Coverage Checklist & Grounded Web Sources */}
-      <div className="report-scroll-section grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6 no-print">
-        <div className="lg:col-span-7 glass-surface rounded-3xl p-4 sm:p-6">
-          <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC] mb-4 flex items-center gap-2">
-            <BookCheck className="w-5 h-5 text-sky-600 dark:text-sky-400" />
-            Bảng kiểm mức độ bao phủ kiến thức chương ({analysis.coverageItems.length})
-          </h3>
-          {analysis.coverageItems.length === 0 ? (
-            <p className="text-xs text-slate-600 dark:text-slate-300">
-              Không có danh sách mục tiêu chương cụ thể cho lần phân tích này.
-            </p>
-          ) : (
-            <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
-              {analysis.coverageItems.map((cov) => (
-                <div
-                  key={cov.itemId}
-                  className="document-paper rounded-2xl p-3.5 text-xs"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">{cov.concept}</span>
-                    <span
-                      className={`font-semibold shrink-0 ${
-                        cov.status === 'COVERED'
-                          ? 'text-emerald-700 dark:text-emerald-400'
+      {(workspaceView === 'all' || workspaceView === 'overview') && (
+        <div className="report-scroll-section grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6 no-print">
+          <div className="lg:col-span-7 glass-surface rounded-3xl p-4 sm:p-6">
+            <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC] mb-4 flex items-center gap-2">
+              <BookCheck className="w-5 h-5 text-sky-600 dark:text-sky-400" />
+              Bảng kiểm mức độ bao phủ kiến thức chương ({analysis.coverageItems.length})
+            </h3>
+            {analysis.coverageItems.length === 0 ? (
+              <p className="text-xs text-slate-600 dark:text-slate-300">
+                Không có danh sách mục tiêu chương cụ thể cho lần phân tích này.
+              </p>
+            ) : (
+              <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                {analysis.coverageItems.map((cov) => (
+                  <div
+                    key={cov.itemId}
+                    className="document-paper rounded-2xl p-3.5 text-xs"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-[#16243E] dark:text-[#E6EFFC]">{cov.concept}</span>
+                      <span
+                        className={`font-semibold shrink-0 ${
+                          cov.status === 'COVERED'
+                            ? 'text-emerald-700 dark:text-emerald-400'
+                            : cov.status === 'PARTIALLY_COVERED'
+                            ? 'text-amber-700 dark:text-amber-400'
+                            : 'text-rose-700 dark:text-rose-400'
+                        }`}
+                      >
+                        {cov.status === 'COVERED'
+                          ? 'Đã bao phủ'
                           : cov.status === 'PARTIALLY_COVERED'
-                          ? 'text-amber-700 dark:text-amber-400'
-                          : 'text-rose-700 dark:text-rose-400'
-                      }`}
-                    >
-                      {cov.status === 'COVERED'
-                        ? 'Đã bao phủ'
-                        : cov.status === 'PARTIALLY_COVERED'
-                        ? 'Thiếu một phần'
-                        : 'Còn thiếu'}
-                    </span>
-                  </div>
-                  <p className="text-slate-500 dark:text-slate-400 mt-0.5">
-                    {cov.chapter}
-                    {cov.referencePage ? ` · SGK Tr. ${cov.referencePage}` : ''}
-                  </p>
-                  {cov.status !== 'COVERED' && cov.suggestedAddition && (
-                    <p className="text-slate-700 dark:text-slate-200 mt-1.5 bg-amber-50/75 dark:bg-amber-950/35 rounded-xl px-2.5 py-1.5">
-                      Cần bổ sung: {cov.suggestedAddition}
+                          ? 'Thiếu một phần'
+                          : 'Còn thiếu'}
+                      </span>
+                    </div>
+                    <p className="text-slate-500 dark:text-slate-400 mt-0.5">
+                      {cov.chapter}
+                      {cov.referencePage ? ` · SGK Tr. ${cov.referencePage}` : ''}
                     </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+                    {cov.status !== 'COVERED' && cov.suggestedAddition && (
+                      <p className="text-slate-700 dark:text-slate-200 mt-1.5 bg-amber-50/75 dark:bg-amber-950/35 rounded-xl px-2.5 py-1.5">
+                        Cần bổ sung: {cov.suggestedAddition}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
-        <div className="lg:col-span-5 glass-surface rounded-3xl p-6">
-          <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC] mb-4 flex items-center gap-2">
-            <Globe className="w-5 h-5 text-sky-600 dark:text-sky-400" />
-            Nguồn tham khảo ngoài sách (Web Grounding)
-          </h3>
-          {analysis.webGroundingNotice && (
-            <div className="mb-3 rounded-2xl border border-amber-200 dark:border-amber-800/70 bg-amber-50/80 dark:bg-amber-950/40 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-              <span>{analysis.webGroundingNotice}</span>
-            </div>
-          )}
-          {analysis.webSources.length === 0 ? (
-            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              {analysis.usedWebGrounding
-                ? 'Google Search Grounding không trả về liên kết ngoài bổ sung cho truy vấn này.'
-                : 'Phiên kiểm định này chỉ đối chiếu trên bộ sách giáo khoa và kiến thức chuẩn chương trình.'}
-            </p>
-          ) : (
-            <div className="space-y-2.5">
-              {analysis.webSources.map((src) => {
-                const safeUrl = sanitizeExternalHttpUrl(src.url);
-                if (!safeUrl) {
+          <div className="lg:col-span-5 glass-surface rounded-3xl p-6">
+            <h3 className="font-display text-base font-bold text-[#16243E] dark:text-[#E6EFFC] mb-4 flex items-center gap-2">
+              <Globe className="w-5 h-5 text-sky-600 dark:text-sky-400" />
+              Nguồn tham khảo ngoài sách (Web Grounding)
+            </h3>
+            {analysis.webGroundingNotice && (
+              <div className="mb-3 rounded-2xl border border-amber-200 dark:border-amber-800/70 bg-amber-50/80 dark:bg-amber-950/40 p-3 text-xs text-amber-900 dark:text-amber-200 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                <span>{analysis.webGroundingNotice}</span>
+              </div>
+            )}
+            {analysis.webSources.length === 0 ? (
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                {analysis.usedWebGrounding
+                  ? 'Google Search Grounding không trả về liên kết ngoài bổ sung cho truy vấn này.'
+                  : 'Phiên kiểm định này chỉ đối chiếu trên bộ sách giáo khoa và kiến thức chuẩn chương trình.'}
+              </p>
+            ) : (
+              <div className="space-y-2.5">
+                {analysis.webSources.map((src) => {
+                  const safeUrl = sanitizeExternalHttpUrl(src.url);
+                  if (!safeUrl) {
+                    return (
+                      <div
+                        key={src.evidenceId}
+                        className="block document-paper rounded-2xl p-3.5 text-xs"
+                      >
+                        <div className="flex items-center justify-between gap-2 font-semibold text-slate-700 dark:text-slate-300">
+                          <span className="truncate">{src.title}</span>
+                        </div>
+                        <p className="text-slate-500 dark:text-slate-400 font-mono text-[11px] mt-1 truncate">
+                          {src.domain || 'Nguồn tham khảo'}
+                        </p>
+                      </div>
+                    );
+                  }
                   return (
-                    <div
+                    <a
                       key={src.evidenceId}
-                      className="block document-paper rounded-2xl p-3.5 text-xs"
+                      href={safeUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block document-paper rounded-2xl p-3.5 text-xs hover:border-sky-400 transition-colors"
                     >
-                      <div className="flex items-center justify-between gap-2 font-semibold text-slate-700 dark:text-slate-300">
+                      <div className="flex items-center justify-between gap-2 font-semibold text-sky-700 dark:text-sky-400">
                         <span className="truncate">{src.title}</span>
+                        <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                       </div>
                       <p className="text-slate-500 dark:text-slate-400 font-mono text-[11px] mt-1 truncate">
-                        {src.domain || 'Nguồn tham khảo'}
+                        {src.domain || safeUrl}
                       </p>
-                    </div>
+                    </a>
                   );
-                }
-                return (
-                  <a
-                    key={src.evidenceId}
-                    href={safeUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="block document-paper rounded-2xl p-3.5 text-xs hover:border-sky-400 transition-colors"
-                  >
-                    <div className="flex items-center justify-between gap-2 font-semibold text-sky-700 dark:text-sky-400">
-                      <span className="truncate">{src.title}</span>
-                      <ExternalLink className="w-3.5 h-3.5 shrink-0" />
-                    </div>
-                    <p className="text-slate-500 dark:text-slate-400 font-mono text-[11px] mt-1 truncate">
-                      {src.domain || safeUrl}
-                    </p>
-                  </a>
-                );
-              })}
-            </div>
-          )}
+                })}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       <SummaryExportModal
         open={summaryModalOpen}

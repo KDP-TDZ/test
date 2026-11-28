@@ -4,7 +4,9 @@ import {
   isReadableExtractedPageText,
   parsePageRangeInput,
 } from '../core/retrieval';
+import { groupRawTextIntoSemanticBlocks } from '../core/semanticBlocks';
 import type {
+  ExtractedPage,
   GradeLevel,
   KnowledgeSourceType,
   ReferenceBook,
@@ -47,6 +49,92 @@ export async function inspectClientPdfPageCount(file: File): Promise<number> {
   await pdfDoc.cleanup();
   await loadingTask.destroy().catch(() => {});
   return numPages;
+}
+
+export interface ClientStudentPdfExtractionResult {
+  totalPages: number;
+  directPages: ExtractedPage[];
+  scannedPageImages: Array<{ pageNumber: number; file: File }>;
+}
+
+/**
+ * Extracts student PDF pages directly in the browser before uploading:
+ * - Pages with selectable text are converted immediately into `ExtractedPage` with semantic blocks (zero server binary upload needed).
+ * - Pages without an embedded text layer (scanned pages) are rendered to compressed JPEG `File` objects so `/api/ai/extract` Vision OCR can read them seamlessly.
+ */
+export async function extractClientStudentPdfForGrading(
+  file: File,
+  options?: {
+    maxPages?: number;
+    pageOffset?: number;
+    onProgress?: (currentPage: number, totalPages: number) => void;
+  }
+): Promise<ClientStudentPdfExtractionResult> {
+  ensurePdfWorkerConfigured();
+  const arrayBuffer = await file.arrayBuffer();
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(arrayBuffer),
+    useSystemFonts: true,
+  });
+  const pdfDoc = await loadingTask.promise;
+  const totalPages = pdfDoc.numPages;
+  const maxPages = options?.maxPages ?? 25;
+  const pageOffset = options?.pageOffset ?? 0;
+
+  if (totalPages + pageOffset > maxPages) {
+    await pdfDoc.cleanup().catch(() => {});
+    await loadingTask.destroy().catch(() => {});
+    throw new Error(
+      `Tài liệu PDF có ${totalPages + pageOffset} trang, vượt quá giới hạn tối đa ${maxPages} trang cho mỗi lần phân tích.`
+    );
+  }
+
+  const directPages: ExtractedPage[] = [];
+  const scannedPageImages: Array<{ pageNumber: number; file: File }> = [];
+  const cleanBaseName = file.name.replace(/\.pdf$/i, '') || 'tai_lieu';
+
+  try {
+    for (let i = 1; i <= totalPages; i += 1) {
+      options?.onProgress?.(i, totalPages);
+      const globalPageNum = pageOffset + i;
+      const page = await pdfDoc.getPage(i);
+      const text = (await extractTextFromPdfPage(page)).trim();
+
+      if (text.length >= 12) {
+        const blocks = groupRawTextIntoSemanticBlocks(text, globalPageNum, 0.98).map(
+          (b, idx) => ({
+            ...b,
+            blockId: `p${globalPageNum}_b${idx + 1}`,
+            pageNumber: globalPageNum,
+          })
+        );
+        directPages.push({
+          pageNumber: globalPageNum,
+          rawText: text,
+          blocks,
+          ocrAverageConfidence: 0.98,
+        });
+      } else {
+        const blob = await renderPdfPageToJpegBlob(page);
+        const imgFile = new File([blob], `${cleanBaseName}_trang_${globalPageNum}.jpg`, {
+          type: 'image/jpeg',
+        });
+        scannedPageImages.push({
+          pageNumber: globalPageNum,
+          file: imgFile,
+        });
+      }
+    }
+  } finally {
+    await pdfDoc.cleanup().catch(() => {});
+    await loadingTask.destroy().catch(() => {});
+  }
+
+  return {
+    totalPages,
+    directPages,
+    scannedPageImages,
+  };
 }
 
 export interface SmartPdfIngestProgress {

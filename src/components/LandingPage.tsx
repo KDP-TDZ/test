@@ -57,7 +57,7 @@ const SPECIMEN_ANNOTATIONS: SpecimenAnnotation[] = [
     sourceExcerpt:
       '“Liên kết hydrogen là một loại liên kết yếu được hình thành giữa nguyên tử H (đã liên kết với một nguyên tử có độ âm điện lớn, thường là F, O, N) với một nguyên tử khác có độ âm điện lớn (thường là F, O, N) còn cặp electron hóa trị chưa liên kết.”',
     verificationRule:
-      'Đối chiếu trực tiếp khái niệm cốt lõi (trọng số 3) với kho sách giáo khoa chuẩn. Mệnh đề sai bản chất sẽ trừ vào chỉ số Độ chính xác.',
+      'Đối chiếu trực tiếp khái niệm cốt lõi (trọng số 3) với kho sách giáo khoa chuẩn và gắn nhãn rõ nhận định Sai bản chất kiến thức kèm gợi ý sửa trực tiếp.',
   },
   {
     id: 'part-1',
@@ -77,7 +77,7 @@ const SPECIMEN_ANNOTATIONS: SpecimenAnnotation[] = [
     sourceExcerpt:
       '“Các chất có liên kết hydrogen liên phân tử thường có nhiệt độ nóng chảy và nhiệt độ sôi cao hơn so với các chất có khối lượng phân tử tương đương nhưng không tạo được liên kết hydrogen liên phân tử.”',
     verificationRule:
-      'Mệnh đề đúng hướng nhưng thiếu điều kiện/phạm vi áp dụng được tính hệ số 0,5 thay vì chấm sai hoàn toàn.',
+      'Mệnh đề đúng hướng nhưng thiếu điều kiện/phạm vi áp dụng được gắn nhãn Cần bổ sung thay vì đánh dấu sai hoàn toàn.',
   },
   {
     id: 'ok-1',
@@ -97,14 +97,14 @@ const SPECIMEN_ANNOTATIONS: SpecimenAnnotation[] = [
     sourceExcerpt:
       '“Liên kết hydrogen có bản chất tĩnh điện, yếu hơn liên kết ion và liên kết cộng hóa trị nhưng mạnh hơn tương tác van der Waals.”',
     verificationRule:
-      'Mệnh đề đúng về nghĩa học thuật (không yêu cầu chép nguyên văn) và khớp nguồn chuẩn được tính hệ số tối đa 1,0.',
+      'Mệnh đề đúng về nghĩa học thuật (không yêu cầu chép nguyên văn) và khớp nguồn chuẩn được xác nhận Đúng chuẩn SGK.',
   },
 ];
 
 const FAQS = [
   {
     q: 'StudyCheck AI có đánh đồng việc viết thiếu ý với việc viết sai kiến thức không?',
-    a: 'Không. Hệ thống tách biệt hoàn toàn hai chỉ số độc lập: Độ chính xác (Accuracy) chỉ chấm trên những kiến thức bạn đã viết và đã được xác minh, còn Độ đầy đủ (Completeness) đo mức độ bao phủ mục tiêu học tập của chương đã chọn.',
+    a: 'Không. Hệ thống tách biệt hoàn toàn nhận định Sai kiến thức với nhận định Cần bổ sung điều kiện và bảng kiểm mục tiêu chương còn thiếu, giúp bạn biết chính xác chỗ nào cần sửa và chỗ nào cần viết thêm.',
   },
   {
     q: 'Ảnh chụp vở viết tay hoặc ảnh bảng có được sửa lỗi OCR trước khi chấm không?',
